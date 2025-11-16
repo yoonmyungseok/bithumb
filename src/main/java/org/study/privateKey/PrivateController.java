@@ -30,7 +30,7 @@ import java.util.UUID;
 @RestController
 @RequestMapping("private")
 @Slf4j
-@CrossOrigin(origins = "http://localhost:3000")
+@CrossOrigin(origins = "http://localhost:5173")
 @RequiredArgsConstructor
 public class PrivateController {
     
