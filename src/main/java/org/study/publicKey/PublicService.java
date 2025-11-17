@@ -2,13 +2,11 @@ package org.study.publicKey;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.Response;
-import okhttp3.ResponseBody;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClient;
 
 import java.util.List;
 
@@ -23,36 +21,34 @@ import java.util.List;
  */
 @Service
 @Slf4j
+@RequiredArgsConstructor
 public class PublicService {
-    private final OkHttpClient client = new OkHttpClient();
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final RestClient restClient;
     
-    public List<MarketCode> marketCodeList(){
-        Request request = new Request.Builder()
-            .url("https://api.bithumb.com/v1/market/all?isDetails=false")
-            .get()
-            .addHeader("accept", "application/json")
-            .build();
+    public List<MarketCode> marketAll(){
         
-        try (Response response = client.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                throw new IllegalStateException("HTTP 에러: " + response.code());
+        try {
+            ResponseEntity<String> entity = restClient.get().uri(uriBuilder -> uriBuilder.queryParam("isDetails",false).pathSegment("v1","market","all").build())
+                .header("accept", "application/json")
+                .retrieve()
+                .toEntity(String.class);
+            // 1) 상태코드 검증
+            if (!entity.getStatusCode().is2xxSuccessful()) {
+                throw new IllegalStateException("HTTP 에러: " + entity.getStatusCode());
             }
             
-            ResponseBody responseBody = response.body();
-            if (responseBody == null) {
+            // 2) 바디 검증
+            String json = entity.getBody();
+            if (json == null || json.isBlank()) {
                 throw new IllegalStateException("응답 바디 없음");
             }
-            
-            String json = responseBody.string();   // ✅ JSON 문자열
-            // log.info("응답: {}", json);
             
             // ✅ JSON → 객체
             List<MarketCode> marketCode = objectMapper.readValue(
                 json,
                 new TypeReference<List<MarketCode>>() {}
             );
-            log.info("마켓코드: {}", marketCode);
             return marketCode.stream()
                 .filter(v -> v.getMarket() != null && v.getMarket().contains("KRW"))
                 .toList();

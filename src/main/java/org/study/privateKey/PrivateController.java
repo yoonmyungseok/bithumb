@@ -1,22 +1,15 @@
 package org.study.privateKey;
 
-import com.auth0.jwt.JWT;
-import com.auth0.jwt.algorithms.Algorithm;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import io.swagger.v3.oas.annotations.Operation;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import okhttp3.*;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import org.study.GlobalConfig;
-import org.study.publicKey.MarketCode;
 
 import java.util.List;
-import java.util.UUID;
 
 /**
  * 1. ClassName     : PrivateController
@@ -36,8 +29,12 @@ public class PrivateController {
     
     private final PrivateService privateService;
     
+    @Operation(
+        summary = "전체 계좌 조회",
+        description = "보유 중인 자산 정보를 조회합니다."
+    )
     @GetMapping("/accounts")
-    public ResponseEntity<List<AccountsDto>> 전체계좌조회(){
-        return ResponseEntity.ok(privateService.전체계좌조회());
+    public ResponseEntity<List<AccountsDto>> accounts(){
+        return ResponseEntity.ok(privateService.accounts());
     }
 }
