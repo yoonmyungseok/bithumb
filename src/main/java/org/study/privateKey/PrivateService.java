@@ -1,16 +1,14 @@
 package org.study.privateKey;
 
-import com.auth0.jwt.JWT;
-import com.auth0.jwt.algorithms.Algorithm;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+import org.study.common.HttpService;
 import org.study.config.AuthToken;
-import org.study.config.BithumbProperties;
 import org.study.publicKey.MarketCode;
 import org.study.publicKey.PublicService;
 
@@ -19,7 +17,6 @@ import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -38,33 +35,22 @@ import java.util.stream.Collectors;
 public class PrivateService {
     
     private final PublicService publicService;
-    private final RestClient restClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final HttpService httpService;
     private final AuthToken authToken;
     
+    
     public List<AccountsDto> accounts() {
-        String authenticationToken = authToken.getAuthToken();
-        
         try {
-            ResponseEntity<String> entity = restClient.get().uri(uriBuilder -> uriBuilder.pathSegment("v1","accounts").build())
-                .header("Authorization", authenticationToken)
-                .retrieve()
-                .toEntity(String.class);
+            String authenticationToken = authToken.getAuthToken();
+            MultiValueMap<String, String> headers = new LinkedMultiValueMap<>();
+            headers.add("Authorization", authenticationToken);
             
-            // 1) 상태코드 검증
-            if (!entity.getStatusCode().is2xxSuccessful()) {
-                throw new IllegalStateException("HTTP 에러: " + entity.getStatusCode());
-            }
-            
-            // 2) 바디 검증
-            String json = entity.getBody();
-            if (json == null || json.isBlank()) {
-                throw new IllegalStateException("응답 바디 없음");
-            }
+            String response = httpService.client("get", "accounts", headers);
             
             // ✅ JSON → 객체
             List<Accounts> accounts = objectMapper.readValue(
-                json,
+                response,
                 new TypeReference<List<Accounts>>() {
                 }
             );
