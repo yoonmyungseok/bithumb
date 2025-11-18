@@ -1,4 +1,4 @@
-package org.study.publicKey;
+package org.study.publicKey.marketAll;
 
 import lombok.Data;
 

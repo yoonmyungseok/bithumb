@@ -4,10 +4,10 @@ import io.swagger.v3.oas.annotations.Operation;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.CrossOrigin;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
+import org.study.privateKey.accounts.AccountsDto;
+import org.study.publicKey.orders.Orders;
+import org.study.publicKey.orders.OrdersDto;
 
 import java.util.List;
 
@@ -34,7 +34,16 @@ public class PrivateController {
         description = "보유 중인 자산 정보를 조회합니다."
     )
     @GetMapping("/accounts")
-    public ResponseEntity<List<AccountsDto>> accounts(){
+    public ResponseEntity<List<AccountsDto>> accounts() {
         return ResponseEntity.ok(privateService.accounts());
+    }
+    
+    @Operation(
+        summary = "주문하기",
+        description = "주문을 요청합니다."
+    )
+    @PostMapping("/orders")
+    public ResponseEntity<List<OrdersDto>> orders(@RequestBody Orders orders) {
+        return ResponseEntity.ok(privateService.orders(orders));
     }
 }

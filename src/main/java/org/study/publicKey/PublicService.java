@@ -1,12 +1,17 @@
 package org.study.publicKey;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+import org.study.common.CustomException;
+import org.study.common.HttpService;
+import org.study.publicKey.marketAll.MarketCode;
+import org.study.publicKey.ticker.Ticker;
 
 import java.util.List;
 
@@ -24,36 +29,50 @@ import java.util.List;
 @RequiredArgsConstructor
 public class PublicService {
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final RestClient restClient;
+    private final HttpService httpService;
     
-    public List<MarketCode> marketAll(){
-        
+    public List<MarketCode> marketAll() {
         try {
-            ResponseEntity<String> entity = restClient.get().uri(uriBuilder -> uriBuilder.queryParam("isDetails",false).pathSegment("v1","market","all").build())
-                .header("accept", "application/json")
-                .retrieve()
-                .toEntity(String.class);
-            // 1) 상태코드 검증
-            if (!entity.getStatusCode().is2xxSuccessful()) {
-                throw new IllegalStateException("HTTP 에러: " + entity.getStatusCode());
-            }
+            MultiValueMap<String, String> headers = new LinkedMultiValueMap<>();
+            headers.add("accept", "application/json");
             
-            // 2) 바디 검증
-            String json = entity.getBody();
-            if (json == null || json.isBlank()) {
-                throw new IllegalStateException("응답 바디 없음");
-            }
+            MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
+            params.add("isDetails", "false");
+            
+            String response = httpService.client("get", "market/all", headers, params);
             
             // ✅ JSON → 객체
             List<MarketCode> marketCode = objectMapper.readValue(
-                json,
-                new TypeReference<List<MarketCode>>() {}
+                response,
+                new TypeReference<>() {
+                }
             );
             return marketCode.stream()
                 .filter(v -> v.getMarket() != null && v.getMarket().contains("KRW"))
                 .toList();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
+        } catch (JsonProcessingException e) {
+            throw new CustomException("JSON 파싱 실패", e);
         }
     }
+    
+    public List<Ticker> ticker(String markets) {
+        try {
+            MultiValueMap<String, String> headers = new LinkedMultiValueMap<>();
+            headers.add("accept", "application/json");
+            
+            MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
+            params.add("markets", "KRW-"+markets);
+            
+            String response = httpService.client("get", "ticker", headers, params);
+            // ✅ JSON → 객체
+            return objectMapper.readValue(
+                response,
+                new TypeReference<>() {
+                }
+            );
+        } catch (JsonProcessingException e) {
+            throw new CustomException("JSON 파싱 실패", e);
+        }
+    }
+    
 }

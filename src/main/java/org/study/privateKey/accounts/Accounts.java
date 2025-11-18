@@ -1,4 +1,4 @@
-package org.study.privateKey;
+package org.study.privateKey.accounts;
 
 import lombok.Data;
 

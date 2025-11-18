@@ -1,12 +1,12 @@
 package org.study.common;
 
+import jakarta.annotation.Nullable;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
-import org.study.config.AuthToken;
 
 /**
  * 1. ClassName     : HttpService
@@ -24,16 +24,25 @@ public class HttpService {
     private final RestClient restClient;
     
     
-    public String client(String method, String path, MultiValueMap<String, String> headers) {
+    public String client(String method, String path, @Nullable MultiValueMap<String, String> headers, @Nullable MultiValueMap<String, String> params) {
         HttpMethod httpMethod = "post".equalsIgnoreCase(method) ? HttpMethod.POST : HttpMethod.GET;
         String[] segments = path.split("/");
         
-        ResponseEntity<String> entity = restClient
-            .method(httpMethod)
-            .uri(uriBuilder -> uriBuilder.path("v1").pathSegment(segments).build())
-            .headers(httpHeaders ->  httpHeaders.putAll(headers))
-            .retrieve()
-            .toEntity(String.class);
+        ResponseEntity<String> entity = restClient.method(httpMethod).uri(uriBuilder -> {
+            var builder = uriBuilder.path("v1").pathSegment(segments);
+            
+            // ✅ query param 처리
+            if (params != null && !params.isEmpty()) {
+                params.forEach((name, values) -> builder.queryParam(name, values.toArray()));
+            }
+            
+            return builder.build();
+        }).headers((httpHeaders -> {
+            // ✅ header null-safe 처리
+            if (headers != null && !headers.isEmpty()) {
+                httpHeaders.putAll(headers);
+            }
+        })).retrieve().toEntity(String.class);
         
         // 1) 상태코드 검증
         if (!entity.getStatusCode().is2xxSuccessful()) {

@@ -4,13 +4,11 @@ import io.swagger.v3.oas.annotations.Operation;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.CrossOrigin;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
+import org.study.publicKey.marketAll.MarketCode;
+import org.study.publicKey.ticker.Ticker;
 
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * 1. ClassName     : PublicController
@@ -38,4 +36,14 @@ public class PublicController {
     public ResponseEntity<List<MarketCode>> marketAll(){
         return ResponseEntity.ok(publicService.marketAll());
     }
+    
+    @Operation(
+        summary = "현재가 정보",
+        description = "요청 시점 종목의 스냅샷이 제공됩니다."
+    )
+    @GetMapping("/ticker")
+    public ResponseEntity<List<Ticker>> ticker(@RequestParam String markets){
+        return ResponseEntity.ok(publicService.ticker(markets));
+    }
+    
 }

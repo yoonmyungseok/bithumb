@@ -1,5 +1,6 @@
 package org.study.privateKey;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -7,10 +8,16 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.study.common.CustomException;
 import org.study.common.HttpService;
 import org.study.config.AuthToken;
-import org.study.publicKey.MarketCode;
+import org.study.privateKey.accounts.Accounts;
+import org.study.privateKey.accounts.AccountsDto;
+import org.study.publicKey.marketAll.MarketCode;
 import org.study.publicKey.PublicService;
+import org.study.publicKey.orders.Orders;
+import org.study.publicKey.orders.OrdersDto;
+import org.study.publicKey.ticker.Ticker;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -39,19 +46,20 @@ public class PrivateService {
     private final HttpService httpService;
     private final AuthToken authToken;
     
-    
     public List<AccountsDto> accounts() {
         try {
             String authenticationToken = authToken.getAuthToken();
             MultiValueMap<String, String> headers = new LinkedMultiValueMap<>();
             headers.add("Authorization", authenticationToken);
             
-            String response = httpService.client("get", "accounts", headers);
+            MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
+            
+            String response = httpService.client("get", "accounts", headers, params);
             
             // ✅ JSON → 객체
             List<Accounts> accounts = objectMapper.readValue(
                 response,
-                new TypeReference<List<Accounts>>() {
+                new TypeReference<>() {
                 }
             );
             
@@ -101,12 +109,19 @@ public class PrivateService {
                             .setScale(0, RoundingMode.HALF_UP)
                             .intValue();
                         
+                        Ticker ticker = publicService.ticker(account.getCurrency()).getFirst();
+                        int estimatedValue = balance.multiply(ticker.getTrade_price()).intValue();
+                        int unrealizedPnL = estimatedValue - buyAmount;
+                        double rateOfReturn = (double) unrealizedPnL / buyAmount * 100;
                         dto = AccountsDto.builder()
                             .balance(balance.toPlainString())
                             .avgPrice(avgPrice)
                             .engName(marketCode.getEnglish_name())
                             .korName(marketCode.getKorean_name())
                             .buyAmount(buyAmount)
+                            .estimatedValue(estimatedValue)
+                            .unrealizedPnL(unrealizedPnL)
+                            .rateOfReturn(Math.round(rateOfReturn * 100.0) / 100.0)
                             .build();
                     }
                 }
@@ -118,8 +133,12 @@ public class PrivateService {
             
             log.info("accountsDtoList: {}", accountsDtoList);
             return accountsDtoList;
-        } catch (Exception e) {
-            throw new RuntimeException(e);
+        } catch (JsonProcessingException e) {
+            throw new CustomException("JSON 파싱 실패", e);
         }
+    }
+    
+    public List<OrdersDto> orders(Orders orders) {
+        return null;
     }
 }
