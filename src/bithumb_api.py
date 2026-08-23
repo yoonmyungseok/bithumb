@@ -116,16 +116,32 @@ class BithumbAPI:
             currency.upper(), {"balance": 0.0, "locked": 0.0, "avg_buy_price": 0.0}
         )
 
+    def get_all_markets(self) -> List[Dict[str, Any]]:
+        """
+        빗썸에서 거래 지원하는 전체 마켓 목록 조회
+        """
+        data = self._request("GET", "/market/all")
+        return data if isinstance(data, list) else []
+
+    def get_tickers(self, markets: List[str]) -> List[Dict[str, Any]]:
+        """
+        여러 마켓의 Ticker 시세 일괄 조회
+        """
+        if not markets:
+            return []
+        
+        # 빗썸 API 규격에 맞춰 쉼표로 연결
+        markets_str = ",".join(markets)
+        params = {"markets": markets_str}
+        data = self._request("GET", "/ticker", params=params)
+        return data if isinstance(data, list) else []
+
     def get_ticker(self, market: str = "KRW-BTC") -> Dict[str, Any]:
         """
-        현재 코인 시세 조회
-        반환: Ticker 정보 딕셔너리 (trade_price, high_price, low_price, etc.)
+        단일 코인 시세 조회
         """
-        params = {"markets": market}
-        data = self._request("GET", "/ticker", params=params)
-        if isinstance(data, list) and len(data) > 0:
-            return data[0]
-        return {}
+        res = self.get_tickers([market])
+        return res[0] if res else {}
 
     def get_candles(self, unit: int = 5, count: int = 30, market: str = "KRW-BTC") -> List[Dict[str, Any]]:
         """
