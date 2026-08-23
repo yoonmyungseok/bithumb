@@ -123,6 +123,18 @@ class BithumbAPI:
         data = self._request("GET", "/market/all")
         return data if isinstance(data, list) else []
 
+    def get_korean_name(self, market: str) -> str:
+        """
+        마켓 코드(예: KRW-BTC)에 대응하는 한글 종목명(예: 비트코인) 반환
+        """
+        if not hasattr(self, "_market_name_map") or not self._market_name_map:
+            try:
+                all_m = self.get_all_markets()
+                self._market_name_map = {m["market"]: m.get("korean_name", "") for m in all_m if "market" in m}
+            except Exception:
+                self._market_name_map = {}
+        return self._market_name_map.get(market, market.split("-")[-1])
+
     def get_tickers(self, markets: List[str]) -> List[Dict[str, Any]]:
         """
         여러 마켓의 Ticker 시세 일괄 조회

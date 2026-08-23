@@ -12,8 +12,8 @@ class SheetsManager:
     """
     Google 스프레드시트 연동 모듈 (gspread) v2.0
     - Dashboard 탭: 종합 자산, 당일 손익률, 킬스위치/BTC방어선 실시간 대시보드
-    - Strategy 탭: 한글 표준 헤더 및 다중 마켓 실시간 전략 동기화
-    - Trade_Log 탭: 한글 표준 헤더 및 실현 손익률(%) 자동 기록
+    - Strategy 탭: [종목명(한글), 마켓코드] 분리 및 한글 표준 헤더 실시간 동기화
+    - Trade_Log 탭: [종목명(한글), 마켓코드] 분리, 실현 손익률(%) 및 '원' 단위 자동 기록
     """
 
     SCOPES = [
@@ -110,9 +110,12 @@ class SheetsManager:
 
             target_row = None
             for row in all_rows[1:]:
-                if row and str(row[0]).strip().upper() == market.upper():
-                    target_row = row
-                    break
+                if row:
+                    first_val = str(row[0]).strip().upper()
+                    second_val = str(row[1]).strip().upper() if len(row) > 1 else ""
+                    if first_val == market.upper() or second_val == market.upper():
+                        target_row = row
+                        break
 
             if not target_row:
                 if len(all_rows) > 1:
@@ -120,7 +123,12 @@ class SheetsManager:
                 else:
                     return {"status": "PAUSE", "action": "HOLD"}
 
-            offset = 1 if str(target_row[0]).startswith("KRW-") or str(target_row[0]).startswith("BTC-") else 0
+            # 오프셋 판별: [0: 종목명(한글), 1: 마켓코드] 구조면 offset=2, [0: 마켓코드] 구조면 offset=1
+            offset = 1
+            if len(target_row) > 1 and (str(target_row[1]).startswith("KRW-") or str(target_row[1]).startswith("BTC-")):
+                offset = 2
+            elif str(target_row[0]).startswith("KRW-") or str(target_row[0]).startswith("BTC-"):
+                offset = 1
 
             status = str(target_row[offset + 1]).strip().upper() if len(target_row) > offset + 1 else "PAUSE"
             action = str(target_row[offset + 2]).strip().upper() if len(target_row) > offset + 2 else "HOLD"
@@ -148,10 +156,10 @@ class SheetsManager:
             return {"status": "PAUSE", "action": "HOLD", "reason": str(e)}
 
     def update_strategy(
-        self, market: str, strategy: Dict[str, Any], timestamp_str: str
+        self, market: str, strategy: Dict[str, Any], timestamp_str: str, korean_name: str = ""
     ) -> None:
         """
-        'Strategy' 탭에 한글 표준 헤더 및 마켓별 실시간 전략 기록
+        'Strategy' 탭에 [종목명(한글), 마켓코드] 및 한글 표준 헤더로 실시간 전략 기록
         """
         try:
             try:
@@ -161,9 +169,10 @@ class SheetsManager:
 
             all_rows = worksheet.get_all_values()
 
-            # 한글 표준 헤더
+            # 한글 표준 헤더: 종목명(한글)을 가장 첫 번째(마켓코드 왼쪽)에 배치
             korean_headers = [
-                "마켓(종목)",
+                "종목명(한글)",
+                "마켓코드",
                 "업데이트일시",
                 "봇상태",
                 "매매판단",
@@ -177,8 +186,8 @@ class SheetsManager:
             if not all_rows:
                 worksheet.append_row(korean_headers)
                 all_rows = [korean_headers]
-            elif all_rows and ("MARKET" in str(all_rows[0][0]).upper() or not all_rows[0][0]):
-                worksheet.update(values=[korean_headers], range_name="A1:I1")
+            elif all_rows and ("MARKET" in str(all_rows[0][0]).upper() or "마켓" in str(all_rows[0][0])):
+                worksheet.update(values=[korean_headers], range_name="A1:J1")
                 all_rows[0] = korean_headers
 
             def format_price(p: Any) -> str:
@@ -194,7 +203,10 @@ class SheetsManager:
             target_p = strategy.get("target_price", 0)
             stop_l = strategy.get("stop_loss", 0)
 
+            display_korean = korean_name if korean_name else market.split("-")[-1]
+
             row_data = [
+                display_korean,
                 market,
                 timestamp_str,
                 strategy.get("status", "ACTIVE"),
@@ -208,34 +220,38 @@ class SheetsManager:
 
             target_row_num = -1
             for idx, row in enumerate(all_rows):
-                if row and str(row[0]).strip().upper() == market.upper():
-                    target_row_num = idx + 1
-                    break
+                if row:
+                    first_val = str(row[0]).strip().upper()
+                    second_val = str(row[1]).strip().upper() if len(row) > 1 else ""
+                    if first_val == display_korean.upper() or first_val == market.upper() or second_val == market.upper():
+                        target_row_num = idx + 1
+                        break
 
             if target_row_num != -1:
-                worksheet.update(values=[row_data], range_name=f"A{target_row_num}:I{target_row_num}")
-                logger.info(f"구글 시트 Strategy [{market}] (행 {target_row_num}) 갱신 완료")
+                worksheet.update(values=[row_data], range_name=f"A{target_row_num}:J{target_row_num}")
+                logger.info(f"구글 시트 Strategy [{display_korean} / {market}] (행 {target_row_num}) 갱신 완료")
             else:
                 worksheet.append_row(row_data)
-                logger.info(f"구글 시트 Strategy [{market}] 신규 행 추가 완료")
+                logger.info(f"구글 시트 Strategy [{display_korean} / {market}] 신규 행 추가 완료")
 
         except Exception as e:
             logger.warning(f"Strategy 탭 업데이트 실패: {e}")
 
     def append_trade_log(self, data: Any) -> None:
         """
-        'Trade_Log' 탭에 한글 표준 헤더 및 실현 손익률(%) 스마트 기록 (자리수 콤마 및 '원' 단위 적용)
+        'Trade_Log' 탭에 [종목명(한글), 마켓코드] 및 한글 표준 헤더 기록
         """
         try:
             try:
                 worksheet = self.spreadsheet.worksheet("Trade_Log")
             except gspread.exceptions.WorksheetNotFound:
-                worksheet = self.spreadsheet.add_worksheet(title="Trade_Log", rows=1000, cols=13)
+                worksheet = self.spreadsheet.add_worksheet(title="Trade_Log", rows=1000, cols=14)
 
             headers = worksheet.row_values(1)
             korean_headers = [
                 "주문일시",
-                "마켓(종목)",
+                "종목명(한글)",
+                "마켓코드",
                 "주문구분",
                 "주문유형",
                 "주문/체결단가",
@@ -249,8 +265,8 @@ class SheetsManager:
                 "분석및체결사유",
             ]
 
-            if not headers:
-                worksheet.append_row(korean_headers)
+            if not headers or len(headers) < 14 or "마켓(종목)" in headers:
+                worksheet.update(values=[korean_headers], range_name="A1:N1")
                 headers = korean_headers
 
             def format_val(key: str, val: Any) -> str:
@@ -268,7 +284,8 @@ class SheetsManager:
             if isinstance(data, dict):
                 key_aliases = {
                     "timestamp": ["timestamp", "주문일시", "일시", "시간", "날짜", "updated_at"],
-                    "market": ["market", "마켓(종목)", "종목", "마켓", "코인", "symbol"],
+                    "korean_name": ["korean_name", "종목명(한글)", "한글명", "종목명", "코인명"],
+                    "market": ["market", "마켓코드", "마켓(종목)", "마켓", "symbol"],
                     "side": ["side", "주문구분", "action", "구분", "매매"],
                     "order_type": ["order_type", "주문유형", "type", "유형"],
                     "price": ["price", "주문/체결단가", "체결단가", "주문단가", "가격", "order_price"],

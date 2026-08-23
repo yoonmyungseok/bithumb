@@ -357,7 +357,8 @@ def run_cycle():
         # 4. 마켓별 순회 분석 및 매매 실행
         for market in target_markets:
             currency = market.split("-")[-1] if "-" in market else market
-            logger.info(f"--- [{market} AI 퀀트 분석 시작] ---")
+            korean_name = bithumb.get_korean_name(market)
+            logger.info(f"--- [{korean_name} / {market} AI 퀀트 분석 시작] ---")
 
             try:
                 # 잔고 및 시세 데이터 갱신
@@ -376,7 +377,7 @@ def run_cycle():
                 candles = bithumb.get_candles(unit=INTERVAL_MINUTES, count=30, market=market)
 
                 logger.info(
-                    f"[{market}] 현재가: {current_price:,.2f}원 | 가용 KRW: {krw_available:,.0f}원 | 보유 {currency}: {coin_total:.6f} (평단: {avg_buy_price:,.2f}원)"
+                    f"[{korean_name} / {market}] 현재가: {current_price:,.2f}원 | 가용 KRW: {krw_available:,.0f}원 | 보유 {currency}: {coin_total:.6f} (평단: {avg_buy_price:,.2f}원)"
                 )
 
                 # =========================================================================
@@ -390,7 +391,7 @@ def run_cycle():
 
                     if is_trailing_hit:
                         logger.info(
-                            f"🎯 [{market} 트레일링 스탑 익절 발동] 최고점 {peak_p:,.2f}원(+{peak_profit_pct:.2f}%) ➜ 현재 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 전량 시장가 익절!"
+                            f"🎯 [{korean_name} / {market} 트레일링 스탑 익절 발동] 최고점 {peak_p:,.2f}원(+{peak_profit_pct:.2f}%) ➜ 현재 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 전량 시장가 익절!"
                         )
 
                         for order in bithumb.get_open_orders(market):
@@ -405,7 +406,7 @@ def run_cycle():
                         order_uuid = order_res.get("uuid", "UNKNOWN")
 
                         telegram.send_message(
-                            f"🎯 <b>[{market} 트레일링 스탑 최고점 익절 완료!]</b>\n"
+                            f"🎯 <b>[{korean_name}({market}) 트레일링 스탑 최고점 익절 완료!]</b>\n"
                             f"• 진입 평단가: {avg_buy_price:,.2f} KRW\n"
                             f"• 도달 최고가: {peak_p:,.2f} KRW (+{peak_profit_pct:.2f}%)\n"
                             f"• 익절 체결가: {current_price:,.2f} KRW\n"
@@ -418,6 +419,7 @@ def run_cycle():
                         sheets.append_trade_log(
                             {
                                 "Timestamp": now_str,
+                                "Korean_Name": korean_name,
                                 "Market": market,
                                 "Order_UUID": order_uuid,
                                 "Side": "TRAILING_STOP",
@@ -444,7 +446,7 @@ def run_cycle():
                         coin_balance=coin_available,
                         avg_buy_price=avg_buy_price,
                     )
-                    sheets.update_strategy(market, strategy, now_str)
+                    sheets.update_strategy(market, strategy, now_str, korean_name=korean_name)
                 else:
                     strategy = sheets.get_strategy(market)
 
@@ -485,7 +487,7 @@ def run_cycle():
                     order_uuid = order_res.get("uuid", "UNKNOWN")
 
                     telegram.send_message(
-                        f"🚨 <b>[{market} 손절 전량 매도 실행]</b>\n"
+                        f"🚨 <b>[{korean_name}({market}) 손절 전량 매도 실행]</b>\n"
                         f"• 현재가: {current_price:,.2f} KRW\n"
                         f"• 손절 기준가: {stop_loss:,.2f} KRW\n"
                         f"• 매도 수량: {coin_available:.8f} {currency}\n"
@@ -496,6 +498,7 @@ def run_cycle():
                     sheets.append_trade_log(
                         {
                             "Timestamp": now_str,
+                            "Korean_Name": korean_name,
                             "Market": market,
                             "Order_UUID": order_uuid,
                             "Side": "STOP_LOSS",
@@ -515,25 +518,25 @@ def run_cycle():
                 # 6. [미체결 주문 정리]
                 open_orders = bithumb.get_open_orders(market)
                 if open_orders:
-                    logger.info(f"[{market}] 기존 미체결 주문 {len(open_orders)}건 취소 진행")
+                    logger.info(f"[{korean_name} / {market}] 기존 미체결 주문 {len(open_orders)}건 취소 진행")
                     for order in open_orders:
                         bithumb.cancel_order(order["uuid"])
 
                 # 7. [신규 주문 실행]
                 if action == "BUY":
                     if is_kill_switch:
-                        logger.info(f"[{market}] 킬 스위치 발동 상태이므로 신규 매수를 건너뜁니다.")
+                        logger.info(f"[{korean_name} / {market}] 킬 스위치 발동 상태이므로 신규 매수를 건너뜁니다.")
                         continue
 
                     # [포트폴리오 보호] 이미 보유 중인 코인은 중복 매수 금지 (1회 진입 락)
                     if coin_value >= MIN_ORDER_KRW:
-                        logger.info(f"[{market}] 이미 보유 중인 포지션({coin_value:,.0f}원)이므로 중복 매수를 건너뜁니다 (보유 유지).")
+                        logger.info(f"[{korean_name} / {market}] 이미 보유 중인 포지션({coin_value:,.0f}원)이므로 중복 매수를 건너뜁니다 (보유 유지).")
                         continue
 
                     if market != "KRW-BTC" and is_btc_crashing:
-                        logger.warning(f"[{market}] 비트코인 급락세({btc_status_msg})로 인해 알트코인 매수를 방어적으로 차단합니다.")
+                        logger.warning(f"[{korean_name} / {market}] 비트코인 급락세({btc_status_msg})로 인해 알트코인 매수를 방어적으로 차단합니다.")
                         telegram.send_message(
-                            f"⚠️ <b>[{market} 매수 차단 - BTC 급락 방어]</b>\n"
+                            f"⚠️ <b>[{korean_name}({market}) 매수 차단 - BTC 급락 방어]</b>\n"
                             f"• 사유: <i>{btc_status_msg}</i>\n"
                             f"• 대장주(BTC) 급락으로 인한 알트코인 동반 폭락 위험 방지"
                         )
@@ -551,7 +554,7 @@ def run_cycle():
 
                     if trade_budget < MIN_ORDER_KRW:
                         logger.warning(
-                            f"[{market}] 매수 예산 부족: 요청금액 {trade_budget:,.0f}원 < 최소주문금액 {MIN_ORDER_KRW:,.0f}원"
+                            f"[{korean_name} / {market}] 매수 예산 부족: 요청금액 {trade_budget:,.0f}원 < 최소주문금액 {MIN_ORDER_KRW:,.0f}원"
                         )
                         continue
 
@@ -567,7 +570,7 @@ def run_cycle():
                     order_uuid = order_res.get("uuid", "UNKNOWN")
 
                     telegram.send_message(
-                        f"🟢 <b>[{market} 급등 포착 지정가 매수 주문]</b>\n"
+                        f"🟢 <b>[{korean_name}({market}) 급등 포착 지정가 매수 주문]</b>\n"
                         f"• 주문가: {order_price:,.2f} KRW\n"
                         f"• 수량: {buy_volume:.8f} {currency}\n"
                         f"• 투입금액: {trade_budget:,.0f} KRW (비중: {alloc_pct*100:.0f}%)\n"
@@ -579,6 +582,7 @@ def run_cycle():
                     sheets.append_trade_log(
                         {
                             "Timestamp": now_str,
+                            "Korean_Name": korean_name,
                             "Market": market,
                             "Order_UUID": order_uuid,
                             "Side": "BUY",
@@ -601,7 +605,7 @@ def run_cycle():
 
                     if estimated_krw < MIN_ORDER_KRW:
                         logger.warning(
-                            f"[{market}] 매도 가치 부족: {estimated_krw:,.0f}원 < 최소주문금액 {MIN_ORDER_KRW:,.0f}원"
+                            f"[{korean_name} / {market}] 매도 가치 부족: {estimated_krw:,.0f}원 < 최소주문금액 {MIN_ORDER_KRW:,.0f}원"
                         )
                         continue
 
@@ -617,7 +621,7 @@ def run_cycle():
                     order_uuid = order_res.get("uuid", "UNKNOWN")
 
                     telegram.send_message(
-                        f"🔴 <b>[{market} 지정가 익절 매도 주문]</b>\n"
+                        f"🔴 <b>[{korean_name}({market}) 지정가 익절 매도 주문]</b>\n"
                         f"• 주문가: {order_price:,.2f} KRW\n"
                         f"• 매도수량: {sell_volume:.8f} {currency}\n"
                         f"• 예상금액: {estimated_krw:,.0f} KRW (비중: {alloc_pct*100:.0f}%)\n"
@@ -628,6 +632,7 @@ def run_cycle():
                     sheets.append_trade_log(
                         {
                             "Timestamp": now_str,
+                            "Korean_Name": korean_name,
                             "Market": market,
                             "Order_UUID": order_uuid,
                             "Side": "SELL",
