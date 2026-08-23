@@ -668,12 +668,86 @@ def run_cycle():
             pass
 
 
+class CodeChangeWatcher:
+    """
+    소스코드 및 Git 커밋 실시간 감시 핫리로더 (Hot-Reloader)
+    - src/ 내의 파이썬 파일 변경
+    - .env 환경변수 설정 변경
+    - Git 커밋 및 Pull (HEAD, refs 변경)
+    감지 시 1초 만에 봇을 새 버전으로 자동 안전 재시작
+    """
+
+    def __init__(self, watch_paths: List[str], check_interval: float = 3.0):
+        self.watch_paths = watch_paths
+        self.check_interval = check_interval
+        self.snapshots = self._get_snapshots()
+
+    def _get_snapshots(self) -> Dict[str, float]:
+        snapshots = {}
+        for p in self.watch_paths:
+            if not os.path.exists(p):
+                continue
+            if os.path.isfile(p):
+                try:
+                    snapshots[p] = os.path.getmtime(p)
+                except Exception:
+                    pass
+            else:
+                for root, _, files in os.walk(p):
+                    for f in files:
+                        if f.endswith(".py") or f.endswith(".env") or f == "HEAD" or "refs" in root:
+                            fpath = os.path.join(root, f)
+                            try:
+                                snapshots[fpath] = os.path.getmtime(fpath)
+                            except Exception:
+                                pass
+        return snapshots
+
+    def start(self):
+        import threading
+
+        def _watch_loop():
+            import time
+            while True:
+                time.sleep(self.check_interval)
+                try:
+                    current_snapshots = self._get_snapshots()
+                    if current_snapshots != self.snapshots:
+                        logger.info("🔄 [코드 / Git 커밋 변경 감지] 최신 버전으로 봇을 즉시 자동 재시작(Hot-Reload)합니다...")
+                        try:
+                            telegram = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+                            telegram.send_message("🔄 <b>[코드 업데이트 감지]</b> 봇을 최신 코드로 자동 재시작합니다.")
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
+                        os.execv(sys.executable, [sys.executable] + sys.argv)
+                except Exception as e:
+                    logger.warning(f"코드 감시 루프 오류: {e}")
+
+        t = threading.Thread(target=_watch_loop, daemon=True, name="CodeChangeWatcher")
+        t.start()
+        logger.info("👀 코드 변경 및 Git 커밋 실시간 감시자(Hot-Reloader) 활성화 완료")
+
+
 def main():
     logger.info("🚀 빗썸 API 2.0 프로 퀀트 AI 자동매매 봇 v2.0 시작")
     mode_text = f"실시간 급등주 자동 스캔 (상위 {TOP_COUNT}종목)" if IS_AUTO_MODE else f"고정 마켓 ({RAW_MARKETS})"
     logger.info(
         f"실행 주기: {INTERVAL_MINUTES}분 | 모드: {mode_text} | 트레일링 시작: +{TRAILING_START_PCT*100:.1f}% (고점대비 -{TRAILING_STOP_PCT*100:.1f}%) | 킬스위치: -{MAX_DAILY_LOSS_PCT*100:.1f}%"
     )
+
+    # 코드 및 Git 변경 자동 감시 핫리로더 가동
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    watcher = CodeChangeWatcher(
+        watch_paths=[
+            os.path.join(base_dir, "src"),
+            os.path.join(base_dir, ".env"),
+            os.path.join(base_dir, ".git", "HEAD"),
+            os.path.join(base_dir, ".git", "refs"),
+        ],
+        check_interval=3.0,
+    )
+    watcher.start()
 
     try:
         run_cycle()
