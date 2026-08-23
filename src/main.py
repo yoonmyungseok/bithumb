@@ -1,4 +1,5 @@
 import datetime
+import json
 import logging
 import os
 import sys
@@ -133,30 +134,76 @@ trailing_tracker = TrailingStopTracker(
 
 class DailyRiskManager:
     """
-    일일 손익 추적 및 킬 스위치(Kill-Switch) 관리자
+    일일 손익 추적 및 킬 스위치(Kill-Switch) 관리자 (영구 저장 연동)
+    - data/daily_stats.json 파일에 당일 기준 자산 및 확정 실현 손익 저장
+    - 프로그램 재시작 시에도 아침 9시 기준 자산 보존
     """
 
     def __init__(self, max_loss_pct: float = 0.05):
         self.max_loss_pct = max_loss_pct
+        self.data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+        os.makedirs(self.data_dir, exist_ok=True)
+        self.stats_file = os.path.join(self.data_dir, "daily_stats.json")
+
         self.current_date_str = ""
         self.daily_start_equity = 0.0
+        self.realized_pnl_krw = 0.0
         self.kill_switch_active = False
         self.total_trades_today = 0
         self.win_trades_today = 0
+        self._load_state()
+
+    def _load_state(self):
+        if os.path.exists(self.stats_file):
+            try:
+                with open(self.stats_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.current_date_str = data.get("date", "")
+                    self.daily_start_equity = float(data.get("start_equity", 0.0))
+                    self.realized_pnl_krw = float(data.get("realized_pnl_krw", 0.0))
+                    self.total_trades_today = int(data.get("total_trades", 0))
+                    self.win_trades_today = int(data.get("win_trades", 0))
+            except Exception as e:
+                logger.warning(f"일일 통계 로드 실패: {e}")
+
+    def _save_state(self):
+        try:
+            with open(self.stats_file, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "date": self.current_date_str,
+                        "start_equity": self.daily_start_equity,
+                        "realized_pnl_krw": self.realized_pnl_krw,
+                        "total_trades": self.total_trades_today,
+                        "win_trades": self.win_trades_today,
+                    },
+                    f,
+                    indent=2,
+                    ensure_ascii=False,
+                )
+        except Exception as e:
+            logger.warning(f"일일 통계 저장 실패: {e}")
+
+    def add_realized_trade(self, pnl_krw: float, is_win: bool):
+        self.realized_pnl_krw += pnl_krw
+        self.total_trades_today += 1
+        if is_win:
+            self.win_trades_today += 1
+        self._save_state()
 
     def update_daily_equity(self, current_total_equity: float, now_kst: datetime.datetime) -> Tuple[bool, float]:
         date_key = (now_kst - datetime.timedelta(hours=9)).strftime("%Y-%m-%d")
 
-        if date_key != self.current_date_str:
+        if date_key != self.current_date_str or self.daily_start_equity <= 0:
+            if date_key != self.current_date_str:
+                self.realized_pnl_krw = 0.0
+                self.total_trades_today = 0
+                self.win_trades_today = 0
             self.current_date_str = date_key
             self.daily_start_equity = current_total_equity
             self.kill_switch_active = False
-            self.total_trades_today = 0
-            self.win_trades_today = 0
+            self._save_state()
             logger.info(f"📅 [일일 손익 기준일 갱신: {date_key}] 시작 총 자산: {self.daily_start_equity:,.0f}원")
-
-        if self.daily_start_equity <= 0:
-            self.daily_start_equity = current_total_equity
 
         daily_pnl_pct = (
             (current_total_equity - self.daily_start_equity) / self.daily_start_equity
@@ -329,6 +376,9 @@ def run_cycle():
                 "krw_available": krw_available,
                 "daily_pnl_pct": daily_pnl * 100,
                 "daily_pnl_krw": current_total_equity - risk_manager.daily_start_equity,
+                "realized_pnl_krw": risk_manager.realized_pnl_krw,
+                "trades_count": risk_manager.total_trades_today,
+                "win_count": risk_manager.win_trades_today,
                 "held_coins": ", ".join(held_markets) if held_markets else "없음 (100% 현금)",
                 "kill_switch_status": "🛑 발동 중 (신규매수 차단)" if is_kill_switch else "🟢 정상 (리스크 양호)",
                 "btc_health": f"⚠️ 급락 감지 ({btc_status_msg})" if is_btc_crashing else "🟢 정상 안정세",
@@ -405,12 +455,15 @@ def run_cycle():
                         )
                         order_uuid = order_res.get("uuid", "UNKNOWN")
 
+                        pnl_krw = (current_price - avg_buy_price) * coin_available
+                        risk_manager.add_realized_trade(pnl_krw, is_win=True)
+
                         telegram.send_message(
                             f"🎯 <b>[{korean_name}({market}) 트레일링 스탑 최고점 익절 완료!]</b>\n"
                             f"• 진입 평단가: {avg_buy_price:,.2f} KRW\n"
                             f"• 도달 최고가: {peak_p:,.2f} KRW (+{peak_profit_pct:.2f}%)\n"
                             f"• 익절 체결가: {current_price:,.2f} KRW\n"
-                            f"• <b>실현 수익률: +{realized_profit_pct:.2f}% 🚀</b>\n"
+                            f"• <b>실현 수익: +{pnl_krw:,.0f} KRW (+{realized_profit_pct:.2f}%) 🚀</b>\n"
                             f"• 매도 수량: {coin_available:.8f} {currency}\n"
                             f"• 주문 ID: <code>{order_uuid}</code>\n"
                             f"• 일시: {now_str}"
@@ -486,10 +539,14 @@ def run_cycle():
                     )
                     order_uuid = order_res.get("uuid", "UNKNOWN")
 
+                    pnl_krw = (current_price - avg_buy_price) * coin_available if avg_buy_price > 0 else 0.0
+                    risk_manager.add_realized_trade(pnl_krw, is_win=False)
+
                     telegram.send_message(
                         f"🚨 <b>[{korean_name}({market}) 손절 전량 매도 실행]</b>\n"
                         f"• 현재가: {current_price:,.2f} KRW\n"
                         f"• 손절 기준가: {stop_loss:,.2f} KRW\n"
+                        f"• 손실 금액: {pnl_krw:,.0f} KRW\n"
                         f"• 매도 수량: {coin_available:.8f} {currency}\n"
                         f"• 주문 ID: <code>{order_uuid}</code>\n"
                         f"• 일시: {now_str}"
@@ -620,11 +677,15 @@ def run_cycle():
                     )
                     order_uuid = order_res.get("uuid", "UNKNOWN")
 
+                    pnl_krw = (order_price - avg_buy_price) * sell_volume if avg_buy_price > 0 else 0.0
+                    risk_manager.add_realized_trade(pnl_krw, is_win=(pnl_krw > 0))
+
                     telegram.send_message(
                         f"🔴 <b>[{korean_name}({market}) 지정가 익절 매도 주문]</b>\n"
                         f"• 주문가: {order_price:,.2f} KRW\n"
                         f"• 매도수량: {sell_volume:.8f} {currency}\n"
                         f"• 예상금액: {estimated_krw:,.0f} KRW (비중: {alloc_pct*100:.0f}%)\n"
+                        f"• 예상수익: {pnl_krw:+,.0f} KRW\n"
                         f"• 분석근거: <i>{reason}</i>\n"
                         f"• 일시: {now_str}"
                     )

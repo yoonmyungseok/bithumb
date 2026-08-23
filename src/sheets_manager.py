@@ -69,22 +69,27 @@ class SheetsManager:
             krw_avail = summary_data.get("krw_available", 0.0)
             daily_pnl_pct = summary_data.get("daily_pnl_pct", 0.0)
             daily_pnl_krw = summary_data.get("daily_pnl_krw", 0.0)
+            realized_krw = summary_data.get("realized_pnl_krw", 0.0)
+            trades_count = summary_data.get("trades_count", 0)
+            win_count = summary_data.get("win_count", 0)
+            win_rate = (win_count / trades_count * 100) if trades_count > 0 else 0.0
             held_coins_str = summary_data.get("held_coins", "없음 (100% 현금)")
             kill_switch_str = summary_data.get("kill_switch_status", "🟢 정상")
             btc_health_str = summary_data.get("btc_health", "🟢 정상")
 
             dashboard_rows = [
                 ["📊 [빗썸 AI 퀀트 자동매매 실시간 종합 대시보드]", "", "", ""],
-                ["최종 갱신 일시 (KST)", now_str, "봇 상태", "🟢 정상 가동 중 (5분 주기)"],
+                ["최종 갱신 일시 (KST)", now_str, "봇 가동 상태", "🟢 24시간 실시간 자동매매 가동 중"],
                 ["", "", "", ""],
                 ["📌 [핵심 계좌 자산 현황]", "", "🛡️ [리스크 관리 안전장치 상태]", ""],
                 ["총 평가 자산 (KRW)", f"{int(total_equity):,} 원", "일일 킬스위치 상태", kill_switch_str],
                 ["가용 원화 잔고 (KRW)", f"{int(krw_avail):,} 원", "BTC 대세 급락 방어선", btc_health_str],
-                ["금일 누적 실현 손익", f"{int(daily_pnl_krw):+,} 원 ({daily_pnl_pct:+.2f}%)", "트레일링 스탑 모드", "🎯 활성화 (+2.0% 추적)"],
-                ["현재 보유 포지션", held_coins_str, "일일 최대 손실 한도", "-5.0%"],
+                ["금일 자산 변동 (평가손익)", f"{int(daily_pnl_krw):+,} 원 ({daily_pnl_pct:+.2f}%)", "트레일링 스탑 모드", "🎯 활성화 (+2.0% 추적)"],
+                ["금일 확정 실현 손익", f"{int(realized_krw):+,} 원 (총 {trades_count}회 거래 / 승률 {win_rate:.0f}%)", "일일 최대 손실 한도", "-5.0%"],
+                ["현재 보유 포지션", held_coins_str, "종목 발굴 모드", "🔥 실시간 급등 모멘텀 TOP 3 스캔"],
             ]
 
-            worksheet.update(values=dashboard_rows, range_name="A1:D8")
+            worksheet.update(values=dashboard_rows, range_name="A1:D9")
             logger.info("구글 시트 'Dashboard' 탭 실시간 갱신 완료")
 
         except Exception as e:
