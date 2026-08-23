@@ -83,12 +83,14 @@ MIN_ORDER_KRW = 5000.0
 # 봇 일시정지 상태 플래그 (텔레그램 및 웹 대시보드 연동)
 IS_BOT_PAUSED = False
 
+# ⏳ 포지션 진입 시간 추적기 (타임스탑용: 60분 이상 횡보 시 자금 회전 청산)
+POSITION_ENTRY_TIMES: dict[str, float] = {}
+
 # 전역 인스턴스 초기화
 chart_renderer = ChartRenderer()
 trade_memory = TradeMemoryManager()
 
-
-# 빗썸 실시간 웹소켓(WebSocket) 클라이언트 (0.1초 실시간 시세 스트리밍)
+# 빗썸 실시간 웹소켓(WebSocket) 클라이언트 (0.1초 실시간 시세 및 5분 고래 수급 스트리밍)
 ws_client = BithumbWebSocketClient(
     initial_markets=["KRW-BTC"],
 )
@@ -405,8 +407,8 @@ def check_btc_market_crash(bithumb: BithumbAPI, threshold_pct: float = BTC_CRASH
         return False, "BTC 검사 오류"
 
 
-def clean_stale_orders(bithumb: BithumbAPI, max_age_seconds: int = 900) -> int:
-    """15분 이상 미체결 주문 자동 취소 및 예수금 회수"""
+def clean_stale_orders(bithumb: BithumbAPI, max_age_seconds: int = 60) -> int:
+    """1분(60초) 이상 미체결 주문 자동 취소 및 예수금 즉시 회수"""
     canceled_count = 0
     try:
         open_orders = bithumb.get_open_orders()
@@ -701,10 +703,10 @@ def run_cycle():
         analyzer = GeminiAnalyzer(GEMINI_API_KEY) if GEMINI_API_KEY else None
         fng = get_fear_and_greed_index()
 
-        # 0-1. 미체결 주문 정리 & 스마트 리쿼팅
-        cleaned = clean_stale_orders(bithumb, max_age_seconds=900)
+        # 0-1. 미체결 주문 TTL 자동 정리 (60초 이상 미체결 주문 취소) & 스마트 리쿼팅
+        cleaned = clean_stale_orders(bithumb, max_age_seconds=60)
         if cleaned > 0:
-            logger.info(f"🧹 총 {cleaned}건의 장기 미체결 주문 정리 완료")
+            logger.info(f"🧹 총 {cleaned}건의 60초 경과 미체결 주문 자동 취소 및 예수금 회수 완료")
 
         requoted = requote_pending_orders(bithumb)
         if requoted > 0:
@@ -985,11 +987,61 @@ def run_cycle():
                                 "Status_Reason": f"트레일링 스탑 최고점 익절 (+{realized_profit_pct:.2f}%)",
                             }
                         )
+                        POSITION_ENTRY_TIMES.pop(market, None)
                         continue
 
-                # AI 전략 수립 및 자가학습 피드백 주입
+                # =========================================================================
+                # ⏳ [최우선 2: 60분 횡보 자금 묶임 방지 타임스탑(Time-Stop)]
+                # =========================================================================
+                if coin_value >= MIN_ORDER_KRW and avg_buy_price > 0:
+                    entry_ts = POSITION_ENTRY_TIMES.setdefault(market, time.time())
+                    hold_duration_sec = time.time() - entry_ts
+                    pnl_pct_current = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
+
+                    # 60분(3,600초) 이상 보유 중이고 손익률이 -1.0% ~ +1.0% 박스권 횡보일 때
+                    if hold_duration_sec >= 3600 and (-1.0 <= pnl_pct_current <= 1.0):
+                        logger.info(
+                            f"⏳ [{korean_name} / {market}] 60분 횡보 타임스탑 발동! (손익률: {pnl_pct_current:+.2f}%, 보유시간: {hold_duration_sec/60:.0f}분) ➜ 신규 기회를 위해 시장가 전량 청산"
+                        )
+                        for order in bithumb.get_open_orders(market):
+                            bithumb.cancel_order(order["uuid"])
+
+                        order_res = bithumb.create_order(
+                            market=market,
+                            side="ask",
+                            volume=coin_available,
+                            ord_type="market",
+                        )
+                        order_uuid = order_res.get("uuid", "UNKNOWN")
+                        pnl_krw = (current_price - avg_buy_price) * coin_available
+                        risk_manager.add_realized_trade(pnl_krw, is_win=(pnl_krw >= 0))
+                        trade_memory.record_completed_trade(
+                            market=market,
+                            side="TIME_STOP",
+                            entry_price=avg_buy_price,
+                            exit_price=current_price,
+                            pnl_pct=pnl_pct_current,
+                            pnl_krw=pnl_krw,
+                            reason="60분 이상 박스권 횡보로 인한 자금 회전 타임스탑 청산",
+                            timestamp=now_str,
+                        )
+                        POSITION_ENTRY_TIMES.pop(market, None)
+                        trailing_tracker.clear(market)
+
+                        caption = (
+                            f"⏳ <b>[{korean_name}({market}) 60분 횡보 타임스탑 청산]</b>\n"
+                            f"• 청산가: {current_price:,.2f} KRW | 평단가: {avg_buy_price:,.2f} KRW\n"
+                            f"• 실현 손익: {pnl_krw:+,.0f} KRW ({pnl_pct_current:+.2f}%)\n"
+                            f"• 사유: <i>장기 횡보에 따른 자금 잠김 방지 및 다음 급등 유망주 순환매 확보</i>\n"
+                            f"• 일시: {now_str}"
+                        )
+                        telegram.send_message(caption)
+                        continue
+
+                # AI 전략 수립 및 실시간 고래 수급 + 자가학습 피드백 주입
                 if analyzer:
                     feedback_context = trade_memory.get_feedback_context()
+                    whale_flow_context = ws_client.get_whale_flow_summary(market)
                     strategy = analyzer.analyze(
                         market=market,
                         current_price=current_price,
@@ -1001,6 +1053,7 @@ def run_cycle():
                         orderbook=orderbook,
                         trade_memory_context=feedback_context,
                         btc_context=f"{btc_status_msg} ({'급락 위험 감지' if is_btc_crashing else '정상 안정세'})",
+                        whale_context=whale_flow_context,
                     )
                     sheets.update_strategy(market, strategy, now_str, korean_name=korean_name)
                 else:
@@ -1040,6 +1093,7 @@ def run_cycle():
                     )
 
                     trailing_tracker.clear(market)
+                    POSITION_ENTRY_TIMES.pop(market, None)
 
                     for order in bithumb.get_open_orders(market):
                         bithumb.cancel_order(order["uuid"])
@@ -1181,6 +1235,9 @@ def run_cycle():
                         )
                         order_uuid = order_res.get("uuid", "UNKNOWN")
 
+                    # 진입 시간 기록 (타임스탑 추적 시작)
+                    POSITION_ENTRY_TIMES[market] = time.time()
+
                     # 진입 캔들 차트 이미지 렌더링 및 텔레그램 사진 전송
                     chart_img = chart_renderer.render_trade_chart(
                         market=market,
@@ -1238,6 +1295,7 @@ def run_cycle():
                         continue
 
                     trailing_tracker.clear(market)
+                    POSITION_ENTRY_TIMES.pop(market, None)
 
                     order_res = bithumb.create_order(
                         market=market,

@@ -339,9 +339,10 @@ class GeminiAnalyzer:
         orderbook: dict[str, Any] | None = None,
         trade_memory_context: str = "",
         btc_context: str = "비트코인(BTC): 🟢 정상 안정세",
+        whale_context: str = "최근 5분간 고래 대량 체결 없음 (수급 평온)",
     ) -> dict[str, Any]:
         """
-        [MTF 3중 정렬 + 호가창 수급 + 체결강도 + ATR 변동성 + 자가학습 메모리] 퀀트 분석 엔진 v4.0
+        [MTF 3중 정렬 + 호가창 수급 + 실시간 고래 수급 + 체결강도 + ATR 변동성 + 자가학습 메모리] 퀀트 분석 엔진 v4.1
         """
         if not self.api_key:
             logger.warning("Gemini API Key가 설정되지 않았습니다.")
@@ -388,24 +389,36 @@ class GeminiAnalyzer:
             )
         candles_text = "\n".join(recent_summary)
 
-        # ATR 기반 동적 목표가/손절가 가이드
-        dynamic_tp = current_price + max(current_price * 0.025, atr_info["atr"] * 1.5)
-        dynamic_sl = max(sr_levels["support_low"] * 0.995, current_price - max(current_price * 0.015, atr_info["atr"]))
+        # 4. 코인 고유 변동성(ATR %)에 따른 맞춤형 동적 손익비 가이드라인
+        atr_pct = atr_info["atr_pct"]
+        if atr_pct < 2.0:  # 저변동성 메이저
+            tp_delta = max(current_price * 0.020, atr_info["atr"] * 1.5)
+            sl_delta = min(current_price * 0.012, atr_info["atr"] * 0.9)
+        elif atr_pct <= 4.0:  # 일반 알트코인
+            tp_delta = max(current_price * 0.035, atr_info["atr"] * 1.6)
+            sl_delta = max(current_price * 0.018, atr_info["atr"] * 1.0)
+        else:  # 고변동성 급등주
+            tp_delta = max(current_price * 0.050, atr_info["atr"] * 1.8)
+            sl_delta = max(current_price * 0.025, atr_info["atr"] * 1.1)
 
-        # 4. 기관 퀀트 헤지펀드 시스템 프롬프트 v4.0
+        dynamic_tp = current_price + tp_delta
+        dynamic_sl = max(sr_levels["support_low"] * 0.995, current_price - sl_delta)
+
+        # 5. 기관 퀀트 헤지펀드 시스템 프롬프트 v4.1
         memory_section = f"\n{trade_memory_context}\n" if trade_memory_context else ""
 
         prompt = f"""당신은 월스트리트 헤지펀드 출신의 수석 암호화폐 퀀트 트레이더이자 리스크 관리 책임자(CRO)입니다.
-제공된 실시간 {market}의 [BTC 거시 환경], [MTF 상위 추세], [호가창 & 체결강도 수급], [5분봉 퀀트 지표]를 종합 분석하여 최적의 트레이딩 지침을 JSON으로 제시하세요.
+제공된 실시간 {market}의 [BTC 거시 환경], [MTF 상위 추세], [호가창 & 실시간 고래 체결 수급], [5분봉 퀀트 지표]를 종합 분석하여 최적의 트레이딩 지침을 JSON으로 제시하세요.
 
 ### [0. 대장주(BTC) 거시 시장 환경]
 - 비트코인 시장 상태: {btc_context}
 ※ 알트코인은 비트코인의 단기 급락세에 매우 취약하므로, BTC 급락 위험 감지 시에는 신규 매수를 전면 금지하고 HOLD하세요.
 
-### [1. MTF(멀티 타임프레임) 상위 추세 & 호가창/체결강도 수급 데이터]
+### [1. MTF(멀티 타임프레임) 상위 추세 & 호가창/고래 체결 수급 데이터]
 - 1시간봉 대세 방향: {mtf_1h['desc']}
 - 실시간 호가창 잔량: {ob_info['imbalance_desc']}
 - 실시간 실질 체결강도: {trade_strength['desc']}
+- 실시간 고래(3,000만 원↑) 수급 흐름: {whale_context}
 - 코인 고유 변동폭(ATR 14): {atr_info['atr']:,.2f} KRW ({atr_info['atr_pct']}% - {'🔥 고변동성 급등주' if atr_info['atr_pct'] >= 3.0 else '평온한 변동성'})
 
 ### [2. 5분봉 정밀 퀀트 지표 데이터]
@@ -429,7 +442,7 @@ class GeminiAnalyzer:
 1. [MTF 추세 정렬]: 1시간봉 추세가 '대세 하락장'이 아닐 것 (1시간봉 하락장 속 5분봉 일시 반등은 데드캣 속임수이므로 매수 금지).
 2. [모멘텀 과열 방지]: 5분봉 RSI가 38 ~ 62 사이일 것 (RSI 62 초과 시 단기 과열이므로 추격 매수 전면 금지, 눌림목 대기).
 3. [눌림목 & 이격도]: MA20 이격도가 98.5% ~ 102.5% 이내이며, %B <= 0.75 (볼린저 상단 돌파 추격 매수 원천 금지, 5분봉 MA20 지지선 부근 눌림 타점 필수).
-4. [캔들 형태 & 수급]: 캔들 윗꼬리 비율이 25% 이하이며, 실시간 실질 체결강도 110% 이상 확인 (매도 덤핑 없는 순매수 유입 확인).
+4. [캔들 형태 & 수급]: 캔들 윗꼬리 비율이 25% 이하이며, 실시간 고래 순매수 유입 또는 실질 체결강도 110% 이상 확인 (매도 덤핑 없는 순매수 유입 확인).
 5. [기대 손익비]: (목표가 - 진입가) >= 1.5 * (진입가 - 손절가) 수학적 보장.
 
 ※ 위 조건 중 '모멘텀 과열' 또는 '볼린저 상단/이격도 과열'에 해당하는 경우, 아무리 상승세가 강해 보여도 **반드시 HOLD**로 판단하고 눌림목 지지선(ENTRY_PRICE)을 제시하세요.

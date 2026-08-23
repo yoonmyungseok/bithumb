@@ -38,11 +38,42 @@ class BithumbWebSocketClient:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._last_whale_time: dict[str, float] = {}
+        self._whale_trades: list[dict[str, Any]] = []
 
     def get_latest_price(self, market: str) -> float:
         """실시간 캐시된 최신 체결가 반환 (없으면 0.0)"""
         with self._lock:
             return self.latest_prices.get(market, 0.0)
+
+    def get_whale_flow_summary(self, market: str, window_seconds: int = 300) -> str:
+        """
+        최근 window_seconds(기본 5분) 동안의 고래 대량 체결 수급 집계
+        """
+        now_ts = time.time()
+        cutoff_ts = now_ts - window_seconds
+        
+        with self._lock:
+            # 10분 이전 과거 데이터 정리
+            self._whale_trades = [t for t in self._whale_trades if t["ts"] >= (now_ts - 600)]
+            recent_trades = [t for t in self._whale_trades if t["market"] == market and t["ts"] >= cutoff_ts]
+
+        if not recent_trades:
+            return "최근 5분간 3,000만 원 이상 고래 대량 체결 없음 (수급 평온)"
+
+        buy_krw = sum(t["val_krw"] for t in recent_trades if t["side"] == "매수")
+        sell_krw = sum(t["val_krw"] for t in recent_trades if t["side"] == "매도")
+        net_krw = buy_krw - sell_krw
+
+        buy_100m = buy_krw / 100_000_000.0
+        sell_100m = sell_krw / 100_000_000.0
+        net_100m = net_krw / 100_000_000.0
+
+        if net_krw > 0:
+            return f"🟢 최근 5분 고래 순매수 우위 (+{net_100m:.2f}억 원 | 매수: {buy_100m:.2f}억, 매도: {sell_100m:.2f}억)"
+        elif net_krw < 0:
+            return f"🔴 최근 5분 고래 순매도 우위 ({net_100m:.2f}억 원 | 매도: {sell_100m:.2f}억, 매수: {buy_100m:.2f}억)"
+        else:
+            return f"⚪ 최근 5분 고래 매수/매도 균형 (총 {buy_100m + sell_100m:.2f}억 원)"
 
     def update_subscriptions(self, markets: list[str]):
         """감시 대상 마켓 목록 동적 갱신 및 재구독"""
@@ -106,9 +137,19 @@ class BithumbWebSocketClient:
                 ask_bid = data.get("ask_bid", "BID")
                 side = "매수" if str(ask_bid).upper() in ("BID", "BUY", "1") else "매도"
 
-                # 3,000만 원 이상 대량 체결 포착
+                # 3,000만 원 이상 대량 체결 포착 및 이력 누적
                 if val_krw >= 30_000_000 and price > 0:
                     now_ts = time.time()
+                    with self._lock:
+                        self._whale_trades.append({
+                            "ts": now_ts,
+                            "market": code,
+                            "side": side,
+                            "val_krw": val_krw,
+                            "price": price,
+                            "qty": qty,
+                        })
+
                     last_t = self._last_whale_time.get(code, 0.0)
                     if now_ts - last_t >= 30:  # 30초 쿨다운
                         self._last_whale_time[code] = now_ts
