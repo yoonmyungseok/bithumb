@@ -13,10 +13,13 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
 
 from bithumb_api import BithumbAPI
+from chart_renderer import ChartRenderer
 from gemini_analyzer import GeminiAnalyzer
 from market_screener import MarketScreener
 from sheets_manager import SheetsManager
 from telegram_alert import TelegramAlert
+from trade_memory import TradeMemoryManager
+from web_server import DashboardWebServer
 from websocket_manager import BithumbWebSocketClient
 
 # 윈도우 cp949 인코딩 에러 방지 (이모지 및 한글 UTF-8 표준화)
@@ -67,25 +70,44 @@ INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "5"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
 # ==========================================
-# 🛡️ 1 & 2대 리스크 관리 파라미터
+# 🛡️ 리스크 및 트레일링 스탑 파라미터
 # ==========================================
 BTC_CRASH_THRESHOLD_PCT = float(os.getenv("BTC_CRASH_THRESHOLD_PCT", "0.015"))
 MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "0.05"))
-
-# ==========================================
-# 🎯 트레일링 스탑(Trailing Stop) 설정
-# ==========================================
 TRAILING_START_PCT = float(os.getenv("TRAILING_START_PCT", "0.02"))
 TRAILING_STOP_PCT = float(os.getenv("TRAILING_STOP_PCT", "0.012"))
 
 # 최소 주문 금액 제한 (빗썸 기준: 최소 5,000 KRW)
 MIN_ORDER_KRW = 5000.0
 
-# 봇 일시정지 상태 플래그 (텔레그램 /pause, /resume 연동)
+# 봇 일시정지 상태 플래그 (텔레그램 및 웹 대시보드 연동)
 IS_BOT_PAUSED = False
 
-# 빗썸 실시간 웹소켓(WebSocket) 클라이언트 (0.1초 체결 스트리밍)
-ws_client = BithumbWebSocketClient(initial_markets=["KRW-BTC"])
+# 전역 인스턴스 초기화
+chart_renderer = ChartRenderer()
+trade_memory = TradeMemoryManager()
+
+
+def on_whale_detected(market: str, price: float, val_krw: float, side: str):
+    """3,000만 원 이상 고래 대량 체결 웹소켓 알림 콜백"""
+    try:
+        telegram = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+        telegram.send_message(
+            f"🐋 <b>[고래 대량 {side} 체결 감지!]</b>\n"
+            f"• 종목: <b>{market}</b>\n"
+            f"• 체결 단가: {price:,.2f} KRW\n"
+            f"• 체결 금액: <b>{val_krw:,.0f} KRW</b> 💰\n"
+            f"• 시장가 수급 급증 ➜ 다음 사이클 우선 모니터링"
+        )
+    except requests.exceptions.RequestException:
+        pass
+
+
+# 빗썸 실시간 웹소켓(WebSocket) 클라이언트
+ws_client = BithumbWebSocketClient(
+    initial_markets=["KRW-BTC"],
+    on_whale_callback=on_whale_detected,
+)
 
 
 class TrailingStopTracker:
@@ -106,10 +128,6 @@ class TrailingStopTracker:
     def check_position(
         self, market: str, current_price: float, avg_buy_price: float
     ) -> tuple[str, float, float, float, float]:
-        """
-        반환: (행동, 최고점가격, 기준가격, 최고수익률%, 실현수익률%)
-        - 행동: 'PARTIAL_TP' (50% 1차 분할익절), 'TRAILING_STOP' (전량/잔여 익절), 'NONE'
-        """
         if avg_buy_price <= 0:
             return "NONE", 0.0, 0.0, 0.0, 0.0
 
@@ -130,11 +148,10 @@ class TrailingStopTracker:
 
             peak_profit_pct = ((current_peak - avg_buy_price) / avg_buy_price) * 100.0
 
-            # 수익률 구간별 동적 드롭 폭 축소 (고점 부근 이익 보존)
             if peak_profit_pct >= 10.0:
-                active_drop_pct = 0.005  # +10% 이상 대박 구간: 0.5% 초밀착 추적
+                active_drop_pct = 0.005  # +10% 이상: 0.5% 초밀착
             elif peak_profit_pct >= 5.0:
-                active_drop_pct = 0.008  # +5% 이상 급등 구간: 0.8% 밀착 추적
+                active_drop_pct = 0.008  # +5% 이상: 0.8% 밀착
             else:
                 active_drop_pct = self.trailing_drop_pct  # 기본 1.2%
 
@@ -169,7 +186,6 @@ trailing_tracker = TrailingStopTracker(
 class DailyRiskManager:
     """
     일일 손익 추적 및 킬 스위치(Kill-Switch) 관리자 (영구 저장 연동)
-    - data/daily_stats.json 파일에 당일 기준 자산 및 확정 실현 손익 저장
     """
 
     def __init__(self, max_loss_pct: float = 0.05):
@@ -279,9 +295,7 @@ def get_kst_now_str() -> str:
 
 
 def get_fear_and_greed_index() -> dict[str, Any]:
-    """
-    글로벌 가상자산 크립토 공포 & 탐욕 지수 (Fear & Greed Index) 실시간 조회
-    """
+    """글로벌 가상자산 크립토 공포 & 탐욕 지수 실시간 조회"""
     try:
         res = requests.get("https://api.alternative.me/fng/?limit=1", timeout=5)
         if res.status_code == 200:
@@ -366,9 +380,7 @@ def check_btc_market_crash(bithumb: BithumbAPI, threshold_pct: float = BTC_CRASH
 
 
 def clean_stale_orders(bithumb: BithumbAPI, max_age_seconds: int = 900) -> int:
-    """
-    15분(900초) 이상 체결되지 않고 방치된 미체결 지정가 주문을 자동 취소하여 예수금 회수
-    """
+    """15분 이상 미체결 주문 자동 취소 및 예수금 회수"""
     canceled_count = 0
     try:
         open_orders = bithumb.get_open_orders()
@@ -397,11 +409,7 @@ def clean_stale_orders(bithumb: BithumbAPI, max_age_seconds: int = 900) -> int:
 
 
 def requote_pending_orders(bithumb: BithumbAPI) -> int:
-    """
-    [스마트 최우선 호가 재정정 (Smart Re-quoter)]
-    - 60초 이상 미체결 상태인 매수 지정가 주문을 감지
-    - 주가가 위로 올라간 경우 최우선 매수가로 자동 정정하여 급등주 체결률 극대화
-    """
+    """[스마트 최우선 호가 재정정 (Smart Re-quoter)]"""
     requoted_count = 0
     try:
         open_orders = bithumb.get_open_orders()
@@ -422,7 +430,6 @@ def requote_pending_orders(bithumb: BithumbAPI) -> int:
             except (ValueError, TypeError):
                 order_age = 0
 
-            # 60초 이상 300초 이하 미체결 매수 주문 대상
             if 60 <= order_age <= 300:
                 current_price = bithumb.get_current_price(market)
                 if current_price > order_price and current_price <= order_price * 1.008:
@@ -446,9 +453,7 @@ def requote_pending_orders(bithumb: BithumbAPI) -> int:
 
 
 def send_daily_morning_report():
-    """
-    매일 아침 09:00 KST 빗썸 일봉 리셋 시 일일 결산 모닝 리포트 전송
-    """
+    """매일 아침 09:00 KST 일일 결산 모닝 리포트 전송"""
     now_str = get_kst_now_str()
     logger.info(f"📊 [아침 9시 일일 결산 브리핑 발송: {now_str}]")
 
@@ -478,7 +483,7 @@ def send_daily_morning_report():
             f"• <b>가용 원화 잔고:</b> {krw_avail:,.0f} KRW\n"
             f"• <b>현재 보유 포지션:</b> {held_desc}\n"
             f"• <b>크립토 공포/탐욕 지수:</b> {fng['desc']}\n"
-            f"• <b>일일 킬스위치 상태:</b> {'🚨 발동 중' if risk_manager.kill_switch_active else '🟢 정상 (리스크 양호)'}\n"
+            f"• <b>웹 대시보드:</b> <code>http://localhost:7979</code>\n"
             f"• <b>기준 일시:</b> {now_str}"
         )
     except (requests.exceptions.RequestException, KeyError, ValueError) as e:
@@ -510,8 +515,8 @@ def get_telegram_status_callback() -> str:
             f"• <b>금일 확정 실현 손익:</b> {risk_manager.realized_pnl_krw:+,.0f} KRW (거래 {risk_manager.total_trades_today}회)\n"
             f"• <b>현재 보유 종목:</b> {held_str}\n"
             f"• <b>크립토 공포/탐욕 지수:</b> {fng['desc']}\n"
-            f"• <b>일일 킬스위치 상태:</b> {'🛑 발동 중' if risk_manager.kill_switch_active else '🟢 정상 (안전)'}\n"
-            f"• <b>트레일링 모드:</b> 🎯 50% 분할익절 + 가속 트레일링 러너\n"
+            f"• <b>웹소켓 스트리밍:</b> ⚡ 0.1초 실시간 체결 감시 가동 중\n"
+            f"• <b>웹 대시보드:</b> <code>http://localhost:7979</code>\n"
             f"• <b>조회 일시:</b> {now_str}"
         )
     except (requests.exceptions.RequestException, KeyError, ValueError) as e:
@@ -552,17 +557,15 @@ def get_telegram_panic_callback() -> str:
     """텔레그램 /panic 또는 /긴급매도 원격 명령어 콜백"""
     global IS_BOT_PAUSED
     now_str = get_kst_now_str()
-    logger.warning("🚨 [텔레그램 긴급 매도 명령 수신!] 전 보유 종목 전량 시장가 매도 진행")
+    logger.warning("🚨 [긴급 매도 명령 수신!] 전 보유 종목 전량 시장가 매도 진행")
     IS_BOT_PAUSED = True
 
     try:
         bithumb = BithumbAPI(BITHUMB_ACCESS_KEY, BITHUMB_SECRET_KEY)
-        # 1. 모든 미체결 주문 취소
         open_orders = bithumb.get_open_orders()
         for o in open_orders:
             bithumb.cancel_order(o.get("uuid", ""))
 
-        # 2. 보유 코인 전량 시장가 매도
         balances = bithumb.get_balances()
         sold_summary = []
 
@@ -605,9 +608,42 @@ def get_telegram_resume_callback() -> str:
     return "▶️ <b>[자동매매 정상 재개]</b>\n• 실시간 급등주 자동 탐색 및 매매 사이클이 활성화되었습니다."
 
 
+LATEST_DASHBOARD_DATA: dict[str, Any] = {
+    "total_equity": 0,
+    "krw_available": 0,
+    "daily_start_equity": 0,
+    "daily_pnl_krw": 0,
+    "daily_pnl_pct": 0.0,
+    "realized_pnl_krw": 0,
+    "total_trades": 0,
+    "win_trades": 0,
+    "win_rate": 0.0,
+    "fear_and_greed": "50점 (중립)",
+    "bot_state": "🟢 정상 가동 중",
+    "positions": [],
+}
+
+
+def get_web_dashboard_data() -> dict[str, Any]:
+    """로컬 웹 대시보드 API 즉시 반환 (캐시된 최신 상태)"""
+    LATEST_DASHBOARD_DATA["bot_state"] = "⏸️ 일시정지 중 (관망)" if IS_BOT_PAUSED else "🟢 24시간 실시간 자동매매 가동 중"
+    return LATEST_DASHBOARD_DATA
+
+
+def handle_web_action(action: str) -> str:
+    """웹 대시보드 원격 버튼 액션 핸들러"""
+    if action == "panic":
+        return get_telegram_panic_callback()
+    elif action == "pause":
+        return get_telegram_pause_callback()
+    elif action == "resume":
+        return get_telegram_resume_callback()
+    return "알 수 없는 작업"
+
+
 def run_cycle():
     """
-    [MTF + 호가창 수급 + ATR 변동성 + 가속 트레일링 + 공포탐욕지수 + 스마트 리쿼팅] 퀀트 실행 사이클
+    [MTF + 호가창 수급 + ATR 변동성 + 자가학습 메모리 + 차트 이미지 + 복리 자금관리] 사이클
     """
     load_dotenv(override=True)
 
@@ -637,17 +673,16 @@ def run_cycle():
         analyzer = GeminiAnalyzer(GEMINI_API_KEY) if GEMINI_API_KEY else None
         fng = get_fear_and_greed_index()
 
-        # 0-1. 15분 이상 방치된 미체결 주문 자동 취소 및 예수금 회수
+        # 0-1. 미체결 주문 정리 & 스마트 리쿼팅
         cleaned = clean_stale_orders(bithumb, max_age_seconds=900)
         if cleaned > 0:
-            logger.info(f"🧹 총 {cleaned}건의 장기 미체결 주문을 정리하고 가용 자산을 회수했습니다.")
+            logger.info(f"🧹 총 {cleaned}건의 장기 미체결 주문 정리 완료")
 
-        # 0-2. 스마트 최우선 호가 재정정 (Smart Re-quoter)
         requoted = requote_pending_orders(bithumb)
         if requoted > 0:
-            logger.info(f"🎛️ 총 {requoted}건의 미체결 매수 호가를 최우선가로 재정정하여 체결률을 높였습니다.")
+            logger.info(f"🎛️ 총 {requoted}건의 미체결 호가 최우선가 재정정 완료")
 
-        # 1. 총 자산 평가 및 [리스크 2: 일일 킬 스위치] 점검
+        # 1. 총 자산 평가 및 일일 킬 스위치 점검
         balances = bithumb.get_balances()
         current_total_equity = calculate_total_equity(balances, bithumb)
         is_kill_switch, daily_pnl = risk_manager.update_daily_equity(current_total_equity, now_kst)
@@ -668,12 +703,12 @@ def run_cycle():
                 f"• 원금 보호를 위해 당일 모든 신규 매수를 중단하고 관망합니다."
             )
 
-        # 2. [리스크 1: 비트코인(BTC) 대세 급락 필터] 점검
+        # 2. BTC 대세 급락 필터
         is_btc_crashing, btc_status_msg = check_btc_market_crash(bithumb, threshold_pct=btc_crash_pct)
         if is_btc_crashing:
             logger.warning(f"⚠️ [BTC 급락 방어선 작동] {btc_status_msg} ➜ 알트코인 신규 매수 차단!")
 
-        # 3. 구글 스프레드시트 'Dashboard' 및 'Performance' 탭 실시간 갱신
+        # 3. 구글 스프레드시트 갱신
         bot_state_badge = "⏸️ 일시정지 (관망)" if IS_BOT_PAUSED else "🟢 24시간 실시간 자동매매 가동 중"
         sheets.update_dashboard(
             {
@@ -693,6 +728,22 @@ def run_cycle():
             }
         )
 
+        # 3-1. 로컬 웹 대시보드(포트 7979) 캐시 즉시 갱신
+        win_rate = (risk_manager.win_trades_today / risk_manager.total_trades_today * 100) if risk_manager.total_trades_today > 0 else 0.0
+        LATEST_DASHBOARD_DATA.update({
+            "total_equity": int(current_total_equity),
+            "krw_available": int(krw_available),
+            "daily_start_equity": int(risk_manager.daily_start_equity),
+            "daily_pnl_krw": int(current_total_equity - risk_manager.daily_start_equity),
+            "daily_pnl_pct": daily_pnl * 100,
+            "realized_pnl_krw": int(risk_manager.realized_pnl_krw),
+            "total_trades": risk_manager.total_trades_today,
+            "win_trades": risk_manager.win_trades_today,
+            "win_rate": win_rate,
+            "fear_and_greed": fng["desc"],
+            "bot_state": bot_state_badge,
+        })
+
         sheets.update_performance_tab(
             total_trades=risk_manager.total_trades_today,
             win_trades=risk_manager.win_trades_today,
@@ -700,7 +751,7 @@ def run_cycle():
             daily_history=risk_manager.daily_history,
         )
 
-        # 4. 거래 대상 마켓 결정 (동적 스크리닝 vs 고정 목록)
+        # 4. 대상 마켓 선정
         target_markets: list[str] = []
         if is_auto_mode:
             screener = MarketScreener(
@@ -719,7 +770,7 @@ def run_cycle():
 
         logger.info(f"이번 사이클 최종 분석 대상 마켓 ({len(target_markets)}개): {target_markets}")
 
-        # ⚡ 빗썸 실시간 웹소켓(WebSocket) 구독 마켓 갱신
+        # ⚡ 빗썸 실시간 웹소켓(WebSocket) 구독 갱신
         ws_client.update_subscriptions(list(dict.fromkeys(target_markets + held_markets + ["KRW-BTC"])))
 
         # 5. 마켓별 순회 분석 및 매매 실행
@@ -729,7 +780,6 @@ def run_cycle():
             logger.info(f"--- [{korean_name} / {market} AI 퀀트 분석 시작] ---")
 
             try:
-                # 잔고 및 시세 데이터 갱신
                 balances = bithumb.get_balances()
                 krw_available = balances.get("KRW", {}).get("balance", 0.0)
 
@@ -751,7 +801,7 @@ def run_cycle():
                 )
 
                 # =========================================================================
-                # 🎯 [최우선 1: 50% 분할익절 + 50% 가속 트레일링 러너 검사]
+                # 🎯 [최우선 1: 50% 분할익절 + 50% 가속 트레일링 러너]
                 # =========================================================================
                 coin_value = coin_total * current_price
                 if coin_value >= MIN_ORDER_KRW and avg_buy_price > 0:
@@ -778,16 +828,42 @@ def run_cycle():
                             order_uuid = order_res.get("uuid", "UNKNOWN")
                             pnl_krw = (current_price - avg_buy_price) * sell_vol
                             risk_manager.add_realized_trade(pnl_krw, is_win=True)
+                            trade_memory.record_completed_trade(
+                                market=market,
+                                side="PARTIAL_TP",
+                                entry_price=avg_buy_price,
+                                exit_price=current_price,
+                                pnl_pct=realized_profit_pct,
+                                pnl_krw=pnl_krw,
+                                reason="1차 +2.5% 도달 50% 분할 익절 완료",
+                                timestamp=now_str,
+                            )
 
-                            telegram.send_message(
+                            # 차트 이미지 렌더링 및 텔레그램 사진 발송
+                            chart_img = chart_renderer.render_trade_chart(
+                                market=market,
+                                korean_name=korean_name,
+                                candles=candles_5m,
+                                entry_price=avg_buy_price,
+                                target_price=current_price * 1.05,
+                                stop_loss=avg_buy_price * 1.002,
+                                action="SELL",
+                            )
+
+                            caption = (
                                 f"🎉 <b>[{korean_name}({market}) 1차 50% 분할익절 완료!]</b>\n"
                                 f"• 진입 평단가: {avg_buy_price:,.2f} KRW\n"
                                 f"• 익절 체결가: {current_price:,.2f} KRW (+{realized_profit_pct:.2f}%)\n"
                                 f"• <b>확정 실현수익: +{pnl_krw:,.0f} KRW 💰</b>\n"
                                 f"• 매도 수량: {sell_vol:.8f} {currency} (보유량의 50%)\n"
-                                f"• <b>남은 50% 물량: 무한 트레일링 스탑 러너 모드로 자동 전환 🚀</b>\n"
+                                f"• <b>남은 50% 물량: 무한 트레일링 러너 자동 전환 🚀</b>\n"
                                 f"• 일시: {now_str}"
                             )
+                            if chart_img:
+                                telegram.send_photo(chart_img, caption=caption)
+                            else:
+                                telegram.send_message(caption)
+
                             sheets.append_trade_log(
                                 {
                                     "Timestamp": now_str,
@@ -825,8 +901,28 @@ def run_cycle():
 
                         pnl_krw = (current_price - avg_buy_price) * coin_available
                         risk_manager.add_realized_trade(pnl_krw, is_win=True)
+                        trade_memory.record_completed_trade(
+                            market=market,
+                            side="TRAILING_STOP",
+                            entry_price=avg_buy_price,
+                            exit_price=current_price,
+                            pnl_pct=realized_profit_pct,
+                            pnl_krw=pnl_krw,
+                            reason="가속 트레일링 스탑 최고점 익절 완료",
+                            timestamp=now_str,
+                        )
 
-                        telegram.send_message(
+                        chart_img = chart_renderer.render_trade_chart(
+                            market=market,
+                            korean_name=korean_name,
+                            candles=candles_5m,
+                            entry_price=avg_buy_price,
+                            target_price=peak_p,
+                            stop_loss=avg_buy_price,
+                            action="SELL",
+                        )
+
+                        caption = (
                             f"🎯 <b>[{korean_name}({market}) 트레일링 스탑 최고점 익절 완료!]</b>\n"
                             f"• 진입 평단가: {avg_buy_price:,.2f} KRW\n"
                             f"• 도달 최고가: {peak_p:,.2f} KRW (+{peak_profit_pct:.2f}%)\n"
@@ -836,6 +932,10 @@ def run_cycle():
                             f"• 주문 ID: <code>{order_uuid}</code>\n"
                             f"• 일시: {now_str}"
                         )
+                        if chart_img:
+                            telegram.send_photo(chart_img, caption=caption)
+                        else:
+                            telegram.send_message(caption)
 
                         sheets.append_trade_log(
                             {
@@ -857,8 +957,9 @@ def run_cycle():
                         )
                         continue
 
-                # AI 전략 수립 또는 시트 조회
+                # AI 전략 수립 및 자가학습 피드백 주입
                 if analyzer:
+                    feedback_context = trade_memory.get_feedback_context()
                     strategy = analyzer.analyze(
                         market=market,
                         current_price=current_price,
@@ -868,6 +969,7 @@ def run_cycle():
                         avg_buy_price=avg_buy_price,
                         candles_1h=candles_1h,
                         orderbook=orderbook,
+                        trade_memory_context=feedback_context,
                     )
                     sheets.update_strategy(market, strategy, now_str, korean_name=korean_name)
                 else:
@@ -881,7 +983,6 @@ def run_cycle():
                 alloc_pct = strategy.get("alloc_pct", 0.3)
                 reason = strategy.get("reason", "자동 분석")
 
-                # 공포/탐욕 지수가 '극단적 공포'일 때 방어적 비중 축소
                 if fng["is_extreme_fear"] and action == "BUY":
                     alloc_pct = min(alloc_pct, 0.4)
 
@@ -914,17 +1015,42 @@ def run_cycle():
                     order_uuid = order_res.get("uuid", "UNKNOWN")
 
                     pnl_krw = (current_price - avg_buy_price) * coin_available if avg_buy_price > 0 else 0.0
+                    loss_pct = ((current_price - avg_buy_price) / avg_buy_price * 100) if avg_buy_price > 0 else 0.0
                     risk_manager.add_realized_trade(pnl_krw, is_win=False)
+                    trade_memory.record_completed_trade(
+                        market=market,
+                        side="STOP_LOSS",
+                        entry_price=avg_buy_price,
+                        exit_price=current_price,
+                        pnl_pct=loss_pct,
+                        pnl_krw=pnl_krw,
+                        reason=reason,
+                        timestamp=now_str,
+                    )
 
-                    telegram.send_message(
+                    chart_img = chart_renderer.render_trade_chart(
+                        market=market,
+                        korean_name=korean_name,
+                        candles=candles_5m,
+                        entry_price=avg_buy_price,
+                        target_price=target_price,
+                        stop_loss=stop_loss,
+                        action="SELL",
+                    )
+
+                    caption = (
                         f"🚨 <b>[{korean_name}({market}) 손절 전량 매도 실행]</b>\n"
                         f"• 현재가: {current_price:,.2f} KRW\n"
                         f"• 손절 기준가: {stop_loss:,.2f} KRW\n"
-                        f"• 손실 금액: {pnl_krw:,.0f} KRW\n"
+                        f"• 손실 금액: {pnl_krw:,.0f} KRW ({loss_pct:.2f}%)\n"
                         f"• 매도 수량: {coin_available:.8f} {currency}\n"
                         f"• 주문 ID: <code>{order_uuid}</code>\n"
                         f"• 일시: {now_str}"
                     )
+                    if chart_img:
+                        telegram.send_photo(chart_img, caption=caption)
+                    else:
+                        telegram.send_message(caption)
 
                     sheets.append_trade_log(
                         {
@@ -937,7 +1063,7 @@ def run_cycle():
                             "Price": current_price,
                             "Volume": f"{coin_available:.8f}",
                             "Total_KRW": int(coin_available * current_price),
-                            "Realized_PnL_Pct": f"{((current_price - avg_buy_price) / avg_buy_price * 100):.2f}%" if avg_buy_price > 0 else "-",
+                            "Realized_PnL_Pct": f"{loss_pct:.2f}%",
                             "Stop_Loss": stop_loss,
                             "Target_Price": target_price,
                             "Current_Balance_KRW": int(krw_available),
@@ -946,7 +1072,7 @@ def run_cycle():
                     )
                     continue
 
-                # 6. [신규 주문 실행]
+                # 6. [신규 주문 실행 - 동적 복리 자금 관리 적용]
                 if action == "BUY":
                     if IS_BOT_PAUSED:
                         logger.info(f"[{korean_name} / {market}] 봇이 일시정지 상태이므로 신규 매수를 건너뜁니다.")
@@ -956,7 +1082,6 @@ def run_cycle():
                         logger.info(f"[{korean_name} / {market}] 킬 스위치 발동 상태이므로 신규 매수를 건너뜁니다.")
                         continue
 
-                    # [포트폴리오 보호] 이미 보유 중인 코인은 중복 매수 금지 (1회 진입 락)
                     if coin_value >= MIN_ORDER_KRW:
                         logger.info(f"[{korean_name} / {market}] 이미 보유 중인 포지션({coin_value:,.0f}원)이므로 중복 매수를 건너뜁니다 (보유 유지).")
                         continue
@@ -972,14 +1097,16 @@ def run_cycle():
 
                     num_unheld_targets = len([m for m in target_markets if m not in held_markets])
                     num_slots = max(1, num_unheld_targets)
-                    max_market_budget = krw_available / num_slots
+
+                    # 💰 동적 복리 자금 계산 (가용 원화 + 실현 수익금 반영)
+                    effective_capital = krw_available + max(0.0, risk_manager.realized_pnl_krw)
+                    max_market_budget = min(krw_available, effective_capital / num_slots)
                     trade_budget = max_market_budget * alloc_pct
 
                     # 호가 단위 자동 보정 및 슬리피지 보호
                     order_price = entry_price if (0 < entry_price <= current_price * 1.002) else current_price
                     order_price = bithumb.round_price_to_tick(order_price)
 
-                    # 가용 원화가 5,000원 이상이면 최소 주문 금액(5,000원)을 충족하도록 스마트 보정
                     if trade_budget < MIN_ORDER_KRW and krw_available >= MIN_ORDER_KRW:
                         trade_budget = min(krw_available, max(max_market_budget, MIN_ORDER_KRW))
 
@@ -1000,7 +1127,18 @@ def run_cycle():
                     )
                     order_uuid = order_res.get("uuid", "UNKNOWN")
 
-                    telegram.send_message(
+                    # 진입 캔들 차트 이미지 렌더링 및 텔레그램 사진 전송
+                    chart_img = chart_renderer.render_trade_chart(
+                        market=market,
+                        korean_name=korean_name,
+                        candles=candles_5m,
+                        entry_price=order_price,
+                        target_price=target_price,
+                        stop_loss=stop_loss,
+                        action="BUY",
+                    )
+
+                    caption = (
                         f"🟢 <b>[{korean_name}({market}) 급등 포착 지정가 매수 주문]</b>\n"
                         f"• 주문가: {order_price:,.2f} KRW (호가 단위 보정 완료)\n"
                         f"• 수량: {buy_volume:.8f} {currency}\n"
@@ -1009,6 +1147,10 @@ def run_cycle():
                         f"• 분석근거: <i>{reason}</i>\n"
                         f"• 일시: {now_str}"
                     )
+                    if chart_img:
+                        telegram.send_photo(chart_img, caption=caption)
+                    else:
+                        telegram.send_message(caption)
 
                     sheets.append_trade_log(
                         {
@@ -1080,9 +1222,7 @@ def run_cycle():
 
 
 class CodeChangeWatcher:
-    """
-    소스코드 및 Git 커밋 실시간 감시 핫리로더 (Hot-Reloader)
-    """
+    """소스코드 및 Git 커밋 실시간 감시 핫리로더 (Hot-Reloader)"""
 
     def __init__(self, watch_paths: list[str], check_interval: float = 3.0):
         self.watch_paths = watch_paths
@@ -1136,7 +1276,7 @@ class CodeChangeWatcher:
 
 
 def main():
-    logger.info("🚀 빗썸 API 2.0 프로 퀀트 AI 자동매매 봇 v3.5 시작")
+    logger.info("🚀 빗썸 API 2.0 프로 퀀트 AI 자동매매 봇 v4.0 시작")
     mode_text = f"실시간 급등주 자동 스캔 (상위 {TOP_COUNT}종목)" if IS_AUTO_MODE else f"고정 마켓 ({RAW_MARKETS})"
     logger.info(
         f"실행 주기: {INTERVAL_MINUTES}분 | 모드: {mode_text} | 전략: 50% 분할익절 + 가속 트레일링 | 킬스위치: -{MAX_DAILY_LOSS_PCT*100:.1f}%"
@@ -1168,6 +1308,14 @@ def main():
     # 3. 빗썸 2.0 실시간 웹소켓(WebSocket) 0.1초 스트리밍 가동
     ws_client.start()
 
+    # 4. 로컬 실시간 웹 대시보드 (포트 7979) 가동
+    web_dashboard = DashboardWebServer(
+        port=7979,
+        get_status_data_func=get_web_dashboard_data,
+        action_handler_func=handle_web_action,
+    )
+    web_dashboard.start()
+
     try:
         run_cycle()
     except (requests.exceptions.RequestException, KeyError, ValueError, RuntimeError) as e:
@@ -1175,7 +1323,7 @@ def main():
 
     scheduler = BlockingScheduler(timezone="Asia/Seoul")
 
-    # 3. 주기별 자동매매 사이클
+    # 5. 주기별 자동매매 사이클
     scheduler.add_job(
         run_cycle,
         "interval",
@@ -1184,7 +1332,7 @@ def main():
         replace_existing=True,
     )
 
-    # 4. 매일 아침 09:00 KST 일일 결산 브리핑 발송
+    # 6. 매일 아침 09:00 KST 일일 결산 브리핑 발송
     scheduler.add_job(
         send_daily_morning_report,
         "cron",

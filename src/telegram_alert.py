@@ -59,6 +59,35 @@ class TelegramAlert:
             logger.error(f"텔레그램 메시지 전송 중 예외 발생: {e}")
             return False
 
+    def send_photo(self, photo_bytes: bytes, caption: str = "", parse_mode: str = "HTML") -> bool:
+        """
+        텔레그램 방으로 캔들 차트 이미지(PNG) 바이너리 및 설명 캡션 발송
+        """
+        if not self.bot_token or not self.chat_id or not photo_bytes:
+            return False
+
+        url = f"{self.base_url}/sendPhoto"
+        data = {
+            "chat_id": self.chat_id,
+            "caption": caption,
+            "parse_mode": parse_mode,
+        }
+        files = {
+            "photo": ("chart.png", photo_bytes, "image/png"),
+        }
+
+        try:
+            response = requests.post(url, data=data, files=files, timeout=20)
+            if response.status_code == 200:
+                logger.info("텔레그램 차트 사진 발송 성공")
+                return True
+            else:
+                logger.warning(f"텔레그램 사진 발송 실패 [{response.status_code}]: {response.text}")
+                return False
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"텔레그램 사진 발송 예외: {e}")
+            return False
+
     def start_command_listener(
         self,
         status_callback: Callable[[], str] | None = None,

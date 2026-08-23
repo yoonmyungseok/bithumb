@@ -299,9 +299,10 @@ class GeminiAnalyzer:
         avg_buy_price: float,
         candles_1h: list[dict[str, Any]] | None = None,
         orderbook: dict[str, Any] | None = None,
+        trade_memory_context: str = "",
     ) -> dict[str, Any]:
         """
-        [MTF 3중 정렬 + 호가창 수급 + ATR 변동성 + 지능형 모델 라우팅] 퀀트 분석 엔진
+        [MTF 3중 정렬 + 호가창 수급 + ATR 변동성 + 자가학습 메모리] 퀀트 분석 엔진
         """
         if not self.api_key:
             logger.warning("Gemini API Key가 설정되지 않았습니다.")
@@ -349,6 +350,8 @@ class GeminiAnalyzer:
         dynamic_sl = max(sr_levels["support_low"] * 0.995, current_price - max(current_price * 0.015, atr_info["atr"]))
 
         # 3. 기관 퀀트 헤지펀드 시스템 프롬프트
+        memory_section = f"\n{trade_memory_context}\n" if trade_memory_context else ""
+
         prompt = f"""당신은 월스트리트 헤지펀드 출신의 수석 암호화폐 퀀트 트레이더이자 리스크 관리 책임자(CRO)입니다.
 제공된 실시간 {market}의 [MTF 상위 추세], [호가창 수급], [5분봉 정밀 퀀트 지표]를 종합 분석하여 최적의 트레이딩 지침을 JSON으로 제시하세요.
 
@@ -378,7 +381,7 @@ class GeminiAnalyzer:
 3. [추격 매수 엄격 금지 (No-Chase)]: %B > 0.85이거나 윗꼬리가 길면 눌림목(MA5 또는 볼린저 중심선)까지 대기(HOLD).
 4. [손익비(Risk/Reward >= 1:1.5)]: (목표가 - 진입가)가 (진입가 - 손절가)의 최소 1.5배 이상 확보될 때만 매수.
 5. [ATR 맞춤 목표가/손절가]: 고변동성 코인은 목표가를 넓히고, 저변동성 코인은 타이트하게 설정.
-
+{memory_section}
 ### [JSON 출력 필수 스키마]
 반드시 마크다운 백틱 없는 순수 JSON 포맷으로만 응답하세요:
 {{
