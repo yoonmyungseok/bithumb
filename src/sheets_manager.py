@@ -11,10 +11,11 @@ logger = logging.getLogger(__name__)
 
 class SheetsManager:
     """
-    Google 스프레드시트 연동 모듈 (gspread) v2.0
-    - Dashboard 탭: 종합 자산, 당일 손익률, 킬스위치/BTC방어선 실시간 대시보드
+    Google 스프레드시트 연동 모듈 (gspread) v3.0
+    - Dashboard 탭: 종합 자산, 당일 손익률, 공포탐욕지수, 킬스위치/BTC방어선 실시간 대시보드
     - Strategy 탭: [종목명(한글), 마켓코드] 분리 및 한글 표준 헤더 실시간 동기화
     - Trade_Log 탭: [종목명(한글), 마켓코드] 분리, 실현 손익률(%) 및 '원' 단위 자동 기록
+    - Performance 탭: 누적 승률, 손익비(Profit Factor), 일별 수익 결산 통계표
     """
 
     SCOPES: ClassVar[list[str]] = [
@@ -39,7 +40,7 @@ class SheetsManager:
         try:
             if sheet_name.startswith("https://"):
                 self.spreadsheet = self.client.open_by_url(sheet_name)
-            elif "/" in sheet_name or len(sheet_name) > 30 and " " not in sheet_name:
+            elif "/" in sheet_name or (len(sheet_name) > 30 and " " not in sheet_name):
                 try:
                     self.spreadsheet = self.client.open_by_key(sheet_name)
                 except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException):
@@ -77,24 +78,73 @@ class SheetsManager:
             held_coins_str = summary_data.get("held_coins", "없음 (100% 현금)")
             kill_switch_str = summary_data.get("kill_switch_status", "🟢 정상")
             btc_health_str = summary_data.get("btc_health", "🟢 정상")
+            fng_str = summary_data.get("fear_and_greed", "50점 (중립)")
+            bot_state_str = summary_data.get("bot_state", "🟢 24시간 실시간 자동매매 가동 중")
 
             dashboard_rows = [
                 ["📊 [빗썸 AI 퀀트 자동매매 실시간 종합 대시보드]", "", "", ""],
-                ["최종 갱신 일시 (KST)", now_str, "봇 가동 상태", "🟢 24시간 실시간 자동매매 가동 중"],
+                ["최종 갱신 일시 (KST)", now_str, "봇 가동 상태", bot_state_str],
                 ["", "", "", ""],
                 ["📌 [핵심 계좌 자산 현황]", "", "🛡️ [리스크 관리 안전장치 상태]", ""],
                 ["총 평가 자산 (KRW)", f"{int(total_equity):,} 원", "일일 킬스위치 상태", kill_switch_str],
                 ["가용 원화 잔고 (KRW)", f"{int(krw_avail):,} 원", "BTC 대세 급락 방어선", btc_health_str],
-                ["금일 자산 변동 (평가손익)", f"{int(daily_pnl_krw):+,} 원 ({daily_pnl_pct:+.2f}%)", "트레일링 스탑 모드", "🎯 활성화 (+2.0% 추적)"],
+                ["금일 자산 변동 (평가손익)", f"{int(daily_pnl_krw):+,} 원 ({daily_pnl_pct:+.2f}%)", "트레일링 스탑 모드", "🎯 50% 분할익절 + 가속 러너"],
                 ["금일 확정 실현 손익", f"{int(realized_krw):+,} 원 (총 {trades_count}회 거래 / 승률 {win_rate:.0f}%)", "일일 최대 손실 한도", "-5.0%"],
-                ["현재 보유 포지션", held_coins_str, "종목 발굴 모드", "🔥 실시간 급등 모멘텀 TOP 3 스캔"],
+                ["현재 보유 포지션", held_coins_str, "크립토 공포/탐욕 지수", fng_str],
+                ["종목 발굴 모드", "🔥 실시간 급등 모멘텀 TOP 3 스캔", "원격 제어 지원", "📱 텔레그램 /status, /panic 연동"],
             ]
 
-            worksheet.update(values=dashboard_rows, range_name="A1:D9")
+            worksheet.update(values=dashboard_rows, range_name="A1:D10")
             logger.info("구글 시트 'Dashboard' 탭 실시간 갱신 완료")
 
         except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException, KeyError, ValueError) as e:
             logger.warning(f"Dashboard 탭 갱신 실패 (매매는 지속됨): {e}")
+
+    def update_performance_tab(
+        self,
+        total_trades: int,
+        win_trades: int,
+        realized_pnl_krw: float,
+        daily_history: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """
+        'Performance' 탭에 누적 매매 통계 및 일별 손익 결산 테이블 갱신
+        """
+        try:
+            try:
+                worksheet = self.spreadsheet.worksheet("Performance")
+            except gspread.exceptions.WorksheetNotFound:
+                worksheet = self.spreadsheet.add_worksheet(title="Performance", rows=50, cols=10)
+
+            win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0.0
+            loss_trades = max(0, total_trades - win_trades)
+
+            perf_rows = [
+                ["📈 [빗썸 AI 퀀트 트레이딩 누적 성과 분석 통계]", "", "", ""],
+                ["", "", "", ""],
+                ["📊 [핵심 트레이딩 지표]", "", "💰 [실현 손익 요약]", ""],
+                ["총 누적 거래 횟수", f"{total_trades} 회", "총 확정 실현 손익", f"{int(realized_pnl_krw):+,} 원"],
+                ["총 승리 거래 (익절)", f"{win_trades} 회", "승률 (Win Rate)", f"{win_rate:.1f}%"],
+                ["총 패배 거래 (손절)", f"{loss_trades} 회", "평균 거래 결과", f"{(realized_pnl_krw / total_trades):+,.0f} 원/건" if total_trades > 0 else "-"],
+                ["", "", "", ""],
+                ["📅 [일별 실현 손익 결산 이력]", "", "", ""],
+                ["일자 (Date)", "거래 횟수 (Trades)", "승리 횟수 (Wins)", "확정 실현 손익 (KRW)"],
+            ]
+
+            if daily_history:
+                for h in daily_history[-10:]:
+                    perf_rows.append([
+                        h.get("date", "-"),
+                        f"{h.get('total_trades', 0)} 회",
+                        f"{h.get('win_trades', 0)} 회",
+                        f"{int(h.get('realized_pnl_krw', 0)):+,} 원",
+                    ])
+
+            worksheet.update(values=perf_rows, range_name=f"A1:D{len(perf_rows)}")
+            logger.info("구글 시트 'Performance' 탭 갱신 완료")
+
+        except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException, KeyError, ValueError) as e:
+            logger.warning(f"Performance 탭 갱신 실패: {e}")
 
     def get_strategy(self, market: str = "KRW-BTC") -> dict[str, Any]:
         """
@@ -129,7 +179,6 @@ class SheetsManager:
                 else:
                     return {"status": "PAUSE", "action": "HOLD"}
 
-            # 오프셋 판별: [0: 종목명(한글), 1: 마켓코드] 구조면 offset=2, [0: 마켓코드] 구조면 offset=1
             offset = 1
             if len(target_row) > 1 and str(target_row[1]).startswith(("KRW-", "BTC-")):
                 offset = 2
@@ -138,14 +187,14 @@ class SheetsManager:
 
             status = str(target_row[offset + 1]).strip().upper() if len(target_row) > offset + 1 else "PAUSE"
             action = str(target_row[offset + 2]).strip().upper() if len(target_row) > offset + 2 else "HOLD"
-            entry_price = safe_float(target_row[offset + 3]) if len(target_row) > offset + 3 else 0.0
-            target_price = safe_float(target_row[offset + 4]) if len(target_row) > offset + 4 else 0.0
-            stop_loss = safe_float(target_row[offset + 5]) if len(target_row) > offset + 5 else 0.0
-            alloc_raw = safe_float(target_row[offset + 6]) if len(target_row) > offset + 6 else 30.0
+            entry_price = safe_float(target_row[offset + 3] if len(target_row) > offset + 3 else 0.0)
+            target_price = safe_float(target_row[offset + 4] if len(target_row) > offset + 4 else 0.0)
+            stop_loss = safe_float(target_row[offset + 5] if len(target_row) > offset + 5 else 0.0)
+            alloc_pct = safe_float(target_row[offset + 6] if len(target_row) > offset + 6 else 0.3)
+            reason = str(target_row[offset + 7]) if len(target_row) > offset + 7 else "수동 입력"
 
-            alloc_pct = alloc_raw / 100.0 if alloc_raw > 1.0 else alloc_raw
-            alloc_pct = max(0.05, min(alloc_pct, 1.0))
-            reason = str(target_row[offset + 7]) if len(target_row) > offset + 7 else "Strategy 시트 지침"
+            if alloc_pct > 1.0:
+                alloc_pct = alloc_pct / 100.0
 
             return {
                 "status": status,
@@ -156,183 +205,151 @@ class SheetsManager:
                 "alloc_pct": alloc_pct,
                 "reason": reason,
             }
-
-        except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException, KeyError, ValueError, IndexError) as e:
-            logger.error(f"Strategy 시트 조회 오류 ({market}): {e}")
-            return {"status": "PAUSE", "action": "HOLD", "reason": str(e)}
+        except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException, KeyError, ValueError) as e:
+            logger.warning(f"Strategy 시트 조회 실패: {e}")
+            return {"status": "PAUSE", "action": "HOLD"}
 
     def update_strategy(
-        self, market: str, strategy: dict[str, Any], timestamp_str: str, korean_name: str = ""
+        self, market: str, strategy: dict[str, Any], timestamp: str, korean_name: str = ""
     ) -> None:
         """
-        'Strategy' 탭에 [종목명(한글), 마켓코드] 및 한글 표준 헤더로 실시간 전략 기록
+        'Strategy' 탭에 종목별 전략 업데이트
         """
         try:
             try:
                 worksheet = self.spreadsheet.worksheet("Strategy")
             except gspread.exceptions.WorksheetNotFound:
-                worksheet = self.spreadsheet.add_worksheet(title="Strategy", rows=50, cols=10)
+                worksheet = self.spreadsheet.add_worksheet(title="Strategy", rows=30, cols=12)
+
+            korean_headers = [
+                "종목명",
+                "마켓코드",
+                "최종 업데이트 (KST)",
+                "동작 상태",
+                "매매 행동",
+                "진입가 (KRW)",
+                "목표가 (KRW)",
+                "손절가 (KRW)",
+                "투자 비중",
+                "AI 분석 근거 / 진입 사유",
+            ]
 
             all_rows = worksheet.get_all_values()
-
-            # 한글 표준 헤더: 종목명(한글)을 가장 첫 번째(마켓코드 왼쪽)에 배치
-            korean_headers = [
-                "종목명(한글)",
-                "마켓코드",
-                "업데이트일시",
-                "봇상태",
-                "매매판단",
-                "진입/현재가(KRW)",
-                "목표익절가(KRW)",
-                "손절기준가(KRW)",
-                "투자비중",
-                "AI 퀀트 분석근거",
-            ]
-
-            if not all_rows:
+            if not all_rows or all_rows[0] != korean_headers:
+                worksheet.clear()
                 worksheet.append_row(korean_headers)
                 all_rows = [korean_headers]
-            elif all_rows and ("MARKET" in str(all_rows[0][0]).upper() or "마켓" in str(all_rows[0][0])):
-                worksheet.update(values=[korean_headers], range_name="A1:J1")
-                all_rows[0] = korean_headers
 
-            def format_price(p: Any) -> str:
-                try:
-                    val = float(str(p).replace(",", "").replace("%", "").replace("원", "").replace("KRW", "").strip())
-                    if val <= 0:
-                        return "0원"
-                    return f"{int(val):,}원" if val >= 100 else f"{val:,.2f}원"
-                except (ValueError, TypeError):
-                    return f"{p}원" if p else "0원"
+            entry_p = strategy.get("entry_price", 0.0)
+            target_p = strategy.get("target_price", 0.0)
+            stop_l = strategy.get("stop_loss", 0.0)
+            alloc_p = strategy.get("alloc_pct", 0.3)
+            action = strategy.get("action", "HOLD")
 
-            entry_p = strategy.get("entry_price", 0)
-            target_p = strategy.get("target_price", 0)
-            stop_l = strategy.get("stop_loss", 0)
+            alloc_str = f"{int(alloc_p * 100)}%" if alloc_p > 0 else "0%"
 
-            display_korean = korean_name if korean_name else market.split("-")[-1]
+            display_name = korean_name if korean_name else market.split("-")[-1]
 
             row_data = [
-                display_korean,
+                display_name,
                 market,
-                timestamp_str,
+                timestamp,
                 strategy.get("status", "ACTIVE"),
-                strategy.get("action", "HOLD"),
-                format_price(entry_p),
-                format_price(target_p),
-                format_price(stop_l),
-                f"{strategy.get('alloc_pct', 0.3) * 100:.0f}%",
-                strategy.get("reason", "Gemini 자동 분석"),
+                action,
+                f"{entry_p:,.2f} 원" if entry_p > 0 else "-",
+                f"{target_p:,.2f} 원" if target_p > 0 else "-",
+                f"{stop_l:,.2f} 원" if stop_l > 0 else "-",
+                alloc_str,
+                strategy.get("reason", "자동 분석"),
             ]
 
-            target_row_num = -1
-            for idx, row in enumerate(all_rows):
+            target_row_idx = None
+            for idx, row in enumerate(all_rows[1:], start=2):
                 if row:
                     first_val = str(row[0]).strip().upper()
                     second_val = str(row[1]).strip().upper() if len(row) > 1 else ""
-                    if first_val == display_korean.upper() or first_val == market.upper() or second_val == market.upper():
-                        target_row_num = idx + 1
+                    if first_val == market.upper() or second_val == market.upper():
+                        target_row_idx = idx
                         break
 
-            if target_row_num != -1:
-                worksheet.update(values=[row_data], range_name=f"A{target_row_num}:J{target_row_num}")
-                logger.info(f"구글 시트 Strategy [{display_korean} / {market}] (행 {target_row_num}) 갱신 완료")
+            if target_row_idx:
+                worksheet.update(values=[row_data], range_name=f"A{target_row_idx}:J{target_row_idx}")
+                logger.info(f"구글 시트 Strategy [{display_name} / {market}] (행 {target_row_idx}) 갱신 완료")
             else:
                 worksheet.append_row(row_data)
-                logger.info(f"구글 시트 Strategy [{display_korean} / {market}] 신규 행 추가 완료")
+                logger.info(f"구글 시트 Strategy [{display_name} / {market}] 신규 행 추가 완료")
 
         except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException, KeyError, ValueError) as e:
-            logger.warning(f"Strategy 탭 업데이트 실패: {e}")
+            logger.warning(f"Strategy 탭 갱신 실패: {e}")
 
-    def append_trade_log(self, data: Any) -> None:
+    def append_trade_log(self, data: dict[str, Any]) -> None:
         """
-        'Trade_Log' 탭에 [종목명(한글), 마켓코드] 및 한글 표준 헤더 기록
+        'Trade_Log' 탭에 실시간 거래 내역 추가
         """
         try:
             try:
                 worksheet = self.spreadsheet.worksheet("Trade_Log")
             except gspread.exceptions.WorksheetNotFound:
-                worksheet = self.spreadsheet.add_worksheet(title="Trade_Log", rows=1000, cols=14)
+                worksheet = self.spreadsheet.add_worksheet(title="Trade_Log", rows=100, cols=16)
 
-            headers = worksheet.row_values(1)
             korean_headers = [
-                "주문일시",
-                "종목명(한글)",
+                "일시 (KST)",
+                "종목명",
                 "마켓코드",
-                "주문구분",
-                "주문유형",
-                "주문/체결단가",
-                "수량",
-                "총거래금액(KRW)",
-                "실현손익률(%)",
-                "손절기준가",
-                "목표익절가",
-                "거래후원화잔고",
-                "주문ID",
-                "분석및체결사유",
+                "구분 (Side)",
+                "유형 (Type)",
+                "체결/주문단가",
+                "체결수량",
+                "거래총액 (KRW)",
+                "실현 손익률",
+                "설정 손절가",
+                "설정 목표가",
+                "주문후 원화잔고",
+                "주문 ID (UUID)",
+                "상태 및 사유",
             ]
 
-            if not headers or len(headers) < 14 or "마켓(종목)" in headers:
-                worksheet.update(values=[korean_headers], range_name="A1:N1")
-                headers = korean_headers
+            all_rows = worksheet.get_all_values()
+            if not all_rows:
+                worksheet.append_row(korean_headers)
+            elif all_rows[0] != korean_headers:
+                worksheet.insert_row(korean_headers, index=1)
 
-            def format_val(key: str, val: Any) -> str:
-                if val is None or val == "":
-                    return ""
-                price_keys = ["price", "total_krw", "stop_loss", "target_price", "current_balance_krw"]
-                if any(pk in key.lower() for pk in price_keys):
-                    try:
-                        num = float(str(val).replace(",", "").replace("%", "").replace("원", "").replace("KRW", "").strip())
-                        return f"{int(num):,}원" if num >= 100 else f"{num:,.2f}원"
-                    except (ValueError, TypeError):
-                        return f"{val}원"
-                return str(val)
+            def format_krw(val: Any) -> str:
+                try:
+                    num = float(str(val).replace(",", "").replace("원", "").replace("KRW", "").strip())
+                    return f"{int(num):,} 원" if num.is_integer() or num >= 100 else f"{num:,.2f} 원"
+                except (ValueError, TypeError):
+                    return str(val)
 
-            if isinstance(data, dict):
-                key_aliases = {
-                    "timestamp": ["timestamp", "주문일시", "일시", "시간", "날짜", "updated_at"],
-                    "korean_name": ["korean_name", "종목명(한글)", "한글명", "종목명", "코인명"],
-                    "market": ["market", "마켓코드", "마켓(종목)", "마켓", "symbol"],
-                    "side": ["side", "주문구분", "action", "구분", "매매"],
-                    "order_type": ["order_type", "주문유형", "type", "유형"],
-                    "price": ["price", "주문/체결단가", "체결단가", "주문단가", "가격", "order_price"],
-                    "volume": ["volume", "수량", "체결수량", "amount"],
-                    "total_krw": ["total_krw", "총거래금액(krw)", "총금액", "주문금액"],
-                    "realized_pnl_pct": ["realized_pnl_pct", "실현손익률(%)", "손익률", "수익률", "pnl_pct"],
-                    "stop_loss": ["stop_loss", "손절기준가", "손절가", "손절"],
-                    "target_price": ["target_price", "목표익절가", "목표가", "익절가"],
-                    "current_balance_krw": ["current_balance_krw", "거래후원화잔고", "원화잔고", "가용원화", "잔고"],
-                    "order_uuid": ["order_uuid", "주문id", "주문고유id", "uuid", "order_id"],
-                    "status_reason": ["status_reason", "분석및체결사유", "체결사유", "비고", "reason", "메모"],
-                }
+            price_keys = ["price", "total_krw", "stop_loss", "target_price", "current_balance_krw"]
+            formatted_data = {}
+            for k, v in data.items():
+                if k.lower() in price_keys and v not in ("-", "", None):
+                    formatted_data[k.lower()] = format_krw(v)
+                else:
+                    formatted_data[k.lower()] = v
 
-                lower_data = {str(k).lower(): v for k, v in data.items()}
+            row_map = {
+                "일시 (KST)": formatted_data.get("timestamp", "-"),
+                "종목명": formatted_data.get("korean_name", data.get("Market", "").split("-")[-1]),
+                "마켓코드": formatted_data.get("market", "-"),
+                "구분 (Side)": formatted_data.get("side", "-"),
+                "유형 (Type)": formatted_data.get("order_type", "-"),
+                "체결/주문단가": formatted_data.get("price", "-"),
+                "체결수량": formatted_data.get("volume", "-"),
+                "거래총액 (KRW)": formatted_data.get("total_krw", "-"),
+                "실현 손익률": formatted_data.get("realized_pnl_pct", "-"),
+                "설정 손절가": formatted_data.get("stop_loss", "-"),
+                "설정 목표가": formatted_data.get("target_price", "-"),
+                "주문후 원화잔고": formatted_data.get("current_balance_krw", "-"),
+                "주문 ID (UUID)": formatted_data.get("order_uuid", "-"),
+                "상태 및 사유": formatted_data.get("status_reason", "-"),
+            }
 
-                row_to_insert = []
-                for h in headers:
-                    clean_h = str(h).strip().lower()
-                    matched_value = ""
-
-                    if clean_h in lower_data:
-                        matched_value = format_val(clean_h, lower_data[clean_h])
-                    else:
-                        for std_key, aliases in key_aliases.items():
-                            if clean_h in aliases:
-                                for alias in aliases:
-                                    if alias in lower_data:
-                                        matched_value = format_val(std_key, lower_data[alias])
-                                        break
-                                if matched_value != "":
-                                    break
-
-                    row_to_insert.append(matched_value)
-
-                worksheet.append_row(row_to_insert)
-                logger.info(f"Trade_Log 기록 완료: {row_to_insert}")
-
-            elif isinstance(data, list):
-                worksheet.append_row(data)
-                logger.info(f"Trade_Log 단순 리스트 기록 완료: {data}")
+            row_to_insert = [row_map[h] for h in korean_headers]
+            worksheet.append_row(row_to_insert)
+            logger.info(f"Trade_Log 기록 완료: {row_to_insert}")
 
         except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException, KeyError, ValueError) as e:
-            logger.error(f"Trade_Log 추가 실패: {e}")
-            raise
+            logger.error(f"Trade_Log 기록 실패: {e}")
