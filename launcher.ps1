@@ -68,28 +68,29 @@ if (-not (Test-Path "$scriptDir\logs")) {
 
 # 4. Check if already running
 $runningProcs = Get-CimInstance Win32_Process | Where-Object { 
-    $_.CommandLine -like "*src\main.py*" -or $_.CommandLine -like "*src/main.py*" 
+    ($_.Name -eq 'python.exe' -or $_.Name -eq 'pythonw.exe') -and 
+    ($_.CommandLine -like "*src\main.py*" -or $_.CommandLine -like "*src/main.py*")
 }
 
 if ($runningProcs) {
-    Write-Host "Bot is already running in the background." -ForegroundColor Cyan
+    Write-Host "ℹ️ Bot is already running in the background." -ForegroundColor Cyan
 } else {
-    Write-Host "[3/3] Starting bot process in background..." -ForegroundColor Gray
+    Write-Host "🚀 [3/3] Starting bot process in background..." -ForegroundColor Gray
     Start-Process -FilePath $venvPyw -ArgumentList "$scriptDir\src\main.py" -WorkingDirectory $scriptDir
     Start-Sleep -Seconds 3
 }
 
-# 5. Verify status
+# 5. Verify status (Pick the main active worker process)
 $runningProcs = Get-CimInstance Win32_Process | Where-Object { 
-    $_.CommandLine -like "*src\main.py*" -or $_.CommandLine -like "*src/main.py*" 
+    ($_.Name -eq 'python.exe' -or $_.Name -eq 'pythonw.exe') -and 
+    ($_.CommandLine -like "*src\main.py*" -or $_.CommandLine -like "*src/main.py*")
 }
 
 if ($runningProcs) {
-    foreach ($p in $runningProcs) {
-        $procObj = Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
-        $memMB = [math]::Round($procObj.WorkingSet64 / 1MB, 2)
-        Write-Host "[Active] PID: $($p.ProcessId) | Memory: $memMB MB" -ForegroundColor Green
-    }
+    $mainProc = $runningProcs | Sort-Object { (Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue).WorkingSet64 } -Descending | Select-Object -First 1
+    $procObj = Get-Process -Id $mainProc.ProcessId -ErrorAction SilentlyContinue
+    $memMB = [math]::Round($procObj.WorkingSet64 / 1MB, 2)
+    Write-Host "🟢 [정상 실행 중] PID: $($mainProc.ProcessId) | 메모리 점유: $memMB MB (초경량 구동)" -ForegroundColor Green
 } else {
     Write-Host "[Error] Failed to start bot. Running directly to display error traceback:" -ForegroundColor Red
     Write-Host "------------------------------------------------------" -ForegroundColor DarkGray
@@ -102,7 +103,8 @@ if ($runningProcs) {
 # 6. Stream logs
 Write-Host ""
 Write-Host "======================================================" -ForegroundColor Cyan
-Write-Host " [Live Log Streaming] (Close window anytime - bot keeps running!)" -ForegroundColor Cyan
+Write-Host " 📜 실시간 로그 모니터링 (Ctrl + C 누르면 닫힘)" -ForegroundColor Cyan
+Write-Host " ※ 이 창을 닫아도 봇은 백그라운드에서 24시간 계속 돌아갑니다!" -ForegroundColor Yellow
 Write-Host "======================================================" -ForegroundColor Cyan
 Write-Host ""
 
