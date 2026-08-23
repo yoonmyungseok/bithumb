@@ -20,19 +20,19 @@ class GeminiAnalyzer:
     """
 
     # 1. 급등주 정밀 매수 검증 및 심층 추론용 (고성능 Flash 군)
-    DEEP_FLASH_MODELS: ClassVar[list[str]] = [
-        "gemini-3.7-flash",
-        "gemini-3.6-flash",
-        "gemini-flash-latest",
+    DEEP_FLASH_MODELS = [
         "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
         "gemini-2.5-flash",
+        "gemini-flash-latest",
+        "gemini-3.7-flash",
     ]
 
     # 2. 일상 루틴 모니터링 및 초고속 상태 점검용 (초경량 Flash-Lite 군)
-    LITE_MODELS: ClassVar[list[str]] = [
+    LITE_MODELS = [
         "gemini-3.1-flash-lite",
-        "gemini-flash-lite-latest",
         "gemini-2.5-flash-lite",
+        "gemini-flash-lite-latest",
         "gemini-3.5-flash-lite",
     ]
 

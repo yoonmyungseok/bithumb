@@ -174,14 +174,52 @@ class BithumbAPI:
         ticker = self.get_ticker(market)
         return float(ticker.get("trade_price", 0.0))
 
-    def get_open_orders(self, market: str = "KRW-BTC") -> list[dict[str, Any]]:
+    @staticmethod
+    def round_price_to_tick(price: float) -> float:
+        """
+        빗썸 공식 KRW 마켓 호가 단위(Tick Size)에 맞게 가격 자동 반올림 보정
+        - 2,000,000 이상: 1,000원 단위
+        - 1,000,000 ~ 2,000,000: 500원 단위
+        - 500,000 ~ 1,000,000: 100원 단위
+        - 100,000 ~ 500,000: 50원 단위
+        - 10,000 ~ 100,000: 10원 단위
+        - 1,000 ~ 10,000: 1원 단위
+        - 100 ~ 1,000: 0.1원 단위 (정수형 마켓은 1원)
+        - 10 ~ 100: 0.01원 단위
+        - 1 ~ 10: 0.001원 단위
+        - 1 미만: 0.0001원 단위
+        """
+        if price <= 0:
+            return price
+        if price >= 2_000_000:
+            return float(round(price / 1000) * 1000)
+        elif price >= 1_000_000:
+            return float(round(price / 500) * 500)
+        elif price >= 500_000:
+            return float(round(price / 100) * 100)
+        elif price >= 100_000:
+            return float(round(price / 50) * 50)
+        elif price >= 10_000:
+            return float(round(price / 10) * 10)
+        elif price >= 1_000:
+            return float(round(price))
+        elif price >= 100:
+            return round(price, 1)
+        elif price >= 10:
+            return round(price, 2)
+        elif price >= 1:
+            return round(price, 3)
+        else:
+            return round(price, 4)
+
+    def get_open_orders(self, market: str | None = None) -> list[dict[str, Any]]:
         """
         현재 미체결 주문 목록 조회 (state='wait')
+        - market이 None이면 전체 마켓 미체결 주문 조회
         """
-        params = {
-            "market": market,
-            "state": "wait",
-        }
+        params = {"state": "wait"}
+        if market:
+            params["market"] = market
         data = self._request("GET", "/orders", params=params)
         return data if isinstance(data, list) else []
 
@@ -209,8 +247,11 @@ class BithumbAPI:
         if ord_type == "limit":
             if volume is None or price is None:
                 raise ValueError("지정가(limit) 주문은 volume과 price가 모두 필요합니다.")
+            
+            # 호가 단위 자동 반올림 보정
+            adjusted_price = self.round_price_to_tick(price)
             data["volume"] = f"{volume:.8f}".rstrip("0").rstrip(".")
-            data["price"] = str(int(price) if price.is_integer() else price)
+            data["price"] = str(int(adjusted_price) if adjusted_price.is_integer() else adjusted_price)
 
         elif ord_type == "price":  # 시장가 매수 (price = 원화 총 금액)
             if price is None:
