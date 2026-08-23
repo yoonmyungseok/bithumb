@@ -39,8 +39,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("TradingBot")
 
-# 환경변수 로드
-load_dotenv()
+# 환경변수 로드 (override=True로 기존 메모리 캐시 덮어쓰기 보장)
+load_dotenv(override=True)
 
 BITHUMB_ACCESS_KEY = os.getenv("BITHUMB_ACCESS_KEY", "")
 BITHUMB_SECRET_KEY = os.getenv("BITHUMB_SECRET_KEY", "")
@@ -332,6 +332,25 @@ def run_cycle():
     """
     실시간 급등주 탐색 + AI 퀀트 분석 + 트레일링 스탑 + 리스크 관리(킬스위치 & BTC급락필터) + 자동매매 실행 사이클
     """
+    # .env 실시간 재로드 (봇을 끄지 않아도 .env 변경사항이 다음 사이클에 즉시 반영)
+    load_dotenv(override=True)
+
+    raw_markets = os.getenv("MARKETS", "AUTO").strip()
+    is_auto_mode = raw_markets.upper() == "AUTO"
+    top_count = int(os.getenv("TOP_COUNT", "3"))
+    min_trade_val = float(os.getenv("MIN_TRADE_VALUE", "5000000000"))
+    min_change = float(os.getenv("MIN_CHANGE_RATE", "0.01"))
+    max_change = float(os.getenv("MAX_CHANGE_RATE", "0.25"))
+    btc_crash_pct = float(os.getenv("BTC_CRASH_THRESHOLD_PCT", "0.015"))
+    max_daily_loss = float(os.getenv("MAX_DAILY_LOSS_PCT", "0.05"))
+    trailing_start = float(os.getenv("TRAILING_START_PCT", "0.02"))
+    trailing_stop = float(os.getenv("TRAILING_STOP_PCT", "0.012"))
+    interval_mins = int(os.getenv("INTERVAL_MINUTES", "5"))
+
+    trailing_tracker.start_profit_pct = trailing_start
+    trailing_tracker.trailing_drop_pct = trailing_stop
+    risk_manager.max_loss_pct = max_daily_loss
+
     now_kst = get_kst_now()
     now_str = now_kst.strftime("%Y-%m-%d %H:%M:%S")
     logger.info(f"========== [자동매매 사이클 시작: {now_str}] ==========")
@@ -358,13 +377,13 @@ def run_cycle():
             logger.warning(f"🛑 [일일 킬 스위치 작동 중] 당일 신규 매수를 전면 차단합니다 (손실률: {daily_pnl*100:.2f}%).")
             telegram.send_message(
                 f"🛑 <b>[일일 킬 스위치 발동 중]</b>\n"
-                f"• 당일 손실률: <b>{daily_pnl*100:.2f}%</b> (한도: -{MAX_DAILY_LOSS_PCT*100:.1f}%)\n"
+                f"• 당일 손실률: <b>{daily_pnl*100:.2f}%</b> (한도: -{max_daily_loss*100:.1f}%)\n"
                 f"• 총 평가 자산: {current_total_equity:,.0f} KRW\n"
                 f"• 원금 보호를 위해 당일 모든 신규 매수를 중단하고 관망합니다."
             )
 
         # 2. [리스크 1: 비트코인(BTC) 대세 급락 필터] 점검
-        is_btc_crashing, btc_status_msg = check_btc_market_crash(bithumb)
+        is_btc_crashing, btc_status_msg = check_btc_market_crash(bithumb, threshold_pct=btc_crash_pct)
         if is_btc_crashing:
             logger.warning(f"⚠️ [BTC 급락 방어선 작동] {btc_status_msg} ➜ 알트코인 신규 매수 차단!")
 
@@ -387,19 +406,19 @@ def run_cycle():
 
         # 3. 거래 대상 마켓 결정 (동적 스크리닝 vs 고정 목록)
         target_markets: list[str] = []
-        if IS_AUTO_MODE:
+        if is_auto_mode:
             screener = MarketScreener(
                 bithumb,
-                min_trade_value_krw=MIN_TRADE_VALUE,
-                min_change_rate=MIN_CHANGE_RATE,
-                max_change_rate=MAX_CHANGE_RATE,
+                min_trade_value_krw=min_trade_val,
+                min_change_rate=min_change,
+                max_change_rate=max_change,
             )
             screened_items = screener.scan_markets(
-                top_count=TOP_COUNT, held_markets=held_markets
+                top_count=top_count, held_markets=held_markets
             )
             target_markets = [item["market"] for item in screened_items]
         else:
-            fixed_list = [m.strip().upper() for m in RAW_MARKETS.split(",") if m.strip()]
+            fixed_list = [m.strip().upper() for m in raw_markets.split(",") if m.strip()]
             target_markets = list(dict.fromkeys(held_markets + fixed_list))
 
         logger.info(f"이번 사이클 최종 분석 대상 마켓 ({len(target_markets)}개): {target_markets}")
