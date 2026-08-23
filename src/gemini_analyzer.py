@@ -11,17 +11,29 @@ logger = logging.getLogger(__name__)
 
 class GeminiAnalyzer:
     """
-    Google Gemini API 연동 프로 퀀트 트레이딩 분석 엔진 v2.0
-    - 정밀 기술적 지표 연산: RSI, Bollinger Bands(20,2), MACD(12,26,9), Volume Spike, 지지/저항 레벨, 캔들 꼬리(Wick) 패턴
+    Google Gemini API 연동 프로 퀀트 트레이딩 분석 엔진 v2.5
+    - [지능형 동적 모델 라우터 (Dynamic Model Router)] 탑재:
+      * 1) 급등주 포착 및 신규 매수 정밀 검증 시 ➜ [고성능 Flash (gemini-3.7-flash, gemini-flash-latest)] 자동 배정
+      * 2) 일상 루틴 모니터링 및 보유 포지션 관망 시 ➜ [초고속 Flash-Lite (gemini-3.1-flash-lite)] 자동 배정
+      * 3) 모델 장애/지연 발생 시 ➜ 같은 Flash/Flash-Lite 군 내에서 0.1초 자동 폴백(Fallback)
     - 5대 프로 퀀트 전략 원칙: 3중 진입 필터, 손익비(Risk/Reward >= 1:1.5) 강제, 추격매수 금지(No-Chase), 장세별 모드, 동적 손절/익절
     """
 
-    CANDIDATE_MODELS = [
-        "gemini-3.1-flash-lite",
-        "gemini-flash-latest",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
+    # 1. 급등주 정밀 매수 검증 및 심층 추론용 (고성능 Flash 군)
+    DEEP_FLASH_MODELS = [
         "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-flash-latest",
+        "gemini-3.5-flash",
+        "gemini-2.5-flash",
+    ]
+
+    # 2. 일상 루틴 모니터링 및 초고속 상태 점검용 (초경량 Flash-Lite 군)
+    LITE_MODELS = [
+        "gemini-3.1-flash-lite",
+        "gemini-flash-lite-latest",
+        "gemini-2.5-flash-lite",
+        "gemini-3.5-flash-lite",
     ]
 
     def __init__(self, api_key: str):
@@ -215,7 +227,7 @@ class GeminiAnalyzer:
         avg_buy_price: float,
     ) -> Dict[str, Any]:
         """
-        고도화된 기술적 지표 + 캔들 패턴 + 5대 퀀트 전략 원칙을 적용하여 Gemini 분석 실행
+        [지능형 라우팅] 상황에 따라 Flash vs Flash-Lite를 자동 선택하여 퀀트 분석 수행
         """
         if not self.api_key:
             logger.warning("Gemini API Key가 설정되지 않았습니다.")
@@ -239,6 +251,24 @@ class GeminiAnalyzer:
         coin_value = coin_balance * current_price
         is_holding = coin_value >= 4000.0
         pnl_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100 if (avg_buy_price > 0 and is_holding) else 0.0
+
+        # =========================================================================
+        # 🧠 [지능형 동적 모델 라우터 (Dynamic Model Router)]
+        # =========================================================================
+        # • 급등주 탐색/거래량 폭발/신규 매수 후보: 고성능 Flash (gemini-3.7-flash) 우선
+        # • 평온한 일상 모니터링/보유 유지 상태: 초고속 Flash-Lite (gemini-3.1-flash-lite) 우선
+        is_high_priority_trade = (not is_holding) or vol_info["is_spike"] or (abs(pnl_pct) >= 1.5)
+
+        if is_high_priority_trade:
+            # 1순위: 심층 Flash ➜ 2순위: Flash-Lite 폴백
+            candidate_models = self.DEEP_FLASH_MODELS + self.LITE_MODELS
+            mode_tag = "⚡ [심층 퀀트 Flash 모드]"
+        else:
+            # 1순위: 초고속 Flash-Lite ➜ 2순위: Flash 폴백
+            candidate_models = self.LITE_MODELS + self.DEEP_FLASH_MODELS
+            mode_tag = "🚀 [초고속 Flash-Lite 모드]"
+
+        logger.info(f"[{market}] 모델 라우터: {mode_tag} (1순위: {candidate_models[0]})")
 
         # 최근 5개 캔들 요약
         recent_summary = []
@@ -309,7 +339,7 @@ class GeminiAnalyzer:
 }}
 """
 
-        # JSON 강제 출력 및 토큰 확장
+        # JSON 강제 출력 및 토큰 설정
         payload = {
             "contents": [
                 {
@@ -325,14 +355,14 @@ class GeminiAnalyzer:
         }
 
         last_error = ""
-        for model in self.CANDIDATE_MODELS:
+        for model in candidate_models:
             endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
             try:
                 response = requests.post(endpoint, json=payload, timeout=25)
                 if response.status_code == 200:
                     res_json = response.json()
                     raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
-                    logger.info(f"[{model}] 퀀트 분석 성공:\n{raw_text}")
+                    logger.info(f"[{model}] 퀀트 분석 완료:\n{raw_text}")
 
                     try:
                         parsed = json.loads(raw_text)
@@ -374,10 +404,10 @@ class GeminiAnalyzer:
                     }
                 else:
                     last_error = f"[{model}] {response.text}"
-                    logger.warning(f"모델 '{model}' 호출 실패 ({response.status_code}), 다음 모델로 폴백...")
+                    logger.warning(f"모델 '{model}' 호출 실패 ({response.status_code}), 다음 백업 모델로 자동 전환...")
             except Exception as e:
                 last_error = f"[{model}] Exception: {str(e)}"
-                logger.warning(f"모델 '{model}' 요청 중 예외 발생: {e}")
+                logger.warning(f"모델 '{model}' 요청 중 오류 발생: {e}")
 
-        logger.error(f"모든 Gemini 모델 호출 실패: {last_error}")
+        logger.error(f"모든 Gemini Flash/Flash-Lite 모델 호출 실패: {last_error}")
         return {"status": "PAUSE", "action": "HOLD", "reason": f"All models failed: {last_error}"}
