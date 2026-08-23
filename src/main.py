@@ -17,6 +17,7 @@ from gemini_analyzer import GeminiAnalyzer
 from market_screener import MarketScreener
 from sheets_manager import SheetsManager
 from telegram_alert import TelegramAlert
+from websocket_manager import BithumbWebSocketClient
 
 # 윈도우 cp949 인코딩 에러 방지 (이모지 및 한글 UTF-8 표준화)
 if sys.platform == "win32":
@@ -82,6 +83,9 @@ MIN_ORDER_KRW = 5000.0
 
 # 봇 일시정지 상태 플래그 (텔레그램 /pause, /resume 연동)
 IS_BOT_PAUSED = False
+
+# 빗썸 실시간 웹소켓(WebSocket) 클라이언트 (0.1초 체결 스트리밍)
+ws_client = BithumbWebSocketClient(initial_markets=["KRW-BTC"])
 
 
 class TrailingStopTracker:
@@ -715,6 +719,9 @@ def run_cycle():
 
         logger.info(f"이번 사이클 최종 분석 대상 마켓 ({len(target_markets)}개): {target_markets}")
 
+        # ⚡ 빗썸 실시간 웹소켓(WebSocket) 구독 마켓 갱신
+        ws_client.update_subscriptions(list(dict.fromkeys(target_markets + held_markets + ["KRW-BTC"])))
+
         # 5. 마켓별 순회 분석 및 매매 실행
         for market in target_markets:
             currency = market.split("-")[-1] if "-" in market else market
@@ -1157,6 +1164,9 @@ def main():
         check_interval=3.0,
     )
     watcher.start()
+
+    # 3. 빗썸 2.0 실시간 웹소켓(WebSocket) 0.1초 스트리밍 가동
+    ws_client.start()
 
     try:
         run_cycle()

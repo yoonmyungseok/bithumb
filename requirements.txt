@@ -4,3 +4,4 @@ gspread>=6.0.0
 google-auth>=2.27.0
 apscheduler>=3.10.4
 python-dotenv>=1.0.1
+websocket-client>=1.8.0
