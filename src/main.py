@@ -65,19 +65,13 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 # ==========================================
 # 🛡️ 1 & 2대 리스크 관리 파라미터
 # ==========================================
-# [리스크 1] 비트코인 급락 감지 임계치 (최근 3개봉 동안 -1.5% 이상 하락 시 알트코인 신규 매수 전면 차단)
 BTC_CRASH_THRESHOLD_PCT = float(os.getenv("BTC_CRASH_THRESHOLD_PCT", "0.015"))
-
-# [리스크 2] 일일 최대 손실 한도 킬 스위치 (당일 총 자산 손실률 -5.0% 도달 시 당일 모든 신규 매매 강제 중단)
 MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "0.05"))
 
 # ==========================================
 # 🎯 트레일링 스탑(Trailing Stop) 설정
 # ==========================================
-# 트레일링 스탑 발동 최소 수익률 (기본: +2.0% 도달 시 추적 시작)
 TRAILING_START_PCT = float(os.getenv("TRAILING_START_PCT", "0.02"))
-
-# 최고점 대비 하락 시 즉시 익절 비율 (기본: 최고점에서 -1.2% 하락 시 익절)
 TRAILING_STOP_PCT = float(os.getenv("TRAILING_STOP_PCT", "0.012"))
 
 # 최소 주문 금액 제한 (빗썸 기준: 최소 5,000 KRW)
@@ -87,20 +81,17 @@ MIN_ORDER_KRW = 5000.0
 class TrailingStopTracker:
     """
     고점 추적형 트레일링 스탑(Trailing Stop) 관리자
-    - 수익률이 +TRAILING_START_PCT 이상 올라가면 최고점(Peak)을 실시간 추적
-    - 최고점 대비 -TRAILING_STOP_PCT 만큼 꺾여 내려오는 순간 즉시 시장가 익절
     """
 
     def __init__(self, start_profit_pct: float = 0.02, trailing_drop_pct: float = 0.012):
         self.start_profit_pct = start_profit_pct
         self.trailing_drop_pct = trailing_drop_pct
-        self.peaks: Dict[str, float] = {}  # market -> peak_price
+        self.peaks: Dict[str, float] = {}
 
     def check_trailing_stop(
         self, market: str, current_price: float, avg_buy_price: float
     ) -> Tuple[bool, float, float, float, float]:
         """
-        트레일링 스탑 조건 검사
         반환: (발동여부, 최고점가격, 트레일링익절가, 최고수익률%, 실현수익률%)
         """
         if avg_buy_price <= 0:
@@ -108,18 +99,15 @@ class TrailingStopTracker:
 
         current_profit_rate = (current_price - avg_buy_price) / avg_buy_price
 
-        # 1. 최소 활성화 수익률(예: +2.0%) 이상 도달 시 고점 추적 모드 진입
         if current_profit_rate >= self.start_profit_pct:
             previous_peak = self.peaks.get(market, avg_buy_price)
             current_peak = max(previous_peak, current_price)
             self.peaks[market] = current_peak
 
             peak_profit_pct = ((current_peak - avg_buy_price) / avg_buy_price) * 100.0
-
-            # 트레일링 익절 라인 = 최고점 * (1 - trailing_drop_pct)
             trailing_stop_price = current_peak * (1.0 - self.trailing_drop_pct)
 
-            # 안전 보장: 최소 평단가 대비 +0.5% 이상(수수료 차감 후 무조건 플러스) 보장
+            # 수수료 차감 후 최소 +0.5% 익절 안전 보장
             min_guaranteed_profit = avg_buy_price * 1.005
             trailing_stop_price = max(trailing_stop_price, min_guaranteed_profit)
 
@@ -127,10 +115,9 @@ class TrailingStopTracker:
                 f"🎯 [{market}] 트레일링 추적 중: 최고점 {current_peak:,.2f}원 (+{peak_profit_pct:.2f}%) ➜ 익절기준선 {trailing_stop_price:,.2f}원"
             )
 
-            # 현재 가격이 트레일링 기준선 이하로 꺾였을 때 익절 트리거!
             if current_price <= trailing_stop_price:
                 realized_profit_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
-                self.peaks.pop(market, None)  # 매도 후 초기화
+                self.peaks.pop(market, None)
                 return True, current_peak, trailing_stop_price, peak_profit_pct, realized_profit_pct
 
         return False, self.peaks.get(market, current_price), 0.0, 0.0, current_profit_rate * 100.0
@@ -154,17 +141,18 @@ class DailyRiskManager:
         self.current_date_str = ""
         self.daily_start_equity = 0.0
         self.kill_switch_active = False
+        self.total_trades_today = 0
+        self.win_trades_today = 0
 
     def update_daily_equity(self, current_total_equity: float, now_kst: datetime.datetime) -> Tuple[bool, float]:
-        """
-        일일 손익률 계산 및 킬스위치 발동 여부 반환 (발동여부, 당일손익률)
-        """
         date_key = (now_kst - datetime.timedelta(hours=9)).strftime("%Y-%m-%d")
 
         if date_key != self.current_date_str:
             self.current_date_str = date_key
             self.daily_start_equity = current_total_equity
             self.kill_switch_active = False
+            self.total_trades_today = 0
+            self.win_trades_today = 0
             logger.info(f"📅 [일일 손익 기준일 갱신: {date_key}] 시작 총 자산: {self.daily_start_equity:,.0f}원")
 
         if self.daily_start_equity <= 0:
@@ -192,20 +180,15 @@ risk_manager = DailyRiskManager(max_loss_pct=MAX_DAILY_LOSS_PCT)
 
 
 def get_kst_now() -> datetime.datetime:
-    """현재 한국 표준시 datetime 객체 반환"""
     kst = datetime.timezone(datetime.timedelta(hours=9))
     return datetime.datetime.now(kst)
 
 
 def get_kst_now_str() -> str:
-    """현재 한국 표준시 문자열 반환"""
     return get_kst_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def calculate_total_equity(balances: Dict[str, Dict[str, float]], bithumb: BithumbAPI) -> float:
-    """
-    현재 계좌의 총 평가 자산(원화 + 보유 코인 평가액 합산) 계산
-    """
     krw_balance = balances.get("KRW", {}).get("balance", 0.0) + balances.get("KRW", {}).get("locked", 0.0)
     total_coin_val = 0.0
 
@@ -224,9 +207,6 @@ def calculate_total_equity(balances: Dict[str, Dict[str, float]], bithumb: Bithu
 
 
 def get_held_markets(balances: Dict[str, Dict[str, float]], bithumb: BithumbAPI) -> List[str]:
-    """
-    현재 계좌에서 평가금액 4,000원 이상 보유 중인 코인 마켓 목록 추출
-    """
     held = []
     for cur, info in balances.items():
         if cur == "KRW":
@@ -244,9 +224,6 @@ def get_held_markets(balances: Dict[str, Dict[str, float]], bithumb: BithumbAPI)
 
 
 def check_btc_market_crash(bithumb: BithumbAPI) -> Tuple[bool, str]:
-    """
-    [리스크 1] 비트코인(BTC) 대세 급락 상태 검사
-    """
     try:
         btc_candles = bithumb.get_candles(unit=INTERVAL_MINUTES, count=6, market="KRW-BTC")
         if not btc_candles or len(btc_candles) < 3:
@@ -265,6 +242,43 @@ def check_btc_market_crash(bithumb: BithumbAPI) -> Tuple[bool, str]:
     except Exception as e:
         logger.warning(f"BTC 시장 상태 검사 실패: {e}")
         return False, "BTC 검사 오류"
+
+
+def send_daily_morning_report():
+    """
+    매일 아침 09:00 KST 빗썸 일봉 리셋 시 일일 결산 모닝 리포트 전송
+    """
+    now_str = get_kst_now_str()
+    logger.info(f"📊 [아침 9시 일일 결산 브리핑 발송: {now_str}]")
+
+    try:
+        bithumb = BithumbAPI(BITHUMB_ACCESS_KEY, BITHUMB_SECRET_KEY)
+        telegram = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+        balances = bithumb.get_balances()
+        total_equity = calculate_total_equity(balances, bithumb)
+        krw_avail = balances.get("KRW", {}).get("balance", 0.0)
+
+        daily_pnl_pct = (
+            (total_equity - risk_manager.daily_start_equity) / risk_manager.daily_start_equity * 100
+            if risk_manager.daily_start_equity > 0
+            else 0.0
+        )
+        daily_pnl_krw = total_equity - risk_manager.daily_start_equity
+
+        held = get_held_markets(balances, bithumb)
+        held_desc = ", ".join(held) if held else "없음 (100% 현금 보유)"
+
+        telegram.send_message(
+            f"☕ <b>[굿모닝! 빗썸 퀀트 일일 결산 리포트]</b>\n\n"
+            f"• <b>총 평가 자산:</b> {total_equity:,.0f} KRW\n"
+            f"• <b>24시간 실현 손익:</b> {daily_pnl_krw:+,.0f} KRW ({daily_pnl_pct:+.2f}%)\n"
+            f"• <b>가용 원화 잔고:</b> {krw_avail:,.0f} KRW\n"
+            f"• <b>현재 보유 포지션:</b> {held_desc}\n"
+            f"• <b>일일 킬스위치 상태:</b> {'🚨 발동 중' if risk_manager.kill_switch_active else '🟢 정상 (리스크 양호)'}\n"
+            f"• <b>기준 일시:</b> {now_str}"
+        )
+    except Exception as e:
+        logger.error(f"모닝 리포트 발송 실패: {e}")
 
 
 def run_cycle():
@@ -495,6 +509,11 @@ def run_cycle():
                         logger.info(f"[{market}] 킬 스위치 발동 상태이므로 신규 매수를 건너뜁니다.")
                         continue
 
+                    # [포트폴리오 보호] 이미 보유 중인 코인은 중복 매수 금지 (1회 진입 락)
+                    if coin_value >= MIN_ORDER_KRW:
+                        logger.info(f"[{market}] 이미 보유 중인 포지션({coin_value:,.0f}원)이므로 중복 매수를 건너뜁니다 (보유 유지).")
+                        continue
+
                     if market != "KRW-BTC" and is_btc_crashing:
                         logger.warning(f"[{market}] 비트코인 급락세({btc_status_msg})로 인해 알트코인 매수를 방어적으로 차단합니다.")
                         telegram.send_message(
@@ -507,7 +526,9 @@ def run_cycle():
                     num_slots = max(1, len(target_markets) - len(held_markets) + 1)
                     max_market_budget = krw_available / num_slots
                     trade_budget = max_market_budget * alloc_pct
-                    order_price = entry_price if entry_price > 0 else current_price
+                    
+                    # 슬리피지 보호: 현재가 대비 최대 +0.2% 이내로만 지정가 매수 허용
+                    order_price = entry_price if (0 < entry_price <= current_price * 1.002) else current_price
 
                     if trade_budget < MIN_ORDER_KRW and max_market_budget >= MIN_ORDER_KRW:
                         trade_budget = min(max_market_budget, MIN_ORDER_KRW)
@@ -625,7 +646,7 @@ def run_cycle():
 
 
 def main():
-    logger.info("🚀 빗썸 API 2.0 트레일링 스탑 & 급등주 AI 퀀트 봇 시작")
+    logger.info("🚀 빗썸 API 2.0 프로 퀀트 AI 자동매매 봇 v2.0 시작")
     mode_text = f"실시간 급등주 자동 스캔 (상위 {TOP_COUNT}종목)" if IS_AUTO_MODE else f"고정 마켓 ({RAW_MARKETS})"
     logger.info(
         f"실행 주기: {INTERVAL_MINUTES}분 | 모드: {mode_text} | 트레일링 시작: +{TRAILING_START_PCT*100:.1f}% (고점대비 -{TRAILING_STOP_PCT*100:.1f}%) | 킬스위치: -{MAX_DAILY_LOSS_PCT*100:.1f}%"
@@ -637,11 +658,23 @@ def main():
         logger.error(f"최초 실행 실패: {e}")
 
     scheduler = BlockingScheduler(timezone="Asia/Seoul")
+    
+    # 1. 주기별 자동매매 사이클
     scheduler.add_job(
         run_cycle,
         "interval",
         minutes=INTERVAL_MINUTES,
         id="trading_cycle_job",
+        replace_existing=True,
+    )
+
+    # 2. 매일 아침 09:00 KST 일일 결산 브리핑 발송
+    scheduler.add_job(
+        send_daily_morning_report,
+        "cron",
+        hour=9,
+        minute=0,
+        id="daily_morning_report_job",
         replace_existing=True,
     )
 
