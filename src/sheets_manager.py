@@ -10,9 +10,10 @@ logger = logging.getLogger(__name__)
 
 class SheetsManager:
     """
-    Google 스프레드시트 연동 모듈 (gspread)
-    - Strategy 시트에서 다중 마켓 전략(지침) 로드 및 자동 갱신
-    - Trade_Log 시트에 체결/주문 기록 스마트 매핑 추가
+    Google 스프레드시트 연동 모듈 (gspread) v2.0
+    - Dashboard 탭: 종합 자산, 당일 손익률, 킬스위치/BTC방어선 실시간 대시보드
+    - Strategy 탭: 한글 표준 헤더 및 다중 마켓 실시간 전략 동기화
+    - Trade_Log 탭: 한글 표준 헤더 및 실현 손익률(%) 자동 기록
     """
 
     SCOPES = [
@@ -32,7 +33,6 @@ class SheetsManager:
         self.client = gspread.authorize(self.credentials)
         self.sheet_name = sheet_name
 
-        # 서비스 계정 이메일 확인
         service_email = getattr(self.credentials, "service_account_email", "알 수 없음")
 
         try:
@@ -49,22 +49,56 @@ class SheetsManager:
         except gspread.exceptions.SpreadsheetNotFound as e:
             logger.error(
                 f"\n[구글 시트 연동 실패] '{sheet_name}' 시트를 찾을 수 없습니다.\n"
-                f"▶ 원인: 서비스 계정이 해당 스프레드시트에 공유(초대)되지 않았거나 시트 이름이 다릅니다.\n"
-                f"▶ 해결 방법: 구글 시트 우측 상단 [공유] 버튼 클릭 ➜ 다음 이메일을 '편집자'로 추가해주세요:\n"
+                f"▶ 해결 방법: 구글 시트 우측 상단 [공유] ➜ 다음 이메일을 '편집자'로 추가해주세요:\n"
                 f"   👉 {service_email}\n"
             )
             raise e
 
+    def update_dashboard(self, summary_data: Dict[str, Any]) -> None:
+        """
+        'Dashboard' 탭에 계좌 종합 현황을 실시간 카드 형태로 갱신
+        """
+        try:
+            try:
+                worksheet = self.spreadsheet.worksheet("Dashboard")
+            except gspread.exceptions.WorksheetNotFound:
+                worksheet = self.spreadsheet.add_worksheet(title="Dashboard", rows=30, cols=10)
+
+            now_str = summary_data.get("updated_at", "")
+            total_equity = summary_data.get("total_equity", 0.0)
+            krw_avail = summary_data.get("krw_available", 0.0)
+            daily_pnl_pct = summary_data.get("daily_pnl_pct", 0.0)
+            daily_pnl_krw = summary_data.get("daily_pnl_krw", 0.0)
+            held_coins_str = summary_data.get("held_coins", "없음 (100% 현금)")
+            kill_switch_str = summary_data.get("kill_switch_status", "🟢 정상")
+            btc_health_str = summary_data.get("btc_health", "🟢 정상")
+
+            dashboard_rows = [
+                ["📊 [빗썸 AI 퀀트 자동매매 실시간 종합 대시보드]", "", "", ""],
+                ["최종 갱신 일시 (KST)", now_str, "봇 상태", "🟢 정상 가동 중 (5분 주기)"],
+                ["", "", "", ""],
+                ["📌 [핵심 계좌 자산 현황]", "", "🛡️ [리스크 관리 안전장치 상태]", ""],
+                ["총 평가 자산 (KRW)", f"{int(total_equity):,} 원", "일일 킬스위치 상태", kill_switch_str],
+                ["가용 원화 잔고 (KRW)", f"{int(krw_avail):,} 원", "BTC 대세 급락 방어선", btc_health_str],
+                ["금일 누적 실현 손익", f"{int(daily_pnl_krw):+,} 원 ({daily_pnl_pct:+.2f}%)", "트레일링 스탑 모드", "🎯 활성화 (+2.0% 추적)"],
+                ["현재 보유 포지션", held_coins_str, "일일 최대 손실 한도", "-5.0%"],
+            ]
+
+            worksheet.update(values=dashboard_rows, range_name="A1:D8")
+            logger.info("구글 시트 'Dashboard' 탭 실시간 갱신 완료")
+
+        except Exception as e:
+            logger.warning(f"Dashboard 탭 갱신 실패 (매매는 지속됨): {e}")
+
     def get_strategy(self, market: str = "KRW-BTC") -> Dict[str, Any]:
         """
-        'Strategy' 탭에서 특정 마켓의 전략 딕셔너리로 반환
+        'Strategy' 탭에서 특정 마켓의 전략 조회
         """
         try:
             worksheet = self.spreadsheet.worksheet("Strategy")
             all_rows = worksheet.get_all_values()
 
             if not all_rows:
-                logger.warning("Strategy 탭이 비어 있습니다.")
                 return {"status": "PAUSE", "action": "HOLD"}
 
             def safe_float(val: Any, default: float = 0.0) -> float:
@@ -74,7 +108,6 @@ class SheetsManager:
                 except (ValueError, TypeError):
                     return default
 
-            # 마켓 일치 행 탐색
             target_row = None
             for row in all_rows[1:]:
                 if row and str(row[0]).strip().upper() == market.upper():
@@ -87,8 +120,6 @@ class SheetsManager:
                 else:
                     return {"status": "PAUSE", "action": "HOLD"}
 
-            # 컬럼 순서: [0: MARKET, 1: UPDATED_AT, 2: STATUS, 3: ACTION, 4: ENTRY_PRICE, 5: TARGET_PRICE, 6: STOP_LOSS, 7: ALLOC_PCT, 8: REASON]
-            # 만약 0번째가 MARKET이 아니고 바로 UPDATED_AT인 경우 오프셋 처리
             offset = 1 if str(target_row[0]).startswith("KRW-") or str(target_row[0]).startswith("BTC-") else 0
 
             status = str(target_row[offset + 1]).strip().upper() if len(target_row) > offset + 1 else "PAUSE"
@@ -99,7 +130,8 @@ class SheetsManager:
             alloc_raw = safe_float(target_row[offset + 6]) if len(target_row) > offset + 6 else 30.0
 
             alloc_pct = alloc_raw / 100.0 if alloc_raw > 1.0 else alloc_raw
-            alloc_pct = max(0.0, min(alloc_pct, 1.0))
+            alloc_pct = max(0.05, min(alloc_pct, 1.0))
+            reason = str(target_row[offset + 7]) if len(target_row) > offset + 7 else "Strategy 시트 지침"
 
             return {
                 "status": status,
@@ -108,51 +140,63 @@ class SheetsManager:
                 "target_price": target_price,
                 "stop_loss": stop_loss,
                 "alloc_pct": alloc_pct,
-                "reason": str(target_row[offset + 7]) if len(target_row) > offset + 7 else "",
+                "reason": reason,
             }
 
         except Exception as e:
-            logger.error(f"Strategy 탭 읽기 실패: {e}")
-            raise
+            logger.error(f"Strategy 시트 조회 오류 ({market}): {e}")
+            return {"status": "PAUSE", "action": "HOLD", "reason": str(e)}
 
-    def update_strategy(self, market: str, strategy: Dict[str, Any], timestamp_str: str) -> None:
+    def update_strategy(
+        self, market: str, strategy: Dict[str, Any], timestamp_str: str
+    ) -> None:
         """
-        Gemini가 생성한 전략을 구글 시트 'Strategy' 탭의 해당 마켓 행에 자동 업데이트
+        'Strategy' 탭에 한글 표준 헤더 및 마켓별 실시간 전략 기록
         """
         try:
-            worksheet = self.spreadsheet.worksheet("Strategy")
+            try:
+                worksheet = self.spreadsheet.worksheet("Strategy")
+            except gspread.exceptions.WorksheetNotFound:
+                worksheet = self.spreadsheet.add_worksheet(title="Strategy", rows=50, cols=10)
+
             all_rows = worksheet.get_all_values()
 
-            standard_headers = [
-                "MARKET",
-                "UPDATED_AT",
-                "STATUS",
-                "ACTION",
-                "ENTRY_PRICE",
-                "TARGET_PRICE",
-                "STOP_LOSS",
-                "ALLOC_PCT",
-                "REASON",
+            # 한글 표준 헤더
+            korean_headers = [
+                "마켓(종목)",
+                "업데이트일시",
+                "봇상태",
+                "매매판단",
+                "진입/현재가(KRW)",
+                "목표익절가(KRW)",
+                "손절기준가(KRW)",
+                "투자비중",
+                "AI 퀀트 분석근거",
             ]
 
             if not all_rows:
-                worksheet.append_row(standard_headers)
-                all_rows = [standard_headers]
+                worksheet.append_row(korean_headers)
+                all_rows = [korean_headers]
+            elif all_rows and ("MARKET" in str(all_rows[0][0]).upper() or not all_rows[0][0]):
+                worksheet.update(values=[korean_headers], range_name="A1:I1")
+                all_rows[0] = korean_headers
 
-            # 행 데이터 준비
+            entry_p = strategy.get("entry_price", 0)
+            target_p = strategy.get("target_price", 0)
+            stop_l = strategy.get("stop_loss", 0)
+
             row_data = [
                 market,
                 timestamp_str,
                 strategy.get("status", "ACTIVE"),
                 strategy.get("action", "HOLD"),
-                int(strategy.get("entry_price", 0)),
-                int(strategy.get("target_price", 0)),
-                int(strategy.get("stop_loss", 0)),
+                int(entry_p) if entry_p >= 100 else round(entry_p, 2),
+                int(target_p) if target_p >= 100 else round(target_p, 2),
+                int(stop_l) if stop_l >= 100 else round(stop_l, 2),
                 f"{strategy.get('alloc_pct', 0.3) * 100:.0f}%",
                 strategy.get("reason", "Gemini 자동 분석"),
             ]
 
-            # 해당 마켓이 이미 존재하는 행 번호 찾기 (1-based index)
             target_row_num = -1
             for idx, row in enumerate(all_rows):
                 if row and str(row[0]).strip().upper() == market.upper():
@@ -160,63 +204,61 @@ class SheetsManager:
                     break
 
             if target_row_num != -1:
-                # 기존 행 덮어쓰기
                 worksheet.update(values=[row_data], range_name=f"A{target_row_num}:I{target_row_num}")
-                logger.info(f"구글 시트 Strategy [{market}] (행 {target_row_num}) 업데이트 완료")
+                logger.info(f"구글 시트 Strategy [{market}] (행 {target_row_num}) 갱신 완료")
             else:
-                # 새로운 마켓이면 아래에 새 행 추가
                 worksheet.append_row(row_data)
                 logger.info(f"구글 시트 Strategy [{market}] 신규 행 추가 완료")
 
         except Exception as e:
-            logger.warning(f"Strategy 탭 업데이트 실패 (매매는 계속 진행됨): {e}")
+            logger.warning(f"Strategy 탭 업데이트 실패: {e}")
 
     def append_trade_log(self, data: Any) -> None:
         """
-        'Trade_Log' 탭에 새로운 로그 행을 스마트 매핑하여 추가
+        'Trade_Log' 탭에 한글 표준 헤더 및 실현 손익률(%) 스마트 기록
         """
         try:
             try:
                 worksheet = self.spreadsheet.worksheet("Trade_Log")
             except gspread.exceptions.WorksheetNotFound:
-                worksheet = self.spreadsheet.add_worksheet(
-                    title="Trade_Log", rows=1000, cols=12
-                )
+                worksheet = self.spreadsheet.add_worksheet(title="Trade_Log", rows=1000, cols=13)
 
             headers = worksheet.row_values(1)
-            standard_headers = [
-                "Timestamp",
-                "Market",
-                "Order_UUID",
-                "Side",
-                "Order_Type",
-                "Price",
-                "Volume",
-                "Total_KRW",
-                "Stop_Loss",
-                "Target_Price",
-                "Current_Balance_KRW",
-                "Status_Reason",
+            korean_headers = [
+                "주문일시",
+                "마켓(종목)",
+                "주문구분",
+                "주문유형",
+                "주문/체결단가",
+                "수량",
+                "총거래금액(KRW)",
+                "실현손익률(%)",
+                "손절기준가",
+                "목표익절가",
+                "거래후원화잔고",
+                "주문ID",
+                "분석및체결사유",
             ]
 
             if not headers:
-                worksheet.append_row(standard_headers)
-                headers = standard_headers
+                worksheet.append_row(korean_headers)
+                headers = korean_headers
 
             if isinstance(data, dict):
                 key_aliases = {
-                    "timestamp": ["timestamp", "일시", "시간", "날짜", "updated_at"],
-                    "market": ["market", "종목", "마켓", "코인", "symbol"],
-                    "order_uuid": ["order_uuid", "uuid", "주문번호", "주문id", "order_id"],
-                    "side": ["side", "action", "구분", "매매", "포지션"],
-                    "order_type": ["order_type", "type", "주문유형", "유형"],
-                    "price": ["price", "order_price", "exec_price", "체결가", "주문가", "가격"],
-                    "volume": ["volume", "수량", "주문수량", "amount"],
-                    "total_krw": ["total_krw", "총금액", "주문금액", "total"],
-                    "stop_loss": ["stop_loss", "손절가", "손절"],
-                    "target_price": ["target_price", "목표가", "익절가"],
-                    "current_balance_krw": ["current_balance_krw", "balance_krw", "잔고", "원화잔고", "가용원화"],
-                    "status_reason": ["status_reason", "status", "reason", "비고", "메모", "status/note"],
+                    "timestamp": ["timestamp", "주문일시", "일시", "시간", "날짜", "updated_at"],
+                    "market": ["market", "마켓(종목)", "종목", "마켓", "코인", "symbol"],
+                    "side": ["side", "주문구분", "action", "구분", "매매"],
+                    "order_type": ["order_type", "주문유형", "type", "유형"],
+                    "price": ["price", "주문/체결단가", "체결단가", "주문단가", "가격", "order_price"],
+                    "volume": ["volume", "수량", "체결수량", "amount"],
+                    "total_krw": ["total_krw", "총거래금액(krw)", "총금액", "주문금액"],
+                    "realized_pnl_pct": ["realized_pnl_pct", "실현손익률(%)", "손익률", "수익률", "pnl_pct"],
+                    "stop_loss": ["stop_loss", "손절기준가", "손절가", "손절"],
+                    "target_price": ["target_price", "목표익절가", "목표가", "익절가"],
+                    "current_balance_krw": ["current_balance_krw", "거래후원화잔고", "원화잔고", "가용원화", "잔고"],
+                    "order_uuid": ["order_uuid", "주문id", "주문고유id", "uuid", "order_id"],
+                    "status_reason": ["status_reason", "분석및체결사유", "체결사유", "비고", "reason", "메모"],
                 }
 
                 lower_data = {str(k).lower(): v for k, v in data.items()}
@@ -241,7 +283,7 @@ class SheetsManager:
                     row_to_insert.append(matched_value)
 
                 worksheet.append_row(row_to_insert)
-                logger.info(f"Trade_Log 헤더 매핑 기록 완료: {row_to_insert}")
+                logger.info(f"Trade_Log 기록 완료: {row_to_insert}")
 
             elif isinstance(data, list):
                 worksheet.append_row(data)

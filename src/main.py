@@ -321,6 +321,20 @@ def run_cycle():
         if is_btc_crashing:
             logger.warning(f"⚠️ [BTC 급락 방어선 작동] {btc_status_msg} ➜ 알트코인 신규 매수 차단!")
 
+        # 3. 구글 스프레드시트 'Dashboard' 탭 실시간 갱신
+        sheets.update_dashboard(
+            {
+                "updated_at": now_str,
+                "total_equity": current_total_equity,
+                "krw_available": krw_available,
+                "daily_pnl_pct": daily_pnl * 100,
+                "daily_pnl_krw": current_total_equity - risk_manager.daily_start_equity,
+                "held_coins": ", ".join(held_markets) if held_markets else "없음 (100% 현금)",
+                "kill_switch_status": "🛑 발동 중 (신규매수 차단)" if is_kill_switch else "🟢 정상 (리스크 양호)",
+                "btc_health": f"⚠️ 급락 감지 ({btc_status_msg})" if is_btc_crashing else "🟢 정상 안정세",
+            }
+        )
+
         # 3. 거래 대상 마켓 결정 (동적 스크리닝 vs 고정 목록)
         target_markets: List[str] = []
         if IS_AUTO_MODE:
@@ -411,6 +425,7 @@ def run_cycle():
                                 "Price": current_price,
                                 "Volume": f"{coin_available:.8f}",
                                 "Total_KRW": int(coin_available * current_price),
+                                "Realized_PnL_Pct": f"+{realized_profit_pct:.2f}%",
                                 "Stop_Loss": avg_buy_price,
                                 "Target_Price": peak_p,
                                 "Current_Balance_KRW": int(krw_available + (coin_available * current_price)),
@@ -488,6 +503,7 @@ def run_cycle():
                             "Price": current_price,
                             "Volume": f"{coin_available:.8f}",
                             "Total_KRW": int(coin_available * current_price),
+                            "Realized_PnL_Pct": f"{((current_price - avg_buy_price) / avg_buy_price * 100):.2f}%" if avg_buy_price > 0 else "-",
                             "Stop_Loss": stop_loss,
                             "Target_Price": target_price,
                             "Current_Balance_KRW": int(krw_available),
@@ -570,6 +586,7 @@ def run_cycle():
                             "Price": order_price,
                             "Volume": f"{buy_volume:.8f}",
                             "Total_KRW": int(trade_budget),
+                            "Realized_PnL_Pct": "-",
                             "Stop_Loss": stop_loss,
                             "Target_Price": target_price,
                             "Current_Balance_KRW": int(krw_available - trade_budget),
@@ -618,6 +635,7 @@ def run_cycle():
                             "Price": order_price,
                             "Volume": f"{sell_volume:.8f}",
                             "Total_KRW": int(estimated_krw),
+                            "Realized_PnL_Pct": f"{((order_price - avg_buy_price) / avg_buy_price * 100):.2f}%" if avg_buy_price > 0 else "-",
                             "Stop_Loss": stop_loss,
                             "Target_Price": target_price,
                             "Current_Balance_KRW": int(krw_available),
