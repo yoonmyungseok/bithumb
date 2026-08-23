@@ -1,0 +1,6 @@
+requests>=2.31.0
+PyJWT>=2.8.0
+gspread>=6.0.0
+google-auth>=2.27.0
+apscheduler>=3.10.4
+python-dotenv>=1.0.1

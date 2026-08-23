@@ -1,0 +1,80 @@
+# ==========================================
+# ⚠️ 민감 보안 정보 및 API 키 (절대 커밋 금지)
+# ==========================================
+.env
+.env.local
+.env.*.local
+*.env
+
+# 구글 서비스 계정 키 파일 (JSON)
+config/*.json
+!config/.gitkeep
+service_account.json
+credentials.json
+
+# ==========================================
+# 파이썬 캐시 및 가상환경
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 가상환경 (venv)
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# ==========================================
+# 로그 및 임시 파일
+# ==========================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ==========================================
+# 운영체제 및 IDE 설정 파일
+# ==========================================
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDEs (VS Code, PyCharm 등)
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.sublime-workspace
+*.sublime-project

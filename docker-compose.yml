@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  bithumb-bot:
+    build: .
+    container_name: bithumb-sheets-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+    environment:
+      - TZ=Asia/Seoul
