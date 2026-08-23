@@ -344,7 +344,7 @@ def calculate_total_equity(balances: dict[str, dict[str, float]], bithumb: Bithu
 def get_held_markets(balances: dict[str, dict[str, float]], bithumb: BithumbAPI) -> list[str]:
     held = []
     for cur, info in balances.items():
-        if cur == "KRW":
+        if cur in ("KRW", "P"):
             continue
         total_vol = info.get("balance", 0.0) + info.get("locked", 0.0)
         if total_vol > 0:
@@ -356,6 +356,48 @@ def get_held_markets(balances: dict[str, dict[str, float]], bithumb: BithumbAPI)
             except (requests.exceptions.RequestException, KeyError, ValueError):
                 logger.debug(f"{market} 보유 여부 확인 예외 무시")
     return held
+
+
+def build_positions_data(
+    balances: dict[str, dict[str, float]],
+    bithumb: BithumbAPI,
+    strategies: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """웹 대시보드 표시용 보유 코인 포지션 목록 생성"""
+    positions = []
+    strategies = strategies or {}
+    for cur, info in balances.items():
+        if cur in ("KRW", "P"):
+            continue
+        vol = info.get("balance", 0.0) + info.get("locked", 0.0)
+        if vol <= 0:
+            continue
+        market = f"KRW-{cur}"
+        try:
+            price = bithumb.get_current_price(market)
+            if price <= 0:
+                continue
+            val = vol * price
+            if val < 1000.0:  # 1천원 미만 자투리/에어드랍 먼지 제외
+                continue
+            avg_price = info.get("avg_buy_price", 0.0)
+            pnl_pct = ((price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
+            strat = strategies.get(market, {})
+            positions.append({
+                "market": market,
+                "korean_name": bithumb.get_korean_name(market),
+                "current_price": price,
+                "balance": f"{vol:.6f}".rstrip("0").rstrip("."),
+                "value": int(val),
+                "pnl_pct": pnl_pct,
+                "action": strat.get("ACTION", "HOLD"),
+                "target_price": strat.get("TARGET_PRICE", 0),
+                "stop_loss": strat.get("STOP_LOSS", 0),
+                "reason": strat.get("REASON", "보유 중 (AI 실시간 관망 및 모니터링)"),
+            })
+        except (requests.exceptions.RequestException, KeyError, ValueError):
+            continue
+    return positions
 
 
 def check_btc_market_crash(bithumb: BithumbAPI, threshold_pct: float = BTC_CRASH_THRESHOLD_PCT) -> tuple[bool, str]:
@@ -608,6 +650,8 @@ def get_telegram_resume_callback() -> str:
     return "▶️ <b>[자동매매 정상 재개]</b>\n• 실시간 급등주 자동 탐색 및 매매 사이클이 활성화되었습니다."
 
 
+LATEST_STRATEGIES: dict[str, dict[str, Any]] = {}
+
 LATEST_DASHBOARD_DATA: dict[str, Any] = {
     "total_equity": 0,
     "krw_available": 0,
@@ -730,6 +774,7 @@ def run_cycle():
 
         # 3-1. 로컬 웹 대시보드(포트 7979) 캐시 즉시 갱신
         win_rate = (risk_manager.win_trades_today / risk_manager.total_trades_today * 100) if risk_manager.total_trades_today > 0 else 0.0
+        positions_data = build_positions_data(balances, bithumb, LATEST_STRATEGIES)
         LATEST_DASHBOARD_DATA.update({
             "total_equity": int(current_total_equity),
             "krw_available": int(krw_available),
@@ -742,6 +787,7 @@ def run_cycle():
             "win_rate": win_rate,
             "fear_and_greed": fng["desc"],
             "bot_state": bot_state_badge,
+            "positions": positions_data,
         })
 
         sheets.update_performance_tab(
@@ -989,6 +1035,13 @@ def run_cycle():
                 logger.info(f"[{market}] 전략: ACTION={action}, 진입가={entry_price:,.2f}, 목표가={target_price:,.2f}, 손절가={stop_loss:,.2f}, 비중={alloc_pct*100:.0f}%")
                 logger.info(f"[{market}] 근거: {reason}")
 
+                LATEST_STRATEGIES[market] = {
+                    "ACTION": action,
+                    "TARGET_PRICE": target_price,
+                    "STOP_LOSS": stop_loss,
+                    "REASON": reason,
+                }
+
                 if status != "ACTIVE":
                     logger.info(f"[{market}] 상태가 ACTIVE가 아니므로 건너뜁니다. ({status})")
                     continue
@@ -1210,6 +1263,13 @@ def run_cycle():
             except (requests.exceptions.RequestException, KeyError, ValueError) as e:
                 logger.error(f"[{market}] 처리 중 오류: {e}")
                 logger.error(traceback.format_exc())
+
+        # 사이클 종료 시 최종 보유 포지션 상태 웹 대시보드 반영
+        try:
+            latest_balances = bithumb.get_balances()
+            LATEST_DASHBOARD_DATA["positions"] = build_positions_data(latest_balances, bithumb, LATEST_STRATEGIES)
+        except Exception:
+            pass
 
     except (requests.exceptions.RequestException, KeyError, ValueError, RuntimeError) as e:
         logger.error(f"전체 사이클 실행 중 에러:\n{traceback.format_exc()}")
