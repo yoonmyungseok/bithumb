@@ -5,8 +5,8 @@ import os
 import sys
 import traceback
 from logging.handlers import RotatingFileHandler
-from typing import Dict, List, Optional, Set, Tuple
 
+import requests
 from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
 
@@ -21,7 +21,7 @@ if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
+    except (AttributeError, OSError):
         pass
 
 # 로그 디렉토리 생성 및 로깅 설정 (콘솔 + 파일 동시 기록)
@@ -87,11 +87,11 @@ class TrailingStopTracker:
     def __init__(self, start_profit_pct: float = 0.02, trailing_drop_pct: float = 0.012):
         self.start_profit_pct = start_profit_pct
         self.trailing_drop_pct = trailing_drop_pct
-        self.peaks: Dict[str, float] = {}
+        self.peaks: dict[str, float] = {}
 
     def check_trailing_stop(
         self, market: str, current_price: float, avg_buy_price: float
-    ) -> Tuple[bool, float, float, float, float]:
+    ) -> tuple[bool, float, float, float, float]:
         """
         반환: (발동여부, 최고점가격, 트레일링익절가, 최고수익률%, 실현수익률%)
         """
@@ -163,7 +163,7 @@ class DailyRiskManager:
                     self.realized_pnl_krw = float(data.get("realized_pnl_krw", 0.0))
                     self.total_trades_today = int(data.get("total_trades", 0))
                     self.win_trades_today = int(data.get("win_trades", 0))
-            except Exception as e:
+            except (json.JSONDecodeError, OSError, KeyError, ValueError) as e:
                 logger.warning(f"일일 통계 로드 실패: {e}")
 
     def _save_state(self):
@@ -181,7 +181,7 @@ class DailyRiskManager:
                     indent=2,
                     ensure_ascii=False,
                 )
-        except Exception as e:
+        except (OSError, TypeError) as e:
             logger.warning(f"일일 통계 저장 실패: {e}")
 
     def add_realized_trade(self, pnl_krw: float, is_win: bool):
@@ -191,7 +191,7 @@ class DailyRiskManager:
             self.win_trades_today += 1
         self._save_state()
 
-    def update_daily_equity(self, current_total_equity: float, now_kst: datetime.datetime) -> Tuple[bool, float]:
+    def update_daily_equity(self, current_total_equity: float, now_kst: datetime.datetime) -> tuple[bool, float]:
         date_key = (now_kst - datetime.timedelta(hours=9)).strftime("%Y-%m-%d")
 
         if date_key != self.current_date_str or self.daily_start_equity <= 0:
@@ -235,7 +235,7 @@ def get_kst_now_str() -> str:
     return get_kst_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def calculate_total_equity(balances: Dict[str, Dict[str, float]], bithumb: BithumbAPI) -> float:
+def calculate_total_equity(balances: dict[str, dict[str, float]], bithumb: BithumbAPI) -> float:
     krw_balance = balances.get("KRW", {}).get("balance", 0.0) + balances.get("KRW", {}).get("locked", 0.0)
     total_coin_val = 0.0
 
@@ -247,13 +247,13 @@ def calculate_total_equity(balances: Dict[str, Dict[str, float]], bithumb: Bithu
             try:
                 price = bithumb.get_current_price(f"KRW-{cur}")
                 total_coin_val += vol * price
-            except Exception:
+            except (requests.exceptions.RequestException, KeyError, ValueError):
                 pass
 
     return krw_balance + total_coin_val
 
 
-def get_held_markets(balances: Dict[str, Dict[str, float]], bithumb: BithumbAPI) -> List[str]:
+def get_held_markets(balances: dict[str, dict[str, float]], bithumb: BithumbAPI) -> list[str]:
     held = []
     for cur, info in balances.items():
         if cur == "KRW":
@@ -265,12 +265,12 @@ def get_held_markets(balances: Dict[str, Dict[str, float]], bithumb: BithumbAPI)
                 price = bithumb.get_current_price(market)
                 if total_vol * price >= 4000.0:
                     held.append(market)
-            except Exception:
+            except (requests.exceptions.RequestException, KeyError, ValueError):
                 pass
     return held
 
 
-def check_btc_market_crash(bithumb: BithumbAPI) -> Tuple[bool, str]:
+def check_btc_market_crash(bithumb: BithumbAPI) -> tuple[bool, str]:
     try:
         btc_candles = bithumb.get_candles(unit=INTERVAL_MINUTES, count=6, market="KRW-BTC")
         if not btc_candles or len(btc_candles) < 3:
@@ -286,7 +286,7 @@ def check_btc_market_crash(bithumb: BithumbAPI) -> Tuple[bool, str]:
 
         return False, f"BTC 안정세 ({drop_rate*100:+.2f}%)"
 
-    except Exception as e:
+    except (requests.exceptions.RequestException, KeyError, ValueError, IndexError) as e:
         logger.warning(f"BTC 시장 상태 검사 실패: {e}")
         return False, "BTC 검사 오류"
 
@@ -324,7 +324,7 @@ def send_daily_morning_report():
             f"• <b>일일 킬스위치 상태:</b> {'🚨 발동 중' if risk_manager.kill_switch_active else '🟢 정상 (리스크 양호)'}\n"
             f"• <b>기준 일시:</b> {now_str}"
         )
-    except Exception as e:
+    except (requests.exceptions.RequestException, KeyError, ValueError) as e:
         logger.error(f"모닝 리포트 발송 실패: {e}")
 
 
@@ -386,7 +386,7 @@ def run_cycle():
         )
 
         # 3. 거래 대상 마켓 결정 (동적 스크리닝 vs 고정 목록)
-        target_markets: List[str] = []
+        target_markets: list[str] = []
         if IS_AUTO_MODE:
             screener = MarketScreener(
                 bithumb,
@@ -435,7 +435,7 @@ def run_cycle():
                 # =========================================================================
                 coin_value = coin_total * current_price
                 if coin_value >= MIN_ORDER_KRW and avg_buy_price > 0:
-                    is_trailing_hit, peak_p, trail_stop_p, peak_profit_pct, realized_profit_pct = (
+                    is_trailing_hit, peak_p, peak_profit_pct, realized_profit_pct = (
                         trailing_tracker.check_trailing_stop(market, current_price, avg_buy_price)
                     )
 
@@ -712,10 +712,10 @@ def run_cycle():
                 elif action == "HOLD":
                     logger.info(f"[{market}] HOLD (관망) - 사유: {reason}")
 
-            except Exception as e:
+            except (requests.exceptions.RequestException, KeyError, ValueError, IndexError) as e:
                 logger.error(f"[{market}] 처리 중 오류 발생: {e}")
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         error_msg = traceback.format_exc()
         logger.error(f"전체 사이클 실행 중 에러:\n{error_msg}")
         try:
@@ -723,9 +723,9 @@ def run_cycle():
             telegram.send_message(
                 f"❌ <b>[시스템 오류 알림]</b>\n"
                 f"• 시간: {now_str}\n"
-                f"• 에러 내용: <code>{str(e)}</code>"
+                f"• 에러 내용: <code>{e}</code>"
             )
-        except Exception:
+        except requests.exceptions.RequestException:
             pass
 
 
@@ -738,12 +738,12 @@ class CodeChangeWatcher:
     감지 시 1초 만에 봇을 새 버전으로 자동 안전 재시작
     """
 
-    def __init__(self, watch_paths: List[str], check_interval: float = 3.0):
+    def __init__(self, watch_paths: list[str], check_interval: float = 3.0):
         self.watch_paths = watch_paths
         self.check_interval = check_interval
         self.snapshots = self._get_snapshots()
 
-    def _get_snapshots(self) -> Dict[str, float]:
+    def _get_snapshots(self) -> dict[str, float]:
         snapshots = {}
         for p in self.watch_paths:
             if not os.path.exists(p):
@@ -751,16 +751,16 @@ class CodeChangeWatcher:
             if os.path.isfile(p):
                 try:
                     snapshots[p] = os.path.getmtime(p)
-                except Exception:
+                except OSError:
                     pass
             else:
                 for root, _, files in os.walk(p):
                     for f in files:
-                        if f.endswith(".py") or f.endswith(".env") or f == "HEAD" or "refs" in root:
+                        if f.endswith((".py", ".env")) or f == "HEAD" or "refs" in root:
                             fpath = os.path.join(root, f)
                             try:
                                 snapshots[fpath] = os.path.getmtime(fpath)
-                            except Exception:
+                            except OSError:
                                 pass
         return snapshots
 
@@ -778,11 +778,11 @@ class CodeChangeWatcher:
                         try:
                             telegram = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
                             telegram.send_message("🔄 <b>[코드 업데이트 감지]</b> 봇을 최신 코드로 자동 재시작합니다.")
-                        except Exception:
+                        except requests.exceptions.RequestException:
                             pass
                         time.sleep(0.5)
                         os.execv(sys.executable, [sys.executable] + sys.argv)
-                except Exception as e:
+                except OSError as e:
                     logger.warning(f"코드 감시 루프 오류: {e}")
 
         t = threading.Thread(target=_watch_loop, daemon=True, name="CodeChangeWatcher")
@@ -812,7 +812,7 @@ def main():
 
     try:
         run_cycle()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         logger.error(f"최초 실행 실패: {e}")
 
     scheduler = BlockingScheduler(timezone="Asia/Seoul")

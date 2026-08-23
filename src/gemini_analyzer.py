@@ -2,7 +2,7 @@ import json
 import logging
 import math
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, ClassVar
 
 import requests
 
@@ -20,7 +20,7 @@ class GeminiAnalyzer:
     """
 
     # 1. 급등주 정밀 매수 검증 및 심층 추론용 (고성능 Flash 군)
-    DEEP_FLASH_MODELS = [
+    DEEP_FLASH_MODELS: ClassVar[list[str]] = [
         "gemini-3.7-flash",
         "gemini-3.6-flash",
         "gemini-flash-latest",
@@ -29,7 +29,7 @@ class GeminiAnalyzer:
     ]
 
     # 2. 일상 루틴 모니터링 및 초고속 상태 점검용 (초경량 Flash-Lite 군)
-    LITE_MODELS = [
+    LITE_MODELS: ClassVar[list[str]] = [
         "gemini-3.1-flash-lite",
         "gemini-flash-lite-latest",
         "gemini-2.5-flash-lite",
@@ -40,7 +40,7 @@ class GeminiAnalyzer:
         self.api_key = api_key.strip()
 
     @staticmethod
-    def calculate_rsi(prices: List[float], period: int = 14) -> float:
+    def calculate_rsi(prices: list[float], period: int = 14) -> float:
         """단순 RSI(Relative Strength Index) 계산"""
         if len(prices) < period + 1:
             return 50.0
@@ -72,8 +72,8 @@ class GeminiAnalyzer:
 
     @staticmethod
     def calculate_bollinger_bands(
-        prices: List[float], period: int = 20, num_std: float = 2.0
-    ) -> Dict[str, float]:
+        prices: list[float], period: int = 20, num_std: float = 2.0
+    ) -> dict[str, float]:
         """
         볼린저 밴드 (상단, 중심선, 하단, 밴드폭 %, %B 지표) 계산
         """
@@ -102,7 +102,7 @@ class GeminiAnalyzer:
         }
 
     @staticmethod
-    def calculate_ema(prices: List[float], period: int) -> float:
+    def calculate_ema(prices: list[float], period: int) -> float:
         """지수이동평균(EMA) 계산"""
         if len(prices) < period:
             return sum(prices) / len(prices) if prices else 0.0
@@ -115,8 +115,8 @@ class GeminiAnalyzer:
         return ema
 
     def calculate_macd(
-        self, prices: List[float], fast: int = 12, slow: int = 26, signal: int = 9
-    ) -> Dict[str, Any]:
+        self, prices: list[float], fast: int = 12, slow: int = 26, signal: int = 9
+    ) -> dict[str, Any]:
         """
         MACD 지표 (MACD Line, Signal Line, Histogram) 계산
         """
@@ -139,7 +139,7 @@ class GeminiAnalyzer:
         }
 
     @staticmethod
-    def analyze_volume_spike(candles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def analyze_volume_spike(candles: list[dict[str, Any]]) -> dict[str, Any]:
         """
         거래량 급증(Volume Spike) 분석
         """
@@ -162,7 +162,7 @@ class GeminiAnalyzer:
         }
 
     @staticmethod
-    def analyze_support_resistance(candles: List[Dict[str, Any]]) -> Dict[str, float]:
+    def analyze_support_resistance(candles: list[dict[str, Any]]) -> dict[str, float]:
         """
         최근 30개 캔들 기준 최고점(저항선) 및 최저점(지지선) 산출
         """
@@ -181,7 +181,7 @@ class GeminiAnalyzer:
         }
 
     @staticmethod
-    def analyze_candle_patterns(candles: List[Dict[str, Any]]) -> str:
+    def analyze_candle_patterns(candles: list[dict[str, Any]]) -> str:
         """
         최근 캔들의 몸통(Body) 및 윗꼬리/밑꼬리(Wick) 형태를 정밀 분석하여 속임수 반등 필터링
         """
@@ -221,11 +221,11 @@ class GeminiAnalyzer:
         self,
         market: str,
         current_price: float,
-        candles: List[Dict[str, Any]],
+        candles: list[dict[str, Any]],
         krw_balance: float,
         coin_balance: float,
         avg_buy_price: float,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         [지능형 라우팅] 상황에 따라 Flash vs Flash-Lite를 자동 선택하여 퀀트 분석 수행
         """
@@ -405,8 +405,8 @@ class GeminiAnalyzer:
                 else:
                     last_error = f"[{model}] {response.text}"
                     logger.warning(f"모델 '{model}' 호출 실패 ({response.status_code}), 다음 백업 모델로 자동 전환...")
-            except Exception as e:
-                last_error = f"[{model}] Exception: {str(e)}"
+            except (requests.exceptions.RequestException, json.JSONDecodeError, KeyError, IndexError, ValueError) as e:
+                last_error = f"[{model}] Exception: {e}"
                 logger.warning(f"모델 '{model}' 요청 중 오류 발생: {e}")
 
         logger.error(f"모든 Gemini Flash/Flash-Lite 모델 호출 실패: {last_error}")

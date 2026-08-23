@@ -1,10 +1,9 @@
 import hashlib
-import json
 import logging
 import time
 import urllib.parse
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import jwt
 import requests
@@ -27,7 +26,7 @@ class BithumbAPI:
         self.access_key = access_key
         self.secret_key = secret_key
 
-    def _generate_jwt_token(self, params: Optional[Dict[str, Any]] = None) -> str:
+    def _generate_jwt_token(self, params: dict[str, Any] | None = None) -> str:
         """
         빗썸 API 2.0 규격에 맞는 JWT 토큰 생성
         """
@@ -53,8 +52,8 @@ class BithumbAPI:
         self,
         method: str,
         endpoint: str,
-        params: Optional[Dict[str, Any]] = None,
-        data: Optional[Dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
     ) -> Any:
         """
         API 요청 공통 핸들러
@@ -90,14 +89,13 @@ class BithumbAPI:
             logger.error(f"HTTP Request Failed: {e}")
             raise
 
-    def get_balances(self) -> Dict[str, Dict[str, float]]:
+    def get_balances(self) -> dict[str, dict[str, float]]:
         """
         계좌 전체 잔고 조회
         반환: {'KRW': {'balance': float, 'locked': float, 'avg_buy_price': float}, ...}
         """
         data = self._request("GET", "/accounts")
-        balances: Dict[str, Dict[str, float]] = {}
-
+        balances: dict[str, dict[str, float]] = {}
         for item in data:
             currency = item.get("currency")
             balances[currency] = {
@@ -107,7 +105,7 @@ class BithumbAPI:
             }
         return balances
 
-    def get_currency_balance(self, currency: str) -> Dict[str, float]:
+    def get_currency_balance(self, currency: str) -> dict[str, float]:
         """
         특정 통화/코인의 잔고 정보 반환
         """
@@ -116,7 +114,7 @@ class BithumbAPI:
             currency.upper(), {"balance": 0.0, "locked": 0.0, "avg_buy_price": 0.0}
         )
 
-    def get_all_markets(self) -> List[Dict[str, Any]]:
+    def get_all_markets(self) -> list[dict[str, Any]]:
         """
         빗썸에서 거래 지원하는 전체 마켓 목록 조회
         """
@@ -131,11 +129,11 @@ class BithumbAPI:
             try:
                 all_m = self.get_all_markets()
                 self._market_name_map = {m["market"]: m.get("korean_name", "") for m in all_m if "market" in m}
-            except Exception:
+            except (requests.exceptions.RequestException, KeyError, ValueError):
                 self._market_name_map = {}
         return self._market_name_map.get(market, market.split("-")[-1])
 
-    def get_tickers(self, markets: List[str]) -> List[Dict[str, Any]]:
+    def get_tickers(self, markets: list[str]) -> list[dict[str, Any]]:
         """
         여러 마켓의 Ticker 시세 일괄 조회
         """
@@ -148,14 +146,14 @@ class BithumbAPI:
         data = self._request("GET", "/ticker", params=params)
         return data if isinstance(data, list) else []
 
-    def get_ticker(self, market: str = "KRW-BTC") -> Dict[str, Any]:
+    def get_ticker(self, market: str = "KRW-BTC") -> dict[str, Any]:
         """
         단일 코인 시세 조회
         """
         res = self.get_tickers([market])
         return res[0] if res else {}
 
-    def get_candles(self, unit: int = 5, count: int = 30, market: str = "KRW-BTC") -> List[Dict[str, Any]]:
+    def get_candles(self, unit: int = 5, count: int = 30, market: str = "KRW-BTC") -> list[dict[str, Any]]:
         """
         분봉 캔들 데이터 조회 (최신 순으로 정렬되어 반환됨)
         - unit: 1, 3, 5, 15, 30, 60 등 분 단위
@@ -176,7 +174,7 @@ class BithumbAPI:
         ticker = self.get_ticker(market)
         return float(ticker.get("trade_price", 0.0))
 
-    def get_open_orders(self, market: str = "KRW-BTC") -> List[Dict[str, Any]]:
+    def get_open_orders(self, market: str = "KRW-BTC") -> list[dict[str, Any]]:
         """
         현재 미체결 주문 목록 조회 (state='wait')
         """
@@ -191,10 +189,10 @@ class BithumbAPI:
         self,
         market: str,
         side: str,
-        volume: Optional[float] = None,
-        price: Optional[float] = None,
+        volume: float | None = None,
+        price: float | None = None,
         ord_type: str = "limit",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         주문 생성
         - side: 'bid' (매수), 'ask' (매도)
@@ -202,7 +200,7 @@ class BithumbAPI:
         - volume: 주문 수량 (limit, market 필수)
         - price: 주문 가격 (limit, price 필수)
         """
-        data: Dict[str, Any] = {
+        data: dict[str, Any] = {
             "market": market,
             "side": side,
             "ord_type": ord_type,
@@ -227,7 +225,7 @@ class BithumbAPI:
         logger.info(f"주문 요청 데이터: {data}")
         return self._request("POST", "/orders", data=data)
 
-    def cancel_order(self, uuid_str: str) -> Dict[str, Any]:
+    def cancel_order(self, uuid_str: str) -> dict[str, Any]:
         """
         미체결 주문 취소
         - uuid_str: 취소할 주문의 UUID

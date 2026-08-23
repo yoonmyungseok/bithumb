@@ -1,5 +1,4 @@
 import logging
-from typing import Optional
 
 import requests
 
@@ -43,6 +42,6 @@ class TelegramAlert:
                     f"텔레그램 전송 실패 [{response.status_code}]: {response.text}"
                 )
                 return False
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
             logger.error(f"텔레그램 메시지 전송 중 예외 발생: {e}")
             return False

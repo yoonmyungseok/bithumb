@@ -1,15 +1,15 @@
-import json
 import os
 import sys
+
 import requests
 from dotenv import load_dotenv
 
-# 윈도우 인코딩 설정
+# 윈도우 인코딩 설정 (UTF-8 표준화)
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
+    except (AttributeError, OSError):
         pass
 
 # .env 로드
@@ -22,7 +22,7 @@ print("=" * 60)
 
 if not api_key:
     print("❌ .env 파일에 GEMINI_API_KEY가 설정되어 있지 않습니다.")
-    exit(1)
+    sys.exit(1)
 
 endpoint = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
 
@@ -30,12 +30,12 @@ try:
     res = requests.get(endpoint, timeout=10)
     if res.status_code != 200:
         print(f"❌ API 호출 실패 [{res.status_code}]: {res.text}")
-        exit(1)
+        sys.exit(1)
 
     models_data = res.json().get("models", [])
-    
+
     # 텍스트/퀀트 분석 생성(generateContent) 가능한 모델 필터링
-    gen_models = []
+    gen_models: list[tuple[str, str]] = []
     for m in models_data:
         methods = m.get("supportedGenerationMethods", [])
         if "generateContent" in methods:
@@ -54,5 +54,5 @@ try:
     print("-" * 65)
     print("\n💡 퀀트 자동매매에는 속도가 빠르고 1일 1,500회 무료인 [flash-lite / flash] 계열을 추천합니다.")
 
-except Exception as e:
+except (requests.exceptions.RequestException, KeyError, ValueError) as e:
     print(f"❌ 오류 발생: {e}")

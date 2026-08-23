@@ -1,6 +1,8 @@
 import logging
 import math
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
+
+import requests
 
 from bithumb_api import BithumbAPI
 
@@ -29,13 +31,13 @@ class MarketScreener:
     def scan_markets(
         self,
         top_count: int = 3,
-        held_markets: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
+        held_markets: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """
         거래대금 및 모멘텀 기반 상위 종목 선별
         - held_markets: 현재 계좌에 보유 중인 마켓 리스트 (최우선 포함)
         """
-        held_set: Set[str] = set(m.upper() for m in (held_markets or []))
+        held_set: set[str] = {m.upper() for m in (held_markets or [])}
 
         try:
             # 1. 전체 마켓 목록 조회 (KRW 페어만 필터링)
@@ -52,7 +54,7 @@ class MarketScreener:
 
             # 2. 전체 KRW 마켓의 시세/거래대금 일괄 조회 (청크 분할)
             chunk_size = 50
-            all_tickers: List[Dict[str, Any]] = []
+            all_tickers: list[dict[str, Any]] = []
             for i in range(0, len(krw_markets), chunk_size):
                 chunk = krw_markets[i : i + chunk_size]
                 tickers_chunk = self.api.get_tickers(chunk)
@@ -61,8 +63,8 @@ class MarketScreener:
             logger.info(f"빗썸 KRW 마켓 {len(all_tickers)}개 종목 시세 스캔 완료")
 
             # 3. 퀀트 필터링 및 모멘텀 스코어링
-            qualified_candidates: List[Dict[str, Any]] = []
-            held_candidates: List[Dict[str, Any]] = []
+            qualified_candidates: list[dict[str, Any]] = []
+            held_candidates: list[dict[str, Any]] = []
 
             for t in all_tickers:
                 market = t.get("market", "")
@@ -123,8 +125,8 @@ class MarketScreener:
                         })
 
             # 4. 기보유 코인 + 스크리닝 상위 코인 조합
-            final_selection: List[Dict[str, Any]] = []
-            selected_markets_set: Set[str] = set()
+            final_selection: list[dict[str, Any]] = []
+            selected_markets_set: set[str] = set()
 
             # 1순위: 기보유 코인 (목표가/손절가 관리 지속)
             for hc in held_candidates:
@@ -150,7 +152,7 @@ class MarketScreener:
 
             return final_selection
 
-        except Exception as e:
+        except (requests.exceptions.RequestException, KeyError, ValueError, IndexError) as e:
             logger.error(f"마켓 스크리닝 중 오류 발생: {e}")
             fallback = [{"market": m} for m in (held_markets or ["KRW-BTC"])]
             return fallback

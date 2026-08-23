@@ -1,8 +1,9 @@
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar
 
 import gspread
+import requests
 from google.oauth2.service_account import Credentials
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,7 @@ class SheetsManager:
     - Trade_Log 탭: [종목명(한글), 마켓코드] 분리, 실현 손익률(%) 및 '원' 단위 자동 기록
     """
 
-    SCOPES = [
+    SCOPES: ClassVar[list[str]] = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
@@ -41,20 +42,20 @@ class SheetsManager:
             elif "/" in sheet_name or len(sheet_name) > 30 and " " not in sheet_name:
                 try:
                     self.spreadsheet = self.client.open_by_key(sheet_name)
-                except Exception:
+                except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException):
                     self.spreadsheet = self.client.open(sheet_name)
             else:
                 self.spreadsheet = self.client.open(sheet_name)
             logger.info(f"구글 스프레드시트 '{self.spreadsheet.title}' 연결 성공")
-        except gspread.exceptions.SpreadsheetNotFound as e:
+        except gspread.exceptions.SpreadsheetNotFound:
             logger.error(
                 f"\n[구글 시트 연동 실패] '{sheet_name}' 시트를 찾을 수 없습니다.\n"
                 f"▶ 해결 방법: 구글 시트 우측 상단 [공유] ➜ 다음 이메일을 '편집자'로 추가해주세요:\n"
                 f"   👉 {service_email}\n"
             )
-            raise e
+            raise
 
-    def update_dashboard(self, summary_data: Dict[str, Any]) -> None:
+    def update_dashboard(self, summary_data: dict[str, Any]) -> None:
         """
         'Dashboard' 탭에 계좌 종합 현황을 실시간 카드 형태로 갱신
         """
@@ -92,10 +93,10 @@ class SheetsManager:
             worksheet.update(values=dashboard_rows, range_name="A1:D9")
             logger.info("구글 시트 'Dashboard' 탭 실시간 갱신 완료")
 
-        except Exception as e:
+        except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException, KeyError, ValueError) as e:
             logger.warning(f"Dashboard 탭 갱신 실패 (매매는 지속됨): {e}")
 
-    def get_strategy(self, market: str = "KRW-BTC") -> Dict[str, Any]:
+    def get_strategy(self, market: str = "KRW-BTC") -> dict[str, Any]:
         """
         'Strategy' 탭에서 특정 마켓의 전략 조회
         """
@@ -130,9 +131,9 @@ class SheetsManager:
 
             # 오프셋 판별: [0: 종목명(한글), 1: 마켓코드] 구조면 offset=2, [0: 마켓코드] 구조면 offset=1
             offset = 1
-            if len(target_row) > 1 and (str(target_row[1]).startswith("KRW-") or str(target_row[1]).startswith("BTC-")):
+            if len(target_row) > 1 and str(target_row[1]).startswith(("KRW-", "BTC-")):
                 offset = 2
-            elif str(target_row[0]).startswith("KRW-") or str(target_row[0]).startswith("BTC-"):
+            elif str(target_row[0]).startswith(("KRW-", "BTC-")):
                 offset = 1
 
             status = str(target_row[offset + 1]).strip().upper() if len(target_row) > offset + 1 else "PAUSE"
@@ -156,12 +157,12 @@ class SheetsManager:
                 "reason": reason,
             }
 
-        except Exception as e:
+        except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException, KeyError, ValueError, IndexError) as e:
             logger.error(f"Strategy 시트 조회 오류 ({market}): {e}")
             return {"status": "PAUSE", "action": "HOLD", "reason": str(e)}
 
     def update_strategy(
-        self, market: str, strategy: Dict[str, Any], timestamp_str: str, korean_name: str = ""
+        self, market: str, strategy: dict[str, Any], timestamp_str: str, korean_name: str = ""
     ) -> None:
         """
         'Strategy' 탭에 [종목명(한글), 마켓코드] 및 한글 표준 헤더로 실시간 전략 기록
@@ -201,7 +202,7 @@ class SheetsManager:
                     if val <= 0:
                         return "0원"
                     return f"{int(val):,}원" if val >= 100 else f"{val:,.2f}원"
-                except Exception:
+                except (ValueError, TypeError):
                     return f"{p}원" if p else "0원"
 
             entry_p = strategy.get("entry_price", 0)
@@ -239,7 +240,7 @@ class SheetsManager:
                 worksheet.append_row(row_data)
                 logger.info(f"구글 시트 Strategy [{display_korean} / {market}] 신규 행 추가 완료")
 
-        except Exception as e:
+        except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException, KeyError, ValueError) as e:
             logger.warning(f"Strategy 탭 업데이트 실패: {e}")
 
     def append_trade_log(self, data: Any) -> None:
@@ -282,7 +283,7 @@ class SheetsManager:
                     try:
                         num = float(str(val).replace(",", "").replace("%", "").replace("원", "").replace("KRW", "").strip())
                         return f"{int(num):,}원" if num >= 100 else f"{num:,.2f}원"
-                    except Exception:
+                    except (ValueError, TypeError):
                         return f"{val}원"
                 return str(val)
 
@@ -332,6 +333,6 @@ class SheetsManager:
                 worksheet.append_row(data)
                 logger.info(f"Trade_Log 단순 리스트 기록 완료: {data}")
 
-        except Exception as e:
+        except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException, KeyError, ValueError) as e:
             logger.error(f"Trade_Log 추가 실패: {e}")
             raise
