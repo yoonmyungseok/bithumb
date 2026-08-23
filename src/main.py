@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import traceback
+from logging.handlers import RotatingFileHandler
 from typing import Dict, List, Optional, Set, Tuple
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -14,20 +15,26 @@ from market_screener import MarketScreener
 from sheets_manager import SheetsManager
 from telegram_alert import TelegramAlert
 
-from logging.handlers import RotatingFileHandler
+# 윈도우 cp949 인코딩 에러 방지 (이모지 및 한글 UTF-8 표준화)
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 # 로그 디렉토리 생성 및 로깅 설정 (콘솔 + 파일 동시 기록)
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "trading.log")
 
+file_handler = RotatingFileHandler(LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+stream_handler = logging.StreamHandler(sys.stdout)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        RotatingFileHandler(LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"),
-    ],
+    handlers=[stream_handler, file_handler],
 )
 logger = logging.getLogger("TradingBot")
 
