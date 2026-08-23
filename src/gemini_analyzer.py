@@ -355,7 +355,13 @@ class GeminiAnalyzer:
                         entry_p = current_price
                     if alloc_p > 1.0:
                         alloc_p = alloc_p / 100.0
-                    alloc_p = max(0.05, min(alloc_p, 1.0))
+
+                    if action == "HOLD":
+                        alloc_p = 0.0
+                    elif action == "BUY":
+                        alloc_p = max(0.1, min(alloc_p, 1.0)) if alloc_p > 0 else 0.5
+                    elif action == "SELL":
+                        alloc_p = max(0.1, min(alloc_p, 1.0)) if alloc_p > 0 else 1.0
 
                     return {
                         "status": status,
