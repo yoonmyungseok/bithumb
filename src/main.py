@@ -14,11 +14,20 @@ from market_screener import MarketScreener
 from sheets_manager import SheetsManager
 from telegram_alert import TelegramAlert
 
-# 로깅 설정 (콘솔 및 타임스탬프)
+from logging.handlers import RotatingFileHandler
+
+# 로그 디렉토리 생성 및 로깅 설정 (콘솔 + 파일 동시 기록)
+LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, "trading.log")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        RotatingFileHandler(LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"),
+    ],
 )
 logger = logging.getLogger("TradingBot")
 
