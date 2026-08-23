@@ -1145,12 +1145,14 @@ def run_cycle():
                     order_price = entry_price if (0 < entry_price <= current_price * 1.002) else current_price
                     order_price = bithumb.round_price_to_tick(order_price)
 
-                    if trade_budget < MIN_ORDER_KRW and krw_available >= MIN_ORDER_KRW:
-                        trade_budget = min(krw_available, max(max_market_budget, MIN_ORDER_KRW))
+                    # 🛡️ 최소 5,500원 안전 마진 확보 (빗썸 5,000원 최소주문금액 및 수수료 0.995 반영)
+                    SAFE_ORDER_KRW = 5500.0
+                    if trade_budget < SAFE_ORDER_KRW and krw_available >= SAFE_ORDER_KRW:
+                        trade_budget = min(krw_available, max(max_market_budget, SAFE_ORDER_KRW))
 
-                    if trade_budget < MIN_ORDER_KRW:
+                    if trade_budget < SAFE_ORDER_KRW or (trade_budget * 0.995) < MIN_ORDER_KRW:
                         logger.warning(
-                            f"[{korean_name} / {market}] 매수 예산 부족: 요청금액 {trade_budget:,.0f}원 < 최소주문금액 {MIN_ORDER_KRW:,.0f}원"
+                            f"[{korean_name} / {market}] 매수 예산 부족: 요청금액 {trade_budget:,.0f}원 < 안전최소주문금액 {SAFE_ORDER_KRW:,.0f}원"
                         )
                         continue
 

@@ -19,9 +19,9 @@ class MarketScreener:
     def __init__(
         self,
         bithumb_api: BithumbAPI,
-        min_trade_value_krw: float = 5_000_000_000.0,  # 최소 24시간 거래대금 50억 원
-        min_change_rate: float = 0.01,                 # 최소 당일 상승률 +1.0%
-        max_change_rate: float = 0.25,                 # 최대 당일 상승률 +25.0% (초고점 설거지 방지)
+        min_trade_value_krw: float = 3_000_000_000.0,  # 최소 24시간 거래대금 30억 원
+        min_change_rate: float = 0.015,                # 최소 당일 상승률 +1.5% (유효 모멘텀)
+        max_change_rate: float = 0.15,                 # 최대 당일 상승률 +15.0% (초고점 설거지/폭탄돌리기 방지)
     ):
         self.api = bithumb_api
         self.min_trade_value_krw = min_trade_value_krw
@@ -62,7 +62,7 @@ class MarketScreener:
 
             logger.info(f"빗썸 KRW 마켓 {len(all_tickers)}개 종목 시세 스캔 완료")
 
-            # 3. 퀀트 필터링 및 모멘텀 스코어링
+            # 3. 퀀트 필터링 및 상승 초기 가중치 모멘텀 스코어링
             qualified_candidates: list[dict[str, Any]] = []
             held_candidates: list[dict[str, Any]] = []
 
@@ -89,12 +89,21 @@ class MarketScreener:
                 if acc_price_24h < self.min_trade_value_krw:
                     continue
 
-                # 상승률 필터 (적정 모멘텀 구간: +1% ~ +25%)
+                # 상승률 필터 (적정 모멘텀 구간: +1.5% ~ +15.0%)
                 if not (self.min_change_rate <= change_rate <= self.max_change_rate):
                     continue
 
-                # 모멘텀 스코어: (상승률 %) * log10(거래대금)
-                score = (change_rate * 100.0) * math.log10(max(1.0, acc_price_24h))
+                # 상승 초기(+2% ~ +8%) 가중치: 초고점 물림을 방지하고 상승 시동 거는 종목 우대
+                if 0.02 <= change_rate <= 0.08:
+                    momentum_multiplier = 1.5
+                elif change_rate < 0.02:
+                    momentum_multiplier = 1.0
+                else:
+                    # +8% ~ +15% 구간은 상승 피로감 고려하여 기본 가중치
+                    momentum_multiplier = 1.1
+
+                # 모멘텀 스코어: (상승률 %) * 가중치 * log10(거래대금)
+                score = (change_rate * 100.0) * momentum_multiplier * math.log10(max(1.0, acc_price_24h))
                 ticker_info["score"] = score
                 ticker_info["is_held"] = False
                 qualified_candidates.append(ticker_info)
