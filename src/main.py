@@ -270,7 +270,7 @@ def get_held_markets(balances: dict[str, dict[str, float]], bithumb: BithumbAPI)
     return held
 
 
-def check_btc_market_crash(bithumb: BithumbAPI) -> tuple[bool, str]:
+def check_btc_market_crash(bithumb: BithumbAPI, threshold_pct: float = BTC_CRASH_THRESHOLD_PCT) -> tuple[bool, str]:
     try:
         btc_candles = bithumb.get_candles(unit=INTERVAL_MINUTES, count=6, market="KRW-BTC")
         if not btc_candles or len(btc_candles) < 3:
@@ -281,7 +281,7 @@ def check_btc_market_crash(bithumb: BithumbAPI) -> tuple[bool, str]:
 
         drop_rate = (current_btc - past_btc) / past_btc if past_btc > 0 else 0.0
 
-        if drop_rate <= -BTC_CRASH_THRESHOLD_PCT:
+        if drop_rate <= -threshold_pct:
             return True, f"비트코인(BTC) 단기 급락세 감지 ({drop_rate*100:.2f}%)"
 
         return False, f"BTC 안정세 ({drop_rate*100:+.2f}%)"
