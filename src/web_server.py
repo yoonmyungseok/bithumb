@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 class DashboardWebServer:
     """
     로컬 경량 실시간 웹 대시보드 서버 (포트 7979)
-    - TradingView Lightweight Charts 실시간 인터랙티브 캔들 차트 연동
-    - 계좌 종합 현황, 공포탐욕지수, 보유 포지션, 텔레그램 원격 제어 지원
+    - 계좌 종합 현황, 공포탐욕지수, 실시간 보유 포지션 및 AI 전략 상태 모니터링
+    - 원격 긴급 매도(Panic Sell), 일시정지(Pause), 재개(Resume) 제어 지원
     """
 
     def __init__(
@@ -21,12 +21,10 @@ class DashboardWebServer:
         port: int = 7979,
         get_status_data_func: Callable[[], dict[str, Any]] | None = None,
         action_handler_func: Callable[[str], str] | None = None,
-        get_candles_func: Callable[[str, int, int], list[dict[str, Any]]] | None = None,
     ):
         self.port = port
         self.get_status_data = get_status_data_func
         self.action_handler = action_handler_func
-        self.get_candles = get_candles_func
         self.server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -55,22 +53,6 @@ class DashboardWebServer:
                 if path == "/api/status":
                     data = server_self.get_status_data() if server_self.get_status_data else {}
                     body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self.send_header("Content-Length", str(len(body)))
-                    self.send_header("Connection", "close")
-                    self.end_headers()
-                    self.wfile.write(body)
-                    return
-
-                elif path == "/api/candles":
-                    query_params = urllib.parse.parse_qs(parsed_url.query)
-                    market = query_params.get("market", ["KRW-BTC"])[0]
-                    unit = int(query_params.get("unit", ["5"])[0])
-                    count = int(query_params.get("count", ["60"])[0])
-
-                    candles_data = server_self.get_candles(market, unit, count) if server_self.get_candles else []
-                    body = json.dumps(candles_data, ensure_ascii=False).encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json; charset=utf-8")
                     self.send_header("Content-Length", str(len(body)))
@@ -115,9 +97,8 @@ class DashboardWebServer:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>빗썸 AI 퀀트 트레이딩 Pro v4.5 대시보드</title>
+    <title>빗썸 AI 퀀트 트레이딩 Pro 대시보드</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         body {{ background-color: #0b0e14; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
         .card {{ background-color: #151923; border: 1px solid #232a3b; border-radius: 12px; }}
@@ -132,9 +113,9 @@ class DashboardWebServer:
                 <span class="text-3xl">🚀</span>
                 <div>
                     <h1 class="text-2xl font-black bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">
-                        Bithumb AI 퀀트 트레이딩 Pro v4.5
+                        Bithumb AI 퀀트 트레이딩 Pro
                     </h1>
-                    <p class="text-xs text-slate-400">포트: {self.port} | TradingView 실시간 차트 & 0.1초 웹소켓 고래 감시</p>
+                    <p class="text-xs text-slate-400">포트: {self.port} | 실시간 급등주 스캔 & 50% 분할익절 가속 트레일링</p>
                 </div>
             </div>
             <!-- Quick Actions -->
@@ -169,31 +150,10 @@ class DashboardWebServer:
             </div>
         </div>
 
-        <!-- Interactive TradingView Chart Section -->
-        <div class="card p-6">
-            <div class="flex flex-wrap justify-between items-center mb-4">
-                <div class="flex items-center space-x-3">
-                    <span class="text-lg font-bold text-white">📈 실시간 TradingView 인터랙티브 캔들 차트</span>
-                    <select id="market_select" onchange="changeChartMarket(this.value)" class="bg-slate-800 text-white text-sm font-bold px-3 py-1.5 rounded-lg border border-slate-700">
-                        <option value="KRW-BTC">비트코인 (KRW-BTC)</option>
-                        <option value="KRW-ENA">에테나 (KRW-ENA)</option>
-                        <option value="KRW-TRAC">오리진트레일 (KRW-TRAC)</option>
-                        <option value="KRW-TRUMP">오피셜트럼프 (KRW-TRUMP)</option>
-                    </select>
-                </div>
-                <div class="flex space-x-1 mt-2 sm:mt-0">
-                    <button onclick="setChartUnit(5)" id="btn_u5" class="px-3 py-1 bg-blue-600 font-bold rounded text-xs text-white">5분봉</button>
-                    <button onclick="setChartUnit(15)" id="btn_u15" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 font-bold rounded text-xs text-slate-300">15분봉</button>
-                    <button onclick="setChartUnit(60)" id="btn_u60" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 font-bold rounded text-xs text-slate-300">1시간봉</button>
-                </div>
-            </div>
-            <div id="chart_container" class="w-full h-[400px] rounded-lg overflow-hidden border border-slate-800"></div>
-        </div>
-
         <!-- Real-time Positions & Strategies -->
         <div class="card p-6">
             <h2 class="text-lg font-bold text-white mb-4 flex items-center">
-                <span class="mr-2">📊</span> 현재 보유 포지션 및 AI 퀀트 전략 (클릭 시 차트 전환)
+                <span class="mr-2">📊</span> 현재 보유 포지션 및 AI 퀀트 전략 모니터링
             </h2>
             <div class="overflow-x-auto">
                 <table class="w-full text-left text-sm text-slate-300">
@@ -208,7 +168,7 @@ class DashboardWebServer:
                             <th class="p-3">AI 분석 근거</th>
                         </tr>
                     </thead>
-                    <tbody id="positions_tbody" class="divide-y divide-slate-800 cursor-pointer">
+                    <tbody id="positions_tbody" class="divide-y divide-slate-800">
                         <tr><td colspan="7" class="p-4 text-center text-slate-500">데이터 로딩 중...</td></tr>
                     </tbody>
                 </table>
@@ -216,74 +176,11 @@ class DashboardWebServer:
         </div>
 
         <div class="text-center text-xs text-slate-500 py-2">
-            빗썸 API 2.0 AI 퀀트 시스템 v4.5 | 5초마다 자동 실시간 동기화 중 | 포트: {self.port}
+            빗썸 API 2.0 AI 퀀트 시스템 | 5초마다 자동 실시간 동기화 중 | 포트: {self.port}
         </div>
     </div>
 
     <script>
-        let chart = null;
-        let candleSeries = null;
-        let currentMarket = 'KRW-BTC';
-        let currentUnit = 5;
-
-        function initTradingViewChart() {{
-            const container = document.getElementById('chart_container');
-            chart = LightweightCharts.createChart(container, {{
-                layout: {{ background: {{ color: '#12141a' }}, textColor: '#94a3b8' }},
-                grid: {{ vertLines: {{ color: '#1e2433' }}, horzLines: {{ color: '#1e2433' }} }},
-                crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
-                timeScale: {{ timeVisible: true, secondsVisible: false, borderColor: '#232a3b' }},
-                rightPriceScale: {{ borderColor: '#232a3b' }}
-            }});
-
-            candleSeries = chart.addCandlestickSeries({{
-                upColor: '#00e676',
-                downColor: '#ff5252',
-                borderUpColor: '#00e676',
-                borderDownColor: '#ff5252',
-                wickUpColor: '#00e676',
-                wickDownColor: '#ff5252'
-            }});
-
-            window.addEventListener('resize', () => {{
-                chart.applyOptions({{ width: container.clientWidth, height: container.clientHeight }});
-            }});
-        }}
-
-        async function loadChartCandles() {{
-            if (!candleSeries) return;
-            try {{
-                const res = await fetch(`/api/candles?market=${{currentMarket}}&unit=${{currentUnit}}&count=80`);
-                const data = await res.json();
-                if (Array.isArray(data) && data.length > 0) {{
-                    candleSeries.setData(data);
-                    chart.timeScale().fitContent();
-                }}
-            }} catch (e) {{
-                console.error('차트 데이터 로드 실패:', e);
-            }}
-        }}
-
-        function setChartUnit(unit) {{
-            currentUnit = unit;
-            ['5', '15', '60'].forEach(u => {{
-                const btn = document.getElementById('btn_u' + u);
-                if (btn) {{
-                    btn.className = (parseInt(u) === unit) 
-                        ? 'px-3 py-1 bg-blue-600 font-bold rounded text-xs text-white' 
-                        : 'px-3 py-1 bg-slate-800 hover:bg-slate-700 font-bold rounded text-xs text-slate-300';
-                }}
-            }});
-            loadChartCandles();
-        }}
-
-        function changeChartMarket(market) {{
-            currentMarket = market;
-            const select = document.getElementById('market_select');
-            if (select) select.value = market;
-            loadChartCandles();
-        }}
-
         async function fetchStatus() {{
             try {{
                 const res = await fetch('/api/status');
@@ -311,7 +208,7 @@ class DashboardWebServer:
                     const tbody = document.getElementById('positions_tbody');
                     if (data.positions && data.positions.length > 0) {{
                         tbody.innerHTML = data.positions.map(p => `
-                            <tr onclick="changeChartMarket('${{p.market}}')" class="hover:bg-slate-800/60 transition">
+                            <tr class="hover:bg-slate-800/60 transition">
                                 <td class="p-3 font-bold text-white">${{p.korean_name}} <span class="text-xs text-slate-400 font-normal">(${{p.market}})</span></td>
                                 <td class="p-3">${{p.current_price.toLocaleString()}} 원</td>
                                 <td class="p-3">${{p.balance}}개 <span class="text-xs text-slate-400">(${{p.value.toLocaleString()}}원)</span></td>
@@ -345,11 +242,8 @@ class DashboardWebServer:
         }}
 
         document.addEventListener('DOMContentLoaded', () => {{
-            initTradingViewChart();
-            loadChartCandles();
             fetchStatus();
             setInterval(fetchStatus, 5000);
-            setInterval(loadChartCandles, 10000);
         }});
     </script>
 </body>

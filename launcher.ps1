@@ -1,6 +1,8 @@
 ﻿# ===================================================================
 # Bithumb Bot Launcher (PowerShell 5.1 & 7 compatible)
 # ===================================================================
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 $host.UI.RawUI.WindowTitle = "Bithumb Auto Trading Bot Launcher"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $scriptDir

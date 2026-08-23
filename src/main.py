@@ -88,25 +88,9 @@ chart_renderer = ChartRenderer()
 trade_memory = TradeMemoryManager()
 
 
-def on_whale_detected(market: str, price: float, val_krw: float, side: str):
-    """3,000만 원 이상 고래 대량 체결 웹소켓 알림 콜백"""
-    try:
-        telegram = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
-        telegram.send_message(
-            f"🐋 <b>[고래 대량 {side} 체결 감지!]</b>\n"
-            f"• 종목: <b>{market}</b>\n"
-            f"• 체결 단가: {price:,.2f} KRW\n"
-            f"• 체결 금액: <b>{val_krw:,.0f} KRW</b> 💰\n"
-            f"• 시장가 수급 급증 ➜ 다음 사이클 우선 모니터링"
-        )
-    except requests.exceptions.RequestException:
-        pass
-
-
-# 빗썸 실시간 웹소켓(WebSocket) 클라이언트
+# 빗썸 실시간 웹소켓(WebSocket) 클라이언트 (0.1초 실시간 시세 스트리밍)
 ws_client = BithumbWebSocketClient(
     initial_markets=["KRW-BTC"],
-    on_whale_callback=on_whale_detected,
 )
 
 
@@ -672,35 +656,6 @@ def get_web_dashboard_data() -> dict[str, Any]:
     """로컬 웹 대시보드 API 즉시 반환 (캐시된 최신 상태)"""
     LATEST_DASHBOARD_DATA["bot_state"] = "⏸️ 일시정지 중 (관망)" if IS_BOT_PAUSED else "🟢 24시간 실시간 자동매매 가동 중"
     return LATEST_DASHBOARD_DATA
-
-
-def get_web_candles_data(market: str, unit: int, count: int) -> list[dict[str, Any]]:
-    """로컬 웹 대시보드 TradingView 캔들 API 포맷터"""
-    try:
-        bithumb = BithumbAPI(BITHUMB_ACCESS_KEY, BITHUMB_SECRET_KEY)
-        raw_candles = bithumb.get_candles(unit=unit, count=count, market=market)
-        if not raw_candles:
-            return []
-
-        formatted = []
-        for c in raw_candles[::-1]:  # 과거 -> 현재 순
-            dt_str = c.get("candle_date_time_kst", "")
-            try:
-                dt = datetime.datetime.fromisoformat(dt_str)
-                ts = int(dt.timestamp())
-            except (ValueError, TypeError):
-                ts = int(time.time())
-
-            formatted.append({
-                "time": ts,
-                "open": float(c.get("opening_price", 0)),
-                "high": float(c.get("high_price", 0)),
-                "low": float(c.get("low_price", 0)),
-                "close": float(c.get("trade_price", 0)),
-            })
-        return formatted
-    except (requests.exceptions.RequestException, KeyError, ValueError):
-        return []
 
 
 def handle_web_action(action: str) -> str:
@@ -1371,7 +1326,6 @@ def main():
         port=7979,
         get_status_data_func=get_web_dashboard_data,
         action_handler_func=handle_web_action,
-        get_candles_func=get_web_candles_data,
     )
     web_dashboard.start()
 

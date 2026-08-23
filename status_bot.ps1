@@ -1,4 +1,6 @@
-﻿$host.UI.RawUI.WindowTitle = "Bithumb Bot Status"
+﻿[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$host.UI.RawUI.WindowTitle = "Bithumb Bot Status"
 $procs = Get-CimInstance Win32_Process | Where-Object { 
     ($_.Name -eq 'python.exe' -or $_.Name -eq 'pythonw.exe') -and 
     ($_.CommandLine -like "*src\main.py*" -or $_.CommandLine -like "*src/main.py*")

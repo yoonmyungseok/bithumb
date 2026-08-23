@@ -1,3 +1,5 @@
+﻿[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 $host.UI.RawUI.WindowTitle = "Restart Bithumb Bot"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $scriptDir
@@ -14,17 +16,17 @@ $procs = Get-CimInstance Win32_Process | Where-Object {
 }
 
 if ($procs) {
-    Write-Host "🛑 [1/2] Stopping existing bot process(es)..." -ForegroundColor Yellow
+    Write-Host "[1/2] Stopping existing bot process(es)..." -ForegroundColor Yellow
     foreach ($p in $procs) {
         Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
         Write-Host "   - Terminated PID: $($p.ProcessId)" -ForegroundColor Gray
     }
     Start-Sleep -Seconds 1
 } else {
-    Write-Host "ℹ️ No running bot processes found. Starting freshly..." -ForegroundColor Gray
+    Write-Host "No running bot processes found. Starting freshly..." -ForegroundColor Gray
 }
 
-Write-Host "🚀 [2/2] Launching updated bot..." -ForegroundColor Green
+Write-Host "[2/2] Launching updated bot..." -ForegroundColor Green
 Write-Host ""
 
 # 2. Call launcher
