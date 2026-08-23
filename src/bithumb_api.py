@@ -53,39 +53,66 @@ class BithumbAPI:
         endpoint: str,
         params: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
+        max_retries: int = 3,
     ) -> Any:
         """
-        API 요청 공통 핸들러
+        API 요청 공통 핸들러 (최대 3회 지수 백오프 자동 재시도)
         """
         url = f"{self.BASE_URL}{endpoint}"
-        headers = {"Content-Type": "application/json"}
+        last_exception = None
 
-        if self.access_key and self.secret_key:
-            query_payload = params if params is not None else data
-            jwt_token = self._generate_jwt_token(query_payload)
-            headers["Authorization"] = f"Bearer {jwt_token}"
+        for attempt in range(1, max_retries + 1):
+            headers = {"Content-Type": "application/json"}
+            if self.access_key and self.secret_key:
+                query_payload = params if params is not None else data
+                jwt_token = self._generate_jwt_token(query_payload)
+                headers["Authorization"] = f"Bearer {jwt_token}"
 
-        try:
-            if method.upper() == "GET":
-                response = requests.get(url, headers=headers, params=params, timeout=10)
-            elif method.upper() == "POST":
-                response = requests.post(url, headers=headers, json=data, timeout=10)
-            elif method.upper() == "DELETE":
-                response = requests.delete(url, headers=headers, params=params, timeout=10)
-            else:
-                raise ValueError(f"지원하지 않는 HTTP 메서드: {method}")
+            try:
+                if method.upper() == "GET":
+                    response = requests.get(url, headers=headers, params=params, timeout=10)
+                elif method.upper() == "POST":
+                    response = requests.post(url, headers=headers, json=data, timeout=10)
+                elif method.upper() == "DELETE":
+                    response = requests.delete(url, headers=headers, params=params, timeout=10)
+                else:
+                    raise ValueError(f"지원하지 않는 HTTP 메서드: {method}")
 
-            if response.status_code not in (200, 201):
-                logger.error(
-                    f"Bithumb API Error [{response.status_code}] {endpoint}: {response.text}"
-                )
-                response.raise_for_status()
+                # 429(Rate Limit) 또는 5xx 서버 일시 에러 시 재시도
+                if response.status_code in (429, 500, 502, 503, 504):
+                    if attempt < max_retries:
+                        sleep_sec = 2 ** (attempt - 1)
+                        logger.warning(
+                            f"⚠️ Bithumb API [{response.status_code}] {endpoint} 일시 오류. {sleep_sec}초 후 재시도 ({attempt}/{max_retries})"
+                        )
+                        time.sleep(sleep_sec)
+                        continue
 
-            return response.json()
+                if response.status_code not in (200, 201):
+                    logger.error(
+                        f"Bithumb API Error [{response.status_code}] {endpoint}: {response.text}"
+                    )
+                    response.raise_for_status()
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"HTTP Request Failed: {e}")
-            raise
+                return response.json()
+
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                last_exception = e
+                if attempt < max_retries:
+                    sleep_sec = 2 ** (attempt - 1)
+                    logger.warning(
+                        f"⚠️ Bithumb API 네트워크 타임아웃/연결 오류: {e}. {sleep_sec}초 후 재시도 ({attempt}/{max_retries})"
+                    )
+                    time.sleep(sleep_sec)
+                else:
+                    logger.error(f"HTTP Request Failed after {max_retries} attempts: {e}")
+                    raise
+            except requests.exceptions.RequestException as e:
+                logger.error(f"HTTP Request Failed: {e}")
+                raise
+
+        if last_exception:
+            raise last_exception
 
     def get_balances(self) -> dict[str, dict[str, float]]:
         """

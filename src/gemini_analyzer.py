@@ -201,24 +201,35 @@ class GeminiAnalyzer:
     @staticmethod
     def analyze_orderbook(orderbook: dict[str, Any] | None) -> dict[str, Any]:
         """
-        실시간 호가창 매수/매도 총잔량 비율 및 수급 강도 분석
+        실시간 호가창 매수/매도 총잔량 비율, 수급 강도 및 최우선 호가 스프레드(Gap) 분석
         """
         if not orderbook:
-            return {"bid_ask_ratio": 1.0, "imbalance_desc": "호가창 데이터 없음 (중립)"}
+            return {"bid_ask_ratio": 1.0, "spread_pct": 0.0, "imbalance_desc": "호가창 데이터 없음 (중립)"}
 
         total_ask = float(orderbook.get("total_ask_size", 1.0))
         total_bid = float(orderbook.get("total_bid_size", 1.0))
         ratio = total_bid / total_ask if total_ask > 0 else 1.0
 
+        # 최우선 호가 스프레드 계산 (매수/매도 1호가 갭)
+        units = orderbook.get("orderbook_units", [])
+        spread_pct = 0.0
+        if units:
+            top_ask = float(units[0].get("ask_price", 0.0))
+            top_bid = float(units[0].get("bid_price", 0.0))
+            spread_pct = ((top_ask - top_bid) / top_bid * 100.0) if top_bid > 0 else 0.0
+
+        spread_desc = f" | 호가 갭(스프레드): {spread_pct:.2f}% ({'⚠️ 유동성 부족 갭 발생' if spread_pct > 0.5 else '🟢 촘촘한 유동성'})"
+
         if ratio >= 1.5:
-            desc = f"🟢 강력한 매수 벽 받침 (매수/매도 잔량비: {ratio:.2f}배)"
+            desc = f"🟢 강력한 매수 벽 받침 (매수/매도 잔량비: {ratio:.2f}배){spread_desc}"
         elif ratio <= 0.6:
-            desc = f"🔴 두터운 상단 매도 벽 저항 (매수/매도 잔량비: {ratio:.2f}배)"
+            desc = f"🔴 두터운 상단 매도 벽 저항 (매수/매도 잔량비: {ratio:.2f}배){spread_desc}"
         else:
-            desc = f"⚪ 매수/매도 잔량 균형 (비율: {ratio:.2f}배)"
+            desc = f"⚪ 매수/매도 잔량 균형 (비율: {ratio:.2f}배){spread_desc}"
 
         return {
             "bid_ask_ratio": round(ratio, 2),
+            "spread_pct": round(spread_pct, 2),
             "total_bid": round(total_bid, 4),
             "total_ask": round(total_ask, 4),
             "imbalance_desc": desc,
@@ -442,7 +453,7 @@ class GeminiAnalyzer:
 1. [MTF 추세 정렬]: 1시간봉 추세가 '대세 하락장'이 아닐 것 (1시간봉 하락장 속 5분봉 일시 반등은 데드캣 속임수이므로 매수 금지).
 2. [모멘텀 과열 방지]: 5분봉 RSI가 38 ~ 62 사이일 것 (RSI 62 초과 시 단기 과열이므로 추격 매수 전면 금지, 눌림목 대기).
 3. [눌림목 & 이격도]: MA20 이격도가 98.5% ~ 102.5% 이내이며, %B <= 0.75 (볼린저 상단 돌파 추격 매수 원천 금지, 5분봉 MA20 지지선 부근 눌림 타점 필수).
-4. [캔들 형태 & 수급]: 캔들 윗꼬리 비율이 25% 이하이며, 실시간 고래 순매수 유입 또는 실질 체결강도 110% 이상 확인 (매도 덤핑 없는 순매수 유입 확인).
+4. [캔들 형태 & 수급 & 스프레드]: 캔들 윗꼬리 비율이 25% 이하이며, 호가 갭(스프레드) <= 0.5% (유동성 풍부), 실시간 고래 순매수 유입 또는 실질 체결강도 110% 이상 확인 (매도 덤핑 없는 순매수 유입 확인).
 5. [기대 손익비]: (목표가 - 진입가) >= 1.5 * (진입가 - 손절가) 수학적 보장.
 
 ※ 위 조건 중 '모멘텀 과열' 또는 '볼린저 상단/이격도 과열'에 해당하는 경우, 아무리 상승세가 강해 보여도 **반드시 HOLD**로 판단하고 눌림목 지지선(ENTRY_PRICE)을 제시하세요.

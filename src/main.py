@@ -83,9 +83,6 @@ MIN_ORDER_KRW = 5000.0
 # 봇 일시정지 상태 플래그 (텔레그램 및 웹 대시보드 연동)
 IS_BOT_PAUSED = False
 
-# ⏳ 포지션 진입 시간 추적기 (타임스탑용: 60분 이상 횡보 시 자금 회전 청산)
-POSITION_ENTRY_TIMES: dict[str, float] = {}
-
 # 전역 인스턴스 초기화
 chart_renderer = ChartRenderer()
 trade_memory = TradeMemoryManager()
@@ -98,11 +95,12 @@ ws_client = BithumbWebSocketClient(
 
 class TrailingStopTracker:
     """
-    [50% 분할 익절 + 50% 가속 트레일링 러너] 관리자
+    [50% 분할 익절 + 50% 가속 트레일링 러너] 관리자 (영구 저장 연동)
     - 1차 목표가(+2.5%) 도달 시: 50% 분할 익절 & 본절 방어선 가동
     - +5.0% 이상 돌파 시: 트레일링 폭 0.8%로 축소 (고점 밀착 방어)
     - +10.0% 이상 돌파 시: 트레일링 폭 0.5%로 초밀착 (초고점 극대화)
     - 왕복 수수료(0.1%) 차감 후 최소 +0.2% 이상 순수익 보장선 강제
+    - data/position_state.json 파일에 최고점 및 1차 익절 여부 영구 저장
     """
 
     def __init__(self, start_profit_pct: float = 0.02, trailing_drop_pct: float = 0.012):
@@ -110,6 +108,48 @@ class TrailingStopTracker:
         self.trailing_drop_pct = trailing_drop_pct
         self.peaks: dict[str, float] = {}
         self.partial_tp_done: dict[str, bool] = {}
+        self.entry_times: dict[str, float] = {}
+        self.data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+        os.makedirs(self.data_dir, exist_ok=True)
+        self.state_file = os.path.join(self.data_dir, "position_state.json")
+        self._load_state()
+
+    def _load_state(self):
+        if os.path.exists(self.state_file):
+            try:
+                with open(self.state_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.peaks = data.get("peaks", {})
+                    self.partial_tp_done = data.get("partial_tp_done", {})
+                    self.entry_times = data.get("entry_times", {})
+            except (OSError, json.JSONDecodeError, ValueError) as e:
+                logger.warning(f"포지션 상태 파일 로드 실패: {e}")
+
+    def _save_state(self):
+        try:
+            with open(self.state_file, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "peaks": self.peaks,
+                        "partial_tp_done": self.partial_tp_done,
+                        "entry_times": self.entry_times,
+                    },
+                    f,
+                    indent=2,
+                    ensure_ascii=False,
+                )
+        except OSError as e:
+            logger.warning(f"포지션 상태 파일 저장 실패: {e}")
+
+    def set_entry_time(self, market: str, ts: float | None = None):
+        self.entry_times[market] = ts or time.time()
+        self._save_state()
+
+    def get_entry_time(self, market: str) -> float:
+        if market not in self.entry_times:
+            self.entry_times[market] = time.time()
+            self._save_state()
+        return self.entry_times[market]
 
     def check_position(
         self, market: str, current_price: float, avg_buy_price: float
@@ -124,6 +164,7 @@ class TrailingStopTracker:
         if current_profit_rate >= 0.025 and not self.partial_tp_done.get(market, False):
             self.partial_tp_done[market] = True
             self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
+            self._save_state()
             return "PARTIAL_TP", current_price, current_price, current_profit_pct, current_profit_pct
 
         # 2. [수익률 단계별 가속 트레일링 스탑 (Ratchet Tightening)]
@@ -131,6 +172,7 @@ class TrailingStopTracker:
             previous_peak = self.peaks.get(market, avg_buy_price)
             current_peak = max(previous_peak, current_price)
             self.peaks[market] = current_peak
+            self._save_state()
 
             peak_profit_pct = ((current_peak - avg_buy_price) / avg_buy_price) * 100.0
 
@@ -153,8 +195,7 @@ class TrailingStopTracker:
 
             if current_price <= trailing_stop_price:
                 realized_profit_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
-                self.peaks.pop(market, None)
-                self.partial_tp_done.pop(market, None)
+                self.clear(market)
                 return "TRAILING_STOP", current_peak, trailing_stop_price, peak_profit_pct, realized_profit_pct
 
         return "NONE", self.peaks.get(market, current_price), 0.0, 0.0, current_profit_pct
@@ -162,6 +203,8 @@ class TrailingStopTracker:
     def clear(self, market: str):
         self.peaks.pop(market, None)
         self.partial_tp_done.pop(market, None)
+        self.entry_times.pop(market, None)
+        self._save_state()
 
 
 trailing_tracker = TrailingStopTracker(
@@ -171,7 +214,7 @@ trailing_tracker = TrailingStopTracker(
 
 class DailyRiskManager:
     """
-    일일 손익 추적 및 킬 스위치(Kill-Switch) 관리자 (영구 저장 연동)
+    일일 손익 추적, 킬 스위치(Kill-Switch) 및 연속 손절 30분 쿨다운 관리자 (영구 저장 연동)
     """
 
     def __init__(self, max_loss_pct: float = 0.05):
@@ -186,6 +229,8 @@ class DailyRiskManager:
         self.kill_switch_active = False
         self.total_trades_today = 0
         self.win_trades_today = 0
+        self.consecutive_losses = 0
+        self.cooldown_until_ts = 0.0
         self.daily_history: list[dict[str, Any]] = []
         self._load_state()
 
@@ -199,6 +244,8 @@ class DailyRiskManager:
                     self.realized_pnl_krw = float(data.get("realized_pnl_krw", 0.0))
                     self.total_trades_today = int(data.get("total_trades", 0))
                     self.win_trades_today = int(data.get("win_trades", 0))
+                    self.consecutive_losses = int(data.get("consecutive_losses", 0))
+                    self.cooldown_until_ts = float(data.get("cooldown_until_ts", 0.0))
                     self.daily_history = data.get("history", [])
             except (OSError, json.JSONDecodeError, ValueError) as e:
                 logger.warning(f"일일 통계 로드 실패: {e}")
@@ -213,6 +260,8 @@ class DailyRiskManager:
                         "realized_pnl_krw": self.realized_pnl_krw,
                         "total_trades": self.total_trades_today,
                         "win_trades": self.win_trades_today,
+                        "consecutive_losses": self.consecutive_losses,
+                        "cooldown_until_ts": self.cooldown_until_ts,
                         "history": self.daily_history,
                     },
                     f,
@@ -227,7 +276,21 @@ class DailyRiskManager:
         self.total_trades_today += 1
         if is_win:
             self.win_trades_today += 1
+            self.consecutive_losses = 0
+        else:
+            self.consecutive_losses += 1
+            if self.consecutive_losses >= 2:
+                self.cooldown_until_ts = time.time() + 1800.0  # 30분 쿨다운
+                logger.warning("🛑 [연속 2회 손절 발생] 30분간 뇌동매매 방지 신규 매수 쿨다운 가동!")
+
         self._save_state()
+
+    def is_cooling_down(self) -> tuple[bool, int]:
+        now_ts = time.time()
+        if now_ts < self.cooldown_until_ts:
+            remain_minutes = max(1, int((self.cooldown_until_ts - now_ts) / 60))
+            return True, remain_minutes
+        return False, 0
 
     def update_daily_equity(self, current_total_equity: float, now_kst: datetime.datetime) -> tuple[bool, float]:
         date_key = (now_kst - datetime.timedelta(hours=9)).strftime("%Y-%m-%d")
@@ -943,6 +1006,7 @@ def run_cycle():
                             reason="가속 트레일링 스탑 최고점 익절 완료",
                             timestamp=now_str,
                         )
+                        trailing_tracker.clear(market)
 
                         chart_img = chart_renderer.render_trade_chart(
                             market=market,
@@ -994,7 +1058,7 @@ def run_cycle():
                 # ⏳ [최우선 2: 60분 횡보 자금 묶임 방지 타임스탑(Time-Stop)]
                 # =========================================================================
                 if coin_value >= MIN_ORDER_KRW and avg_buy_price > 0:
-                    entry_ts = POSITION_ENTRY_TIMES.setdefault(market, time.time())
+                    entry_ts = trailing_tracker.get_entry_time(market)
                     hold_duration_sec = time.time() - entry_ts
                     pnl_pct_current = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
 
@@ -1025,7 +1089,6 @@ def run_cycle():
                             reason="60분 이상 박스권 횡보로 인한 자금 회전 타임스탑 청산",
                             timestamp=now_str,
                         )
-                        POSITION_ENTRY_TIMES.pop(market, None)
                         trailing_tracker.clear(market)
 
                         caption = (
@@ -1081,12 +1144,9 @@ def run_cycle():
                 }
 
                 if status != "ACTIVE":
-                    logger.info(f"[{market}] 상태가 ACTIVE가 아니므로 건너뜁니다. ({status})")
                     continue
 
-                # =========================================================================
-                # 🚨 [최우선 2: 긴급 손절 로직]
-                # =========================================================================
+                # 5. [손절 검사]
                 if coin_value >= MIN_ORDER_KRW and stop_loss > 0 and current_price <= stop_loss:
                     logger.warning(
                         f"🚨 [{market} 손절 발생] 현재가({current_price:,.2f}원) <= 손절가({stop_loss:,.2f}원). 전량 시장가 매도!"
@@ -1235,8 +1295,8 @@ def run_cycle():
                         )
                         order_uuid = order_res.get("uuid", "UNKNOWN")
 
-                    # 진입 시간 기록 (타임스탑 추적 시작)
-                    POSITION_ENTRY_TIMES[market] = time.time()
+                    # 진입 시간 기록 (타임스탑 추적 시작 및 영구 저장)
+                    trailing_tracker.set_entry_time(market)
 
                     # 진입 캔들 차트 이미지 렌더링 및 텔레그램 사진 전송
                     chart_img = chart_renderer.render_trade_chart(
