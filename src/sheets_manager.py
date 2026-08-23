@@ -103,7 +103,7 @@ class SheetsManager:
 
             def safe_float(val: Any, default: float = 0.0) -> float:
                 try:
-                    cleaned = str(val).replace(",", "").replace("%", "").strip()
+                    cleaned = str(val).replace(",", "").replace("%", "").replace("원", "").replace("KRW", "").strip()
                     return float(cleaned)
                 except (ValueError, TypeError):
                     return default
@@ -181,6 +181,15 @@ class SheetsManager:
                 worksheet.update(values=[korean_headers], range_name="A1:I1")
                 all_rows[0] = korean_headers
 
+            def format_price(p: Any) -> str:
+                try:
+                    val = float(str(p).replace(",", "").replace("%", "").replace("원", "").replace("KRW", "").strip())
+                    if val <= 0:
+                        return "0원"
+                    return f"{int(val):,}원" if val >= 100 else f"{val:,.2f}원"
+                except Exception:
+                    return f"{p}원" if p else "0원"
+
             entry_p = strategy.get("entry_price", 0)
             target_p = strategy.get("target_price", 0)
             stop_l = strategy.get("stop_loss", 0)
@@ -190,9 +199,9 @@ class SheetsManager:
                 timestamp_str,
                 strategy.get("status", "ACTIVE"),
                 strategy.get("action", "HOLD"),
-                int(entry_p) if entry_p >= 100 else round(entry_p, 2),
-                int(target_p) if target_p >= 100 else round(target_p, 2),
-                int(stop_l) if stop_l >= 100 else round(stop_l, 2),
+                format_price(entry_p),
+                format_price(target_p),
+                format_price(stop_l),
                 f"{strategy.get('alloc_pct', 0.3) * 100:.0f}%",
                 strategy.get("reason", "Gemini 자동 분석"),
             ]
@@ -215,7 +224,7 @@ class SheetsManager:
 
     def append_trade_log(self, data: Any) -> None:
         """
-        'Trade_Log' 탭에 한글 표준 헤더 및 실현 손익률(%) 스마트 기록
+        'Trade_Log' 탭에 한글 표준 헤더 및 실현 손익률(%) 스마트 기록 (자리수 콤마 및 '원' 단위 적용)
         """
         try:
             try:
@@ -244,6 +253,18 @@ class SheetsManager:
                 worksheet.append_row(korean_headers)
                 headers = korean_headers
 
+            def format_val(key: str, val: Any) -> str:
+                if val is None or val == "":
+                    return ""
+                price_keys = ["price", "total_krw", "stop_loss", "target_price", "current_balance_krw"]
+                if any(pk in key.lower() for pk in price_keys):
+                    try:
+                        num = float(str(val).replace(",", "").replace("%", "").replace("원", "").replace("KRW", "").strip())
+                        return f"{int(num):,}원" if num >= 100 else f"{num:,.2f}원"
+                    except Exception:
+                        return f"{val}원"
+                return str(val)
+
             if isinstance(data, dict):
                 key_aliases = {
                     "timestamp": ["timestamp", "주문일시", "일시", "시간", "날짜", "updated_at"],
@@ -269,13 +290,13 @@ class SheetsManager:
                     matched_value = ""
 
                     if clean_h in lower_data:
-                        matched_value = lower_data[clean_h]
+                        matched_value = format_val(clean_h, lower_data[clean_h])
                     else:
                         for std_key, aliases in key_aliases.items():
                             if clean_h in aliases:
                                 for alias in aliases:
                                     if alias in lower_data:
-                                        matched_value = lower_data[alias]
+                                        matched_value = format_val(std_key, lower_data[alias])
                                         break
                                 if matched_value != "":
                                     break
