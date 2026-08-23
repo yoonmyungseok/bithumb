@@ -1,6 +1,7 @@
 import json
 import logging
 import math
+import os
 import re
 from typing import Any, ClassVar
 
@@ -35,8 +36,8 @@ class GeminiAnalyzer:
         "gemini-3.5-flash-lite",
     ]
 
-    def __init__(self, api_key: str):
-        self.api_key = api_key.strip()
+    def __init__(self, api_key: str = ""):
+        self.api_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
 
     @staticmethod
     def calculate_rsi(prices: list[float], period: int = 14) -> float:

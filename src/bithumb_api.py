@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import os
 import time
 import urllib.parse
 import uuid
@@ -20,11 +21,9 @@ class BithumbAPI:
 
     BASE_URL = "https://api.bithumb.com/v1"
 
-    def __init__(self, access_key: str, secret_key: str):
-        if not access_key or not secret_key:
-            raise ValueError("BITHUMB_ACCESS_KEY 및 BITHUMB_SECRET_KEY가 설정되어야 합니다.")
-        self.access_key = access_key
-        self.secret_key = secret_key
+    def __init__(self, access_key: str = "", secret_key: str = ""):
+        self.access_key = (access_key or os.getenv("BITHUMB_ACCESS_KEY", "")).strip()
+        self.secret_key = (secret_key or os.getenv("BITHUMB_SECRET_KEY", "")).strip()
 
     def _generate_jwt_token(self, params: dict[str, Any] | None = None) -> str:
         """
@@ -59,13 +58,12 @@ class BithumbAPI:
         API 요청 공통 핸들러
         """
         url = f"{self.BASE_URL}{endpoint}"
-        query_payload = params if params is not None else data
-        jwt_token = self._generate_jwt_token(query_payload)
+        headers = {"Content-Type": "application/json"}
 
-        headers = {
-            "Authorization": f"Bearer {jwt_token}",
-            "Content-Type": "application/json",
-        }
+        if self.access_key and self.secret_key:
+            query_payload = params if params is not None else data
+            jwt_token = self._generate_jwt_token(query_payload)
+            headers["Authorization"] = f"Bearer {jwt_token}"
 
         try:
             if method.upper() == "GET":
@@ -288,3 +286,61 @@ class BithumbAPI:
         params = {"uuid": uuid_str}
         logger.info(f"주문 취소 요청 (UUID: {uuid_str})")
         return self._request("DELETE", "/order", params=params)
+
+    def execute_twap_order(
+        self,
+        market: str,
+        side: str,
+        volume: float | None = None,
+        price: float | None = None,
+        ord_type: str = "limit",
+        splits: int = 3,
+        interval_seconds: float = 2.0,
+    ) -> list[dict[str, Any]]:
+        """
+        기관용 TWAP (Time-Weighted Average Price) 시간 분할 주문 집행
+        - 대량 주문을 여러 개로 분할하여 슬리피지(Slippage)와 호가 충격을 최소화
+        """
+        if splits <= 1:
+            return [self.create_order(market, side, volume, price, ord_type)]
+
+        results = []
+        if ord_type == "limit" and volume is not None and price is not None:
+            slice_vol = volume / splits
+            for i in range(splits):
+                if i > 0:
+                    time.sleep(interval_seconds)
+                try:
+                    res = self.create_order(market, side, volume=slice_vol, price=price, ord_type=ord_type)
+                    results.append(res)
+                    logger.info(f"⚡ [TWAP 분할 주문 {i+1}/{splits} 완료] {market} {side} {slice_vol:.6f}개 @ {price:,.2f}원")
+                except (requests.exceptions.RequestException, KeyError, ValueError) as e:
+                    logger.warning(f"TWAP {i+1}/{splits} 주문 실패: {e}")
+
+        elif ord_type == "price" and price is not None:
+            slice_price = price / splits
+            for i in range(splits):
+                if i > 0:
+                    time.sleep(interval_seconds)
+                try:
+                    res = self.create_order(market, side, price=slice_price, ord_type=ord_type)
+                    results.append(res)
+                    logger.info(f"⚡ [TWAP 시장가 매수 {i+1}/{splits} 완료] {market} {slice_price:,.0f}원")
+                except (requests.exceptions.RequestException, KeyError, ValueError) as e:
+                    logger.warning(f"TWAP 시장가 {i+1}/{splits} 실패: {e}")
+
+        elif ord_type == "market" and volume is not None:
+            slice_vol = volume / splits
+            for i in range(splits):
+                if i > 0:
+                    time.sleep(interval_seconds)
+                try:
+                    res = self.create_order(market, side, volume=slice_vol, ord_type=ord_type)
+                    results.append(res)
+                    logger.info(f"⚡ [TWAP 시장가 매도 {i+1}/{splits} 완료] {market} {slice_vol:.6f}개")
+                except (requests.exceptions.RequestException, KeyError, ValueError) as e:
+                    logger.warning(f"TWAP 매도 {i+1}/{splits} 실패: {e}")
+        else:
+            results.append(self.create_order(market, side, volume, price, ord_type))
+
+        return results

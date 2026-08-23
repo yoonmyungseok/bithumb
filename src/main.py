@@ -674,6 +674,35 @@ def get_web_dashboard_data() -> dict[str, Any]:
     return LATEST_DASHBOARD_DATA
 
 
+def get_web_candles_data(market: str, unit: int, count: int) -> list[dict[str, Any]]:
+    """로컬 웹 대시보드 TradingView 캔들 API 포맷터"""
+    try:
+        bithumb = BithumbAPI(BITHUMB_ACCESS_KEY, BITHUMB_SECRET_KEY)
+        raw_candles = bithumb.get_candles(unit=unit, count=count, market=market)
+        if not raw_candles:
+            return []
+
+        formatted = []
+        for c in raw_candles[::-1]:  # 과거 -> 현재 순
+            dt_str = c.get("candle_date_time_kst", "")
+            try:
+                dt = datetime.datetime.fromisoformat(dt_str)
+                ts = int(dt.timestamp())
+            except (ValueError, TypeError):
+                ts = int(time.time())
+
+            formatted.append({
+                "time": ts,
+                "open": float(c.get("opening_price", 0)),
+                "high": float(c.get("high_price", 0)),
+                "low": float(c.get("low_price", 0)),
+                "close": float(c.get("trade_price", 0)),
+            })
+        return formatted
+    except (requests.exceptions.RequestException, KeyError, ValueError):
+        return []
+
+
 def handle_web_action(action: str) -> str:
     """웹 대시보드 원격 버튼 액션 핸들러"""
     if action == "panic":
@@ -1171,14 +1200,28 @@ def run_cycle():
 
                     net_trade_budget = trade_budget * 0.995
                     buy_volume = net_trade_budget / order_price
-                    order_res = bithumb.create_order(
-                        market=market,
-                        side="bid",
-                        price=order_price,
-                        volume=buy_volume,
-                        ord_type="limit",
-                    )
-                    order_uuid = order_res.get("uuid", "UNKNOWN")
+
+                    # ⚡ 대량 주문 슬리피지 방지 TWAP 시간분할 체결 (5만 원 이상 주문 시 3회 분할)
+                    if trade_budget >= 50000.0:
+                        order_list = bithumb.execute_twap_order(
+                            market=market,
+                            side="bid",
+                            volume=buy_volume,
+                            price=order_price,
+                            ord_type="limit",
+                            splits=3,
+                            interval_seconds=2.0,
+                        )
+                        order_uuid = order_list[0].get("uuid", "TWAP_MULTI") if order_list else "UNKNOWN"
+                    else:
+                        order_res = bithumb.create_order(
+                            market=market,
+                            side="bid",
+                            price=order_price,
+                            volume=buy_volume,
+                            ord_type="limit",
+                        )
+                        order_uuid = order_res.get("uuid", "UNKNOWN")
 
                     # 진입 캔들 차트 이미지 렌더링 및 텔레그램 사진 전송
                     chart_img = chart_renderer.render_trade_chart(
@@ -1267,9 +1310,31 @@ def run_cycle():
         # 사이클 종료 시 최종 보유 포지션 상태 웹 대시보드 반영
         try:
             latest_balances = bithumb.get_balances()
-            LATEST_DASHBOARD_DATA["positions"] = build_positions_data(latest_balances, bithumb, LATEST_STRATEGIES)
-        except Exception:
-            pass
+            pos_list = []
+            for cur, info in latest_balances.items():
+                if cur == "KRW":
+                    continue
+                bal = info.get("balance", 0.0) + info.get("locked", 0.0)
+                m_code = f"KRW-{cur}"
+                cur_p = ws_client.get_latest_price(m_code) or bithumb.get_current_price(m_code)
+                if bal * cur_p >= 4000.0:
+                    avg_p = info.get("avg_buy_price", 0.0)
+                    pnl = ((cur_p - avg_p) / avg_p * 100) if avg_p > 0 else 0.0
+                    pos_list.append({
+                        "market": m_code,
+                        "korean_name": bithumb.get_korean_name(m_code),
+                        "balance": round(bal, 6),
+                        "current_price": cur_p,
+                        "value": int(bal * cur_p),
+                        "pnl_pct": pnl,
+                        "action": "HOLD",
+                        "target_price": cur_p * 1.03,
+                        "stop_loss": avg_p * 0.98 if avg_p > 0 else cur_p * 0.98,
+                        "reason": "보유 포지션 실시간 트레일링 추종 중",
+                    })
+            LATEST_DASHBOARD_DATA["positions"] = pos_list
+        except (requests.exceptions.RequestException, KeyError, ValueError) as e:
+            logger.debug(f"웹 대시보드 포지션 갱신 예외: {e}")
 
     except (requests.exceptions.RequestException, KeyError, ValueError, RuntimeError) as e:
         logger.error(f"전체 사이클 실행 중 에러:\n{traceback.format_exc()}")
@@ -1306,6 +1371,7 @@ def main():
         port=7979,
         get_status_data_func=get_web_dashboard_data,
         action_handler_func=handle_web_action,
+        get_candles_func=get_web_candles_data,
     )
     web_dashboard.start()
 
