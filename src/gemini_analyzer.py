@@ -12,28 +12,32 @@ logger = logging.getLogger(__name__)
 
 class GeminiAnalyzer:
     """
-    Google Gemini API 연동 프로 퀀트 트레이딩 분석 엔진 v3.0
-    - [멀티 타임프레임(MTF) 3중 정렬]: 1시간봉 대세 추세 + 5분봉 정밀 진입 타점 동시 분석
-    - [호가창(Orderbook) 수급 분석]: 매수/매도 총잔량 비율 및 실시간 체결강도 포착
-    - [ATR(Average True Range) 변동성 적응형 퀀트]: 코인별 변동폭에 맞춘 동적 익절/손절 계산
-    - [지능형 동적 모델 라우터]: 상황별 Flash / Flash-Lite 최적 자동 배정 및 0.1초 폴백
+    Google Gemini API 연동 프로 퀀트 트레이딩 분석 엔진 v4.0
+    - [MTF 3중 정렬]: 1시간봉 대세 추세 + 5분봉 정밀 진입 타점 동시 분석
+    - [호가창 & 체결강도 수급 분석]: 매수/매도 잔량비 + 실시간 매수체결강도(허매수벽 트랩 회피)
+    - [ATR 변동성 & 이격도 퀀트]: MA5/MA20/MA60 이격도 + ATR 기반 동적 익절/손절선 산출
+    - [대장주(BTC) 거시 환경 주입]: 비트코인 급락 위험 및 거시 추세 연동
+    - [5대 정량적 매수 승인 체크리스트]: 5개 핵심 퀀트 조건 중 4개 이상 충족 시에만 BUY 승인
+    - [안정형 모델 라우터]: Rate Limit 429 방지를 위해 프로덕션 안정 모델 우선 배치
     """
 
-    # 1. 급등주 정밀 매수 검증 및 심층 추론용 (고성능 Flash 군)
+    # 1. 급등주 정밀 매수 검증 및 심층 추론용 (안정형 고성능 Flash 군)
     DEEP_FLASH_MODELS: ClassVar[list[str]] = [
-        "gemini-3.5-flash",
         "gemini-3.1-flash-lite",
-        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
         "gemini-flash-latest",
+        "gemini-3.5-flash",
         "gemini-3.7-flash",
     ]
 
     # 2. 일상 루틴 모니터링 및 초고속 상태 점검용 (초경량 Flash-Lite 군)
     LITE_MODELS: ClassVar[list[str]] = [
         "gemini-3.1-flash-lite",
-        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash-lite",
         "gemini-flash-lite-latest",
-        "gemini-3.5-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-flash-latest",
     ]
 
     def __init__(self, api_key: str = ""):
@@ -162,6 +166,39 @@ class GeminiAnalyzer:
         return {"atr": round(atr, 2), "atr_pct": round(atr_pct, 2)}
 
     @staticmethod
+    def analyze_trade_strength(candles: list[dict[str, Any]]) -> dict[str, Any]:
+        """
+        최근 6개봉 기준 매수 체결량 vs 매도 체결량 분석 (실질 체결강도 & 세력 순매수 판별)
+        """
+        if not candles:
+            return {"trade_power_pct": 100.0, "desc": "체결 데이터 부족 (중립)"}
+
+        buy_vol = 0.0
+        sell_vol = 0.0
+        for c in candles[:min(len(candles), 6)]:
+            vol = float(c.get("candle_acc_trade_volume", 0.0))
+            o = float(c.get("opening_price", 0.0))
+            close_p = float(c.get("trade_price", 0.0))
+            if close_p >= o:
+                buy_vol += vol
+            else:
+                sell_vol += vol
+
+        if sell_vol == 0:
+            power = 200.0 if buy_vol > 0 else 100.0
+        else:
+            power = (buy_vol / sell_vol) * 100.0
+
+        if power >= 130.0:
+            desc = f"🟢 실질 매수세 압도적 (체결강도: {power:.1f}% - 순매수 유입)"
+        elif power <= 70.0:
+            desc = f"🔴 실질 매도세 우위 (체결강도: {power:.1f}% - 시장가 패대기 출회)"
+        else:
+            desc = f"⚪ 매수/매도 체결 균형 (체결강도: {power:.1f}%)"
+
+        return {"trade_power_pct": round(power, 1), "desc": desc}
+
+    @staticmethod
     def analyze_orderbook(orderbook: dict[str, Any] | None) -> dict[str, Any]:
         """
         실시간 호가창 매수/매도 총잔량 비율 및 수급 강도 분석
@@ -174,9 +211,9 @@ class GeminiAnalyzer:
         ratio = total_bid / total_ask if total_ask > 0 else 1.0
 
         if ratio >= 1.5:
-            desc = f"🟢 강력한 매수 벽 받침 (매수/매도 비율: {ratio:.2f}배 - 세력 지지)"
+            desc = f"🟢 강력한 매수 벽 받침 (매수/매도 잔량비: {ratio:.2f}배)"
         elif ratio <= 0.6:
-            desc = f"🔴 두터운 상단 매도 벽 저항 (매수/매도 비율: {ratio:.2f}배 - 차익 매물)"
+            desc = f"🔴 두터운 상단 매도 벽 저항 (매수/매도 잔량비: {ratio:.2f}배)"
         else:
             desc = f"⚪ 매수/매도 잔량 균형 (비율: {ratio:.2f}배)"
 
@@ -301,9 +338,10 @@ class GeminiAnalyzer:
         candles_1h: list[dict[str, Any]] | None = None,
         orderbook: dict[str, Any] | None = None,
         trade_memory_context: str = "",
+        btc_context: str = "비트코인(BTC): 🟢 정상 안정세",
     ) -> dict[str, Any]:
         """
-        [MTF 3중 정렬 + 호가창 수급 + ATR 변동성 + 자가학습 메모리] 퀀트 분석 엔진
+        [MTF 3중 정렬 + 호가창 수급 + 체결강도 + ATR 변동성 + 자가학습 메모리] 퀀트 분석 엔진 v4.0
         """
         if not self.api_key:
             logger.warning("Gemini API Key가 설정되지 않았습니다.")
@@ -320,19 +358,23 @@ class GeminiAnalyzer:
         sr_levels = self.analyze_support_resistance(candles)
         candle_pattern = self.analyze_candle_patterns(candles)
         atr_info = self.calculate_atr(candles, 14)
+        trade_strength = self.analyze_trade_strength(candles)
 
-        # 2. MTF 1시간봉 상위 추세 및 호가창 수급 연산
-        mtf_1h = self.analyze_1h_trend(candles_1h)
-        ob_info = self.analyze_orderbook(orderbook)
-
+        # 2. 이동평균선 & 이격도 연산
         ma5 = sum(close_prices[:5]) / min(len(close_prices), 5) if close_prices else current_price
         ma20 = bb["middle"]
+        ma60 = sum(close_prices[:60]) / min(len(close_prices), 60) if close_prices else current_price
+        disparity_ma20 = (current_price / ma20 * 100.0) if ma20 > 0 else 100.0
+
+        # 3. MTF 1시간봉 상위 추세 및 호가창 수급 연산
+        mtf_1h = self.analyze_1h_trend(candles_1h)
+        ob_info = self.analyze_orderbook(orderbook)
 
         coin_value = coin_balance * current_price
         is_holding = coin_value >= 4000.0
         pnl_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100 if (avg_buy_price > 0 and is_holding) else 0.0
 
-        # 지능형 동적 모델 배정 (급등주 탐색/거래량 폭발 시 고성능 Flash 투입)
+        # 지능형 동적 모델 배정
         is_high_priority = (not is_holding) or vol_info["is_spike"] or (abs(pnl_pct) >= 1.5)
         candidate_models = (self.DEEP_FLASH_MODELS + self.LITE_MODELS) if is_high_priority else (self.LITE_MODELS + self.DEEP_FLASH_MODELS)
         mode_tag = "⚡ [심층 퀀트 Flash 모드]" if is_high_priority else "🚀 [초고속 Flash-Lite 모드]"
@@ -346,25 +388,31 @@ class GeminiAnalyzer:
             )
         candles_text = "\n".join(recent_summary)
 
-        # ATR 기반 동적 기본 목표가/손절가 가이드
+        # ATR 기반 동적 목표가/손절가 가이드
         dynamic_tp = current_price + max(current_price * 0.025, atr_info["atr"] * 1.5)
         dynamic_sl = max(sr_levels["support_low"] * 0.995, current_price - max(current_price * 0.015, atr_info["atr"]))
 
-        # 3. 기관 퀀트 헤지펀드 시스템 프롬프트
+        # 4. 기관 퀀트 헤지펀드 시스템 프롬프트 v4.0
         memory_section = f"\n{trade_memory_context}\n" if trade_memory_context else ""
 
         prompt = f"""당신은 월스트리트 헤지펀드 출신의 수석 암호화폐 퀀트 트레이더이자 리스크 관리 책임자(CRO)입니다.
-제공된 실시간 {market}의 [MTF 상위 추세], [호가창 수급], [5분봉 정밀 퀀트 지표]를 종합 분석하여 최적의 트레이딩 지침을 JSON으로 제시하세요.
+제공된 실시간 {market}의 [BTC 거시 환경], [MTF 상위 추세], [호가창 & 체결강도 수급], [5분봉 퀀트 지표]를 종합 분석하여 최적의 트레이딩 지침을 JSON으로 제시하세요.
 
-### [1. MTF(멀티 타임프레임) 상위 추세 & 호가창 수급 데이터]
+### [0. 대장주(BTC) 거시 시장 환경]
+- 비트코인 시장 상태: {btc_context}
+※ 알트코인은 비트코인의 단기 급락세에 매우 취약하므로, BTC 급락 위험 감지 시에는 신규 매수를 전면 금지하고 HOLD하세요.
+
+### [1. MTF(멀티 타임프레임) 상위 추세 & 호가창/체결강도 수급 데이터]
 - 1시간봉 대세 방향: {mtf_1h['desc']}
-- 실시간 호가창 수급: {ob_info['imbalance_desc']}
+- 실시간 호가창 잔량: {ob_info['imbalance_desc']}
+- 실시간 실질 체결강도: {trade_strength['desc']}
 - 코인 고유 변동폭(ATR 14): {atr_info['atr']:,.2f} KRW ({atr_info['atr_pct']}% - {'🔥 고변동성 급등주' if atr_info['atr_pct'] >= 3.0 else '평온한 변동성'})
 
 ### [2. 5분봉 정밀 퀀트 지표 데이터]
 - 현재 체결가: {current_price:,.2f} KRW
 - 캔들 패턴: {candle_pattern}
-- 이동평균선: MA5={ma5:,.2f} | MA20={ma20:,.2f} ({'단기 골든크로스/정배열' if ma5 > ma20 else '단기 데드크로스/역배열'})
+- 이동평균선: MA5={ma5:,.2f} | MA20={ma20:,.2f} | MA60={ma60:,.2f}
+- MA20 이격도(Disparity): {disparity_ma20:.2f}% ({'⚠️ 과열 이격' if disparity_ma20 >= 104.0 else ('🟢 눌림목 적정' if 98.0 <= disparity_ma20 <= 102.5 else '과매도 이격')})
 - 모멘텀(RSI 14): {rsi_val} | MACD 상태: {macd['trend']} (Line={macd['macd']} | Signal={macd['signal']})
 - 볼린저 밴드(20, 2.0): 상단={bb['upper']:,.2f} | 중심={bb['middle']:,.2f} | 하단={bb['lower']:,.2f} | 위치(%B)={bb['pct_b']}
 - 거래량 상태: 현재={vol_info['current_vol']} | 5봉평균={vol_info['avg_vol_5']} ({vol_info['vol_ratio']}배 {'🚨 급증 폭발' if vol_info['is_spike'] else '평이'})
@@ -376,23 +424,28 @@ class GeminiAnalyzer:
 - 보유 여부: {'🔒 [보유 중]' if is_holding else '⚪ [미보유 (현금)]'} | 가용 원화: {krw_balance:,.0f} KRW
 - 보유 수량: {coin_balance:.8f} {currency} (평가: {coin_value:,.0f} KRW) | 평단가: {avg_buy_price:,.2f} KRW (손익률: {pnl_pct:+.2f}%)
 
-### [4. 기관 퀀트 5대 전략 원칙 (철저 준수)]
-1. [MTF 역추세 매수 금지]: 1시간봉이 '대세 하락장'인 경우, 5분봉 반등은 속임수(Dead Cat)일 확률이 높으므로 신규 BUY를 금지하고 HOLD 유지.
-2. [호가창 수급 검증]: 매수 잔량이 매도 잔량보다 두텁게 받쳐줄 때(세력 지지)만 매수 승인.
-3. [추격 매수 엄격 금지 (No-Chase)]: %B > 0.85이거나 윗꼬리가 길면 눌림목(MA5 또는 볼린저 중심선)까지 대기(HOLD).
-4. [손익비(Risk/Reward >= 1:1.5)]: (목표가 - 진입가)가 (진입가 - 손절가)의 최소 1.5배 이상 확보될 때만 매수.
-5. [ATR 맞춤 목표가/손절가]: 고변동성 코인은 목표가를 넓히고, 저변동성 코인은 타이트하게 설정.
+### [4. 5대 정량적 매수 승인 체크리스트 (5개 중 최소 4개 이상 충족 필수)]
+신규 매수(BUY) 승인을 내리기 위해서는 아래 5가지 조건 중 **반드시 4개 이상을 엄격히 충족**해야 합니다. 하나라도 애매하면 HOLD로 관망하세요:
+1. [MTF 추세 정렬]: 1시간봉 추세가 '대세 하락장'이 아닐 것 (하락장 속 5분봉 일시 반등은 데드캣 속임수).
+2. [모멘텀 건강도]: 5분봉 RSI가 35 ~ 65 사이일 것 (과열 70 이상 추격 매수 금지, 과매도 바닥 탈출 환영).
+3. [이격도 & 상단 저항]: MA20 이격도가 103.5% 이하이며, %B <= 0.85 (볼린저 상단 돌파 추격 매수 원천 금지).
+4. [캔들 형태 & 수급]: 캔들 윗꼬리 비율이 30% 이하이며, 체결강도 100% 이상 또는 거래량 급감 바닥 지지 확인.
+5. [기대 손익비]: (목표가 - 진입가) >= 1.5 * (진입가 - 손절가) 수학적 보장.
+
+### [5. 목표가/손절가 수학적 유효성 규칙]
+- BUY 시: 반드시 '손절가 < 현재가 < 목표가' 관계를 만족해야 하며, 손익비 1:1.5 이상을 유지하세요.
+- HOLD 시: 0을 적지 말고, **"눌림목 지지선 부근의 희망 진입가(ENTRY_PRICE)"**, **"직전 지지선 손절가(STOP_LOSS)"**, **"목표가(TARGET_PRICE)"**를 기재하여 향후 진입 기준선을 제시하세요.
 {memory_section}
 ### [JSON 출력 필수 스키마]
 반드시 마크다운 백틱 없는 순수 JSON 포맷으로만 응답하세요:
 {{
-  "STATUS": "ACTIVE" 또는 "PAUSE",
+  "STATUS": "ACTIVE",
   "ACTION": "BUY", "SELL", 또는 "HOLD",
   "ENTRY_PRICE": {int(current_price) if current_price >= 100 else round(current_price, 2)},
   "TARGET_PRICE": {int(dynamic_tp) if dynamic_tp >= 100 else round(dynamic_tp, 2)},
   "STOP_LOSS": {int(dynamic_sl) if dynamic_sl >= 100 else round(dynamic_sl, 2)},
   "ALLOC_PCT": 0.5,
-  "REASON": "MTF추세/호가창수급/캔들꼬리/손익비 기반 1~2줄 정밀 요약"
+  "REASON": "체크리스트 충족 현황 및 MTF추세/수급/손익비 기반 1~2줄 정밀 요약"
 }}
 """
 
@@ -435,6 +488,23 @@ class GeminiAnalyzer:
 
                     if entry_p <= 0:
                         entry_p = current_price
+                    if target_p <= 0:
+                        target_p = dynamic_tp
+                    if stop_l <= 0:
+                        stop_l = dynamic_sl
+
+                    # BUY 시 수학적 손익비 및 유효성 강제 보정
+                    if action == "BUY":
+                        if target_p <= current_price:
+                            target_p = dynamic_tp
+                        if stop_l >= current_price or stop_l <= 0:
+                            stop_l = dynamic_sl
+                        # 손익비 1.5배 미만 시 목표가 자동 상향
+                        reward = target_p - current_price
+                        risk = current_price - stop_l
+                        if risk > 0 and (reward / risk) < 1.3:
+                            target_p = current_price + (risk * 1.5)
+
                     if alloc_p > 1.0:
                         alloc_p = alloc_p / 100.0
 

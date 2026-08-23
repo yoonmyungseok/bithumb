@@ -1000,6 +1000,7 @@ def run_cycle():
                         candles_1h=candles_1h,
                         orderbook=orderbook,
                         trade_memory_context=feedback_context,
+                        btc_context=f"{btc_status_msg} ({'급락 위험 감지' if is_btc_crashing else '정상 안정세'})",
                     )
                     sheets.update_strategy(market, strategy, now_str, korean_name=korean_name)
                 else:
