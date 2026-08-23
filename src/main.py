@@ -345,7 +345,6 @@ def run_cycle():
     max_daily_loss = float(os.getenv("MAX_DAILY_LOSS_PCT", "0.05"))
     trailing_start = float(os.getenv("TRAILING_START_PCT", "0.02"))
     trailing_stop = float(os.getenv("TRAILING_STOP_PCT", "0.012"))
-    interval_mins = int(os.getenv("INTERVAL_MINUTES", "5"))
 
     trailing_tracker.start_profit_pct = trailing_start
     trailing_tracker.trailing_drop_pct = trailing_stop
