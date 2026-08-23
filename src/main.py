@@ -113,21 +113,30 @@ class TrailingStopTracker:
             self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
             return "PARTIAL_TP", current_price, current_price, current_profit_pct, current_profit_pct
 
-        # 2. [트레일링 스탑 추적 (시작 기준선: +2.0%)]
+        # 2. [수익률 단계별 가속 트레일링 스탑 (Ratchet Tightening)]
         if current_profit_rate >= self.start_profit_pct or self.partial_tp_done.get(market, False):
             previous_peak = self.peaks.get(market, avg_buy_price)
             current_peak = max(previous_peak, current_price)
             self.peaks[market] = current_peak
 
             peak_profit_pct = ((current_peak - avg_buy_price) / avg_buy_price) * 100.0
-            trailing_stop_price = current_peak * (1.0 - self.trailing_drop_pct)
+
+            # 수익률 구간별 동적 드롭 폭 축소 (고점 부근 이익 보존)
+            if peak_profit_pct >= 10.0:
+                active_drop_pct = 0.005  # +10% 이상 대박 구간: 0.5% 초밀착 추적
+            elif peak_profit_pct >= 5.0:
+                active_drop_pct = 0.008  # +5% 이상 급등 구간: 0.8% 밀착 추적
+            else:
+                active_drop_pct = self.trailing_drop_pct  # 기본 1.2%
+
+            trailing_stop_price = current_peak * (1.0 - active_drop_pct)
 
             # 수수료(0.1%) 차감 후 최소 +0.2% 순수익 안전 보장
             min_guaranteed_profit = avg_buy_price * 1.002
             trailing_stop_price = max(trailing_stop_price, min_guaranteed_profit)
 
             logger.info(
-                f"🎯 [{market}] 트레일링 추적 중: 최고점 {current_peak:,.2f}원 (+{peak_profit_pct:.2f}%) ➜ 익절기준선 {trailing_stop_price:,.2f}원"
+                f"🎯 [{market}] 가속 트레일링 추적 중: 최고점 {current_peak:,.2f}원 (+{peak_profit_pct:.2f}% | 드롭폭 {active_drop_pct*100:.1f}%) ➜ 익절기준선 {trailing_stop_price:,.2f}원"
             )
 
             if current_price <= trailing_stop_price:
@@ -554,7 +563,9 @@ def run_cycle():
                 if current_price <= 0:
                     continue
 
-                candles = bithumb.get_candles(unit=INTERVAL_MINUTES, count=30, market=market)
+                candles_5m = bithumb.get_candles(unit=INTERVAL_MINUTES, count=30, market=market)
+                candles_1h = bithumb.get_candles(unit=60, count=24, market=market)
+                orderbook = bithumb.get_orderbook(market)
 
                 logger.info(
                     f"[{korean_name} / {market}] 현재가: {current_price:,.2f}원 | 가용 KRW: {krw_available:,.0f}원 | 보유 {currency}: {coin_total:.6f} (평단: {avg_buy_price:,.2f}원)"
@@ -673,10 +684,12 @@ def run_cycle():
                     strategy = analyzer.analyze(
                         market=market,
                         current_price=current_price,
-                        candles=candles,
+                        candles=candles_5m,
                         krw_balance=krw_available,
                         coin_balance=coin_available,
                         avg_buy_price=avg_buy_price,
+                        candles_1h=candles_1h,
+                        orderbook=orderbook,
                     )
                     sheets.update_strategy(market, strategy, now_str, korean_name=korean_name)
                 else:
@@ -778,7 +791,8 @@ def run_cycle():
                         )
                         continue
 
-                    num_slots = max(1, len(target_markets) - len(held_markets) + 1)
+                    num_unheld_targets = len([m for m in target_markets if m not in held_markets])
+                    num_slots = max(1, num_unheld_targets)
                     max_market_budget = krw_available / num_slots
                     trade_budget = max_market_budget * alloc_pct
                     
@@ -786,8 +800,9 @@ def run_cycle():
                     order_price = entry_price if (0 < entry_price <= current_price * 1.002) else current_price
                     order_price = bithumb.round_price_to_tick(order_price)
 
-                    if trade_budget < MIN_ORDER_KRW and max_market_budget >= MIN_ORDER_KRW:
-                        trade_budget = min(max_market_budget, MIN_ORDER_KRW)
+                    # 가용 원화가 5,000원 이상이면 최소 주문 금액(5,000원)을 충족하도록 스마트 보정
+                    if trade_budget < MIN_ORDER_KRW and krw_available >= MIN_ORDER_KRW:
+                        trade_budget = min(krw_available, max(max_market_budget, MIN_ORDER_KRW))
 
                     if trade_budget < MIN_ORDER_KRW:
                         logger.warning(
@@ -879,7 +894,8 @@ def run_cycle():
         logger.error(f"전체 사이클 실행 중 에러:\n{traceback.format_exc()}")
         try:
             telegram = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
-            telegram.send_message(f"⚠️ <b>[자동매매 봇 사이클 경고]</b>\n{str(e)[:300]}")
+            err_summary = str(e)[:300]
+            telegram.send_message(f"⚠️ <b>[자동매매 봇 사이클 경고]</b>\n{err_summary}")
         except requests.exceptions.RequestException:
             pass
 

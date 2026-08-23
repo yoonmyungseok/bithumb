@@ -164,8 +164,22 @@ class BithumbAPI:
             "market": market,
             "count": count,
         }
-        data = self._request("GET", endpoint, params=params)
-        return data if isinstance(data, list) else []
+        try:
+            data = self._request("GET", endpoint, params=params)
+            return data if isinstance(data, list) else []
+        except (requests.exceptions.RequestException, KeyError, ValueError):
+            return []
+
+    def get_orderbook(self, market: str = "KRW-BTC") -> dict[str, Any]:
+        """
+        실시간 호가창 정보 조회 (매수/매도 호가 잔량 및 체결강도 분석용)
+        """
+        params = {"markets": market}
+        try:
+            data = self._request("GET", "/orderbook", params=params)
+            return data[0] if (isinstance(data, list) and data) else {}
+        except (requests.exceptions.RequestException, KeyError, ValueError, IndexError):
+            return {}
 
     def get_current_price(self, market: str = "KRW-BTC") -> float:
         """

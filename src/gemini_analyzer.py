@@ -11,16 +11,15 @@ logger = logging.getLogger(__name__)
 
 class GeminiAnalyzer:
     """
-    Google Gemini API 연동 프로 퀀트 트레이딩 분석 엔진 v2.5
-    - [지능형 동적 모델 라우터 (Dynamic Model Router)] 탑재:
-      * 1) 급등주 포착 및 신규 매수 정밀 검증 시 ➜ [고성능 Flash (gemini-3.7-flash, gemini-flash-latest)] 자동 배정
-      * 2) 일상 루틴 모니터링 및 보유 포지션 관망 시 ➜ [초고속 Flash-Lite (gemini-3.1-flash-lite)] 자동 배정
-      * 3) 모델 장애/지연 발생 시 ➜ 같은 Flash/Flash-Lite 군 내에서 0.1초 자동 폴백(Fallback)
-    - 5대 프로 퀀트 전략 원칙: 3중 진입 필터, 손익비(Risk/Reward >= 1:1.5) 강제, 추격매수 금지(No-Chase), 장세별 모드, 동적 손절/익절
+    Google Gemini API 연동 프로 퀀트 트레이딩 분석 엔진 v3.0
+    - [멀티 타임프레임(MTF) 3중 정렬]: 1시간봉 대세 추세 + 5분봉 정밀 진입 타점 동시 분석
+    - [호가창(Orderbook) 수급 분석]: 매수/매도 총잔량 비율 및 실시간 체결강도 포착
+    - [ATR(Average True Range) 변동성 적응형 퀀트]: 코인별 변동폭에 맞춘 동적 익절/손절 계산
+    - [지능형 동적 모델 라우터]: 상황별 Flash / Flash-Lite 최적 자동 배정 및 0.1초 폴백
     """
 
     # 1. 급등주 정밀 매수 검증 및 심층 추론용 (고성능 Flash 군)
-    DEEP_FLASH_MODELS = [
+    DEEP_FLASH_MODELS: ClassVar[list[str]] = [
         "gemini-3.5-flash",
         "gemini-3.1-flash-lite",
         "gemini-2.5-flash",
@@ -29,7 +28,7 @@ class GeminiAnalyzer:
     ]
 
     # 2. 일상 루틴 모니터링 및 초고속 상태 점검용 (초경량 Flash-Lite 군)
-    LITE_MODELS = [
+    LITE_MODELS: ClassVar[list[str]] = [
         "gemini-3.1-flash-lite",
         "gemini-2.5-flash-lite",
         "gemini-flash-lite-latest",
@@ -139,10 +138,87 @@ class GeminiAnalyzer:
         }
 
     @staticmethod
+    def calculate_atr(candles: list[dict[str, Any]], period: int = 14) -> dict[str, float]:
+        """
+        ATR (Average True Range) 평균 실제 변동폭 계산
+        """
+        if not candles or len(candles) < 2:
+            return {"atr": 0.0, "atr_pct": 2.0}
+
+        trs = []
+        for i in range(len(candles) - 1):
+            h = float(candles[i].get("high_price", 0.0))
+            l = float(candles[i].get("low_price", 0.0))
+            prev_c = float(candles[i + 1].get("trade_price", 0.0))
+            tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
+            trs.append(tr)
+
+        subset = trs[:min(len(trs), period)]
+        atr = sum(subset) / len(subset) if subset else 0.0
+        current_price = float(candles[0].get("trade_price", 1.0))
+        atr_pct = (atr / current_price * 100.0) if current_price > 0 else 2.0
+
+        return {"atr": round(atr, 2), "atr_pct": round(atr_pct, 2)}
+
+    @staticmethod
+    def analyze_orderbook(orderbook: dict[str, Any] | None) -> dict[str, Any]:
+        """
+        실시간 호가창 매수/매도 총잔량 비율 및 수급 강도 분석
+        """
+        if not orderbook:
+            return {"bid_ask_ratio": 1.0, "imbalance_desc": "호가창 데이터 없음 (중립)"}
+
+        total_ask = float(orderbook.get("total_ask_size", 1.0))
+        total_bid = float(orderbook.get("total_bid_size", 1.0))
+        ratio = total_bid / total_ask if total_ask > 0 else 1.0
+
+        if ratio >= 1.5:
+            desc = f"🟢 강력한 매수 벽 받침 (매수/매도 비율: {ratio:.2f}배 - 세력 지지)"
+        elif ratio <= 0.6:
+            desc = f"🔴 두터운 상단 매도 벽 저항 (매수/매도 비율: {ratio:.2f}배 - 차익 매물)"
+        else:
+            desc = f"⚪ 매수/매도 잔량 균형 (비율: {ratio:.2f}배)"
+
+        return {
+            "bid_ask_ratio": round(ratio, 2),
+            "total_bid": round(total_bid, 4),
+            "total_ask": round(total_ask, 4),
+            "imbalance_desc": desc,
+        }
+
+    def analyze_1h_trend(self, candles_1h: list[dict[str, Any]] | None) -> dict[str, Any]:
+        """
+        1시간봉(MTF) 대세 추세 분석 (상위 추세 정렬)
+        """
+        if not candles_1h or len(candles_1h) < 10:
+            return {"trend": "NEUTRAL", "desc": "1시간봉 데이터 부족 (중립)", "ma20": 0.0, "rsi": 50.0}
+
+        close_prices = [float(c.get("trade_price", 0)) for c in candles_1h if "trade_price" in c]
+        current_p = close_prices[0]
+        ma20_1h = sum(close_prices[:20]) / min(len(close_prices), 20) if close_prices else current_p
+        rsi_1h = self.calculate_rsi(close_prices, 14)
+        macd_1h = self.calculate_macd(close_prices, 12, 26, 9)
+
+        if current_p > ma20_1h and macd_1h["trend"] == "BULLISH":
+            trend = "BULLISH"
+            desc = f"🟢 1시간봉 대세 상승장 (주가 > 1h MA20({ma20_1h:,.1f}), 1h MACD 강세)"
+        elif current_p < ma20_1h and macd_1h["trend"] == "BEARISH":
+            trend = "BEARISH"
+            desc = f"🔴 1시간봉 대세 하락장 (주가 < 1h MA20({ma20_1h:,.1f}), 1h MACD 약세 - 단기 반등 속임수 주의)"
+        else:
+            trend = "SIDEWAYS"
+            desc = f"⚪ 1시간봉 횡보/수렴 구간 (1h RSI: {rsi_1h})"
+
+        return {
+            "trend": trend,
+            "desc": desc,
+            "ma20": round(ma20_1h, 2),
+            "rsi": rsi_1h,
+        }
+
+    @staticmethod
     def analyze_volume_spike(candles: list[dict[str, Any]]) -> dict[str, Any]:
-        """
-        거래량 급증(Volume Spike) 분석
-        """
+        """거래량 급증(Volume Spike) 분석"""
         if not candles or len(candles) < 2:
             return {"current_vol": 0.0, "avg_vol_5": 0.0, "vol_ratio": 1.0, "is_spike": False}
 
@@ -163,9 +239,7 @@ class GeminiAnalyzer:
 
     @staticmethod
     def analyze_support_resistance(candles: list[dict[str, Any]]) -> dict[str, float]:
-        """
-        최근 30개 캔들 기준 최고점(저항선) 및 최저점(지지선) 산출
-        """
+        """최근 30개 캔들 기준 최고점(저항선) 및 최저점(지지선) 산출"""
         if not candles:
             return {"resistance_high": 0.0, "support_low": 0.0}
 
@@ -182,9 +256,7 @@ class GeminiAnalyzer:
 
     @staticmethod
     def analyze_candle_patterns(candles: list[dict[str, Any]]) -> str:
-        """
-        최근 캔들의 몸통(Body) 및 윗꼬리/밑꼬리(Wick) 형태를 정밀 분석하여 속임수 반등 필터링
-        """
+        """최근 캔들의 몸통(Body) 및 윗꼬리/밑꼬리(Wick) 형태를 정밀 분석"""
         if not candles:
             return "캔들 데이터 없음"
 
@@ -225,9 +297,11 @@ class GeminiAnalyzer:
         krw_balance: float,
         coin_balance: float,
         avg_buy_price: float,
+        candles_1h: list[dict[str, Any]] | None = None,
+        orderbook: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
-        [지능형 라우팅] 상황에 따라 Flash vs Flash-Lite를 자동 선택하여 퀀트 분석 수행
+        [MTF 3중 정렬 + 호가창 수급 + ATR 변동성 + 지능형 모델 라우팅] 퀀트 분석 엔진
         """
         if not self.api_key:
             logger.warning("Gemini API Key가 설정되지 않았습니다.")
@@ -236,38 +310,30 @@ class GeminiAnalyzer:
         currency = market.split("-")[-1] if "-" in market else market
         close_prices = [float(c.get("trade_price", 0)) for c in candles if "trade_price" in c]
 
-        # 1. 종합 기술 지표 및 캔들 패턴 정밀 연산
+        # 1. 종합 기술 지표 연산
         rsi_val = self.calculate_rsi(close_prices, 14) if close_prices else 50.0
         bb = self.calculate_bollinger_bands(close_prices, 20, 2.0)
         macd = self.calculate_macd(close_prices, 12, 26, 9)
         vol_info = self.analyze_volume_spike(candles)
         sr_levels = self.analyze_support_resistance(candles)
         candle_pattern = self.analyze_candle_patterns(candles)
+        atr_info = self.calculate_atr(candles, 14)
+
+        # 2. MTF 1시간봉 상위 추세 및 호가창 수급 연산
+        mtf_1h = self.analyze_1h_trend(candles_1h)
+        ob_info = self.analyze_orderbook(orderbook)
 
         ma5 = sum(close_prices[:5]) / min(len(close_prices), 5) if close_prices else current_price
         ma20 = bb["middle"]
 
-        # 현재 포지션 보유 상태 및 수익률 계산
         coin_value = coin_balance * current_price
         is_holding = coin_value >= 4000.0
         pnl_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100 if (avg_buy_price > 0 and is_holding) else 0.0
 
-        # =========================================================================
-        # 🧠 [지능형 동적 모델 라우터 (Dynamic Model Router)]
-        # =========================================================================
-        # • 급등주 탐색/거래량 폭발/신규 매수 후보: 고성능 Flash (gemini-3.7-flash) 우선
-        # • 평온한 일상 모니터링/보유 유지 상태: 초고속 Flash-Lite (gemini-3.1-flash-lite) 우선
-        is_high_priority_trade = (not is_holding) or vol_info["is_spike"] or (abs(pnl_pct) >= 1.5)
-
-        if is_high_priority_trade:
-            # 1순위: 심층 Flash ➜ 2순위: Flash-Lite 폴백
-            candidate_models = self.DEEP_FLASH_MODELS + self.LITE_MODELS
-            mode_tag = "⚡ [심층 퀀트 Flash 모드]"
-        else:
-            # 1순위: 초고속 Flash-Lite ➜ 2순위: Flash 폴백
-            candidate_models = self.LITE_MODELS + self.DEEP_FLASH_MODELS
-            mode_tag = "🚀 [초고속 Flash-Lite 모드]"
-
+        # 지능형 동적 모델 배정 (급등주 탐색/거래량 폭발 시 고성능 Flash 투입)
+        is_high_priority = (not is_holding) or vol_info["is_spike"] or (abs(pnl_pct) >= 1.5)
+        candidate_models = (self.DEEP_FLASH_MODELS + self.LITE_MODELS) if is_high_priority else (self.LITE_MODELS + self.DEEP_FLASH_MODELS)
+        mode_tag = "⚡ [심층 퀀트 Flash 모드]" if is_high_priority else "🚀 [초고속 Flash-Lite 모드]"
         logger.info(f"[{market}] 모델 라우터: {mode_tag} (1순위: {candidate_models[0]})")
 
         # 최근 5개 캔들 요약
@@ -278,53 +344,40 @@ class GeminiAnalyzer:
             )
         candles_text = "\n".join(recent_summary)
 
-        # 2. 프로 퀀트 시스템 프롬프트 구성
-        prompt = f"""당신은 월스트리트 헤지펀드 출신의 수석 암호화폐 퀀트 트레이더이자 리스크 관리 책임자(CRO)입니다.
-아래 제공된 실시간 {market}({currency})의 [정밀 퀀트 지표 데이터]와 [포트폴리오 상태]를 바탕으로, [5대 프로 퀀트 전략 원칙]을 엄격히 적용하여 최적의 트레이딩 지침을 JSON으로 제시하세요.
+        # ATR 기반 동적 기본 목표가/손절가 가이드
+        dynamic_tp = current_price + max(current_price * 0.025, atr_info["atr"] * 1.5)
+        dynamic_sl = max(sr_levels["support_low"] * 0.995, current_price - max(current_price * 0.015, atr_info["atr"]))
 
-### [1. 실시간 정밀 퀀트 지표 데이터]
-- 마켓: {market}
+        # 3. 기관 퀀트 헤지펀드 시스템 프롬프트
+        prompt = f"""당신은 월스트리트 헤지펀드 출신의 수석 암호화폐 퀀트 트레이더이자 리스크 관리 책임자(CRO)입니다.
+제공된 실시간 {market}의 [MTF 상위 추세], [호가창 수급], [5분봉 정밀 퀀트 지표]를 종합 분석하여 최적의 트레이딩 지침을 JSON으로 제시하세요.
+
+### [1. MTF(멀티 타임프레임) 상위 추세 & 호가창 수급 데이터]
+- 1시간봉 대세 방향: {mtf_1h['desc']}
+- 실시간 호가창 수급: {ob_info['imbalance_desc']}
+- 코인 고유 변동폭(ATR 14): {atr_info['atr']:,.2f} KRW ({atr_info['atr_pct']}% - {'🔥 고변동성 급등주' if atr_info['atr_pct'] >= 3.0 else '평온한 변동성'})
+
+### [2. 5분봉 정밀 퀀트 지표 데이터]
 - 현재 체결가: {current_price:,.2f} KRW
-- 최근 캔들 패턴: {candle_pattern}
-- 이동평균선: MA5={ma5:,.2f} KRW | MA20={ma20:,.2f} KRW ({'MA5 > MA20 단기 골든크로스/정배열' if ma5 > ma20 else 'MA5 < MA20 단기 데드크로스/역배열'})
-- 모멘텀 지표 (RSI 14): {rsi_val} ({'극심한 과매도 바닥권' if rsi_val < 30 else ('과열/과매수권' if rsi_val > 70 else '중립 추세구간')})
-- 볼린저 밴드 (20, 2.0):
-  * 상단(저항): {bb['upper']:,.2f} KRW | 중심선: {bb['middle']:,.2f} KRW | 하단(지지): {bb['lower']:,.2f} KRW
-  * 밴드폭: {bb['width_pct']}% | 현재 밴드내 위치(%B): {bb['pct_b']} (0.0=하단터치, 1.0=상단터치)
-- MACD 지표 (12, 26, 9): Line={macd['macd']} | Signal={macd['signal']} | Hist={macd['hist']} | 상태={macd['trend']}
-- 거래량 상태: 현재봉 거래량={vol_info['current_vol']} | 직전5봉 평균={vol_info['avg_vol_5']} | 평균대비 {vol_info['vol_ratio']}배 ({'🚨 거래량 급증 폭발 확인' if vol_info['is_spike'] else '평이한 거래량'})
-- 최근 30개봉 주요 레벨: 최근 전고점 저항선={sr_levels['resistance_high']:,.2f} KRW | 최근 전저점 지지선={sr_levels['support_low']:,.2f} KRW
+- 캔들 패턴: {candle_pattern}
+- 이동평균선: MA5={ma5:,.2f} | MA20={ma20:,.2f} ({'단기 골든크로스/정배열' if ma5 > ma20 else '단기 데드크로스/역배열'})
+- 모멘텀(RSI 14): {rsi_val} | MACD 상태: {macd['trend']} (Line={macd['macd']} | Signal={macd['signal']})
+- 볼린저 밴드(20, 2.0): 상단={bb['upper']:,.2f} | 중심={bb['middle']:,.2f} | 하단={bb['lower']:,.2f} | 위치(%B)={bb['pct_b']}
+- 거래량 상태: 현재={vol_info['current_vol']} | 5봉평균={vol_info['avg_vol_5']} ({vol_info['vol_ratio']}배 {'🚨 급증 폭발' if vol_info['is_spike'] else '평이'})
+- 최근 주요 레벨: 전고점 저항={sr_levels['resistance_high']:,.2f} | 전저점 지지={sr_levels['support_low']:,.2f}
 - 최근 캔들 흐름:
 {candles_text}
 
-### [2. 현재 계좌 포트폴리오 상태]
-- 보유 여부: {'🔒 [현재 코인 보유 중]' if is_holding else '⚪ [미보유 (100% 현금 상태)]'}
-- 가용 원화(KRW): {krw_balance:,.0f} KRW (최소 주문 가능: 5,000 KRW)
-- 보유 {currency}: {coin_balance:.8f} {currency} (평가금액: {coin_value:,.0f} KRW)
-- 평단가: {avg_buy_price:,.2f} KRW | 현재 평가 손익률: {pnl_pct:+.2f}%
+### [3. 현재 계좌 포트폴리오 상태]
+- 보유 여부: {'🔒 [보유 중]' if is_holding else '⚪ [미보유 (현금)]'} | 가용 원화: {krw_balance:,.0f} KRW
+- 보유 수량: {coin_balance:.8f} {currency} (평가: {coin_value:,.0f} KRW) | 평단가: {avg_buy_price:,.2f} KRW (손익률: {pnl_pct:+.2f}%)
 
-### [3. 5대 프로 퀀트 전략 원칙 (철저 준수)]
-1. 포지션 상태별 맞춤 행동:
-   - 미보유 상태: SELL은 불가능하므로 BUY(진입) 또는 HOLD(관망) 중에서만 결정.
-   - 보유 중 상태: 이미 코인을 쥐고 있으므로 추가 매수(BUY)보다는 HOLD(수익 극대화 유지) 또는 SELL(분할 익절) 우선 판단.
-
-2. 추격 매수 엄격 금지 (No-Chase Rule):
-   - 현재 주가가 볼린저 상단 부근(%B > 0.85)이거나 윗꼬리가 길게 달린 경우, 상단 매도세 출회 위험이 크므로 절대로 매수하지 말고 '눌림목(MA5 또는 볼린저 중심선)'까지 HOLD로 대기.
-
-3. 3중 진입 검증 필터 (BUY 조건 - 모두 부합 시에만 매수):
-   - [필터1 추세]: MA20 위 또는 단기 골든크로스(MA5 > MA20) 지지 확인
-   - [필터2 모멘텀]: RSI 30~45 바닥권 반등 or 밑꼬리 긴 캔들(저가 매수세 지지) 확인
-   - [필터3 거래량]: 반등 시 거래량이 동반(평균 이상)되어 가짜 반등이 아님을 검증
-   - ※ 가용 원화가 5,000원 이상이면 소액이라도 정상 주문이 가능하므로 '잔고 부족' 이유로 HOLD하지 마세요. (소액 ALLOC_PCT: 0.5~1.0)
-
-4. 손익비(Risk/Reward Ratio >= 1:1.5) 강제 규칙:
-   - (목표가 - 진입가)의 기대 수익이 (진입가 - 손절가)의 예상 손실보다 최소 1.5배 이상 클 때만 매수 허용.
-   - 바로 위에 저항선이 있어 기대 수익이 적다면 진입 금지(HOLD).
-
-5. 동적 손절 & 본절 방어 & 시간 초과 룰:
-   - 손절가: 최근 전저점({sr_levels['support_low']:,.0f}) 또는 볼린저 하단({bb['lower']:,.0f})의 -0.5% 아래로 정밀 설정.
-   - 본절 방어: 보유 중 수익률이 +2% 이상이면 손절가를 내 평단가({avg_buy_price:,.0f}) 위로 올려 원금 무위험 상태 확보.
-   - 횡보 청산: 진입 후 변동성 없이 장시간 횡보 시 본절가 부근에서 정리(SELL) 유도.
+### [4. 기관 퀀트 5대 전략 원칙 (철저 준수)]
+1. [MTF 역추세 매수 금지]: 1시간봉이 '대세 하락장'인 경우, 5분봉 반등은 속임수(Dead Cat)일 확률이 높으므로 신규 BUY를 금지하고 HOLD 유지.
+2. [호가창 수급 검증]: 매수 잔량이 매도 잔량보다 두텁게 받쳐줄 때(세력 지지)만 매수 승인.
+3. [추격 매수 엄격 금지 (No-Chase)]: %B > 0.85이거나 윗꼬리가 길면 눌림목(MA5 또는 볼린저 중심선)까지 대기(HOLD).
+4. [손익비(Risk/Reward >= 1:1.5)]: (목표가 - 진입가)가 (진입가 - 손절가)의 최소 1.5배 이상 확보될 때만 매수.
+5. [ATR 맞춤 목표가/손절가]: 고변동성 코인은 목표가를 넓히고, 저변동성 코인은 타이트하게 설정.
 
 ### [JSON 출력 필수 스키마]
 반드시 마크다운 백틱 없는 순수 JSON 포맷으로만 응답하세요:
@@ -332,26 +385,21 @@ class GeminiAnalyzer:
   "STATUS": "ACTIVE" 또는 "PAUSE",
   "ACTION": "BUY", "SELL", 또는 "HOLD",
   "ENTRY_PRICE": {int(current_price) if current_price >= 100 else round(current_price, 2)},
-  "TARGET_PRICE": {int(bb['upper']) if current_price >= 100 else round(bb['upper'], 2)},
-  "STOP_LOSS": {int(sr_levels['support_low'] * 0.995) if current_price >= 100 else round(sr_levels['support_low'] * 0.995, 2)},
+  "TARGET_PRICE": {int(dynamic_tp) if dynamic_tp >= 100 else round(dynamic_tp, 2)},
+  "STOP_LOSS": {int(dynamic_sl) if dynamic_sl >= 100 else round(dynamic_sl, 2)},
   "ALLOC_PCT": 0.5,
-  "REASON": "정밀 지표 기반 분석 근거 1~2줄 요약 (캔들꼬리/장세/손익비 명시)"
+  "REASON": "MTF추세/호가창수급/캔들꼬리/손익비 기반 1~2줄 정밀 요약"
 }}
 """
 
-        # JSON 강제 출력 및 토큰 설정
         payload = {
-            "contents": [
-                {
-                    "parts": [{"text": prompt}]
-                }
-            ],
+            "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": 0.1,
                 "topP": 0.8,
                 "maxOutputTokens": 4000,
                 "responseMimeType": "application/json",
-            }
+            },
         }
 
         last_error = ""
@@ -405,7 +453,7 @@ class GeminiAnalyzer:
                 else:
                     last_error = f"[{model}] {response.text}"
                     logger.warning(f"모델 '{model}' 호출 실패 ({response.status_code}), 다음 백업 모델로 자동 전환...")
-            except (requests.exceptions.RequestException, json.JSONDecodeError, KeyError, IndexError, ValueError) as e:
+            except (requests.exceptions.RequestException, KeyError, ValueError, IndexError) as e:
                 last_error = f"[{model}] Exception: {e}"
                 logger.warning(f"모델 '{model}' 요청 중 오류 발생: {e}")
 
