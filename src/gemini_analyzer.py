@@ -8,6 +8,14 @@ from typing import Any, ClassVar
 
 import requests
 
+from strategy_engine import (
+    calculate_atr as se_calculate_atr,
+    calculate_bollinger_bands as se_calculate_bollinger_bands,
+    calculate_ema as se_calculate_ema,
+    calculate_macd as se_calculate_macd,
+    calculate_rsi as se_calculate_rsi,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,125 +45,26 @@ class GeminiAnalyzer:
 
     @staticmethod
     def calculate_rsi(prices: list[float], period: int = 14) -> float:
-        """단순 RSI(Relative Strength Index) 계산"""
-        if len(prices) < period + 1:
-            return 50.0
-
-        chronological = prices[::-1]
-        gains, losses = [], []
-
-        for i in range(1, len(chronological)):
-            delta = chronological[i] - chronological[i - 1]
-            if delta > 0:
-                gains.append(delta)
-                losses.append(0.0)
-            else:
-                gains.append(0.0)
-                losses.append(abs(delta))
-
-        if len(gains) < period:
-            return 50.0
-
-        avg_gain = sum(gains[-period:]) / period
-        avg_loss = sum(losses[-period:]) / period
-
-        if avg_loss == 0:
-            return 100.0
-
-        rs = avg_gain / avg_loss
-        rsi = 100.0 - (100.0 / (1.0 + rs))
-        return round(rsi, 2)
+        return se_calculate_rsi(prices, period)
 
     @staticmethod
     def calculate_bollinger_bands(
         prices: list[float], period: int = 20, num_std: float = 2.0
     ) -> dict[str, float]:
-        """
-        볼린저 밴드 (상단, 중심선, 하단, 밴드폭 %, %B 지표) 계산
-        """
-        if len(prices) < period:
-            current = prices[0] if prices else 0.0
-            return {"upper": current * 1.02, "middle": current, "lower": current * 0.98, "width_pct": 4.0, "pct_b": 0.5}
-
-        subset = prices[:period]
-        middle = sum(subset) / period
-        variance = sum((x - middle) ** 2 for x in subset) / period
-        std = math.sqrt(variance)
-
-        upper = middle + (num_std * std)
-        lower = middle - (num_std * std)
-        width_pct = ((upper - lower) / middle) * 100 if middle > 0 else 0.0
-
-        current_price = prices[0]
-        pct_b = (current_price - lower) / (upper - lower) if (upper - lower) > 0 else 0.5
-
-        return {
-            "upper": round(upper, 2),
-            "middle": round(middle, 2),
-            "lower": round(lower, 2),
-            "width_pct": round(width_pct, 2),
-            "pct_b": round(pct_b, 2),
-        }
+        return se_calculate_bollinger_bands(prices, period, num_std)
 
     @staticmethod
     def calculate_ema(prices: list[float], period: int) -> float:
-        """지수이동평균(EMA) 계산"""
-        if len(prices) < period:
-            return sum(prices) / len(prices) if prices else 0.0
-
-        chronological = prices[::-1]
-        k = 2 / (period + 1)
-        ema = sum(chronological[:period]) / period
-        for price in chronological[period:]:
-            ema = (price * k) + (ema * (1 - k))
-        return ema
+        return se_calculate_ema(prices, period)
 
     def calculate_macd(
         self, prices: list[float], fast: int = 12, slow: int = 26, signal: int = 9
     ) -> dict[str, Any]:
-        """
-        MACD 지표 (MACD Line, Signal Line, Histogram) 계산
-        """
-        if len(prices) < slow:
-            return {"macd": 0.0, "signal": 0.0, "hist": 0.0, "trend": "NEUTRAL"}
-
-        ema12 = self.calculate_ema(prices, fast)
-        ema26 = self.calculate_ema(prices, slow)
-        macd_line = ema12 - ema26
-        signal_line = macd_line * 0.9
-        hist = macd_line - signal_line
-
-        trend = "BULLISH" if macd_line > signal_line and macd_line > 0 else ("BEARISH" if macd_line < signal_line and macd_line < 0 else "NEUTRAL")
-
-        return {
-            "macd": round(macd_line, 2),
-            "signal": round(signal_line, 2),
-            "hist": round(hist, 2),
-            "trend": trend,
-        }
+        return se_calculate_macd(prices, fast, slow, signal)
 
     @staticmethod
     def calculate_atr(candles: list[dict[str, Any]], period: int = 14) -> dict[str, float]:
-        """
-        ATR (Average True Range) 평균 실제 변동폭 계산
-        """
-        if not candles or len(candles) < 2:
-            return {"atr": 0.0, "atr_pct": 2.0}
-
-        trs = []
-        for i in range(len(candles) - 1):
-            h = float(candles[i].get("high_price", 0.0))
-            l = float(candles[i].get("low_price", 0.0))
-            prev_c = float(candles[i + 1].get("trade_price", 0.0))
-            tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
-            trs.append(tr)
-
-        subset = trs[:min(len(trs), period)]
-        atr = sum(subset) / len(subset) if subset else 0.0
-        current_price = float(candles[0].get("trade_price", 1.0))
-        atr_pct = (atr / current_price * 100.0) if current_price > 0 else 2.0
-
-        return {"atr": round(atr, 2), "atr_pct": round(atr_pct, 2)}
+        return se_calculate_atr(candles, period)
 
     @staticmethod
     def analyze_trade_strength(candles: list[dict[str, Any]]) -> dict[str, Any]:

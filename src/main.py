@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 import traceback
 from logging.handlers import TimedRotatingFileHandler
@@ -131,6 +132,7 @@ def create_exchange_client() -> BithumbAPI | PaperBroker:
 # 빗썸 실시간 웹소켓(WebSocket) 클라이언트 (0.1초 실시간 시세 및 5분 고래 수급 스트리밍)
 ws_client = BithumbWebSocketClient(
     initial_markets=["KRW-BTC"],
+    on_price_callback=lambda m, p: on_realtime_price_tick(m, p),
 )
 
 
@@ -333,7 +335,7 @@ class DailyRiskManager:
         return False, 0
 
     def update_daily_equity(self, current_total_equity: float, now_kst: datetime.datetime) -> tuple[bool, float]:
-        date_key = (now_kst - datetime.timedelta(hours=9)).strftime("%Y-%m-%d")
+        date_key = now_kst.strftime("%Y-%m-%d")
 
         if date_key != self.current_date_str or self.daily_start_equity <= 0:
             if date_key != self.current_date_str and self.current_date_str:
@@ -760,7 +762,187 @@ LATEST_DASHBOARD_DATA: dict[str, Any] = {
 def get_web_dashboard_data() -> dict[str, Any]:
     """로컬 웹 대시보드 API 즉시 반환 (캐시된 최신 상태)"""
     LATEST_DASHBOARD_DATA["bot_state"] = "⏸️ 일시정지 중 (관망)" if IS_BOT_PAUSED else "🟢 24시간 실시간 자동매매 가동 중"
+    try:
+        mem = trade_memory.load_memory()
+        completed = mem.get("completed_trades", [])
+        LATEST_DASHBOARD_DATA["recent_trades"] = completed[-10:][::-1]
+
+        with order_journal._lock:
+            recent_orders = list(order_journal.orders[-10:][::-1])
+        LATEST_DASHBOARD_DATA["recent_orders"] = recent_orders
+    except Exception as e:
+        logger.debug(f"대시보드 부가 데이터 로드 예외: {e}")
     return LATEST_DASHBOARD_DATA
+
+
+_realtime_risk_lock = threading.Lock()
+_last_realtime_trigger: dict[str, float] = {}
+
+
+def on_realtime_price_tick(market: str, current_price: float):
+    """
+    0.1초 실시간 웹소켓 체결가 수신 시 즉시 트레일링 스탑 / 손절 감시 및 자동 청산
+    """
+    if current_price <= 0 or not market.startswith("KRW-"):
+        return
+
+    now_ts = time.time()
+    with _realtime_risk_lock:
+        if now_ts - _last_realtime_trigger.get(market, 0.0) < 5.0:
+            return
+
+    try:
+        bithumb = create_exchange_client()
+        currency = market.split("-")[-1]
+        balances = bithumb.get_balances()
+        coin_info = balances.get(currency, {"balance": 0.0, "locked": 0.0, "avg_buy_price": 0.0})
+        coin_available = float(coin_info.get("balance", 0.0))
+        avg_buy_price = float(coin_info.get("avg_buy_price", 0.0))
+        coin_value = coin_available * current_price
+
+        if coin_value < MIN_ORDER_KRW or avg_buy_price <= 0:
+            return
+
+        korean_name = bithumb.get_korean_name(market)
+        strat = LATEST_STRATEGIES.get(market, {})
+        stop_loss = float(strat.get("STOP_LOSS", 0.0))
+        telegram = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+        now_str = get_kst_now_str()
+
+        # 1. 실시간 손절 검사
+        if stop_loss > 0 and current_price <= stop_loss:
+            with _realtime_risk_lock:
+                if now_ts - _last_realtime_trigger.get(market, 0.0) < 5.0:
+                    return
+                _last_realtime_trigger[market] = now_ts
+
+            logger.warning(
+                f"⚡ [실시간 웹소켓 손절 발동] {korean_name}({market}) 현재가({current_price:,.2f}원) <= 손절가({stop_loss:,.2f}원). 즉시 시장가 매도!"
+            )
+            trailing_tracker.clear(market)
+            for order in bithumb.get_open_orders(market):
+                bithumb.cancel_order(order.get("uuid", ""))
+
+            order_res = order_executor.submit(
+                bithumb,
+                market=market,
+                side="ask",
+                volume=coin_available,
+                ord_type="market",
+            )
+            pnl_krw = (current_price - avg_buy_price) * coin_available
+            loss_pct = ((current_price - avg_buy_price) / avg_buy_price * 100)
+            risk_manager.add_realized_trade(pnl_krw, is_win=False)
+            trade_memory.record_completed_trade(
+                market=market,
+                side="STOP_LOSS",
+                entry_price=avg_buy_price,
+                exit_price=current_price,
+                pnl_pct=loss_pct,
+                pnl_krw=pnl_krw,
+                reason=f"0.1초 실시간 웹소켓 즉각 손절 실행 (손절선 {stop_loss:,.2f}원 터치)",
+                timestamp=now_str,
+            )
+            telegram.send_message(
+                f"🚨 <b>[실시간 초저지연 손절 매도 실행]</b>\n"
+                f"• 종목: {korean_name}({market})\n"
+                f"• 체결가: {current_price:,.2f} KRW (손절가: {stop_loss:,.2f} KRW)\n"
+                f"• 손실: {pnl_krw:,.0f} KRW ({loss_pct:.2f}%)\n"
+                f"• 사유: 0.1초 실시간 급락 방어선 즉시 청산\n"
+                f"• 일시: {now_str}"
+            )
+            return
+
+        # 2. 실시간 50% 분할 익절 & 가속 트레일링 스탑 검사
+        action_type, peak_p, _trigger_p, peak_profit_pct, realized_profit_pct = (
+            trailing_tracker.check_position(market, current_price, avg_buy_price)
+        )
+
+        if action_type == "PARTIAL_TP":
+            sell_vol = coin_available * 0.5
+            sell_val = sell_vol * current_price
+            if sell_val >= MIN_ORDER_KRW:
+                with _realtime_risk_lock:
+                    if now_ts - _last_realtime_trigger.get(market, 0.0) < 5.0:
+                        return
+                    _last_realtime_trigger[market] = now_ts
+
+                logger.info(
+                    f"⚡ [실시간 1차 50% 분할익절] {korean_name}({market}) 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 즉시 50% 시장가 익절!"
+                )
+                for order in bithumb.get_open_orders(market):
+                    bithumb.cancel_order(order.get("uuid", ""))
+
+                order_executor.submit(
+                    bithumb,
+                    market=market,
+                    side="ask",
+                    volume=sell_vol,
+                    ord_type="market",
+                )
+                pnl_krw = (current_price - avg_buy_price) * sell_vol
+                risk_manager.add_realized_trade(pnl_krw, is_win=True)
+                trade_memory.record_completed_trade(
+                    market=market,
+                    side="PARTIAL_TP",
+                    entry_price=avg_buy_price,
+                    exit_price=current_price,
+                    pnl_pct=realized_profit_pct,
+                    pnl_krw=pnl_krw,
+                    reason="0.1초 실시간 1차 +2.5% 도달 50% 분할 익절",
+                    timestamp=now_str,
+                )
+                telegram.send_message(
+                    f"🎉 <b>[실시간 1차 50% 분할익절 체결]</b>\n"
+                    f"• 종목: {korean_name}({market})\n"
+                    f"• 체결가: {current_price:,.2f} KRW (+{realized_profit_pct:.2f}%)\n"
+                    f"• 실현수익: +{pnl_krw:,.0f} KRW 💰\n"
+                    f"• 남은 50%: 무한 트레일링 러너 자동 전환\n"
+                    f"• 일시: {now_str}"
+                )
+
+        elif action_type == "TRAILING_STOP":
+            with _realtime_risk_lock:
+                if now_ts - _last_realtime_trigger.get(market, 0.0) < 5.0:
+                    return
+                _last_realtime_trigger[market] = now_ts
+
+            logger.info(
+                f"⚡ [실시간 트레일링 스탑 최고점 익절] {korean_name}({market}) 최고 {peak_p:,.2f}원(+{peak_profit_pct:.2f}%) ➜ 현재 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 즉시 전량 시장가 익절!"
+            )
+            for order in bithumb.get_open_orders(market):
+                bithumb.cancel_order(order.get("uuid", ""))
+
+            order_executor.submit(
+                bithumb,
+                market=market,
+                side="ask",
+                volume=coin_available,
+                ord_type="market",
+            )
+            pnl_krw = (current_price - avg_buy_price) * coin_available
+            risk_manager.add_realized_trade(pnl_krw, is_win=True)
+            trade_memory.record_completed_trade(
+                market=market,
+                side="TRAILING_STOP",
+                entry_price=avg_buy_price,
+                exit_price=current_price,
+                pnl_pct=realized_profit_pct,
+                pnl_krw=pnl_krw,
+                reason="0.1초 실시간 가속 트레일링 스탑 최고점 익절",
+                timestamp=now_str,
+            )
+            trailing_tracker.clear(market)
+            telegram.send_message(
+                f"🎯 <b>[실시간 트레일링 스탑 최고점 익절 완료]</b>\n"
+                f"• 종목: {korean_name}({market})\n"
+                f"• 최고가: {peak_p:,.2f} KRW (+{peak_profit_pct:.2f}%)\n"
+                f"• 익절 체결가: {current_price:,.2f} KRW (+{realized_profit_pct:.2f}%)\n"
+                f"• 확정 실현수익: +{pnl_krw:,.0f} KRW 🚀\n"
+                f"• 일시: {now_str}"
+            )
+    except Exception as e:
+        logger.debug(f"실시간 시세 콜백 처리 예외 ({market}): {e}")
 
 
 def handle_web_action(action: str) -> str:

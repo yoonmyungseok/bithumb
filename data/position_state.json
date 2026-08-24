@@ -1,8 +1,13 @@
 {
-  "peaks": {},
-  "partial_tp_done": {},
+  "peaks": {
+    "KRW-SPK": 30.23
+  },
+  "partial_tp_done": {
+    "KRW-SPK": true
+  },
   "entry_times": {
     "KRW-VIRTUAL": 1787532926.8047175,
-    "KRW-XRP": 1787541077.1620429
+    "KRW-SPK": 1787543273.74545,
+    "KRW-CYS": 1787545678.952287
   }
 }

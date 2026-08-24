@@ -41,11 +41,23 @@ class PaperBroker:
     def get_open_orders(self, market: str | None = None) -> list[dict[str, Any]]:
         return []
 
-    def get_order(self, uuid_str: str) -> dict[str, Any]:
-        return {"uuid": uuid_str, "state": "done"}
+    def get_order(self, uuid_str: str = "", client_order_id: str = "") -> dict[str, Any]:
+        return {
+            "uuid": uuid_str or f"paper-{client_order_id}",
+            "order_id": uuid_str or f"paper-{client_order_id}",
+            "client_order_id": client_order_id,
+            "state": "done",
+            "status": "done",
+        }
 
-    def cancel_order(self, uuid_str: str) -> dict[str, Any]:
-        return {"uuid": uuid_str, "state": "cancel"}
+    def cancel_order(self, uuid_str: str = "", client_order_id: str = "") -> dict[str, Any]:
+        return {
+            "uuid": uuid_str or f"paper-{client_order_id}",
+            "order_id": uuid_str or f"paper-{client_order_id}",
+            "client_order_id": client_order_id,
+            "state": "cancel",
+            "status": "cancel",
+        }
 
     def create_order(self, market: str, side: str, volume: float | None = None, price: float | None = None, ord_type: str = "limit", client_order_id: str = "") -> dict[str, Any]:
         currency = market.split("-")[-1]

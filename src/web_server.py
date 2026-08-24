@@ -104,7 +104,7 @@ class DashboardWebServer:
     <style>
         body {{ background-color: #0b0e14; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
         .card {{ background-color: #151923; border: 1px solid #232a3b; border-radius: 12px; }}
-        .badge {{ padding: 4px 10px; border-radius: 6px; font-weight: bold; font-size: 0.85rem; }}
+        .badge {{ padding: 3px 8px; border-radius: 6px; font-weight: bold; font-size: 0.75rem; }}
     </style>
 </head>
 <body class="p-6">
@@ -117,7 +117,7 @@ class DashboardWebServer:
                     <h1 class="text-2xl font-black bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">
                         Bithumb AI 퀀트 트레이딩 Pro
                     </h1>
-                    <p class="text-xs text-slate-400">포트: {self.port} | 실시간 급등주 스캔 & 50% 분할익절 가속 트레일링</p>
+                    <p class="text-xs text-slate-400">포트: {self.port} | 0.1초 실시간 웹소켓 리스크 방어 & 50% 분할익절 가속 트레일링</p>
                 </div>
             </div>
             <!-- Quick Actions -->
@@ -177,6 +177,55 @@ class DashboardWebServer:
             </div>
         </div>
 
+        <!-- Dual Column: Recent Completed Trades & Order Journal -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <!-- Recent Completed Trades -->
+            <div class="card p-6">
+                <h2 class="text-lg font-bold text-white mb-4 flex items-center">
+                    <span class="mr-2">💰</span> 최근 완료 거래 내역 (Trade Memory)
+                </h2>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs text-slate-300">
+                        <thead class="bg-slate-800/60 text-slate-400 uppercase">
+                            <tr>
+                                <th class="p-2.5">일시</th>
+                                <th class="p-2.5">종목</th>
+                                <th class="p-2.5">구분</th>
+                                <th class="p-2.5">실현 손익</th>
+                                <th class="p-2.5">사유</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trades_tbody" class="divide-y divide-slate-800">
+                            <tr><td colspan="5" class="p-3 text-center text-slate-500">완료된 거래 기록이 없습니다.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Order Journal -->
+            <div class="card p-6">
+                <h2 class="text-lg font-bold text-white mb-4 flex items-center">
+                    <span class="mr-2">🛡️</span> 실시간 주문 저널 (Order Journal)
+                </h2>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs text-slate-300">
+                        <thead class="bg-slate-800/60 text-slate-400 uppercase">
+                            <tr>
+                                <th class="p-2.5">클라이언트 ID</th>
+                                <th class="p-2.5">종목</th>
+                                <th class="p-2.5">방향</th>
+                                <th class="p-2.5">주문 상태</th>
+                                <th class="p-2.5">거래소 UUID</th>
+                            </tr>
+                        </thead>
+                        <tbody id="orders_tbody" class="divide-y divide-slate-800">
+                            <tr><td colspan="5" class="p-3 text-center text-slate-500">주문 저널 데이터 로딩 중...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
         <div class="text-center text-xs text-slate-500 py-2">
             빗썸 API 2.0 AI 퀀트 시스템 | 5초마다 자동 실시간 동기화 중 | 포트: {self.port}
         </div>
@@ -207,6 +256,7 @@ class DashboardWebServer:
                     document.getElementById('fear_greed').innerText = data.fear_and_greed || '-';
                     document.getElementById('bot_state').innerText = data.bot_state || '🟢 정상 가동 중';
 
+                    // Positions
                     const tbody = document.getElementById('positions_tbody');
                     if (data.positions && data.positions.length > 0) {{
                         tbody.innerHTML = data.positions.map(p => `
@@ -222,6 +272,46 @@ class DashboardWebServer:
                         `).join('');
                     }} else {{
                         tbody.innerHTML = '<tr><td colspan="7" class="p-6 text-center text-slate-500">현재 보유 중인 코인이 없습니다 (100% 현금 보유 관망 중).</td></tr>';
+                    }}
+
+                    // Recent Completed Trades
+                    const tradesTbody = document.getElementById('trades_tbody');
+                    if (data.recent_trades && data.recent_trades.length > 0) {{
+                        tradesTbody.innerHTML = data.recent_trades.map(t => {{
+                            const pnlKrw = t.pnl_krw || 0;
+                            const pnlPct = t.pnl_pct || 0;
+                            const isWin = pnlKrw >= 0;
+                            return `
+                                <tr class="hover:bg-slate-800/40">
+                                    <td class="p-2.5 text-slate-400">${{(t.timestamp || '').slice(-8)}}</td>
+                                    <td class="p-2.5 font-semibold text-white">${{t.market}}</td>
+                                    <td class="p-2.5"><span class="badge ${{t.side.includes('TP') || t.side.includes('WIN') ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}}">${{t.side}}</span></td>
+                                    <td class="p-2.5 font-bold ${{isWin ? 'text-emerald-400' : 'text-rose-400'}}">${{isWin ? '+' : ''}}${{pnlKrw.toLocaleString()}}원 (${{isWin ? '+' : ''}}${{pnlPct.toFixed(2)}}%)</td>
+                                    <td class="p-2.5 text-slate-400 max-w-xs truncate">${{t.reason || '-'}}</td>
+                                </tr>
+                            `;
+                        }}).join('');
+                    }} else {{
+                        tradesTbody.innerHTML = '<tr><td colspan="5" class="p-3 text-center text-slate-500">완료된 거래 기록이 없습니다.</td></tr>';
+                    }}
+
+                    // Recent Orders
+                    const ordersTbody = document.getElementById('orders_tbody');
+                    if (data.recent_orders && data.recent_orders.length > 0) {{
+                        ordersTbody.innerHTML = data.recent_orders.map(o => {{
+                            const statusColor = o.status === 'FILLED' ? 'bg-emerald-500/20 text-emerald-300' : (o.status === 'PARTIALLY_FILLED' ? 'bg-amber-500/20 text-amber-300' : (o.status === 'UNKNOWN' ? 'bg-rose-500/20 text-rose-300' : 'bg-slate-700 text-slate-300'));
+                            return `
+                                <tr class="hover:bg-slate-800/40 font-mono text-xs">
+                                    <td class="p-2.5 text-slate-400 truncate max-w-[120px]">${{o.client_order_id}}</td>
+                                    <td class="p-2.5 font-semibold text-white">${{o.market}}</td>
+                                    <td class="p-2.5 ${{o.side === 'bid' ? 'text-emerald-400' : 'text-rose-400'}}">${{o.side === 'bid' ? '매수' : '매도'}}</td>
+                                    <td class="p-2.5"><span class="badge ${{statusColor}}">${{o.status}}</span></td>
+                                    <td class="p-2.5 text-slate-400 truncate max-w-[120px]">${{o.exchange_uuid || o.exchange_order_id || '-'}}</td>
+                                </tr>
+                            `;
+                        }}).join('');
+                    }} else {{
+                        ordersTbody.innerHTML = '<tr><td colspan="5" class="p-3 text-center text-slate-500">주문 기록이 없습니다.</td></tr>';
                     }}
                 }}
             }} catch (e) {{
