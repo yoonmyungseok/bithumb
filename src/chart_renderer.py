@@ -1,5 +1,6 @@
 import io
 import logging
+import platform
 from typing import Any
 
 import matplotlib
@@ -7,6 +8,17 @@ import matplotlib
 matplotlib.use("Agg")  # GUI 없는 백엔드 사용
 import matplotlib.pyplot as plt
 from matplotlib import patches
+
+# 한글 폰트 설정 (윈도우: 맑은 고딕, 맥: AppleGothic, 리눅스: 나눔고딕)
+if platform.system() == "Windows":
+    plt.rcParams["font.family"] = "Malgun Gothic"
+elif platform.system() == "Darwin":
+    plt.rcParams["font.family"] = "AppleGothic"
+else:
+    plt.rcParams["font.family"] = "NanumGothic"
+
+# 마이너스(-) 부호 깨짐 방지
+plt.rcParams["axes.unicode_minus"] = False
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +34,11 @@ class ChartRenderer:
     """
 
     def __init__(self):
-        # 폰트 및 스타일 초기화
+        # 다크 스타일 초기화
         plt.style.use("dark_background")
+        if platform.system() == "Windows":
+            plt.rcParams["font.family"] = "Malgun Gothic"
+        plt.rcParams["axes.unicode_minus"] = False
 
     def render_trade_chart(
         self,
