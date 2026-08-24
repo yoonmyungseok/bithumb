@@ -1,7 +1,17 @@
 {
-  "date": "2026-08-23",
-  "start_equity": 27149.822740601998,
+  "date": "2026-08-24",
+  "start_equity": 27072.204356342,
   "realized_pnl_krw": 0.0,
   "total_trades": 0,
-  "win_trades": 0
+  "win_trades": 0,
+  "consecutive_losses": 0,
+  "cooldown_until_ts": 0.0,
+  "history": [
+    {
+      "date": "2026-08-23",
+      "total_trades": 5,
+      "win_trades": 4,
+      "realized_pnl_krw": 475.4537965169204
+    }
+  ]
 }

@@ -5,7 +5,7 @@ import os
 import sys
 import time
 import traceback
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 from typing import Any
 
 import requests
@@ -30,12 +30,15 @@ if sys.platform == "win32":
     except (OSError, AttributeError):
         pass
 
-# 로그 디렉토리 생성 및 로깅 설정 (콘솔 + 파일 동시 기록)
+# 로그 디렉토리 생성 및 일자별 로깅 설정 (자정마다 일자별 분할 보관, 30일치 유지)
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "trading.log")
 
-file_handler = RotatingFileHandler(LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+file_handler = TimedRotatingFileHandler(
+    LOG_FILE, when="midnight", interval=1, backupCount=30, encoding="utf-8"
+)
+file_handler.suffix = "%Y-%m-%d"
 stream_handler = logging.StreamHandler(sys.stdout)
 
 logging.basicConfig(
@@ -470,8 +473,8 @@ def check_btc_market_crash(bithumb: BithumbAPI, threshold_pct: float = BTC_CRASH
         return False, "BTC 검사 오류"
 
 
-def clean_stale_orders(bithumb: BithumbAPI, max_age_seconds: int = 60) -> int:
-    """1분(60초) 이상 미체결 주문 자동 취소 및 예수금 즉시 회수"""
+def clean_stale_orders(bithumb: BithumbAPI, max_age_seconds: int = 180) -> int:
+    """3분(180초) 이상 미체결 주문 자동 취소 및 예수금 즉시 회수"""
     canceled_count = 0
     try:
         open_orders = bithumb.get_open_orders()
@@ -766,10 +769,10 @@ def run_cycle():
         analyzer = GeminiAnalyzer(GEMINI_API_KEY) if GEMINI_API_KEY else None
         fng = get_fear_and_greed_index()
 
-        # 0-1. 미체결 주문 TTL 자동 정리 (60초 이상 미체결 주문 취소) & 스마트 리쿼팅
-        cleaned = clean_stale_orders(bithumb, max_age_seconds=60)
+        # 0-1. 미체결 주문 TTL 자동 정리 (3분/180초 이상 미체결 주문 취소) & 스마트 리쿼팅
+        cleaned = clean_stale_orders(bithumb, max_age_seconds=180)
         if cleaned > 0:
-            logger.info(f"🧹 총 {cleaned}건의 60초 경과 미체결 주문 자동 취소 및 예수금 회수 완료")
+            logger.info(f"🧹 총 {cleaned}건의 3분(180초) 경과 미체결 주문 자동 취소 및 예수금 회수 완료")
 
         requoted = requote_pending_orders(bithumb)
         if requoted > 0:
