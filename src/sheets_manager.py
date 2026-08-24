@@ -282,6 +282,40 @@ class SheetsManager:
         except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException, KeyError, ValueError) as e:
             logger.warning(f"Strategy 탭 갱신 실패: {e}")
 
+    def prune_unmonitored_strategies(self, active_markets: list[str]) -> None:
+        """
+        'Strategy' 탭에서 현재 감시 대상(active_markets)에 포함되지 않는 과거 잔여 행들을 일괄 정리
+        """
+        try:
+            try:
+                worksheet = self.spreadsheet.worksheet("Strategy")
+            except gspread.exceptions.WorksheetNotFound:
+                return
+
+            all_rows = worksheet.get_all_values()
+            if not all_rows or len(all_rows) <= 1:
+                return
+
+            headers = all_rows[0]
+            active_set = {m.upper() for m in active_markets}
+
+            # 현재 감시 대상인 행들만 필터링
+            filtered_rows = [headers]
+            for row in all_rows[1:]:
+                if row:
+                    market_code = str(row[1]).strip().upper() if len(row) > 1 else str(row[0]).strip().upper()
+                    if market_code in active_set:
+                        filtered_rows.append(row)
+
+            # 만약 정리할 과거 행이 있었다면 시트 갱신
+            if len(filtered_rows) < len(all_rows):
+                worksheet.clear()
+                worksheet.update(values=filtered_rows, range_name=f"A1:J{len(filtered_rows)}")
+                logger.info(f"🧹 구글 시트 Strategy 탭 정리 완료: {len(all_rows)-1}개 중 비감시 종목 삭제 후 {len(filtered_rows)-1}개 유지")
+
+        except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException, KeyError, ValueError) as e:
+            logger.warning(f"Strategy 탭 과거 행 정리 실패: {e}")
+
     def append_trade_log(self, data: dict[str, Any]) -> None:
         """
         'Trade_Log' 탭에 실시간 거래 내역 추가

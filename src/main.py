@@ -1178,6 +1178,9 @@ def run_cycle():
 
         logger.info(f"이번 사이클 최종 분석 대상 마켓 ({len(target_markets)}개): {target_markets}")
 
+        # 🧹 구글 시트 Strategy 탭의 과거 비감시 종목 정리
+        sheets.prune_unmonitored_strategies(target_markets)
+
         # ⚡ 빗썸 실시간 웹소켓(WebSocket) 구독 갱신
         ws_client.update_subscriptions(list(dict.fromkeys(target_markets + held_markets + ["KRW-BTC"])))
 
