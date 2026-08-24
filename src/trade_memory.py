@@ -31,6 +31,16 @@ class TradeMemoryManager:
             except (OSError, json.JSONDecodeError, ValueError) as e:
                 logger.warning(f"매매 메모리 로드 실패: {e}")
 
+    def load_memory(self) -> dict[str, Any]:
+        """Load memory and return dict for compatibility."""
+        self._load_memory()
+        return {"completed_trades": self.trades}
+
+    def get_recent_trades(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Return the most recent completed trades."""
+        self._load_memory()
+        return list(self.trades[-limit:])
+
     def _save_memory(self):
         try:
             write_json_atomically(self.memory_file, self.trades[-50:])

@@ -787,15 +787,24 @@ def get_web_dashboard_data() -> dict[str, Any]:
     """로컬 웹 대시보드 API 즉시 반환 (캐시된 최신 상태)"""
     LATEST_DASHBOARD_DATA["bot_state"] = "⏸️ 일시정지 중 (관망)" if IS_BOT_PAUSED else "🟢 24시간 실시간 자동매매 가동 중"
     try:
-        mem = trade_memory.load_memory()
-        completed = mem.get("completed_trades", [])
-        LATEST_DASHBOARD_DATA["recent_trades"] = completed[-10:][::-1]
+        if hasattr(trade_memory, "get_recent_trades"):
+            completed = trade_memory.get_recent_trades(limit=10)
+        elif hasattr(trade_memory, "load_memory"):
+            mem = trade_memory.load_memory()
+            completed = mem.get("completed_trades", []) if isinstance(mem, dict) else list(mem)
+        else:
+            completed = list(getattr(trade_memory, "trades", []))[-10:]
+        LATEST_DASHBOARD_DATA["recent_trades"] = completed[::-1]
+    except Exception as e:
+        logger.warning(f"대시보드 완료 거래 내역 로드 예외: {e}")
 
+    try:
         with order_journal._lock:
             recent_orders = list(order_journal.orders[-10:][::-1])
         LATEST_DASHBOARD_DATA["recent_orders"] = recent_orders
     except Exception as e:
-        logger.debug(f"대시보드 부가 데이터 로드 예외: {e}")
+        logger.warning(f"대시보드 주문 저널 로드 예외: {e}")
+
     return LATEST_DASHBOARD_DATA
 
 
