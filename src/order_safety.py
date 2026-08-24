@@ -97,6 +97,37 @@ class OrderJournal:
                     self._save()
                     return
 
+    def is_managed_order(self, order_uuid_or_client_id: str) -> bool:
+        """Check if an order UUID or client_order_id originated from this bot."""
+        if not order_uuid_or_client_id:
+            return False
+        with self._lock:
+            return any(
+                order.get("client_order_id") == order_uuid_or_client_id
+                or order.get("exchange_uuid") == order_uuid_or_client_id
+                or order.get("exchange_order_id") == order_uuid_or_client_id
+                for order in self.orders
+            )
+
+    def mark_by_uuid(self, exchange_uuid: str, status: str, **fields: Any) -> None:
+        """Update order status using exchange UUID."""
+        with self._lock:
+            for order in reversed(self.orders):
+                if order.get("exchange_uuid") == exchange_uuid or order.get("exchange_order_id") == exchange_uuid:
+                    order["status"] = status
+                    order["updated_at"] = time.time()
+                    order.update(fields)
+                    self._save()
+                    return
+
+    def get_order_by_uuid(self, exchange_uuid: str) -> dict[str, Any] | None:
+        """Lookup order by exchange UUID."""
+        with self._lock:
+            for order in reversed(self.orders):
+                if order.get("exchange_uuid") == exchange_uuid or order.get("exchange_order_id") == exchange_uuid:
+                    return dict(order)
+        return None
+
     def has_unresolved_market(self, market: str) -> bool:
         with self._lock:
             return any(

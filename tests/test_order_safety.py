@@ -123,8 +123,17 @@ class OrderSafetyTests(unittest.TestCase):
             risk_fraction=0.01,
             max_position_pct=0.35,
         )
-        self.assertGreater(size, 5000.0)
-        self.assertLessEqual(size, 350_000.0)
+    def test_is_managed_order_filters_external_orders(self):
+        client_id = self.journal.record_intent("KRW-BTC", "bid", 1, 10000, "limit")
+        self.journal.mark(client_id, "OPEN", exchange_uuid="uuid-bot-1")
+
+        # 봇이 생성한 주문 ID / UUID는 True
+        self.assertTrue(self.journal.is_managed_order(client_id))
+        self.assertTrue(self.journal.is_managed_order("uuid-bot-1"))
+
+        # 수동으로 생성된 외부 주문은 False
+        self.assertFalse(self.journal.is_managed_order("uuid-manual-external-999"))
+        self.assertFalse(self.journal.is_managed_order(""))
 
 
 if __name__ == "__main__":

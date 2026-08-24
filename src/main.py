@@ -501,32 +501,41 @@ def build_positions_data(
 
 
 def check_btc_market_crash(bithumb: BithumbAPI, threshold_pct: float = BTC_CRASH_THRESHOLD_PCT) -> tuple[bool, str, str]:
-    """Classify BTC market state into (is_crash: bool, btc_regime: str, status_msg: str)."""
+    """Classify BTC market state into (is_crash: bool, btc_regime: str, status_msg: str) with Fail-Closed policy."""
     try:
         btc_candles_5m = bithumb.get_candles(unit=INTERVAL_MINUTES, count=20, market="KRW-BTC")
         btc_candles_1h = bithumb.get_candles(unit=60, count=50, market="KRW-BTC")
+        if not btc_candles_5m or len(btc_candles_5m) < 5:
+            logger.warning("BTC 캔들 데이터 수신 부족으로 신규 매수 차단 (Fail-Closed)")
+            return True, "CRASH", "BTC 데이터 부족 (Fail-Closed: 안전 관망)"
+
         regime_data = classify_btc_regime(btc_candles_5m, btc_candles_1h, crash_threshold_pct=threshold_pct)
         regime = regime_data.get("regime", "NORMAL")
         is_crash = regime == "CRASH"
         return is_crash, regime, regime_data.get("reason", "BTC 정상 안정세")
     except Exception as e:
-        logger.warning(f"BTC 시장 상태 검사 실패: {e}")
-        return False, "NORMAL", "BTC 검사 오류 (정상 가정)"
+        logger.warning(f"BTC 시장 상태 검사 실패 (Fail-Closed 작동): {e}")
+        return True, "CRASH", f"BTC 조회 예외 (Fail-Closed: {e})"
 
 
 def clean_stale_orders(bithumb: BithumbAPI, max_age_seconds: int = 180) -> int:
-    """3분(180초) 이상 미체결 주문 자동 취소 및 예수금 즉시 회수"""
+    """3분(180초) 이상 미체결 봇 주문만 자동 취소 및 예수금 즉시 회수 (수동/외부 주문 보호)"""
     canceled_count = 0
     try:
         open_orders = bithumb.get_open_orders()
         now_ts = time.time()
         for order in open_orders:
-            created_at_str = order.get("created_at", "")
             order_uuid = order.get("uuid") or order.get("order_id", "")
             if not order_uuid:
                 continue
+
+            # 🛡️ 봇이 발행한 주문인지 검증 (외부/수동 주문 보호)
+            if not order_journal.is_managed_order(order_uuid):
+                continue
+
             market = order.get("market", "")
             side = "매수" if order.get("side") == "bid" else "매도"
+            created_at_str = order.get("created_at", "")
 
             try:
                 dt = datetime.datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
@@ -535,8 +544,9 @@ def clean_stale_orders(bithumb: BithumbAPI, max_age_seconds: int = 180) -> int:
                 order_age = 1000
 
             if order_age >= max_age_seconds:
-                logger.info(f"🧹 [장기 미체결 주문 청소] {market} {side} 주문 (경과: {order_age/60:.1f}분) 취소 진행")
+                logger.info(f"🧹 [장기 미체결 봇 주문 청소] {market} {side} 주문 (경과: {order_age/60:.1f}분) 취소 진행")
                 bithumb.cancel_order(order_uuid)
+                order_journal.mark_by_uuid(order_uuid, "CANCELED")
                 canceled_count += 1
 
     except (requests.exceptions.RequestException, KeyError, ValueError) as e:
@@ -546,7 +556,7 @@ def clean_stale_orders(bithumb: BithumbAPI, max_age_seconds: int = 180) -> int:
 
 
 def requote_pending_orders(bithumb: BithumbAPI) -> int:
-    """[스마트 최우선 호가 재정정 (Smart Re-quoter)]"""
+    """[스마트 최우선 호가 재정정 (Smart Re-quoter)] 봇 발행 주문만 선별 재정정"""
     requoted_count = 0
     try:
         open_orders = bithumb.get_open_orders()
@@ -555,13 +565,18 @@ def requote_pending_orders(bithumb: BithumbAPI) -> int:
             if order.get("side") != "bid":
                 continue
 
-            created_at_str = order.get("created_at", "")
             order_uuid = order.get("uuid") or order.get("order_id", "")
             if not order_uuid:
                 continue
+
+            # 🛡️ 봇이 발행한 주문인지 검증
+            if not order_journal.is_managed_order(order_uuid):
+                continue
+
             market = order.get("market", "")
             order_price = float(order.get("price", 0.0))
             order_vol = float(order.get("volume", 0.0))
+            created_at_str = order.get("created_at", "")
 
             try:
                 dt = datetime.datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
@@ -574,9 +589,10 @@ def requote_pending_orders(bithumb: BithumbAPI) -> int:
                 if current_price > order_price and current_price <= order_price * 1.008:
                     new_price = bithumb.round_price_to_tick(current_price)
                     logger.info(
-                        f"🎛️ [스마트 호가 재정정] {market} 기존 지정가({order_price:,.2f}원) ➜ 최신 체결가({new_price:,.2f}원)로 자동 정정"
+                        f"🎛️ [스마트 호가 재정정] {market} 봇 지정가({order_price:,.2f}원) ➜ 최신 체결가({new_price:,.2f}원)로 자동 정정"
                     )
                     bithumb.cancel_order(order_uuid)
+                    order_journal.mark_by_uuid(order_uuid, "CANCELED")
                     order_executor.submit(bithumb,
                         market=market,
                         side="bid",
