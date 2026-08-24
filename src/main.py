@@ -1374,6 +1374,9 @@ def run_cycle():
 
                     # 진입 시간 기록 (타임스탑 추적 시작 및 영구 저장)
                     trailing_tracker.set_entry_time(market)
+                    if market not in held_markets:
+                        held_markets.append(market)
+                    krw_available = max(0.0, krw_available - trade_budget)
 
                     # 진입 캔들 차트 이미지 렌더링 및 텔레그램 사진 전송
                     chart_img = chart_renderer.render_trade_chart(

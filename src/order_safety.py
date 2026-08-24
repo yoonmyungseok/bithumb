@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import time
 import uuid
 from typing import Any
@@ -45,6 +46,7 @@ class OrderJournal:
     """Small append-only JSON journal, written atomically for crash recovery."""
 
     def __init__(self, path: str | None = None):
+        self._lock = threading.Lock()
         data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(data_dir, exist_ok=True)
         self.path = path or os.path.join(data_dir, "order_journal.json")
@@ -70,43 +72,55 @@ class OrderJournal:
 
     def record_intent(self, market: str, side: str, volume: float | None, price: float | None, ord_type: str) -> str:
         client_order_id = f"bot-{int(time.time() * 1000)}-{uuid.uuid4().hex[:10]}"
-        self.orders.append({
-            "client_order_id": client_order_id,
-            "market": market,
-            "side": side,
-            "volume": volume,
-            "price": price,
-            "ord_type": ord_type,
-            "status": "PENDING_SUBMISSION",
-            "created_at": time.time(),
-            "exchange_uuid": None,
-        })
-        self._save()
+        with self._lock:
+            self.orders.append({
+                "client_order_id": client_order_id,
+                "market": market,
+                "side": side,
+                "volume": volume,
+                "price": price,
+                "ord_type": ord_type,
+                "status": "PENDING_SUBMISSION",
+                "created_at": time.time(),
+                "exchange_uuid": None,
+            })
+            self._save()
         return client_order_id
 
     def mark(self, client_order_id: str, status: str, **fields: Any) -> None:
-        for order in reversed(self.orders):
-            if order["client_order_id"] == client_order_id:
-                order["status"] = status
-                order["updated_at"] = time.time()
-                order.update(fields)
-                self._save()
-                return
+        with self._lock:
+            for order in reversed(self.orders):
+                if order["client_order_id"] == client_order_id:
+                    order["status"] = status
+                    order["updated_at"] = time.time()
+                    order.update(fields)
+                    self._save()
+                    return
 
     def has_unresolved_market(self, market: str) -> bool:
-        return any(
-            order.get("market") == market
-            and order.get("status") in {"PENDING_SUBMISSION", "UNKNOWN", "ACKNOWLEDGED", "OPEN"}
-            for order in self.orders
-        )
+        with self._lock:
+            return any(
+                order.get("market") == market
+                and order.get("status") in {"PENDING_SUBMISSION", "UNKNOWN", "ACKNOWLEDGED", "OPEN", "PARTIALLY_FILLED"}
+                for order in self.orders
+            )
 
     def reconcile_exchange_statuses(self, get_order: Any, get_order_by_client_id: Any | None = None) -> int:
         """Update acknowledged orders from the exchange's canonical order endpoint."""
         updated = 0
-        state_map = {"wait": "OPEN", "watch": "OPEN", "done": "FILLED", "cancel": "CANCELED"}
-        for local in self.orders:
-            exchange_uuid = local.get("exchange_uuid")
-            if local.get("status") not in {"PENDING_SUBMISSION", "UNKNOWN", "ACKNOWLEDGED", "OPEN"}:
+        state_map = {
+            "wait": "OPEN",
+            "watch": "OPEN",
+            "trade": "PARTIALLY_FILLED",
+            "done": "FILLED",
+            "cancel": "CANCELED",
+        }
+        with self._lock:
+            orders_snapshot = list(self.orders)
+
+        for local in orders_snapshot:
+            exchange_uuid = local.get("exchange_uuid") or local.get("exchange_order_id")
+            if local.get("status") not in {"PENDING_SUBMISSION", "UNKNOWN", "ACKNOWLEDGED", "OPEN", "PARTIALLY_FILLED"}:
                 continue
             try:
                 if exchange_uuid:
@@ -117,13 +131,14 @@ class OrderJournal:
                     continue
             except requests.exceptions.RequestException:
                 continue
-            state = state_map.get(str(remote.get("state", "")).lower())
+            raw_state = str(remote.get("state") or remote.get("status") or "").lower()
+            state = state_map.get(raw_state)
             if state and state != local.get("status"):
                 self.mark(
                     local["client_order_id"],
                     state,
-                    exchange_state=remote.get("state"),
-                    exchange_uuid=remote.get("uuid", exchange_uuid),
+                    exchange_state=raw_state,
+                    exchange_uuid=remote.get("uuid") or remote.get("order_id", exchange_uuid),
                     executed_volume=remote.get("executed_volume"),
                     remaining_volume=remote.get("remaining_volume"),
                     trades=remote.get("trades", []),
@@ -138,7 +153,10 @@ class OrderJournal:
         this conservative behavior prevents accidental duplicate orders.
         """
         matched = 0
-        for local in self.orders:
+        with self._lock:
+            orders_snapshot = list(self.orders)
+
+        for local in orders_snapshot:
             if local.get("status") not in {"PENDING_SUBMISSION", "UNKNOWN"}:
                 continue
             for remote in open_orders:
@@ -146,7 +164,7 @@ class OrderJournal:
                     continue
                 if local.get("ord_type") != remote.get("ord_type"):
                     continue
-                remote_uuid = remote.get("uuid")
+                remote_uuid = remote.get("uuid") or remote.get("order_id")
                 if remote_uuid:
                     self.mark(local["client_order_id"], "OPEN", exchange_uuid=remote_uuid)
                     matched += 1
@@ -156,7 +174,7 @@ class OrderJournal:
     def apply_private_order_event(self, event: dict[str, Any]) -> bool:
         """Apply a v2 MyOrder event keyed by the exchange client_order_id."""
         client_id = event.get("client_order_id") or event.get("coid")
-        state = str(event.get("state") or event.get("s") or "").lower()
+        state = str(event.get("state") or event.get("s") or event.get("status") or "").lower()
         mapped = {"wait": "OPEN", "trade": "PARTIALLY_FILLED", "done": "FILLED", "cancel": "CANCELED"}.get(state)
         if not client_id or not mapped:
             return False

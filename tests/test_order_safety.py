@@ -66,6 +66,17 @@ class OrderSafetyTests(unittest.TestCase):
         self.assertEqual(self.journal.orders[-1]["status"], "FILLED")
         self.assertFalse(self.journal.has_unresolved_market("KRW-BTC"))
 
+    def test_exchange_partial_fill_updates_status_to_partially_filled(self):
+        executor = SafeOrderExecutor(self.journal)
+        executor.submit(SuccessBithumb(), "KRW-BTC", "bid", volume=1, price=10000)
+        
+        def mock_get_order(_uuid):
+            return {"uuid": _uuid, "status": "trade", "executed_volume": "0.5", "remaining_volume": "0.5"}
+        
+        self.assertEqual(self.journal.reconcile_exchange_statuses(mock_get_order), 1)
+        self.assertEqual(self.journal.orders[-1]["status"], "PARTIALLY_FILLED")
+        self.assertTrue(self.journal.has_unresolved_market("KRW-BTC"))
+
     def test_private_fill_event_updates_journal_by_client_order_id(self):
         client_id = self.journal.record_intent("KRW-BTC", "bid", 1, 10000, "limit")
         self.assertTrue(self.journal.apply_private_order_event({

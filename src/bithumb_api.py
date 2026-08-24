@@ -286,9 +286,21 @@ class BithumbAPI:
         """Fetch one order's current exchange state for crash-recovery reconciliation."""
         if not uuid_str and not client_order_id:
             raise ValueError("주문 UUID 또는 client_order_id가 필요합니다.")
-        params = {"uuid": uuid_str} if uuid_str else {"client_order_id": client_order_id}
-        data = self._request("GET", "/order", params=params)
-        return data if isinstance(data, dict) else {}
+        
+        # v2 endpoint with fallback to v1
+        params = {"order_id": uuid_str} if uuid_str else {"client_order_id": client_order_id}
+        try:
+            data = self._request("GET", "/order", params=params, api_version="v2")
+        except (requests.exceptions.RequestException, KeyError, ValueError):
+            v1_params = {"uuid": uuid_str} if uuid_str else {"client_order_id": client_order_id}
+            data = self._request("GET", "/order", params=v1_params, api_version="v1")
+
+        if isinstance(data, dict):
+            # 필드 정규화
+            data.setdefault("uuid", data.get("order_id", ""))
+            data.setdefault("state", data.get("status", ""))
+            return data
+        return {}
 
     def create_order(
         self,
