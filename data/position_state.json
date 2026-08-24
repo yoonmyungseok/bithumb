@@ -1,5 +1,7 @@
 {
-  "peaks": {},
+  "peaks": {
+    "KRW-SPK": 30.44
+  },
   "partial_tp_done": {},
   "entry_times": {
     "KRW-SPK": 1787546668.5196683,
