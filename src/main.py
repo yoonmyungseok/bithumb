@@ -588,7 +588,6 @@ def run_cycle():
                         btc_context=f"{btc_status_msg} ({'급락 위험 감지' if is_btc_crashing else '정상 안정세'})",
                         whale_context=whale_flow_context,
                     )
-                    sheets.update_strategy(market, strategy, now_str, korean_name=korean_name)
                 else:
                     strategy = sheets.get_strategy(market)
 
@@ -633,6 +632,22 @@ def run_cycle():
                     "STOP_LOSS": stop_loss,
                     "REASON": reason,
                 }
+
+                # 📊 최종 정량 게이트 및 리스크 필터가 반영된 확정 전략을 구글 시트에 갱신
+                sheets.update_strategy(
+                    market,
+                    {
+                        "status": status,
+                        "action": action,
+                        "entry_price": entry_price,
+                        "target_price": target_price,
+                        "stop_loss": stop_loss,
+                        "alloc_pct": alloc_pct,
+                        "reason": reason,
+                    },
+                    now_str,
+                    korean_name=korean_name,
+                )
 
                 if status != "ACTIVE":
                     continue

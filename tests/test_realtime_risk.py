@@ -198,7 +198,7 @@ class RealtimeRiskAndIndicatorTests(unittest.TestCase):
             executor = SafeOrderExecutor(journal)
             rm = DailyRiskManager(data_dir=tmpdir)
             tst = TrailingStopTracker(data_dir=tmpdir)
-            tm = TradeMemoryManager()
+            tm = TradeMemoryManager(data_dir=tmpdir)
             tg = TelegramAlert("token", "chat_id")
 
             mock_api = types.SimpleNamespace(

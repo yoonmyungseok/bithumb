@@ -16,10 +16,10 @@ class TradeMemoryManager:
     - 시간이 지날수록 동일한 실수를 반복하지 않고 승률이 우상향하도록 진화
     """
 
-    def __init__(self):
-        self.data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+    def __init__(self, memory_file: str | None = None, data_dir: str | None = None):
+        self.data_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(self.data_dir, exist_ok=True)
-        self.memory_file = os.path.join(self.data_dir, "trade_memory.json")
+        self.memory_file = memory_file or os.path.join(self.data_dir, "trade_memory.json")
         self.trades: list[dict[str, Any]] = []
         self._load_memory()
 
@@ -37,9 +37,9 @@ class TradeMemoryManager:
         return {"completed_trades": self.trades}
 
     def get_recent_trades(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Return the most recent completed trades."""
+        """Return the most recent completed trades (newest first)."""
         self._load_memory()
-        return list(self.trades[-limit:])
+        return list(reversed(self.trades[-limit:]))
 
     def _save_memory(self):
         try:

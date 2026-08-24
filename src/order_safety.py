@@ -97,6 +97,11 @@ class OrderJournal:
                     self._save()
                     return
 
+    def get_recent_orders(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Return the most recent orders (newest first)."""
+        with self._lock:
+            return list(reversed(self.orders[-limit:]))
+
     def is_managed_order(self, order_uuid_or_client_id: str) -> bool:
         """Check if an order UUID or client_order_id originated from this bot."""
         if not order_uuid_or_client_id:

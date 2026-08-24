@@ -80,7 +80,7 @@ class StartupAndIntegrationAuditTests(unittest.TestCase):
         cooldown = CooldownManager(state_file=os.path.join(self.data_dir, "cd.json"))
         rm = DailyRiskManager(data_dir=self.data_dir)
         tst = TrailingStopTracker(data_dir=self.data_dir)
-        tm = TradeMemoryManager()
+        tm = TradeMemoryManager(data_dir=self.data_dir)
         tg = TelegramAlert("test-token", "123456")
 
         mock_exchange = types.SimpleNamespace(
