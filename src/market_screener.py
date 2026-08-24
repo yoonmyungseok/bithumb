@@ -18,11 +18,22 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+EXCLUDED_STABLE_MARKETS: set[str] = {
+    "KRW-USDT",
+    "KRW-USDC",
+    "KRW-DAI",
+    "KRW-TUSD",
+    "KRW-FDUSD",
+    "KRW-USDE",
+}
+
+
 class MarketScreener:
     """
     빗썸 실시간 거래대금 상위 + 급등 모멘텀 종목 동적 탐색기 (Screener)
     - KRW 마켓 전체를 실시간 스캔하여 거래대금과 상승률이 우수한 유망 단타 종목 자동 선별
     - 기보유 중인 코인은 매도/손절 완료 전까지 최우선으로 목록에 유지
+    - USDT, USDC 등 무변동 스테이블코인은 자금 잠김 방지를 위해 원천 배제
     """
 
     def __init__(
@@ -85,6 +96,9 @@ class MarketScreener:
 
                 if not market or trade_price <= 0:
                     logger.debug("유효하지 않은 티커 레코드 제외: market=%r trade_price=%r", market, t.get("trade_price"))
+                    continue
+
+                if market in EXCLUDED_STABLE_MARKETS:
                     continue
 
                 ticker_info = {
@@ -166,6 +180,7 @@ class MarketScreener:
                 fallback_tickers = [
                     t for t in all_tickers
                     if t.get("market", "") not in held_set
+                    and t.get("market", "") not in EXCLUDED_STABLE_MARKETS
                     and _safe_float(t.get("trade_price")) > 0
                     and _safe_float(t.get("acc_trade_price_24h", t.get("acc_trade_value_24h", 0.0))) >= 1_000_000_000.0
                 ]

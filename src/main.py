@@ -571,8 +571,27 @@ def run_cycle():
                         telegram.send_message(caption)
                         continue
 
-                # AI 전략 수립 및 실시간 고래 수급 + 자가학습 피드백 주입
-                if analyzer:
+                # =========================================================================
+                # 🧠 [하이브리드 2단계 게이팅: 1차 퀀트 사전 필터 ➜ 2차 AI 최종 승인]
+                # ※ 1차 퀀트 조건 미충족(95%) 시 Gemini API를 호출하지 않아 하루 쿼터 95% 절약
+                # =========================================================================
+                local_entry = entry_signal(
+                    candles=candles_5m,
+                    candles_1h=candles_1h,
+                    btc_regime=btc_regime,
+                )
+                in_cooldown, cd_remaining = cooldown_manager.is_in_cooldown(market)
+                is_holding = (coin_value >= MIN_ORDER_KRW and avg_buy_price > 0)
+
+                should_call_ai = (
+                    analyzer is not None
+                    and not is_holding
+                    and not in_cooldown
+                    and local_entry["allow_buy"]
+                    and not is_btc_crashing
+                )
+
+                if should_call_ai and analyzer is not None:
                     feedback_context = trade_memory.get_feedback_context()
                     whale_flow_context = ws_client.get_whale_flow_summary(market)
                     strategy = analyzer.analyze(
@@ -589,26 +608,42 @@ def run_cycle():
                         whale_context=whale_flow_context,
                     )
                 else:
-                    strategy = sheets.get_strategy(market)
+                    # 1차 퀀트 관망 또는 기보유 포지션 기준선 산출 (Zero API Quota)
+                    quant_reason = (
+                        f"기보유 포지션 퀀트 감시 ({local_entry['reason']})"
+                        if is_holding
+                        else (
+                            f"재진입 쿨다운 대기중 ({cd_remaining/60:.0f}분 남음)"
+                            if in_cooldown
+                            else (
+                                f"BTC 레짐 경보 ({btc_status_msg})"
+                                if is_btc_crashing
+                                else f"1차 퀀트 관망 대기: {local_entry['reason']}"
+                            )
+                        )
+                    )
+                    strategy = {
+                        "status": "ACTIVE",
+                        "action": "HOLD",
+                        "entry_price": local_entry["entry_price"],
+                        "target_price": local_entry["target_price"],
+                        "stop_loss": local_entry["stop_loss"],
+                        "alloc_pct": 0.0,
+                        "reason": quant_reason,
+                    }
 
-                status = strategy.get("status", "PAUSE")
+                status = strategy.get("status", "ACTIVE")
                 action = strategy.get("action", "HOLD")
                 entry_price = strategy.get("entry_price", current_price)
-                target_price = strategy.get("target_price", 0.0)
-                stop_loss = strategy.get("stop_loss", 0.0)
+                target_price = strategy.get("target_price", local_entry["target_price"])
+                stop_loss = strategy.get("stop_loss", local_entry["stop_loss"])
                 alloc_pct = strategy.get("alloc_pct", 0.3)
                 reason = strategy.get("reason", "자동 분석")
 
-                in_cooldown, cd_remaining = cooldown_manager.is_in_cooldown(market)
                 if in_cooldown and action == "BUY":
                     action = "HOLD"
                     reason = f"재진입 쿨다운 대기중 ({cd_remaining/60:.0f}분 남음) | {reason}"
 
-                local_entry = entry_signal(
-                    candles=candles_5m,
-                    candles_1h=candles_1h,
-                    btc_regime=btc_regime,
-                )
                 if action == "BUY" and not local_entry["allow_buy"]:
                     action = "HOLD"
                     reason = f"정량 공통 진입 게이트 차단: {local_entry['reason']} | {reason}"

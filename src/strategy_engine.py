@@ -243,12 +243,12 @@ def entry_signal(
     volatility = atr_data["atr"]
     atr_pct = atr_data["atr_pct"]
 
-    # 목표가: 최소 +2.0% 또는 ATR 2.0배
-    target_offset = max(current * 0.020, volatility * 2.0)
+    # 목표가: 최소 +2.5% 또는 ATR 2.0배
+    target_offset = max(current * 0.025, volatility * 2.0)
     target_price = current + target_offset
 
-    # 손절가: 최소 -1.2% 또는 ATR 1.3배 (손익비 >= 1.54 보장)
-    stop_offset = max(current * 0.012, volatility * 1.3)
+    # 손절가: 최소 -1.5% 또는 ATR 1.2배 (수수료 및 1틱 휩소 방지, 손익비 >= 1.6 보장)
+    stop_offset = max(current * 0.015, volatility * 1.2)
     stop_loss = current - stop_offset
 
     reasons = [

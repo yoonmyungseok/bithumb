@@ -43,6 +43,7 @@ class RealtimeRiskEngine:
         self.latest_strategies = latest_strategies if latest_strategies is not None else {}
         self._lock = threading.Lock()
         self._last_trigger: dict[str, float] = {}
+        self._sl_hit_count: dict[str, int] = {}
 
     def cancel_bot_open_orders(self, market: str | None = None) -> int:
         """봇이 발행한 미체결 주문만 선별 취소하여 외부/수동 주문 보호"""
@@ -166,17 +167,25 @@ class RealtimeRiskEngine:
 
             korean_name = bithumb.get_korean_name(market)
             strat = self.latest_strategies.get(market, {})
-            stop_loss = float(strat.get("STOP_LOSS", 0.0))
-            # 전략상 손절가가 0이면 평단가 대비 -3.0% 비상 하한선 기본 적용
-            effective_stop_loss = stop_loss if stop_loss > 0 else (avg_buy_price * 0.97)
+            raw_stop_loss = float(strat.get("STOP_LOSS", 0.0))
+            # 진입 직후 1틱(-0.3%) 털림 방지: 손절선은 평단가 대비 최소 -1.5% 이하로 안전 마진 보장
+            min_sl_threshold = avg_buy_price * 0.985
+            effective_stop_loss = min(raw_stop_loss, min_sl_threshold) if raw_stop_loss > 0 else (avg_buy_price * 0.970)
             now_str = get_kst_now_str()
 
-            # 1. 실시간 손절 검사
+            # 1. 실시간 손절 검사 (단일 틱 휩소 방지: 2회 연속 하회 또는 급락 -2.5% 이하 시 즉시 실행)
             if effective_stop_loss > 0 and current_price <= effective_stop_loss:
                 with self._lock:
+                    self._sl_hit_count[market] = self._sl_hit_count.get(market, 0) + 1
+                    is_severe_drop = current_price <= (avg_buy_price * 0.975)
+                    if self._sl_hit_count[market] < 2 and not is_severe_drop:
+                        logger.debug(f"⚠️ [{market}] 1차 손절선 터치 ({current_price:,.2f}원 <= {effective_stop_loss:,.2f}원) - 휩소 확인 중")
+                        return
+
                     if now_ts - self._last_trigger.get(market, 0.0) < 5.0:
                         return
                     self._last_trigger[market] = now_ts
+                    self._sl_hit_count[market] = 0
 
                 logger.warning(
                     f"⚡ [실시간 웹소켓 손절 발동] {korean_name}({market}) 현재가({current_price:,.2f}원) <= 손절가({effective_stop_loss:,.2f}원). 즉시 시장가 매도!"
@@ -202,7 +211,7 @@ class RealtimeRiskEngine:
                     exit_price=current_price,
                     pnl_pct=loss_pct,
                     pnl_krw=pnl_krw,
-                    reason=f"0.1초 실시간 웹소켓 즉각 손절 실행 (손절선 {effective_stop_loss:,.2f}원 터치)",
+                    reason=f"0.1초 실시간 웹소켓 손절 실행 (손절선 {effective_stop_loss:,.2f}원 터치)",
                     timestamp=now_str,
                 )
                 self.telegram.send_message(
@@ -210,10 +219,15 @@ class RealtimeRiskEngine:
                     f"• 종목: {korean_name}({market})\n"
                     f"• 체결가: {current_price:,.2f} KRW (손절가: {effective_stop_loss:,.2f} KRW)\n"
                     f"• 손실: {pnl_krw:,.0f} KRW ({loss_pct:.2f}%)\n"
-                    f"• 사유: 0.1초 실시간 급락 방어선 즉시 청산\n"
+                    f"• 사유: 0.1초 실시간 급락 방어선 청산\n"
                     f"• 일시: {now_str}"
                 )
                 return
+            else:
+                # 손절선 위로 복귀 시 틱 카운터 리셋
+                with self._lock:
+                    if market in self._sl_hit_count:
+                        self._sl_hit_count[market] = 0
 
             # 2. 실시간 50% 분할 익절 & 가속 트레일링 스탑 검사
             action_type, peak_p, _trigger_p, peak_profit_pct, realized_profit_pct = (

@@ -30,11 +30,12 @@ class GeminiAnalyzer:
     - [안정형 모델 라우터]: Rate Limit 429 방지를 위해 프로덕션 안정 모델 우선 배치
     """
 
-    # 1. 안정적인 프로덕션 공식 Flash 모델 군 (무료 티어 1,500 RPD 지원)
+    # 1. 안정적인 프로덕션 공식 Flash 모델 군 (쿼터 효율 최고인 Lite 우선 배치)
     STABLE_MODELS: ClassVar[list[str]] = [
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-2.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-flash-latest",
     ]
 
     # 모델별 429 쿨다운 만료 시점 캐시 (전역 공유)
@@ -389,17 +390,20 @@ class GeminiAnalyzer:
         # 4. 코인 고유 변동성(ATR %)에 따른 맞춤형 동적 손익비 가이드라인
         atr_pct = atr_info["atr_pct"]
         if atr_pct < 2.0:  # 저변동성 메이저
-            tp_delta = max(current_price * 0.020, atr_info["atr"] * 1.5)
-            sl_delta = min(current_price * 0.012, atr_info["atr"] * 0.9)
+            tp_delta = max(current_price * 0.025, atr_info["atr"] * 1.8)
+            sl_delta = max(current_price * 0.015, atr_info["atr"] * 1.1)
         elif atr_pct <= 4.0:  # 일반 알트코인
-            tp_delta = max(current_price * 0.035, atr_info["atr"] * 1.6)
-            sl_delta = max(current_price * 0.018, atr_info["atr"] * 1.0)
+            tp_delta = max(current_price * 0.040, atr_info["atr"] * 2.0)
+            sl_delta = max(current_price * 0.020, atr_info["atr"] * 1.2)
         else:  # 고변동성 급등주
-            tp_delta = max(current_price * 0.050, atr_info["atr"] * 1.8)
-            sl_delta = max(current_price * 0.025, atr_info["atr"] * 1.1)
+            tp_delta = max(current_price * 0.060, atr_info["atr"] * 2.2)
+            sl_delta = max(current_price * 0.028, atr_info["atr"] * 1.3)
 
         dynamic_tp = current_price + tp_delta
-        dynamic_sl = max(sr_levels["support_low"] * 0.995, current_price - sl_delta)
+        # 손절선: 지지선 하단 또는 ATR 기반 손절폭 중 안전한 가격 채택 (최소 -1.5% 룸 보장하여 1틱 휩소 방지)
+        support_sl = sr_levels["support_low"] * 0.990
+        atr_sl = current_price - sl_delta
+        dynamic_sl = min(support_sl, atr_sl, current_price * 0.985)
 
         # 5. 모델 라우터 및 429 쿨다운 검사 (최대 2개 모델만 시도)
         now_ts = time.time()
