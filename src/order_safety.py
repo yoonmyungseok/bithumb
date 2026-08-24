@@ -261,20 +261,46 @@ class RiskGuard:
 
 
 class CooldownManager:
-    """Tracks post-exit cooldown periods to prevent rapid whipsaw re-entries."""
+    """Tracks post-exit cooldown periods to prevent rapid whipsaw re-entries, with disk persistence."""
 
-    def __init__(self, default_sl_cooldown: float = 2700.0, default_tp_cooldown: float = 900.0):
+    def __init__(
+        self,
+        default_sl_cooldown: float = 2700.0,
+        default_tp_cooldown: float = 900.0,
+        state_file: str | None = None,
+    ):
         self._lock = threading.Lock()
         self.default_sl_cooldown = default_sl_cooldown  # 45 minutes
         self.default_tp_cooldown = default_tp_cooldown  # 15 minutes
-        self._cooldowns: dict[str, float] = {}
+        data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+        os.makedirs(data_dir, exist_ok=True)
+        self.state_file = state_file or os.path.join(data_dir, "cooldown_state.json")
+        self._cooldowns: dict[str, float] = self._load()
+
+    def _load(self) -> dict[str, float]:
+        try:
+            if os.path.exists(self.state_file):
+                with open(self.state_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    now = time.time()
+                    return {k: float(v) for k, v in data.items() if float(v) > now}
+        except Exception as exc:
+            logger.warning(f"쿨다운 상태 파일 로드 실패: {exc}")
+        return {}
+
+    def _save(self) -> None:
+        try:
+            write_json_atomically(self.state_file, self._cooldowns)
+        except Exception as exc:
+            logger.warning(f"쿨다운 상태 파일 저장 실패: {exc}")
 
     def record_exit(self, market: str, exit_type: str) -> None:
         duration = self.default_sl_cooldown if "STOP" in exit_type.upper() else self.default_tp_cooldown
         expire_at = time.time() + duration
         with self._lock:
             self._cooldowns[market.upper()] = expire_at
-        logger.info(f"⏳ [{market}] {exit_type} 발생으로 {duration/60:.0f}분간 재진입 쿨다운 적용")
+            self._save()
+        logger.info(f"⏳ [{market}] {exit_type} 발생으로 {duration/60:.0f}분간 재진입 쿨다운 적용 (영속 저장)")
 
     def is_in_cooldown(self, market: str) -> tuple[bool, float]:
         now = time.time()
@@ -284,6 +310,7 @@ class CooldownManager:
                 return True, expire_at - now
             elif expire_at > 0:
                 del self._cooldowns[market.upper()]
+                self._save()
         return False, 0.0
 
 

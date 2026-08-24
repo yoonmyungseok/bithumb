@@ -23,14 +23,39 @@ logging.basicConfig(
 logger = logging.getLogger("Backtester")
 
 
+def synthesize_1h_candles(sorted_5m_candles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group chronological 5m candles into 1h candles (returned newest-first)."""
+    candles_1h = []
+    chunk_size = 12  # 12 * 5m = 60m
+    for i in range(0, len(sorted_5m_candles), chunk_size):
+        chunk = sorted_5m_candles[i : i + chunk_size]
+        if not chunk:
+            continue
+        h_open = float(chunk[0].get("opening_price", chunk[0].get("trade_price", 0.0)))
+        h_close = float(chunk[-1].get("trade_price", 0.0))
+        h_high = max(float(c.get("high_price", c.get("trade_price", 0.0))) for c in chunk)
+        h_low = min(float(c.get("low_price", c.get("trade_price", 0.0))) for c in chunk)
+        h_vol = sum(float(c.get("candle_acc_trade_volume", 0.0)) for c in chunk)
+        candles_1h.append({
+            "opening_price": h_open,
+            "high_price": h_high,
+            "low_price": h_low,
+            "trade_price": h_close,
+            "candle_acc_trade_volume": h_vol,
+        })
+    return candles_1h[::-1]  # Return newest-first for strategy_engine
+
+
 class QuantBacktester:
     """
-    빗썸 2.0 과거 캔들 데이터 기반 비편향(Unbiased) 퀀트 백테스터
-    - Next-Bar Open 체결 모델링 (신호 발생 익봉 시가 진입으로 룩어헤드 편향 제거)
-    - Pessimistic Intra-Candle Matching (동일 봉 High/Low 충돌 시 손절 우선 판정)
-    - 1% Fixed Risk Volatility Position Sizing (ATR 기반 동적 사이징)
+    빗썸 2.0 과거 캔들 데이터 기반 비편향(Unbiased) 퀀트 백테스터 v2.0
+    - Next-Bar Open 체결 모델링 & 시가 갭 보호(Gap Filter)
+    - Pessimistic Intra-Candle Matching (동일 봉 High/Low 충돌 시 손절 우선)
+    - 샹들리에 스탑: 직전 확정 봉까지의 최고가/ATR로만 산출 (캔들 내 룩어헤드 제거)
+    - MTF(1H) 합성 캔들 및 BTC 레짐 연동 시뮬레이션
+    - 1% Fixed Risk Volatility Position Sizing
     - 손절 후 재진입 쿨다운 (9개 캔들 = 45분) 시뮬레이션
-    - 정밀 성과 리포트 (기대수익률, 손익비, MDD, 최대 연속 손실)
+    - Paging 기반 대규모 캔들(수백~수천 개) 백테스트 지원
     """
 
     def __init__(
@@ -46,6 +71,32 @@ class QuantBacktester:
         self.risk_fraction = risk_fraction
         self.bithumb = BithumbAPI()
 
+    def fetch_candles_paged(self, market: str, unit: int = 5, total_count: int = 200) -> list[dict[str, Any]]:
+        """Fetch historical candles with pagination (Bithumb returns newest-first)."""
+        all_candles: list[dict[str, Any]] = []
+        to_param: str | None = None
+        remaining = total_count
+
+        while remaining > 0:
+            fetch_n = min(remaining, 200)
+            chunk = self.bithumb.get_candles(unit=unit, count=fetch_n, market=market, to=to_param)
+            if not chunk:
+                break
+            all_candles.extend(chunk)
+            remaining -= len(chunk)
+            if len(chunk) < fetch_n:
+                break
+
+            # Use oldest candle timestamp in chunk as next 'to' parameter
+            oldest = chunk[-1]
+            oldest_ts = oldest.get("candle_date_time_kst") or oldest.get("candle_date_time_utc")
+            if oldest_ts:
+                to_param = oldest_ts.replace("T", " ")
+            else:
+                break
+
+        return all_candles
+
     def run_backtest(
         self,
         market: str = "KRW-BTC",
@@ -54,7 +105,7 @@ class QuantBacktester:
     ) -> dict[str, Any]:
         logger.info(f"🧪 [{market}] 과거 {count}개 {unit}분봉 캔들 백테스팅 시작 (초기 자본: {self.initial_capital:,.0f}원)")
 
-        candles = self.bithumb.get_candles(unit=unit, count=count, market=market)
+        candles = self.fetch_candles_paged(market=market, unit=unit, total_count=count)
         if not candles or len(candles) < 30:
             logger.warning(f"{market} 캔들 데이터 부족 ({len(candles)}개)")
             return {}
@@ -92,38 +143,50 @@ class QuantBacktester:
 
             window_desc = window[::-1]
 
-            # 0. 익봉 시가 진입 처리 (Next-Bar Open Execution)
+            # 0. 익봉 시가 진입 처리 (Next-Bar Open Execution & Gap Protection)
             if pending_entry and not in_position:
                 pending_entry = False
                 if i >= cooldown_until_idx:
-                    entry_price = open_price * (1.0 + self.slippage_rate)
-                    active_target = pending_signal["target_price"]
-                    active_stop = pending_signal["stop_loss"]
+                    # 직전 종가 및 ATR 기준 갭 검증
+                    prior_close = float(window_desc[1].get("trade_price", open_price))
+                    prior_atr = pending_signal.get("atr", prior_close * 0.015)
+                    gap_pct = abs(open_price - prior_close) / prior_close if prior_close > 0 else 0.0
+                    max_allowable_gap = 1.5 * (prior_atr / prior_close) if prior_close > 0 else 0.03
 
-                    # 1% 고정 리스크 포지션 사이징
-                    invest_amt = calculate_risk_position_size(
-                        total_equity=capital,
-                        entry_price=entry_price,
-                        stop_loss=active_stop,
-                        risk_fraction=self.risk_fraction,
-                        fee_rate=self.fee_rate,
-                        slippage_rate=self.slippage_rate,
-                        max_position_pct=0.35,
-                    )
-                    if invest_amt >= 5000.0 and capital >= invest_amt:
-                        capital -= invest_amt
-                        position_vol = invest_amt * (1.0 - self.fee_rate) / entry_price
-                        in_position = True
-                        partial_tp_done = False
-                        peak_price = entry_price
-                        bars_held = 0
-                        trade_logs.append({
-                            "type": "BUY",
-                            "price": entry_price,
-                            "target": active_target,
-                            "stop": active_stop,
-                            "candle_idx": i,
-                        })
+                    # 시가 갭이 너무 크면 진입 취소 (Gap Protection)
+                    if gap_pct <= max_allowable_gap:
+                        entry_price = open_price * (1.0 + self.slippage_rate)
+
+                        # 실제 체결가 기준으로 ATR 동적 목표가/손절가 재계산
+                        target_offset = max(entry_price * 0.020, prior_atr * 2.0)
+                        stop_offset = max(entry_price * 0.012, prior_atr * 1.3)
+                        active_target = entry_price + target_offset
+                        active_stop = entry_price - stop_offset
+
+                        # 1% 고정 리스크 포지션 사이징
+                        invest_amt = calculate_risk_position_size(
+                            total_equity=capital,
+                            entry_price=entry_price,
+                            stop_loss=active_stop,
+                            risk_fraction=self.risk_fraction,
+                            fee_rate=self.fee_rate,
+                            slippage_rate=self.slippage_rate,
+                            max_position_pct=0.35,
+                        )
+                        if invest_amt >= 5000.0 and capital >= invest_amt:
+                            capital -= invest_amt
+                            position_vol = invest_amt * (1.0 - self.fee_rate) / entry_price
+                            in_position = True
+                            partial_tp_done = False
+                            peak_price = entry_price
+                            bars_held = 0
+                            trade_logs.append({
+                                "type": "BUY",
+                                "price": entry_price,
+                                "target": active_target,
+                                "stop": active_stop,
+                                "candle_idx": i,
+                            })
 
             # 1. 포지션 보유 중인 경우: 보수적(Pessimistic) 청산 검사
             if in_position and entry_price > 0:
@@ -172,9 +235,9 @@ class QuantBacktester:
                     # 본절가 방어선 가동 (수수료 보전)
                     active_stop = max(active_stop, entry_price * (1.0 + (2.0 * self.fee_rate) + 0.002))
 
-                # C. 샹들리에 트레일링 스탑
+                # C. 샹들리에 트레일링 스탑 (직전 확정 봉 window_desc[1:] 기준으로만 산출 -> 인트라바 미래 고가 참조 차단)
                 if partial_tp_done or (cur_price >= entry_price * 1.02):
-                    ch_stop = calculate_chandelier_exit(window_desc, period=14, multiplier=1.5)
+                    ch_stop = calculate_chandelier_exit(window_desc[1:], period=14, multiplier=1.5)
                     trail_stop_price = max(ch_stop, entry_price * 1.002)
                     if low_price <= trail_stop_price:
                         exit_p = trail_stop_price * (1.0 - self.slippage_rate)
@@ -213,9 +276,10 @@ class QuantBacktester:
                     position_vol = 0.0
                     continue
 
-            # 2. 미보유 상태: 퀀트 진입 신호 검사
+            # 2. 미보유 상태: 퀀트 진입 신호 검사 (합성 1시간봉 MTF 결합)
             elif not in_position and capital >= 10_000 and i >= cooldown_until_idx:
-                signal = entry_signal(window_desc)
+                candles_1h_synth = synthesize_1h_candles(sorted_candles[: i + 1])
+                signal = entry_signal(window_desc, candles_1h=candles_1h_synth, btc_regime="NORMAL")
                 if signal["allow_buy"]:
                     # 익봉 시가에 진입하기 위해 예약
                     pending_entry = True
@@ -281,7 +345,7 @@ class QuantBacktester:
 
     def _print_report(self, r: dict[str, Any]):
         print("\n" + "=" * 65)
-        print(f" 📊 [빗썸 비편향 퀀트 백테스팅 리포트 - {r.get('market', '')}]")
+        print(f" 📊 [빗썸 비편향 퀀트 백테스팅 리포트 v2.0 - {r.get('market', '')}]")
         print("=" * 65)
         print(f"• 테스트 캔들 수: {r.get('candles_tested', 0)}개 캔들")
         print(f"• 초기 투자 자본: {r.get('initial_capital', 0):,.0f} KRW")
@@ -294,15 +358,15 @@ class QuantBacktester:
         print(f"• 거래당 기대수익률(Expectancy): {r.get('expectancy_pct', 0.0):+.2f}%")
         print(f"• 최대 연속 손실 횟수: {r.get('max_consecutive_losses', 0)}회")
         print(f"• 비용 가정: 수수료 {r.get('fee_rate', 0.0)*100:.3f}% / 편도 슬리피지 {r.get('slippage_rate', 0.0)*100:.3f}%")
-        print(f"• 체결 모델: Next-Bar Open + Pessimistic SL-First Rule + 45분 쿨다운")
+        print(f"• 체결 모델: Next-Bar Open + Gap Filter + 확정봉 Chandelier Stop + 45분 쿨다운")
         print("=" * 65 + "\n")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="빗썸 퀀트 백테스팅 시뮬레이터")
+    parser = argparse.ArgumentParser(description="빗썸 퀀트 백테스팅 시뮬레이터 v2.0")
     parser.add_argument("--market", type=str, default="KRW-BTC", help="테스트할 마켓 (예: KRW-BTC, KRW-ENA)")
     parser.add_argument("--unit", type=int, default=5, help="분봉 단위 (1, 3, 5, 15, 60)")
-    parser.add_argument("--count", type=int, default=200, help="캔들 개수 (최대 200)")
+    parser.add_argument("--count", type=int, default=200, help="캔들 개수 (최대 2000)")
     parser.add_argument("--capital", type=float, default=1_000_000.0, help="초기 자본금")
     parser.add_argument("--fee-rate", type=float, default=0.0004, help="편도 수수료율 (기본: 0.04%%)")
     parser.add_argument("--slippage-rate", type=float, default=0.001, help="편도 슬리피지율 (기본: 0.10%%)")

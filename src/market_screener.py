@@ -126,29 +126,42 @@ class MarketScreener:
             # 모멘텀 스코어 높은 순으로 정렬
             qualified_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
-            # 유동성 스프레드 필터 적용 (상위 후보군 대상)
+            # 유동성 스프레드 및 호가 깊이 필터 적용 (상위 후보군 대상, Fail-Closed 정책)
             screened_by_spread: list[dict[str, Any]] = []
             for cand in qualified_candidates[: top_count * 2]:
                 m = cand["market"]
                 try:
                     ob = self.api.get_orderbook(m)
                     units = ob.get("orderbook_units", []) if ob else []
-                    if units:
-                        top_ask = float(units[0].get("ask_price", 0.0))
-                        top_bid = float(units[0].get("bid_price", 0.0))
-                        if top_bid > 0:
-                            spread = (top_ask - top_bid) / top_bid
-                            if spread > self.max_spread_pct:
-                                logger.debug("호가 스프레드 과다로 제외: %s (spread=%.3f%%)", m, spread * 100)
-                                continue
+                    if not units:
+                        logger.warning("호가창 데이터 누락으로 제외 (Fail-Closed): %s", m)
+                        continue
+
+                    top_ask = float(units[0].get("ask_price", 0.0))
+                    top_bid = float(units[0].get("bid_price", 0.0))
+                    if top_bid <= 0 or top_ask <= 0:
+                        logger.warning("비정상 호가 가격으로 제외: %s", m)
+                        continue
+
+                    spread = (top_ask - top_bid) / top_bid
+                    if spread > self.max_spread_pct:
+                        logger.debug("호가 스프레드 과다로 제외: %s (spread=%.3f%% > %.3f%%)", m, spread * 100, self.max_spread_pct * 100)
+                        continue
+
+                    # 상위 5호가 매수 잔량 깊이(Depth) 검증 (최소 2천만 원)
+                    top5_bid_krw = sum(float(u.get("bid_price", 0.0)) * float(u.get("bid_size", 0.0)) for u in units[:5])
+                    if top5_bid_krw < 20_000_000.0:
+                        logger.debug("상위 5호가 매수 잔량 부족으로 제외: %s (잔량=%.0f만 원 < 2000만 원)", m, top5_bid_krw / 10_000)
+                        continue
+
+                    screened_by_spread.append(cand)
                 except Exception as exc:
-                    logger.debug("호가 확인 생략: %s (%s)", m, exc)
-                screened_by_spread.append(cand)
+                    logger.warning("호가 검증 오류로 후보 제외 (Fail-Closed): %s (%s)", m, exc)
+                    continue
 
-            if screened_by_spread:
-                qualified_candidates = screened_by_spread
+            qualified_candidates = screened_by_spread
 
-            # 만약 조건에 맞는 급등주가 부족하면, 단순히 거래대금 상위 종목으로 채움
+            # 만약 조건에 맞는 급등주가 부족하면, 단순히 거래대금 상위 종목 중 스프레드 검증된 종목으로 채움
             if len(qualified_candidates) < top_count:
                 fallback_tickers = [
                     t for t in all_tickers
@@ -163,14 +176,34 @@ class MarketScreener:
                     if len(qualified_candidates) >= top_count:
                         break
                     m = ft.get("market", "")
-                    if not any(c["market"] == m for c in qualified_candidates):
-                        qualified_candidates.append({
-                            "market": m,
-                            "trade_price": _safe_float(ft.get("trade_price")),
-                            "change_rate": _safe_float(ft.get("signed_change_rate", ft.get("change_rate"))),
-                            "acc_trade_price_24h": _safe_float(ft.get("acc_trade_price_24h", ft.get("acc_trade_value_24h", 0.0))),
-                            "is_held": False,
-                        })
+                    if any(c["market"] == m for c in qualified_candidates):
+                        continue
+
+                    # Fallback 종목도 호가 스프레드/깊이 검증 (Fail-Closed)
+                    try:
+                        ob = self.api.get_orderbook(m)
+                        units = ob.get("orderbook_units", []) if ob else []
+                        if not units:
+                            continue
+                        top_ask = float(units[0].get("ask_price", 0.0))
+                        top_bid = float(units[0].get("bid_price", 0.0))
+                        if top_bid <= 0 or top_ask <= 0:
+                            continue
+                        if (top_ask - top_bid) / top_bid > self.max_spread_pct:
+                            continue
+                        top5_bid_krw = sum(float(u.get("bid_price", 0.0)) * float(u.get("bid_size", 0.0)) for u in units[:5])
+                        if top5_bid_krw < 20_000_000.0:
+                            continue
+                    except Exception:
+                        continue
+
+                    qualified_candidates.append({
+                        "market": m,
+                        "trade_price": _safe_float(ft.get("trade_price")),
+                        "change_rate": _safe_float(ft.get("signed_change_rate", ft.get("change_rate"))),
+                        "acc_trade_price_24h": _safe_float(ft.get("acc_trade_price_24h", ft.get("acc_trade_value_24h", 0.0))),
+                        "is_held": False,
+                    })
 
             # 4. 기보유 코인 + 스크리닝 상위 코인 조합
             final_selection: list[dict[str, Any]] = []

@@ -184,17 +184,20 @@ class BithumbAPI:
         res = self.get_tickers([market])
         return res[0] if res else {}
 
-    def get_candles(self, unit: int = 5, count: int = 30, market: str = "KRW-BTC") -> list[dict[str, Any]]:
+    def get_candles(self, unit: int = 5, count: int = 30, market: str = "KRW-BTC", to: str | None = None) -> list[dict[str, Any]]:
         """
         분봉 캔들 데이터 조회 (최신 순으로 정렬되어 반환됨)
         - unit: 1, 3, 5, 15, 30, 60 등 분 단위
         - count: 조회할 캔들 개수 (최대 200)
+        - to: 마지막 캔들 시각 (예: 2026-08-24 12:00:00)
         """
         endpoint = f"/candles/minutes/{unit}"
         params = {
             "market": market,
             "count": count,
         }
+        if to:
+            params["to"] = to
         try:
             data = self._request("GET", endpoint, params=params)
             return data if isinstance(data, list) else []

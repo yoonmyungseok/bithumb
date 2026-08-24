@@ -150,21 +150,66 @@ def calculate_chandelier_exit(candles: list[dict[str, Any]], period: int = 14, m
     return round(highest_high - (multiplier * atr_val), 2)
 
 
+def classify_btc_regime(
+    candles_5m: list[dict[str, Any]],
+    candles_1h: list[dict[str, Any]] | None = None,
+    crash_threshold_pct: float = 0.015,
+) -> dict[str, Any]:
+    """Classify BTC market regime into NORMAL, RISK_OFF, or CRASH.
+
+    - CRASH: Recent 5m/15m drop >= crash_threshold_pct (1.5%) -> Stop all new buys
+    - RISK_OFF: 1H Close < 1H EMA50 or 1H drop >= 1.0% -> Stricter gates & 50% sizing
+    - NORMAL: Healthy uptrend/stable state
+    """
+    if not candles_5m or len(candles_5m) < 3:
+        return {"regime": "NORMAL", "reason": "BTC 데이터 부족"}
+
+    cur_p = float(candles_5m[0].get("trade_price", 0.0))
+    p_3 = float(candles_5m[min(len(candles_5m) - 1, 3)].get("trade_price", cur_p))
+    recent_drop = (cur_p - p_3) / p_3 if p_3 > 0 else 0.0
+
+    if recent_drop <= -crash_threshold_pct:
+        return {
+            "regime": "CRASH",
+            "drop_pct": round(recent_drop * 100.0, 2),
+            "reason": f"BTC 15분 급락 경보 ({recent_drop*100.0:.2f}%)",
+        }
+
+    # 1H Check
+    if candles_1h and len(candles_1h) >= 20:
+        prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
+        ema50_1h = calculate_ema(prices_1h, min(len(prices_1h), 50))
+        cur_1h = prices_1h[0]
+        p_1h_prev = prices_1h[min(len(prices_1h) - 1, 3)]
+        drop_1h = (cur_1h - p_1h_prev) / p_1h_prev if p_1h_prev > 0 else 0.0
+
+        if cur_1h < ema50_1h or drop_1h <= -0.010:
+            sub_reason = "1H EMA50 하회" if cur_1h < ema50_1h else f"1H {drop_1h*100.0:.1f}% 하락"
+            return {
+                "regime": "RISK_OFF",
+                "drop_pct": round(drop_1h * 100.0, 2),
+                "reason": f"BTC 약세/조정 ({sub_reason})",
+            }
+
+    return {"regime": "NORMAL", "drop_pct": round(recent_drop * 100.0, 2), "reason": "BTC 정상 안정세"}
+
+
 def entry_signal(
     candles: list[dict[str, Any]],
     candles_1h: list[dict[str, Any]] | None = None,
     btc_regime: str = "NORMAL",
 ) -> dict[str, Any]:
-    """Deterministic entry rule with MTF trend alignment and dynamic ATR risk bounds.
+    """Deterministic entry rule with MTF trend alignment, 3-tier BTC regime, and dynamic ATR risk bounds.
 
-    - 5M Signal: MA5 > MA20, RSI 45~65, Bollinger %B 0.35~0.75
+    - 5M Signal: MA5 > MA20, RSI 45~65 (RISK_OFF: 48~58), Bollinger %B 0.35~0.75 (RISK_OFF: 0.40~0.65)
     - 1H MTF Filter: 1H Close > 1H EMA20 (if 1H candles provided)
     - Regime Filter: Reject new entries if btc_regime == 'CRASH'
     """
     if len(candles) < 25:
         return {"allow_buy": False, "reason": "캔들 데이터 부족"}
 
-    if btc_regime.upper() in ("CRASH", "BEAR_VOLATILE"):
+    regime_upper = btc_regime.upper()
+    if regime_upper in ("CRASH", "BEAR_VOLATILE"):
         return {"allow_buy": False, "reason": f"BTC 시장 레짐 경보 ({btc_regime})"}
 
     prices = [float(c.get("trade_price", 0.0)) for c in candles]
@@ -175,8 +220,11 @@ def entry_signal(
     pct_b = bands["pct_b"]
     rsi = calculate_rsi(prices)
 
-    # 1. 5분봉 정량 조건
-    signal_5m = ma5 > ma20 and 45.0 <= rsi <= 65.0 and 0.35 <= pct_b <= 0.75
+    # 1. 5분봉 정량 조건 (RISK_OFF 상태에서는 기준 강화)
+    rsi_min, rsi_max = (48.0, 58.0) if regime_upper == "RISK_OFF" else (45.0, 65.0)
+    pct_b_min, pct_b_max = (0.40, 0.65) if regime_upper == "RISK_OFF" else (0.35, 0.75)
+
+    signal_5m = ma5 > ma20 and (rsi_min <= rsi <= rsi_max) and (pct_b_min <= pct_b <= pct_b_max)
 
     # 2. 1시간봉 MTF 추세 필터 (옵션/제공 시)
     mtf_allowed = True

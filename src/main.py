@@ -29,7 +29,7 @@ from order_safety import (
 from paper_broker import PaperBroker
 from private_websocket_manager import BithumbPrivateWebSocketClient
 from sheets_manager import SheetsManager
-from strategy_engine import entry_signal
+from strategy_engine import classify_btc_regime, entry_signal
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
 from web_server import DashboardWebServer
@@ -500,25 +500,18 @@ def build_positions_data(
     return positions
 
 
-def check_btc_market_crash(bithumb: BithumbAPI, threshold_pct: float = BTC_CRASH_THRESHOLD_PCT) -> tuple[bool, str]:
+def check_btc_market_crash(bithumb: BithumbAPI, threshold_pct: float = BTC_CRASH_THRESHOLD_PCT) -> tuple[bool, str, str]:
+    """Classify BTC market state into (is_crash: bool, btc_regime: str, status_msg: str)."""
     try:
-        btc_candles = bithumb.get_candles(unit=INTERVAL_MINUTES, count=6, market="KRW-BTC")
-        if not btc_candles or len(btc_candles) < 3:
-            return False, "BTC 데이터 정상"
-
-        current_btc = float(btc_candles[0].get("trade_price", 0.0))
-        past_btc = float(btc_candles[min(2, len(btc_candles) - 1)].get("opening_price", current_btc))
-
-        drop_rate = (current_btc - past_btc) / past_btc if past_btc > 0 else 0.0
-
-        if drop_rate <= -threshold_pct:
-            return True, f"비트코인(BTC) 단기 급락세 감지 ({drop_rate*100:.2f}%)"
-
-        return False, f"BTC 안정세 ({drop_rate*100:+.2f}%)"
-
-    except (requests.exceptions.RequestException, KeyError, ValueError, IndexError) as e:
+        btc_candles_5m = bithumb.get_candles(unit=INTERVAL_MINUTES, count=20, market="KRW-BTC")
+        btc_candles_1h = bithumb.get_candles(unit=60, count=50, market="KRW-BTC")
+        regime_data = classify_btc_regime(btc_candles_5m, btc_candles_1h, crash_threshold_pct=threshold_pct)
+        regime = regime_data.get("regime", "NORMAL")
+        is_crash = regime == "CRASH"
+        return is_crash, regime, regime_data.get("reason", "BTC 정상 안정세")
+    except Exception as e:
         logger.warning(f"BTC 시장 상태 검사 실패: {e}")
-        return False, "BTC 검사 오류"
+        return False, "NORMAL", "BTC 검사 오류 (정상 가정)"
 
 
 def clean_stale_orders(bithumb: BithumbAPI, max_age_seconds: int = 180) -> int:
@@ -1058,10 +1051,12 @@ def run_cycle():
                 f"• 원금 보호를 위해 당일 모든 신규 매수를 중단하고 관망합니다."
             )
 
-        # 2. BTC 대세 급락 필터
-        is_btc_crashing, btc_status_msg = check_btc_market_crash(bithumb, threshold_pct=btc_crash_pct)
+        # 2. BTC 대세 레짐 및 급락 필터 (3단계: NORMAL / RISK_OFF / CRASH)
+        is_btc_crashing, btc_regime, btc_status_msg = check_btc_market_crash(bithumb, threshold_pct=btc_crash_pct)
         if is_btc_crashing:
-            logger.warning(f"⚠️ [BTC 급락 방어선 작동] {btc_status_msg} ➜ 알트코인 신규 매수 차단!")
+            logger.warning(f"⚠️ [BTC 급락 방어선 작동 - {btc_regime}] {btc_status_msg} ➜ 알트코인 신규 매수 차단!")
+        elif btc_regime == "RISK_OFF":
+            logger.info(f"🛡️ [BTC 조정/약세 레짐 - {btc_regime}] {btc_status_msg} ➜ 신규 매수 비중 50% 축소 운용")
 
         # 3. 구글 스프레드시트 갱신
         bot_state_badge = "⏸️ 일시정지 (관망)" if IS_BOT_PAUSED else "🟢 24시간 실시간 자동매매 가동 중"
@@ -1077,7 +1072,7 @@ def run_cycle():
                 "win_count": risk_manager.win_trades_today,
                 "held_coins": ", ".join(held_markets) if held_markets else "없음 (100% 현금)",
                 "kill_switch_status": "🛑 발동 중 (신규매수 차단)" if is_kill_switch else "🟢 정상 (리스크 양호)",
-                "btc_health": f"⚠️ 급락 감지 ({btc_status_msg})" if is_btc_crashing else "🟢 정상 안정세",
+                "btc_health": f"⚠️ [{btc_regime}] {btc_status_msg}" if is_btc_crashing or btc_regime != "NORMAL" else "🟢 정상 안정세",
                 "fear_and_greed": fng["desc"],
                 "bot_state": bot_state_badge,
             }
@@ -1407,7 +1402,7 @@ def run_cycle():
                 local_entry = entry_signal(
                     candles=candles_5m,
                     candles_1h=candles_1h,
-                    btc_regime="CRASH" if is_btc_crashing else "NORMAL",
+                    btc_regime=btc_regime,
                 )
                 if action == "BUY" and not local_entry["allow_buy"]:
                     action = "HOLD"
@@ -1415,6 +1410,10 @@ def run_cycle():
                 elif action == "BUY" and local_entry["allow_buy"]:
                     target_price = local_entry["target_price"]
                     stop_loss = local_entry["stop_loss"]
+
+                if btc_regime == "RISK_OFF" and action == "BUY":
+                    alloc_pct = alloc_pct * 0.5
+                    reason = f"[BTC 약세 레짐 비중 50% 축소] {reason}"
 
                 if fng["is_extreme_fear"] and action == "BUY":
                     alloc_pct = min(alloc_pct, 0.4)
@@ -1544,14 +1543,30 @@ def run_cycle():
                     num_unheld_targets = len([m for m in target_markets if m not in held_markets])
                     num_slots = max(1, num_unheld_targets)
 
-                    # 💰 동적 복리 자금 계산 (가용 원화 + 실현 수익금 반영)
-                    effective_capital = krw_available + max(0.0, risk_manager.realized_pnl_krw)
+                    # 💰 1% 고정 리스크 포지션 사이징 모델과 슬롯 예산 결합
+                    effective_capital = current_total_equity if current_total_equity > 0 else (krw_available + max(0.0, risk_manager.realized_pnl_krw))
                     max_market_budget = min(krw_available, effective_capital / num_slots)
-                    trade_budget = max_market_budget * alloc_pct
+                    slot_budget = max_market_budget * alloc_pct
 
                     # 호가 단위 자동 보정 및 슬리피지 보호
                     order_price = entry_price if (0 < entry_price <= current_price * 1.002) else current_price
                     order_price = bithumb.round_price_to_tick(order_price)
+
+                    # 1회 거래당 1% 리스크 기반 주문금액 산출
+                    risk_based_budget = calculate_risk_position_size(
+                        total_equity=effective_capital,
+                        entry_price=order_price,
+                        stop_loss=stop_loss,
+                        risk_fraction=0.01,
+                        fee_rate=0.0004,
+                        slippage_rate=0.001,
+                        max_position_pct=MAX_POSITION_PCT,
+                        min_order_krw=MIN_ORDER_KRW,
+                    )
+
+                    # 슬롯 예산과 리스크 기반 예산 중 안전한 최소값 채택
+                    effective_risk_budget = risk_based_budget if risk_based_budget > 0 else slot_budget
+                    trade_budget = min(krw_available, slot_budget, effective_risk_budget)
 
                     # 🛡️ 최소 5,500원 안전 마진 확보 (빗썸 5,000원 최소주문금액 및 수수료 0.995 반영)
                     SAFE_ORDER_KRW = 5500.0
