@@ -201,8 +201,8 @@ def entry_signal(
 ) -> dict[str, Any]:
     """Deterministic entry rule with MTF trend alignment, 3-tier BTC regime, and dynamic ATR risk bounds.
 
-    - 5M Signal: MA5 > MA20, RSI 45~65 (RISK_OFF: 48~58), Bollinger %B 0.35~0.75 (RISK_OFF: 0.40~0.65)
-    - 1H MTF Filter: 1H Close > 1H EMA20 (if 1H candles provided)
+    - 5M Signal: MA5 > MA20, RSI 38~72 (RISK_OFF: 42~65), Bollinger %B 0.20~0.88 (RISK_OFF: 0.30~0.75)
+    - 1H MTF Filter: 1H Close >= 1H EMA20 * 0.990 (if 1H candles provided)
     - Regime Filter: Reject new entries if btc_regime == 'CRASH'
     """
     if len(candles) < 25:
@@ -220,9 +220,9 @@ def entry_signal(
     pct_b = bands["pct_b"]
     rsi = calculate_rsi(prices)
 
-    # 1. 5분봉 정량 조건 (RISK_OFF 상태에서는 기준 강화)
-    rsi_min, rsi_max = (48.0, 58.0) if regime_upper == "RISK_OFF" else (45.0, 65.0)
-    pct_b_min, pct_b_max = (0.40, 0.65) if regime_upper == "RISK_OFF" else (0.35, 0.75)
+    # 1. 5분봉 정량 조건 (적극적 매매를 위한 유연한 모멘텀/눌림목 범위)
+    rsi_min, rsi_max = (42.0, 65.0) if regime_upper == "RISK_OFF" else (38.0, 72.0)
+    pct_b_min, pct_b_max = (0.30, 0.75) if regime_upper == "RISK_OFF" else (0.20, 0.88)
 
     signal_5m = ma5 > ma20 and (rsi_min <= rsi <= rsi_max) and (pct_b_min <= pct_b <= pct_b_max)
 
@@ -233,7 +233,7 @@ def entry_signal(
         prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
         ema20_1h = calculate_ema(prices_1h, 20)
         current_1h = prices_1h[0]
-        mtf_allowed = current_1h >= (ema20_1h * 0.995)  # 1H EMA20 지지 또는 상단
+        mtf_allowed = current_1h >= (ema20_1h * 0.990)  # 1H EMA20 부근 지지 또는 상단
         mtf_reason = f"1H {current_1h:.1f} {'>=' if mtf_allowed else '<'} EMA20 {ema20_1h:.1f}"
 
     allowed = signal_5m and mtf_allowed
@@ -243,11 +243,11 @@ def entry_signal(
     volatility = atr_data["atr"]
     atr_pct = atr_data["atr_pct"]
 
-    # 목표가: 최소 +2.5% 또는 ATR 2.0배
-    target_offset = max(current * 0.025, volatility * 2.0)
+    # 목표가: 최소 +2.0% 또는 ATR 1.8배 (빠른 익절 및 회전율 향상)
+    target_offset = max(current * 0.020, volatility * 1.8)
     target_price = current + target_offset
 
-    # 손절가: 최소 -1.5% 또는 ATR 1.2배 (수수료 및 1틱 휩소 방지, 손익비 >= 1.6 보장)
+    # 손절가: 최소 -1.5% 또는 ATR 1.2배 (수수료 및 1틱 휩소 방지, 손익비 >= 1.3 보장)
     stop_offset = max(current * 0.015, volatility * 1.2)
     stop_loss = current - stop_offset
 

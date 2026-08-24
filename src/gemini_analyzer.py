@@ -269,25 +269,25 @@ class GeminiAnalyzer:
         else:
             reasons.append("1h 하락장")
 
-        # 2. 5분봉 모멘텀 RSI 38 ~ 62
-        if 38.0 <= rsi_val <= 62.0:
+        # 2. 5분봉 모멘텀 RSI 38 ~ 72
+        if 38.0 <= rsi_val <= 72.0:
             score += 1
             reasons.append(f"RSI 적정({rsi_val})")
         else:
             reasons.append(f"RSI 이탈({rsi_val})")
 
-        # 3. MA20 눌림목 이격도 & 볼린저 위치
+        # 3. MA20 지지/모멘텀 이격도 & 볼린저 위치
         pct_b = bb.get("pct_b", 0.5)
-        if 98.5 <= disparity_ma20 <= 102.5 and pct_b <= 0.75:
+        if 97.5 <= disparity_ma20 <= 103.5 and pct_b <= 0.88:
             score += 1
-            reasons.append(f"MA20 눌림목(이격 {disparity_ma20:.1f}%, %B {pct_b:.2f})")
+            reasons.append(f"이격/볼린저 적정(이격 {disparity_ma20:.1f}%, %B {pct_b:.2f})")
         else:
             reasons.append(f"이격도 과열/이탈({disparity_ma20:.1f}%)")
 
         # 4. 수급 체결강도 & 호가 스프레드
         spread = ob_info.get("spread_pct", 0.0)
         t_power = trade_strength.get("trade_power_pct", 100.0)
-        if spread <= 0.5 and t_power >= 110.0:
+        if spread <= 0.6 and t_power >= 95.0:
             score += 1
             reasons.append(f"수급 양호(체결강도 {t_power}%, 스프레드 {spread}%)")
         else:
@@ -296,13 +296,13 @@ class GeminiAnalyzer:
         # 5. 기대 손익비
         reward = dynamic_tp - current_price
         risk = current_price - dynamic_sl
-        if risk > 0 and (reward / risk) >= 1.3:
+        if risk > 0 and (reward / risk) >= 1.2:
             score += 1
-            reasons.append("손익비 1:1.5 충족")
+            reasons.append("손익비 적정")
 
-        # 판정
+        # 판정 (5개 중 3개 이상 충족 시 적극 BUY)
         if not is_holding:
-            if score >= 4:
+            if score >= 3:
                 action = "BUY"
                 alloc_pct = 0.5
                 reason = f"⚡ [로컬 퀀트 알고리즘 BUY] 5대 조건 중 {score}개 충족: {', '.join(reasons[:3])}"
@@ -312,7 +312,7 @@ class GeminiAnalyzer:
                 reason = f"⚪ [로컬 퀀트 알고리즘 HOLD] 조건 미달({score}/5개): {', '.join(reasons[:2])}"
         else:
             # 보유 중일 때
-            if rsi_val >= 70.0 or disparity_ma20 >= 104.0:
+            if rsi_val >= 75.0 or disparity_ma20 >= 105.0:
                 action = "SELL"
                 alloc_pct = 0.5
                 reason = f"🚨 [로컬 퀀트 알고리즘 SELL] 과열 감지(RSI {rsi_val}, 이격 {disparity_ma20:.1f}%)"
@@ -451,18 +451,18 @@ class GeminiAnalyzer:
 - 보유 여부: {'🔒 [보유 중]' if is_holding else '⚪ [미보유 (현금)]'} | 가용 원화: {krw_balance:,.0f} KRW
 - 보유 수량: {coin_balance:.8f} {currency} (평가: {coin_value:,.0f} KRW) | 평단가: {avg_buy_price:,.2f} KRW (손익률: {pnl_pct:+.2f}%)
 
-### [4. 5대 정량적 매수 승인 체크리스트 (5개 조건 모두 엄격히 검증 - 4개 이상 충족 필수)]
-신규 매수(BUY) 승인을 내리기 위해서는 아래 5가지 조건 중 **반드시 4개 이상을 엄격히 충족**해야 합니다. 급등 후 고점 물림을 방지하기 위해 추격 매수는 절대 금지하며 **"눌림목 지지 반등(Pullback Bounce)"** 타점만 허용합니다:
+### [4. 5대 정량적 매수 승인 체크리스트 (5개 조건 중 3개 이상 충족 시 적극 BUY 승인)]
+신규 매수(BUY) 승인을 내리기 위해서는 아래 5가지 조건 중 **3개 이상을 충족**하면 적극적으로 진입을 권장합니다. 극단적 고점 과열이 아니라면 **"상승 모멘텀 지속형 돌파"** 및 **"눌림목 지지 반등(Pullback Bounce)"** 모두 진입을 허용합니다:
 1. [MTF 추세 정렬]: 1시간봉 추세가 '대세 하락장'이 아닐 것 (1시간봉 하락장 속 5분봉 일시 반등은 데드캣 속임수이므로 매수 금지).
-2. [모멘텀 과열 방지]: 5분봉 RSI가 38 ~ 62 사이일 것 (RSI 62 초과 시 단기 과열이므로 추격 매수 전면 금지, 눌림목 대기).
-3. [눌림목 & 이격도]: MA20 이격도가 98.5% ~ 102.5% 이내이며, %B <= 0.75 (볼린저 상단 돌파 추격 매수 원천 금지, 5분봉 MA20 지지선 부근 눌림 타점 필수).
-4. [캔들 형태 & 수급 & 스프레드]: 캔들 윗꼬리 비율이 25% 이하이며, 호가 갭(스프레드) <= 0.5% (유동성 풍부), 실시간 고래 순매수 유입 또는 실질 체결강도 110% 이상 확인 (매도 덤핑 없는 순매수 유입 확인).
-5. [기대 손익비]: (목표가 - 진입가) >= 1.5 * (진입가 - 손절가) 수학적 보장.
+2. [모멘텀 범위]: 5분봉 RSI가 38 ~ 72 사이일 것 (RSI 72 이하의 건강한 상승 모멘텀 및 눌림목 반등 적극 수용).
+3. [이격도 & 볼린저]: MA20 이격도가 97.5% ~ 103.5% 이내이며, %B <= 0.88 (모멘텀 돌파 및 5분봉 MA20 지지선 부근 진입 허용).
+4. [캔들 형태 & 수급 & 스프레드]: 캔들 윗꼬리 비율이 35% 이하이며, 호가 갭(스프레드) <= 0.6% (유동성 양호), 실시간 고래 순매수 유입 또는 실질 체결강도 95% 이상 확인.
+5. [기대 손익비]: (목표가 - 진입가) >= 1.2 * (진입가 - 손절가) 수학적 보장.
 
-※ 위 조건 중 '모멘텀 과열' 또는 '볼린저 상단/이격도 과열'에 해당하는 경우, 아무리 상승세가 강해 보여도 **반드시 HOLD**로 판단하고 눌림목 지지선(ENTRY_PRICE)을 제시하세요.
+※ 극단적인 과열(RSI > 75, 이격도 > 105%)이나 1시간봉 하락 추세가 아니라면, 유망한 상승 모멘텀 또는 지지 반등 시 적극적으로 BUY를 결정하세요.
 
 ### [5. 목표가/손절가 수학적 유효성 규칙]
-- BUY 시: 반드시 '손절가 < 현재가 < 목표가' 관계를 만족해야 하며, 손익비 1:1.5 이상을 유지하세요.
+- BUY 시: 반드시 '손절가 < 현재가 < 목표가' 관계를 만족해야 하며, 손익비 1:1.2 이상을 유지하세요.
 - HOLD 시: 0을 적지 말고, **"5분봉 MA20 부근 눌림목 지지선(ENTRY_PRICE)"**, **"직전 지지선 손절가(STOP_LOSS)"**, **"목표가(TARGET_PRICE)"**를 기재하여 향후 진입 기준선을 제시하세요.
 {memory_section}
 ### [JSON 출력 필수 스키마]

@@ -268,17 +268,17 @@ class SafeOrderExecutor:
 def get_dynamic_portfolio_tiers(total_equity: float) -> tuple[int, float, int]:
     """
     총 평가 자산 규모에 따른 동적 포트폴리오 슬롯 및 비중 한도 자동 스케일링 (Auto-Scaling)
-    - 30만 원 미만 (소액/테스트): 최대 2종목 (종목당 최대 50%, 스크리닝 상위 2개)
-    - 30만 원 ~ 100만 원 (중소액): 최대 3종목 (종목당 최대 35%, 스크리닝 상위 3개)
-    - 100만 원 이상 (본격 운용): 최대 4종목 (종목당 최대 25%, 스크리닝 상위 4개)
+    - 30만 원 미만 (소액/테스트): 최대 2종목 (종목당 최대 50%, 스크리닝 상위 4개 검토)
+    - 30만 원 ~ 100만 원 (중소액): 최대 3종목 (종목당 최대 35%, 스크리닝 상위 5개 검토)
+    - 100만 원 이상 (본격 운용): 최대 4종목 (종목당 최대 25%, 스크리닝 상위 6개 검토)
     Returns: (max_open_positions: int, max_position_pct: float, top_screener_count: int)
     """
     if total_equity < 300_000.0:
-        return 2, 0.50, 2
+        return 2, 0.50, 4
     elif total_equity < 1_000_000.0:
-        return 3, 0.35, 3
+        return 3, 0.35, 5
     else:
-        return 4, 0.25, 4
+        return 4, 0.25, 6
 
 
 class RiskGuard:

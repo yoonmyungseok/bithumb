@@ -137,23 +137,23 @@ class OrderSafetyTests(unittest.TestCase):
         self.assertFalse(self.journal.is_managed_order(""))
 
     def test_dynamic_portfolio_tiers(self):
-        # 1. 소액 (< 30만 원) -> 2종목, 50%, 2개 스크리닝
+        # 1. 소액 (< 30만 원) -> 2종목, 50%, 4개 스크리닝
         slots, pos_pct, top_n = get_dynamic_portfolio_tiers(27_680.0)
         self.assertEqual(slots, 2)
         self.assertEqual(pos_pct, 0.50)
-        self.assertEqual(top_n, 2)
+        self.assertEqual(top_n, 4)
 
-        # 2. 중소액 (30만 ~ 100만 원) -> 3종목, 35%, 3개 스크리닝
+        # 2. 중소액 (30만 ~ 100만 원) -> 3종목, 35%, 5개 스크리닝
         slots, pos_pct, top_n = get_dynamic_portfolio_tiers(500_000.0)
         self.assertEqual(slots, 3)
         self.assertEqual(pos_pct, 0.35)
-        self.assertEqual(top_n, 3)
+        self.assertEqual(top_n, 5)
 
-        # 3. 100만 원 이상 -> 4종목, 25%, 4개 스크리닝
+        # 3. 100만 원 이상 -> 4종목, 25%, 6개 스크리닝
         slots, pos_pct, top_n = get_dynamic_portfolio_tiers(1_500_000.0)
         self.assertEqual(slots, 4)
         self.assertEqual(pos_pct, 0.25)
-        self.assertEqual(top_n, 4)
+        self.assertEqual(top_n, 6)
 
 
 if __name__ == "__main__":

@@ -39,10 +39,10 @@ class MarketScreener:
     def __init__(
         self,
         bithumb_api: BithumbAPI,
-        min_trade_value_krw: float = 3_000_000_000.0,  # 최소 24시간 거래대금 30억 원
-        min_change_rate: float = 0.015,                # 최소 당일 상승률 +1.5% (유효 모멘텀)
-        max_change_rate: float = 0.15,                 # 최대 당일 상승률 +15.0% (초고점 설거지/폭탄돌리기 방지)
-        max_spread_pct: float = 0.0035,                # 최대 호가 스프레드 0.35% (유동성 부족 갭 방지)
+        min_trade_value_krw: float = 1_000_000_000.0,  # 최소 24시간 거래대금 10억 원
+        min_change_rate: float = 0.005,                # 최소 당일 상승률 +0.5% (완만한 우상향 메이저 포함)
+        max_change_rate: float = 0.25,                 # 최대 당일 상승률 +25.0% (급등 모멘텀 포함)
+        max_spread_pct: float = 0.005,                 # 최대 호가 스프레드 0.50% (유동성 확보)
     ):
         self.api = bithumb_api
         self.min_trade_value_krw = min_trade_value_krw

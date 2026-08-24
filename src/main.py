@@ -265,7 +265,7 @@ def run_cycle():
     is_auto_mode = raw_markets.upper() == "AUTO"
     top_count = int(os.getenv("TOP_COUNT", "3"))
     min_trade_val = float(os.getenv("MIN_TRADE_VALUE", "1000000000"))
-    min_change = float(os.getenv("MIN_CHANGE_RATE", "0.01"))
+    min_change = float(os.getenv("MIN_CHANGE_RATE", "0.005"))
     max_change = float(os.getenv("MAX_CHANGE_RATE", "0.25"))
     btc_crash_pct = float(os.getenv("BTC_CRASH_THRESHOLD_PCT", "0.015"))
     max_daily_loss = float(os.getenv("MAX_DAILY_LOSS_PCT", "0.05"))
