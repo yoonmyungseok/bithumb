@@ -120,6 +120,38 @@ class RealtimeRiskAndIndicatorTests(unittest.TestCase):
         self.assertEqual(calls[1]["api_version"], "v1")
         self.assertEqual(res["status"], "0000")
 
+    def test_telegram_debouncing(self):
+        from telegram_alert import TelegramAlert
+        telegram = TelegramAlert(bot_token="test-token", chat_id="12345")
+        
+        sent_messages = []
+        def mock_send(text, parse_mode="HTML", reply_markup=None):
+            sent_messages.append(text)
+            return True
+        telegram.send_message = mock_send
+
+        # 첫 번째 발송: 성공
+        res1 = telegram.send_debounced_message("test_cat", "경보 1", min_interval_sec=10.0)
+        self.assertTrue(res1)
+        self.assertEqual(len(sent_messages), 1)
+
+        # 10초 이내 두 번째 발송: 디바운싱 차단 (False)
+        res2 = telegram.send_debounced_message("test_cat", "경보 2", min_interval_sec=10.0)
+        self.assertFalse(res2)
+        self.assertEqual(len(sent_messages), 1)
+
+        # 다른 카테고리 발송: 성공
+        res3 = telegram.send_debounced_message("other_cat", "경보 3", min_interval_sec=10.0)
+        self.assertTrue(res3)
+        self.assertEqual(len(sent_messages), 2)
+
+    def test_bithumb_api_session_pooling(self):
+        from bithumb_api import BithumbAPI
+        api = BithumbAPI(access_key="test-key", secret_key="test-secret")
+        self.assertIsNotNone(api.session)
+        self.assertTrue(hasattr(api.session, "get"))
+        self.assertTrue(hasattr(api.session, "post"))
+
 
 if __name__ == "__main__":
     unittest.main()

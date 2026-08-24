@@ -28,6 +28,7 @@ class TelegramAlert:
         self._pause_callback: Callable[[], str] | None = None
         self._resume_callback: Callable[[], str] | None = None
         self._buy_approval_callback: Callable[[str], str] | None = None
+        self._last_debounced_ts: dict[str, float] = {}
 
     def send_message(
         self,
@@ -60,6 +61,26 @@ class TelegramAlert:
         except requests.exceptions.RequestException as e:
             logger.error(f"텔레그램 메시지 전송 중 예외 발생: {e}")
             return False
+
+    def send_debounced_message(
+        self,
+        category_key: str,
+        text: str,
+        min_interval_sec: float = 900.0,
+        parse_mode: str = "HTML",
+        reply_markup: dict[str, Any] | None = None,
+    ) -> bool:
+        """동일한 카테고리의 반복 경보성 메시지를 min_interval_sec 동안 1회만 발송 (중복 방지)"""
+        now = time.time()
+        last_sent = self._last_debounced_ts.get(category_key, 0.0)
+        if (now - last_sent) < min_interval_sec:
+            logger.debug(f"텔레그램 알림 디바운싱 생략 ({category_key}): {min_interval_sec - (now - last_sent):.0f}초 남음")
+            return False
+
+        success = self.send_message(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        if success:
+            self._last_debounced_ts[category_key] = now
+        return success
 
     def send_photo(
         self,

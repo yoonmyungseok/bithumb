@@ -2,6 +2,7 @@ import hashlib
 import logging
 import os
 import time
+from requests.adapters import HTTPAdapter
 import urllib.parse
 import uuid
 from typing import Any
@@ -17,6 +18,7 @@ class BithumbAPI:
     빗썸 API 2.0 (Open API) 통신 클라이언트
     - JWT 인증 (UUID 기반 nonce, SHA-512 기반 query_hash)
     - 계좌 잔고, 시세, 미체결 조회, 주문 생성/취소 기능 제공
+    - HTTP Keep-Alive 커넥션 풀링을 통한 왕복 지연시간(RTT) 최적화
     """
 
     API_ROOT = "https://api.bithumb.com"
@@ -24,6 +26,10 @@ class BithumbAPI:
     def __init__(self, access_key: str = "", secret_key: str = ""):
         self.access_key = (access_key or os.getenv("BITHUMB_ACCESS_KEY", "")).strip()
         self.secret_key = (secret_key or os.getenv("BITHUMB_SECRET_KEY", "")).strip()
+        self.session = requests.Session()
+        adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=1)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
 
     def _generate_jwt_token(self, params: dict[str, Any] | None = None) -> str:
         """
@@ -76,11 +82,11 @@ class BithumbAPI:
 
             try:
                 if method.upper() == "GET":
-                    response = requests.get(url, headers=headers, params=params, timeout=10)
+                    response = self.session.get(url, headers=headers, params=params, timeout=10)
                 elif method.upper() == "POST":
-                    response = requests.post(url, headers=headers, json=data, timeout=10)
+                    response = self.session.post(url, headers=headers, json=data, timeout=10)
                 elif method.upper() == "DELETE":
-                    response = requests.delete(url, headers=headers, params=params, timeout=10)
+                    response = self.session.delete(url, headers=headers, params=params, timeout=10)
                 else:
                     raise ValueError(f"지원하지 않는 HTTP 메서드: {method}")
 

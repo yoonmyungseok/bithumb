@@ -283,6 +283,7 @@ class DailyRiskManager:
 
         self.current_date_str = ""
         self.daily_start_equity = 0.0
+        self.last_known_equity = 0.0
         self.realized_pnl_krw = 0.0
         self.kill_switch_active = False
         self.total_trades_today = 0
@@ -299,6 +300,7 @@ class DailyRiskManager:
                     data = json.load(f)
                     self.current_date_str = data.get("date", "")
                     self.daily_start_equity = float(data.get("start_equity", 0.0))
+                    self.last_known_equity = self.daily_start_equity
                     self.realized_pnl_krw = float(data.get("realized_pnl_krw", 0.0))
                     self.total_trades_today = int(data.get("total_trades", 0))
                     self.win_trades_today = int(data.get("win_trades", 0))
@@ -361,9 +363,24 @@ class DailyRiskManager:
 
             self.current_date_str = date_key
             self.daily_start_equity = current_total_equity
+            self.last_known_equity = current_total_equity
             self.kill_switch_active = False
             self._save_state()
             logger.info(f"📅 [일일 손익 기준일 갱신: {date_key}] 시작 총 자산: {self.daily_start_equity:,.0f}원")
+
+        # 💵 당일 장중 외부 자금 입출금 자동 감지 및 기준자산 자동 보정 (Cashflow Adjustment)
+        elif self.last_known_equity > 0:
+            equity_jump = current_total_equity - self.last_known_equity
+            # 5분 사이 자산이 10,000원 이상 비정상 급변한 경우 외부 입출금으로 판정
+            if abs(equity_jump) >= 10000.0:
+                old_start = self.daily_start_equity
+                self.daily_start_equity += equity_jump
+                self._save_state()
+                logger.info(
+                    f"💵 [장중 외부 자금 입출금 감지] 변동액: {equity_jump:+,.0f}원 ➜ 당일 시작 기준자산 보정: {old_start:,.0f}원 -> {self.daily_start_equity:,.0f}원"
+                )
+
+        self.last_known_equity = current_total_equity
 
         daily_pnl_pct = (
             (current_total_equity - self.daily_start_equity) / self.daily_start_equity
@@ -1136,19 +1153,25 @@ def run_cycle():
             f"📊 [스마트 자산 티어] 총 자산 {current_total_equity:,.0f}원 ➜ 최대 {dyn_max_positions}종목 분할 (종목당 {dyn_max_pos_pct*100:.0f}% 한도, 스크리닝 상위 {dyn_top_count}개)"
         )
 
-        # 4. 대상 마켓 선정
+        # 4. 대상 마켓 선정 (포지션 만석 시 신규 스크리닝 및 AI 호출 생략으로 쿼터 절약)
         target_markets: list[str] = []
         if is_auto_mode:
-            screener = MarketScreener(
-                bithumb,
-                min_trade_value_krw=min_trade_val,
-                min_change_rate=min_change,
-                max_change_rate=max_change,
-            )
-            screened_items = screener.scan_markets(
-                top_count=dyn_top_count, held_markets=held_markets
-            )
-            target_markets = [item["market"] for item in screened_items]
+            if len(held_markets) >= dyn_max_positions:
+                logger.info(
+                    f"🔒 [보유 슬롯 만석 ({len(held_markets)}/{dyn_max_positions})] 신규 종목 스크리닝 및 AI 분석을 생략하고 보유 포지션 실시간 감시에 집중합니다."
+                )
+                target_markets = held_markets
+            else:
+                screener = MarketScreener(
+                    bithumb,
+                    min_trade_value_krw=min_trade_val,
+                    min_change_rate=min_change,
+                    max_change_rate=max_change,
+                )
+                screened_items = screener.scan_markets(
+                    top_count=dyn_top_count, held_markets=held_markets
+                )
+                target_markets = [item["market"] for item in screened_items]
         else:
             fixed_list = [m.strip().upper() for m in raw_markets.split(",") if m.strip()]
             target_markets = list(dict.fromkeys(held_markets + fixed_list))
@@ -1554,10 +1577,14 @@ def run_cycle():
 
                     if market != "KRW-BTC" and is_btc_crashing:
                         logger.warning(f"[{korean_name} / {market}] 비트코인 급락세({btc_status_msg})로 인해 알트코인 매수를 방어적으로 차단합니다.")
-                        telegram.send_message(
-                            f"⚠️ <b>[{korean_name}({market}) 매수 차단 - BTC 급락 방어]</b>\n"
-                            f"• 사유: <i>{btc_status_msg}</i>\n"
-                            f"• 대장주(BTC) 급락으로 인한 알트코인 동반 폭락 위험 방지"
+                        telegram.send_debounced_message(
+                            category_key=f"btc_crash_{market}",
+                            text=(
+                                f"⚠️ <b>[{korean_name}({market}) 매수 차단 - BTC 급락 방어]</b>\n"
+                                f"• 사유: <i>{btc_status_msg}</i>\n"
+                                f"• 대장주(BTC) 급락으로 인한 알트코인 동반 폭락 위험 방지"
+                            ),
+                            min_interval_sec=900.0,
                         )
                         continue
 
