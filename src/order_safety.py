@@ -260,6 +260,22 @@ class SafeOrderExecutor:
         return results
 
 
+def get_dynamic_portfolio_tiers(total_equity: float) -> tuple[int, float, int]:
+    """
+    총 평가 자산 규모에 따른 동적 포트폴리오 슬롯 및 비중 한도 자동 스케일링 (Auto-Scaling)
+    - 30만 원 미만 (소액/테스트): 최대 2종목 (종목당 최대 50%, 스크리닝 상위 2개)
+    - 30만 원 ~ 100만 원 (중소액): 최대 3종목 (종목당 최대 35%, 스크리닝 상위 3개)
+    - 100만 원 이상 (본격 운용): 최대 4종목 (종목당 최대 25%, 스크리닝 상위 4개)
+    Returns: (max_open_positions: int, max_position_pct: float, top_screener_count: int)
+    """
+    if total_equity < 300_000.0:
+        return 2, 0.50, 2
+    elif total_equity < 1_000_000.0:
+        return 3, 0.35, 3
+    else:
+        return 4, 0.25, 4
+
+
 class RiskGuard:
     """Single decision point for new BUY orders.  SELL orders are never blocked here."""
 
@@ -269,6 +285,15 @@ class RiskGuard:
         self.max_position_pct = max_position_pct
         self.max_total_exposure_pct = max_total_exposure_pct
         self.max_order_krw = max_order_krw
+
+    def update_limits(self, max_open_positions: int | None = None, max_position_pct: float | None = None, max_total_exposure_pct: float | None = None) -> None:
+        """자산 규모 변동에 따라 동적으로 리스크 한도 갱신"""
+        if max_open_positions is not None:
+            self.max_open_positions = max_open_positions
+        if max_position_pct is not None:
+            self.max_position_pct = max_position_pct
+        if max_total_exposure_pct is not None:
+            self.max_total_exposure_pct = max_total_exposure_pct
 
     def validate_buy(self, market: str, order_krw: float, available_krw: float, total_equity: float, held_markets: list[str]) -> tuple[bool, str]:
         if order_krw < self.min_order_krw:

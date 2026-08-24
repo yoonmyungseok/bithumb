@@ -34,6 +34,7 @@ from order_safety import (
     RiskGuard,
     SafeOrderExecutor,
     calculate_risk_position_size,
+    get_dynamic_portfolio_tiers,
 )
 
 
@@ -134,6 +135,25 @@ class OrderSafetyTests(unittest.TestCase):
         # 수동으로 생성된 외부 주문은 False
         self.assertFalse(self.journal.is_managed_order("uuid-manual-external-999"))
         self.assertFalse(self.journal.is_managed_order(""))
+
+    def test_dynamic_portfolio_tiers(self):
+        # 1. 소액 (< 30만 원) -> 2종목, 50%, 2개 스크리닝
+        slots, pos_pct, top_n = get_dynamic_portfolio_tiers(27_680.0)
+        self.assertEqual(slots, 2)
+        self.assertEqual(pos_pct, 0.50)
+        self.assertEqual(top_n, 2)
+
+        # 2. 중소액 (30만 ~ 100만 원) -> 3종목, 35%, 3개 스크리닝
+        slots, pos_pct, top_n = get_dynamic_portfolio_tiers(500_000.0)
+        self.assertEqual(slots, 3)
+        self.assertEqual(pos_pct, 0.35)
+        self.assertEqual(top_n, 3)
+
+        # 3. 100만 원 이상 -> 4종목, 25%, 4개 스크리닝
+        slots, pos_pct, top_n = get_dynamic_portfolio_tiers(1_500_000.0)
+        self.assertEqual(slots, 4)
+        self.assertEqual(pos_pct, 0.25)
+        self.assertEqual(top_n, 4)
 
 
 if __name__ == "__main__":

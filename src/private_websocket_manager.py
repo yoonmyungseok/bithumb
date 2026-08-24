@@ -59,7 +59,7 @@ class BithumbPrivateWebSocketClient:
             delay = 2
             while self.is_running:
                 self.ws = websocket.WebSocketApp(self.URL, header=self._headers(), on_open=self._on_open, on_message=self._on_message, on_error=lambda _ws, err: logger.warning("Private WebSocket 오류: %s", err))
-                self.ws.run_forever(ping_interval=30, ping_timeout=10)
+                self.ws.run_forever(ping_interval=30, ping_timeout=20)
                 if self.is_running:
                     time.sleep(delay)
                     delay = min(delay * 2, 30)

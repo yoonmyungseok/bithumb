@@ -189,7 +189,7 @@ class BithumbWebSocketClient:
                         on_error=self._on_error,
                         on_close=self._on_close,
                     )
-                    self.ws.run_forever(ping_interval=30, ping_timeout=10)
+                    self.ws.run_forever(ping_interval=30, ping_timeout=20)
                 except (websocket.WebSocketException, OSError) as e:
                     logger.warning(f"웹소켓 루프 예외: {e}")
                 time.sleep(3)

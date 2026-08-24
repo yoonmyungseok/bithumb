@@ -24,6 +24,7 @@ from order_safety import (
     RiskGuard,
     SafeOrderExecutor,
     calculate_risk_position_size,
+    get_dynamic_portfolio_tiers,
     write_json_atomically,
 )
 from paper_broker import PaperBroker
@@ -77,7 +78,7 @@ GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv(
 RAW_MARKETS = os.getenv("MARKETS", "AUTO").strip()
 IS_AUTO_MODE = RAW_MARKETS.upper() == "AUTO"
 
-TOP_COUNT = int(os.getenv("TOP_COUNT", "3"))
+TOP_COUNT = int(os.getenv("TOP_COUNT", "2"))
 MIN_TRADE_VALUE = float(os.getenv("MIN_TRADE_VALUE", "5000000000"))  # 최소 50억 원
 MIN_CHANGE_RATE = float(os.getenv("MIN_CHANGE_RATE", "0.01"))        # 최소 +1.0%
 MAX_CHANGE_RATE = float(os.getenv("MAX_CHANGE_RATE", "0.25"))        # 최대 +25.0%
@@ -95,9 +96,9 @@ TRAILING_STOP_PCT = float(os.getenv("TRAILING_STOP_PCT", "0.012"))
 
 # 최소 주문 금액 제한 (빗썸 기준: 최소 5,000 KRW)
 MIN_ORDER_KRW = 5000.0
-MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
-MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.35"))
-MAX_TOTAL_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_EXPOSURE_PCT", "0.85"))
+MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "2"))
+MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.50"))
+MAX_TOTAL_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_EXPOSURE_PCT", "0.95"))
 MAX_ORDER_KRW = float(os.getenv("MAX_ORDER_KRW", "0"))  # 0: no absolute cap
 TRADING_MODE = os.getenv("TRADING_MODE", "LIVE").strip().upper()
 PAPER_INITIAL_KRW = float(os.getenv("PAPER_INITIAL_KRW", "1000000"))
@@ -1128,6 +1129,13 @@ def run_cycle():
             daily_history=risk_manager.daily_history,
         )
 
+        # 3-2. 총 자산 규모에 따른 동적 포트폴리오 슬롯 및 한도 자동 산출 (Auto-Scaling)
+        dyn_max_positions, dyn_max_pos_pct, dyn_top_count = get_dynamic_portfolio_tiers(current_total_equity)
+        risk_guard.update_limits(max_open_positions=dyn_max_positions, max_position_pct=dyn_max_pos_pct)
+        logger.info(
+            f"📊 [스마트 자산 티어] 총 자산 {current_total_equity:,.0f}원 ➜ 최대 {dyn_max_positions}종목 분할 (종목당 {dyn_max_pos_pct*100:.0f}% 한도, 스크리닝 상위 {dyn_top_count}개)"
+        )
+
         # 4. 대상 마켓 선정
         target_markets: list[str] = []
         if is_auto_mode:
@@ -1138,7 +1146,7 @@ def run_cycle():
                 max_change_rate=max_change,
             )
             screened_items = screener.scan_markets(
-                top_count=top_count, held_markets=held_markets
+                top_count=dyn_top_count, held_markets=held_markets
             )
             target_markets = [item["market"] for item in screened_items]
         else:
@@ -1553,13 +1561,11 @@ def run_cycle():
                         )
                         continue
 
-                    num_unheld_targets = len([m for m in target_markets if m not in held_markets])
-                    num_slots = max(1, num_unheld_targets)
-
-                    # 💰 1% 고정 리스크 포지션 사이징 모델과 슬롯 예산 결합
+                    # 💰 자산 규모별 동적 슬롯(2~4개) 예산 및 1% 리스크 관리 결합 (Auto-Scaling)
                     effective_capital = current_total_equity if current_total_equity > 0 else (krw_available + max(0.0, risk_manager.realized_pnl_krw))
-                    max_market_budget = min(krw_available, effective_capital / num_slots)
-                    slot_budget = max_market_budget * alloc_pct
+                    # 종목당 슬롯 예산: 전체 자산 / dyn_max_positions
+                    max_slot_budget = (effective_capital / max(1, dyn_max_positions))
+                    slot_budget = min(krw_available, max_slot_budget * (alloc_pct / dyn_max_pos_pct if alloc_pct < dyn_max_pos_pct else 1.0))
 
                     # 호가 단위 자동 보정 및 슬리피지 보호
                     order_price = entry_price if (0 < entry_price <= current_price * 1.002) else current_price
@@ -1573,18 +1579,18 @@ def run_cycle():
                         risk_fraction=0.01,
                         fee_rate=0.0004,
                         slippage_rate=0.001,
-                        max_position_pct=MAX_POSITION_PCT,
+                        max_position_pct=dyn_max_pos_pct,
                         min_order_krw=MIN_ORDER_KRW,
                     )
 
-                    # 슬롯 예산과 리스크 기반 예산 중 안전한 최소값 채택
+                    # 슬롯 예산과 리스크 기반 예산 중 안전한 값 채택
                     effective_risk_budget = risk_based_budget if risk_based_budget > 0 else slot_budget
                     trade_budget = min(krw_available, slot_budget, effective_risk_budget)
 
                     # 🛡️ 최소 5,500원 안전 마진 확보 (빗썸 5,000원 최소주문금액 및 수수료 0.995 반영)
                     SAFE_ORDER_KRW = 5500.0
                     if trade_budget < SAFE_ORDER_KRW and krw_available >= SAFE_ORDER_KRW:
-                        trade_budget = min(krw_available, max(max_market_budget, SAFE_ORDER_KRW))
+                        trade_budget = min(krw_available, max(max_slot_budget, SAFE_ORDER_KRW))
 
                     if trade_budget < SAFE_ORDER_KRW or (trade_budget * 0.995) < MIN_ORDER_KRW:
                         logger.warning(
