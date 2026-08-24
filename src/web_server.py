@@ -22,11 +22,14 @@ class DashboardWebServer:
         host: str = "127.0.0.1",
         get_status_data_func: Callable[[], dict[str, Any]] | None = None,
         action_handler_func: Callable[[str], str] | None = None,
+        data_provider: Callable[[], dict[str, Any]] | None = None,
+        action_handler: Callable[[str], str] | None = None,
+        **kwargs,
     ):
         self.port = port
         self.host = host
-        self.get_status_data = get_status_data_func
-        self.action_handler = action_handler_func
+        self.get_status_data = get_status_data_func or data_provider or kwargs.get("data_provider")
+        self.action_handler = action_handler_func or action_handler or kwargs.get("action_handler")
         self.server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -39,6 +42,16 @@ class DashboardWebServer:
             logger.info(f"🌐 [로컬 웹 대시보드 가동] 접속 주소: http://localhost:{self.port}")
         except OSError as e:
             logger.warning(f"웹 대시보드 포트 {self.port} 바인딩 실패: {e}")
+
+    def stop(self):
+        """웹 대시보드 서버 안전 종료"""
+        if self.server:
+            try:
+                self.server.shutdown()
+                self.server.server_close()
+                logger.info("🌐 [로컬 웹 대시보드 종료 완료]")
+            except Exception as e:
+                logger.debug(f"웹 대시보드 종료 예외: {e}")
 
     def _create_handler(self):
         server_self = self

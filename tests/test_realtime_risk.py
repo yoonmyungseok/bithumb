@@ -152,6 +152,83 @@ class RealtimeRiskAndIndicatorTests(unittest.TestCase):
         self.assertTrue(hasattr(api.session, "get"))
         self.assertTrue(hasattr(api.session, "post"))
 
+    def test_risk_manager_cashflow_and_trailing(self):
+        import tempfile
+        from risk_manager import DailyRiskManager, TrailingStopTracker
+        import datetime
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rm = DailyRiskManager(max_loss_pct=0.05, data_dir=tmpdir)
+            kst_now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
+            
+            # Initial equity
+            rm.update_daily_equity(100000.0, kst_now)
+            self.assertEqual(rm.daily_start_equity, 100000.0)
+
+            # Cashflow deposit +200,000 -> jump >= 10,000
+            rm.update_daily_equity(300000.0, kst_now)
+            self.assertEqual(rm.daily_start_equity, 300000.0)
+
+            # Trailing stop tracker
+            tst = TrailingStopTracker(start_profit_pct=0.02, trailing_drop_pct=0.012, data_dir=tmpdir)
+            # Normal position check under profit start
+            action, peak, tr_p, pk_pct, r_pct = tst.check_position("KRW-BTC", 10100.0, 10000.0)
+            self.assertEqual(action, "NONE")
+
+            # Reach partial TP (+2.5%)
+            action2, _, _, _, _ = tst.check_position("KRW-BTC", 10250.0, 10000.0)
+            self.assertEqual(action2, "PARTIAL_TP")
+
+    def test_bot_controller_dashboard_and_pause(self):
+        from bot_controller import BotController
+        from order_safety import OrderJournal, SafeOrderExecutor
+        from risk_manager import DailyRiskManager, TrailingStopTracker
+        from trade_memory import TradeMemoryManager
+        from telegram_alert import TelegramAlert
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paused_state = [False]
+            def get_paused():
+                return paused_state[0]
+            def set_paused(v):
+                paused_state[0] = v
+
+            journal = OrderJournal(path=os.path.join(tmpdir, "journal.json"))
+            executor = SafeOrderExecutor(journal)
+            rm = DailyRiskManager(data_dir=tmpdir)
+            tst = TrailingStopTracker(data_dir=tmpdir)
+            tm = TradeMemoryManager()
+            tg = TelegramAlert("token", "chat_id")
+
+            mock_api = types.SimpleNamespace(
+                get_balances=lambda: {"KRW": {"balance": 100000.0, "locked": 0.0}},
+                get_korean_name=lambda m: "비트코인",
+                get_current_price=lambda m: 100000000.0,
+                get_open_orders=lambda market=None: [],
+            )
+
+            bc = BotController(
+                exchange_factory=lambda: mock_api,
+                order_executor=executor,
+                order_journal=journal,
+                risk_manager=rm,
+                trailing_tracker=tst,
+                trade_memory=tm,
+                telegram=tg,
+                get_is_paused=get_paused,
+                set_is_paused=set_paused,
+            )
+
+            dash_data = bc.get_dashboard_data()
+            self.assertIn("total_equity", dash_data)
+            self.assertEqual(dash_data["bot_state"], "🟢 정상 가동 중")
+
+            bc.pause_bot()
+            self.assertTrue(get_paused())
+            bc.resume_bot()
+            self.assertFalse(get_paused())
+
 
 if __name__ == "__main__":
     unittest.main()

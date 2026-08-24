@@ -23,24 +23,26 @@ class SheetsManager:
         "https://www.googleapis.com/auth/drive",
     ]
 
-    def __init__(self, json_key_path: str, sheet_name: str):
-        if not os.path.exists(json_key_path):
+    def __init__(self, json_key_path: str = "", sheet_name: str = "", **kwargs):
+        key_path = json_key_path or kwargs.get("service_account_json_path", "")
+        target_sheet = sheet_name or kwargs.get("spreadsheet_name", "")
+        if not key_path or not os.path.exists(key_path):
             raise FileNotFoundError(
-                f"구글 서비스 계정 키 파일을 찾을 수 없습니다: {json_key_path}"
+                f"구글 서비스 계정 키 파일을 찾을 수 없습니다: {key_path}"
             )
 
         self.credentials = Credentials.from_service_account_file(
-            json_key_path, scopes=self.SCOPES
+            key_path, scopes=self.SCOPES
         )
         self.client = gspread.authorize(self.credentials)
-        self.sheet_name = sheet_name
+        self.sheet_name = target_sheet
 
         service_email = getattr(self.credentials, "service_account_email", "알 수 없음")
 
         try:
-            if sheet_name.startswith("https://"):
-                self.spreadsheet = self.client.open_by_url(sheet_name)
-            elif "/" in sheet_name or (len(sheet_name) > 30 and " " not in sheet_name):
+            if self.sheet_name.startswith("https://"):
+                self.spreadsheet = self.client.open_by_url(self.sheet_name)
+            elif "/" in self.sheet_name or (len(self.sheet_name) > 30 and " " not in self.sheet_name):
                 try:
                     self.spreadsheet = self.client.open_by_key(sheet_name)
                 except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException):

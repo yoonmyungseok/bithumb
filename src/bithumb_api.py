@@ -266,6 +266,13 @@ class BithumbAPI:
         else:
             return round(price, 4)
 
+    @staticmethod
+    def round_volume(market: str, volume: float) -> float:
+        """빗썸 마켓별 주문 가능 수량 정밀도 반올림 (기본 소수점 4자리)"""
+        if volume <= 0:
+            return 0.0
+        return round(volume, 4)
+
     def get_open_orders(self, market: str | None = None) -> list[dict[str, Any]]:
         """v2 대기 주문 목록 조회. 반환 스키마를 기존 호출부와 호환시킨다."""
         params: dict[str, Any] = {}
