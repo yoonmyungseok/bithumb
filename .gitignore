@@ -49,6 +49,8 @@ ENV/
 # ==========================================
 logs/
 *.log
+data/order_journal.json
+data/paper_account.json
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

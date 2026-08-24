@@ -16,7 +16,10 @@ from bithumb_api import BithumbAPI
 from chart_renderer import ChartRenderer
 from gemini_analyzer import GeminiAnalyzer
 from market_screener import MarketScreener
+from order_safety import AmbiguousOrderError, OrderJournal, RiskGuard, SafeOrderExecutor, write_json_atomically
+from paper_broker import PaperBroker
 from sheets_manager import SheetsManager
+from strategy_engine import entry_signal
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
 from web_server import DashboardWebServer
@@ -82,6 +85,13 @@ TRAILING_STOP_PCT = float(os.getenv("TRAILING_STOP_PCT", "0.012"))
 
 # 최소 주문 금액 제한 (빗썸 기준: 최소 5,000 KRW)
 MIN_ORDER_KRW = 5000.0
+MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
+MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.35"))
+MAX_TOTAL_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_EXPOSURE_PCT", "0.85"))
+MAX_ORDER_KRW = float(os.getenv("MAX_ORDER_KRW", "0"))  # 0: no absolute cap
+TRADING_MODE = os.getenv("TRADING_MODE", "LIVE").strip().upper()
+PAPER_INITIAL_KRW = float(os.getenv("PAPER_INITIAL_KRW", "1000000"))
+PAPER_FEE_RATE = float(os.getenv("PAPER_FEE_RATE", "0"))
 
 # 봇 일시정지 상태 플래그 (텔레그램 및 웹 대시보드 연동)
 IS_BOT_PAUSED = False
@@ -89,6 +99,28 @@ IS_BOT_PAUSED = False
 # 전역 인스턴스 초기화
 chart_renderer = ChartRenderer()
 trade_memory = TradeMemoryManager()
+order_journal = OrderJournal()
+order_executor = SafeOrderExecutor(order_journal)
+risk_guard = RiskGuard(
+    min_order_krw=MIN_ORDER_KRW,
+    max_open_positions=MAX_OPEN_POSITIONS,
+    max_position_pct=MAX_POSITION_PCT,
+    max_total_exposure_pct=MAX_TOTAL_EXPOSURE_PCT,
+    max_order_krw=MAX_ORDER_KRW,
+)
+paper_broker: PaperBroker | None = None
+
+
+def create_exchange_client() -> BithumbAPI | PaperBroker:
+    """Use public market data in PAPER mode while keeping all money virtual."""
+    global paper_broker
+    live_client = BithumbAPI(BITHUMB_ACCESS_KEY, BITHUMB_SECRET_KEY)
+    if TRADING_MODE != "PAPER":
+        return live_client
+    if paper_broker is None:
+        paper_broker = PaperBroker(live_client, PAPER_INITIAL_KRW, PAPER_FEE_RATE)
+        logger.warning("🧪 PAPER 모드: 실제 주문은 전송되지 않으며 data/paper_account.json만 갱신됩니다.")
+    return paper_broker
 
 # 빗썸 실시간 웹소켓(WebSocket) 클라이언트 (0.1초 실시간 시세 및 5분 고래 수급 스트리밍)
 ws_client = BithumbWebSocketClient(
@@ -130,17 +162,11 @@ class TrailingStopTracker:
 
     def _save_state(self):
         try:
-            with open(self.state_file, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "peaks": self.peaks,
-                        "partial_tp_done": self.partial_tp_done,
-                        "entry_times": self.entry_times,
-                    },
-                    f,
-                    indent=2,
-                    ensure_ascii=False,
-                )
+            write_json_atomically(self.state_file, {
+                "peaks": self.peaks,
+                "partial_tp_done": self.partial_tp_done,
+                "entry_times": self.entry_times,
+            })
         except OSError as e:
             logger.warning(f"포지션 상태 파일 저장 실패: {e}")
 
@@ -209,6 +235,17 @@ class TrailingStopTracker:
         self.entry_times.pop(market, None)
         self._save_state()
 
+    def reconcile_markets(self, held_markets: list[str]) -> int:
+        """Drop stale trailing state after a restart; exchange balances are authoritative."""
+        stale_markets = (set(self.peaks) | set(self.partial_tp_done) | set(self.entry_times)) - set(held_markets)
+        for market in stale_markets:
+            self.peaks.pop(market, None)
+            self.partial_tp_done.pop(market, None)
+            self.entry_times.pop(market, None)
+        if stale_markets:
+            self._save_state()
+        return len(stale_markets)
+
 
 trailing_tracker = TrailingStopTracker(
     start_profit_pct=TRAILING_START_PCT, trailing_drop_pct=TRAILING_STOP_PCT
@@ -255,22 +292,16 @@ class DailyRiskManager:
 
     def _save_state(self):
         try:
-            with open(self.stats_file, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "date": self.current_date_str,
-                        "start_equity": self.daily_start_equity,
-                        "realized_pnl_krw": self.realized_pnl_krw,
-                        "total_trades": self.total_trades_today,
-                        "win_trades": self.win_trades_today,
-                        "consecutive_losses": self.consecutive_losses,
-                        "cooldown_until_ts": self.cooldown_until_ts,
-                        "history": self.daily_history,
-                    },
-                    f,
-                    indent=2,
-                    ensure_ascii=False,
-                )
+            write_json_atomically(self.stats_file, {
+                "date": self.current_date_str,
+                "start_equity": self.daily_start_equity,
+                "realized_pnl_krw": self.realized_pnl_krw,
+                "total_trades": self.total_trades_today,
+                "win_trades": self.win_trades_today,
+                "consecutive_losses": self.consecutive_losses,
+                "cooldown_until_ts": self.cooldown_until_ts,
+                "history": self.daily_history,
+            })
         except OSError as e:
             logger.warning(f"일일 통계 저장 실패: {e}")
 
@@ -532,7 +563,7 @@ def requote_pending_orders(bithumb: BithumbAPI) -> int:
                         f"🎛️ [스마트 호가 재정정] {market} 기존 지정가({order_price:,.2f}원) ➜ 최신 체결가({new_price:,.2f}원)로 자동 정정"
                     )
                     bithumb.cancel_order(order_uuid)
-                    bithumb.create_order(
+                    order_executor.submit(bithumb,
                         market=market,
                         side="bid",
                         price=new_price,
@@ -552,7 +583,7 @@ def send_daily_morning_report():
     logger.info(f"📊 [아침 9시 일일 결산 브리핑 발송: {now_str}]")
 
     try:
-        bithumb = BithumbAPI(BITHUMB_ACCESS_KEY, BITHUMB_SECRET_KEY)
+        bithumb = create_exchange_client()
         telegram = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
         fng = get_fear_and_greed_index()
         balances = bithumb.get_balances()
@@ -588,7 +619,7 @@ def get_telegram_status_callback() -> str:
     """텔레그램 /status 명령어 응답 콜백"""
     now_str = get_kst_now_str()
     try:
-        bithumb = BithumbAPI(BITHUMB_ACCESS_KEY, BITHUMB_SECRET_KEY)
+        bithumb = create_exchange_client()
         fng = get_fear_and_greed_index()
         balances = bithumb.get_balances()
         total_equity = calculate_total_equity(balances, bithumb)
@@ -621,7 +652,7 @@ def get_telegram_balance_callback() -> str:
     """텔레그램 /balance 명령어 응답 콜백"""
     now_str = get_kst_now_str()
     try:
-        bithumb = BithumbAPI(BITHUMB_ACCESS_KEY, BITHUMB_SECRET_KEY)
+        bithumb = create_exchange_client()
         balances = bithumb.get_balances()
         lines = ["💰 <b>[실시간 계좌 잔고 상세 내역]</b>\n"]
         krw = balances.get("KRW", {})
@@ -655,7 +686,7 @@ def get_telegram_panic_callback() -> str:
     IS_BOT_PAUSED = True
 
     try:
-        bithumb = BithumbAPI(BITHUMB_ACCESS_KEY, BITHUMB_SECRET_KEY)
+        bithumb = create_exchange_client()
         open_orders = bithumb.get_open_orders()
         for o in open_orders:
             bithumb.cancel_order(o.get("uuid", ""))
@@ -671,7 +702,7 @@ def get_telegram_panic_callback() -> str:
             cur_p = bithumb.get_current_price(market)
             if bal * cur_p >= MIN_ORDER_KRW:
                 k_name = bithumb.get_korean_name(market)
-                bithumb.create_order(market=market, side="ask", volume=bal, ord_type="market")
+                order_executor.submit(bithumb, market=market, side="ask", volume=bal, ord_type="market")
                 sold_summary.append(f"{k_name}({cur}) {bal:.6f}개")
                 trailing_tracker.clear(market)
 
@@ -763,11 +794,20 @@ def run_cycle():
     logger.info(f"========== [자동매매 사이클 시작: {now_str}] ==========")
 
     try:
-        bithumb = BithumbAPI(BITHUMB_ACCESS_KEY, BITHUMB_SECRET_KEY)
+        bithumb = create_exchange_client()
         sheets = SheetsManager(GOOGLE_SERVICE_ACCOUNT_JSON, GOOGLE_SHEET_NAME)
         telegram = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
         analyzer = GeminiAnalyzer(GEMINI_API_KEY) if GEMINI_API_KEY else None
         fng = get_fear_and_greed_index()
+
+        # A prior POST may have reached the exchange despite a lost response.  Reconcile
+        # what can be proven; anything still unknown remains blocked from new BUY orders.
+        resolved = order_journal.reconcile_exchange_statuses(bithumb.get_order)
+        reconciled = order_journal.reconcile_open_orders(bithumb.get_open_orders())
+        if resolved:
+            logger.info("주문 저널 동기화: 완료/취소 상태 %d건 반영", resolved)
+        if reconciled:
+            logger.info("주문 저널 동기화: 미확정 주문 %d건을 거래소 미체결 주문과 연결", reconciled)
 
         # 0-1. 미체결 주문 TTL 자동 정리 (3분/180초 이상 미체결 주문 취소) & 스마트 리쿼팅
         cleaned = clean_stale_orders(bithumb, max_age_seconds=180)
@@ -785,6 +825,9 @@ def run_cycle():
 
         krw_available = balances.get("KRW", {}).get("balance", 0.0)
         held_markets = get_held_markets(balances, bithumb)
+        stale_state_count = trailing_tracker.reconcile_markets(held_markets)
+        if stale_state_count:
+            logger.info("거래소 잔고 동기화: 오래된 포지션 추적 상태 %d건 제거", stale_state_count)
 
         logger.info(
             f"💰 총 평가 자산: {current_total_equity:,.0f}원 (가용 원화: {krw_available:,.0f}원) | 당일 손익률: {daily_pnl*100:+.2f}% | 공포탐욕: {fng['desc']}"
@@ -917,7 +960,7 @@ def run_cycle():
                             for order in bithumb.get_open_orders(market):
                                 bithumb.cancel_order(order["uuid"])
 
-                            order_res = bithumb.create_order(
+                            order_res = order_executor.submit(bithumb,
                                 market=market,
                                 side="ask",
                                 volume=sell_vol,
@@ -989,7 +1032,7 @@ def run_cycle():
                         for order in bithumb.get_open_orders(market):
                             bithumb.cancel_order(order["uuid"])
 
-                        order_res = bithumb.create_order(
+                        order_res = order_executor.submit(bithumb,
                             market=market,
                             side="ask",
                             volume=coin_available,
@@ -1054,7 +1097,6 @@ def run_cycle():
                                 "Status_Reason": f"트레일링 스탑 최고점 익절 (+{realized_profit_pct:.2f}%)",
                             }
                         )
-                        POSITION_ENTRY_TIMES.pop(market, None)
                         continue
 
                 # =========================================================================
@@ -1073,7 +1115,7 @@ def run_cycle():
                         for order in bithumb.get_open_orders(market):
                             bithumb.cancel_order(order["uuid"])
 
-                        order_res = bithumb.create_order(
+                        order_res = order_executor.submit(bithumb,
                             market=market,
                             side="ask",
                             volume=coin_available,
@@ -1133,6 +1175,13 @@ def run_cycle():
                 alloc_pct = strategy.get("alloc_pct", 0.3)
                 reason = strategy.get("reason", "자동 분석")
 
+                # The LLM may explain and rank candidates, but it cannot bypass the
+                # deterministic entry rule used by the backtester.
+                local_entry = entry_signal(candles_5m)
+                if action == "BUY" and not local_entry["allow_buy"]:
+                    action = "HOLD"
+                    reason = f"정량 공통 진입 게이트 차단: {local_entry['reason']} | {reason}"
+
                 if fng["is_extreme_fear"] and action == "BUY":
                     alloc_pct = min(alloc_pct, 0.4)
 
@@ -1156,12 +1205,10 @@ def run_cycle():
                     )
 
                     trailing_tracker.clear(market)
-                    POSITION_ENTRY_TIMES.pop(market, None)
-
                     for order in bithumb.get_open_orders(market):
                         bithumb.cancel_order(order["uuid"])
 
-                    order_res = bithumb.create_order(
+                    order_res = order_executor.submit(bithumb,
                         market=market,
                         side="ask",
                         volume=coin_available,
@@ -1229,6 +1276,13 @@ def run_cycle():
 
                 # 6. [신규 주문 실행 - 동적 복리 자금 관리 적용]
                 if action == "BUY":
+                    if order_journal.has_unresolved_market(market):
+                        logger.warning(
+                            "[%s] 이전 주문의 거래소 결과가 확정되지 않아 신규 매수를 차단합니다. data/order_journal.json을 확인하세요.",
+                            market,
+                        )
+                        continue
+
                     if IS_BOT_PAUSED:
                         logger.info(f"[{korean_name} / {market}] 봇이 일시정지 상태이므로 신규 매수를 건너뜁니다.")
                         continue
@@ -1273,23 +1327,34 @@ def run_cycle():
                         )
                         continue
 
+                    is_safe, rejection_reason = risk_guard.validate_buy(
+                        market=market,
+                        order_krw=trade_budget,
+                        available_krw=krw_available,
+                        total_equity=current_total_equity,
+                        held_markets=held_markets,
+                    )
+                    if not is_safe:
+                        logger.warning("[%s] 통합 리스크 검증으로 매수 차단: %s", market, rejection_reason)
+                        continue
+
                     net_trade_budget = trade_budget * 0.995
                     buy_volume = net_trade_budget / order_price
 
                     # ⚡ 대량 주문 슬리피지 방지 TWAP 시간분할 체결 (5만 원 이상 주문 시 3회 분할)
                     if trade_budget >= 50000.0:
-                        order_list = bithumb.execute_twap_order(
+                        order_list = order_executor.execute_twap(
+                            bithumb,
                             market=market,
                             side="bid",
                             volume=buy_volume,
                             price=order_price,
-                            ord_type="limit",
                             splits=3,
                             interval_seconds=2.0,
                         )
                         order_uuid = order_list[0].get("uuid", "TWAP_MULTI") if order_list else "UNKNOWN"
                     else:
-                        order_res = bithumb.create_order(
+                        order_res = order_executor.submit(bithumb,
                             market=market,
                             side="bid",
                             price=order_price,
@@ -1358,9 +1423,7 @@ def run_cycle():
                         continue
 
                     trailing_tracker.clear(market)
-                    POSITION_ENTRY_TIMES.pop(market, None)
-
-                    order_res = bithumb.create_order(
+                    order_res = order_executor.submit(bithumb,
                         market=market,
                         side="ask",
                         price=order_price,
@@ -1382,7 +1445,7 @@ def run_cycle():
                         f"• 일시: {now_str}"
                     )
 
-            except (requests.exceptions.RequestException, KeyError, ValueError) as e:
+            except (requests.exceptions.RequestException, KeyError, ValueError, AmbiguousOrderError) as e:
                 logger.error(f"[{market}] 처리 중 오류: {e}")
                 logger.error(traceback.format_exc())
 

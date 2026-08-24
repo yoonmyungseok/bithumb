@@ -56,12 +56,17 @@ class BithumbAPI:
         max_retries: int = 3,
     ) -> Any:
         """
-        API 요청 공통 핸들러 (최대 3회 지수 백오프 자동 재시도)
+        API 요청 공통 핸들러.
+
+        조회(GET)만 자동 재시도합니다. 주문 POST는 응답 유실 뒤 재시도하면
+        중복 주문이 될 수 있으므로 호출자에게 불확실한 결과를 전달합니다.
         """
         url = f"{self.BASE_URL}{endpoint}"
         last_exception = None
 
-        for attempt in range(1, max_retries + 1):
+        retryable = method.upper() == "GET"
+        attempts = max_retries if retryable else 1
+        for attempt in range(1, attempts + 1):
             headers = {"Content-Type": "application/json"}
             if self.access_key and self.secret_key:
                 query_payload = params if params is not None else data
@@ -80,7 +85,7 @@ class BithumbAPI:
 
                 # 429(Rate Limit) 또는 5xx 서버 일시 에러 시 재시도
                 if response.status_code in (429, 500, 502, 503, 504):
-                    if attempt < max_retries:
+                    if retryable and attempt < attempts:
                         sleep_sec = 2 ** (attempt - 1)
                         logger.warning(
                             f"⚠️ Bithumb API [{response.status_code}] {endpoint} 일시 오류. {sleep_sec}초 후 재시도 ({attempt}/{max_retries})"
@@ -98,14 +103,14 @@ class BithumbAPI:
 
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
                 last_exception = e
-                if attempt < max_retries:
+                if retryable and attempt < attempts:
                     sleep_sec = 2 ** (attempt - 1)
                     logger.warning(
                         f"⚠️ Bithumb API 네트워크 타임아웃/연결 오류: {e}. {sleep_sec}초 후 재시도 ({attempt}/{max_retries})"
                     )
                     time.sleep(sleep_sec)
                 else:
-                    logger.error(f"HTTP Request Failed after {max_retries} attempts: {e}")
+                    logger.error(f"HTTP Request Failed after {attempts} attempts: {e}")
                     raise
             except requests.exceptions.RequestException as e:
                 logger.error(f"HTTP Request Failed: {e}")
@@ -261,6 +266,13 @@ class BithumbAPI:
             params["market"] = market
         data = self._request("GET", "/orders", params=params)
         return data if isinstance(data, list) else []
+
+    def get_order(self, uuid_str: str) -> dict[str, Any]:
+        """Fetch one order's current exchange state for crash-recovery reconciliation."""
+        if not uuid_str:
+            raise ValueError("주문 UUID가 비어 있습니다.")
+        data = self._request("GET", "/order", params={"uuid": uuid_str})
+        return data if isinstance(data, dict) else {}
 
     def create_order(
         self,

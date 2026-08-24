@@ -4,7 +4,7 @@ import sys
 from typing import Any
 
 from bithumb_api import BithumbAPI
-from gemini_analyzer import GeminiAnalyzer
+from strategy_engine import entry_signal
 
 # 윈도우 cp949 인코딩 표준화
 if sys.platform == "win32":
@@ -29,10 +29,11 @@ class QuantBacktester:
     - 누적 수익률, MDD(최대 낙폭), 승률, 손익비 정밀 시뮬레이션
     """
 
-    def __init__(self, initial_capital: float = 1_000_000.0):
+    def __init__(self, initial_capital: float = 1_000_000.0, fee_rate: float = 0.0, slippage_rate: float = 0.0):
         self.initial_capital = initial_capital
+        self.fee_rate = max(0.0, fee_rate)
+        self.slippage_rate = max(0.0, slippage_rate)
         self.bithumb = BithumbAPI()
-        self.analyzer = GeminiAnalyzer()
 
     def run_backtest(
         self,
@@ -73,7 +74,6 @@ class QuantBacktester:
             low_price = float(c_candle.get("low_price", cur_price))
 
             window_desc = window[::-1]
-            close_prices = [float(c.get("trade_price", 0)) for c in window_desc]
 
             # 1. 포지션 보유 중인 경우: 익절/손절/트레일링 검사
             if in_position and entry_price > 0:
@@ -84,14 +84,15 @@ class QuantBacktester:
                 if (high_price - entry_price) / entry_price >= 0.025 and not partial_tp_done:
                     partial_tp_done = True
                     sell_vol = position_vol * 0.5
-                    realized_val = sell_vol * (entry_price * 1.025)
+                    exit_price = entry_price * 1.025 * (1.0 - self.slippage_rate)
+                    realized_val = sell_vol * exit_price * (1.0 - self.fee_rate)
                     capital += realized_val
                     position_vol -= sell_vol
                     trade_logs.append({
                         "type": "PARTIAL_TP",
-                        "price": entry_price * 1.025,
+                        "price": exit_price,
                         "pnl_pct": 2.5,
-                        "profit_krw": sell_vol * (entry_price * 0.025),
+                        "profit_krw": realized_val - sell_vol * entry_price,
                         "candle_idx": i,
                     })
 
@@ -102,10 +103,11 @@ class QuantBacktester:
                     trail_stop_price = max(peak_price * (1.0 - drop_rate), entry_price * 1.002)
 
                     if low_price <= trail_stop_price:
-                        exit_p = trail_stop_price
+                        exit_p = trail_stop_price * (1.0 - self.slippage_rate)
                         pnl_pct = ((exit_p - entry_price) / entry_price) * 100.0
-                        profit_krw = position_vol * (exit_p - entry_price)
-                        capital += position_vol * exit_p
+                        proceeds = position_vol * exit_p * (1.0 - self.fee_rate)
+                        profit_krw = proceeds - position_vol * entry_price
+                        capital += proceeds
                         in_position = False
                         trade_logs.append({
                             "type": "TRAILING_STOP",
@@ -119,10 +121,11 @@ class QuantBacktester:
 
                 # C. 손절 검사
                 if low_price <= active_stop:
-                    exit_p = active_stop
+                    exit_p = active_stop * (1.0 - self.slippage_rate)
                     loss_pct = ((exit_p - entry_price) / entry_price) * 100.0
-                    loss_krw = position_vol * (exit_p - entry_price)
-                    capital += position_vol * exit_p
+                    proceeds = position_vol * exit_p * (1.0 - self.fee_rate)
+                    loss_krw = proceeds - position_vol * entry_price
+                    capital += proceeds
                     in_position = False
                     trade_logs.append({
                         "type": "STOP_LOSS",
@@ -136,23 +139,19 @@ class QuantBacktester:
 
             # 2. 미보유 상태: 퀀트 진입 신호 검사
             elif not in_position and capital >= 10_000:
-                rsi = self.analyzer.calculate_rsi(close_prices, 14)
-                bb = self.analyzer.calculate_bollinger_bands(close_prices, 20, 2.0)
-                ma5 = sum(close_prices[:5]) / 5
-                ma20 = bb["middle"]
-                atr_info = self.analyzer.calculate_atr(window_desc, 14)
+                signal = entry_signal(window_desc)
 
                 # 진입 조건: 골든크로스 + RSI 45~65 건전 구간 + 볼린저 %B 눌림목(0.3~0.7)
-                if ma5 > ma20 and 45.0 <= rsi <= 65.0 and 0.3 <= bb["pct_b"] <= 0.75:
-                    entry_price = cur_price
+                if signal["allow_buy"]:
+                    entry_price = cur_price * (1.0 + self.slippage_rate)
                     invest_amt = capital * 0.4  # 40% 비중
                     capital -= invest_amt
-                    position_vol = invest_amt / entry_price
+                    position_vol = invest_amt * (1.0 - self.fee_rate) / entry_price
                     in_position = True
                     partial_tp_done = False
                     peak_price = cur_price
-                    active_target = cur_price + max(cur_price * 0.025, atr_info["atr"] * 1.5)
-                    active_stop = cur_price - max(cur_price * 0.015, atr_info["atr"])
+                    active_target = signal["target_price"]
+                    active_stop = signal["stop_loss"]
 
                     trade_logs.append({
                         "type": "BUY",
@@ -172,7 +171,7 @@ class QuantBacktester:
         # 미청산 포지션 잔여 가치 합산
         if in_position:
             last_price = float(sorted_candles[-1].get("trade_price", entry_price))
-            capital += position_vol * last_price
+            capital += position_vol * last_price * (1.0 - self.slippage_rate) * (1.0 - self.fee_rate)
 
         total_return_pct = ((capital - self.initial_capital) / self.initial_capital) * 100.0
         completed_trades = [t for t in trade_logs if t["type"] in ("PARTIAL_TP", "TRAILING_STOP", "STOP_LOSS")]
@@ -196,6 +195,8 @@ class QuantBacktester:
             "loss_trades": len(loss_trades),
             "win_rate": win_rate,
             "profit_factor": profit_factor,
+            "fee_rate": self.fee_rate,
+            "slippage_rate": self.slippage_rate,
         }
 
         self._print_report(result)
@@ -213,6 +214,7 @@ class QuantBacktester:
         print(f"• 총 거래 횟수: {r.get('total_trades', 0)}회 (승리: {r.get('win_trades', 0)}회 / 패배: {r.get('loss_trades', 0)}회)")
         print(f"• 실시간 승률: {r.get('win_rate', 0.0):.1f}%")
         print(f"• 손익비(Profit Factor): {r.get('profit_factor', 0.0):.2f}")
+        print(f"• 비용 가정: 수수료 {r.get('fee_rate', 0.0)*100:.3f}% / 편도 슬리피지 {r.get('slippage_rate', 0.0)*100:.3f}%")
         print("=" * 60 + "\n")
 
 
@@ -222,9 +224,11 @@ def main():
     parser.add_argument("--unit", type=int, default=5, help="분봉 단위 (1, 3, 5, 15, 60)")
     parser.add_argument("--count", type=int, default=200, help="캔들 개수 (최대 200)")
     parser.add_argument("--capital", type=float, default=1_000_000.0, help="초기 자본금")
+    parser.add_argument("--fee-rate", type=float, default=0.0, help="편도 수수료율 (예: 0.0004)")
+    parser.add_argument("--slippage-rate", type=float, default=0.0, help="편도 슬리피지율 (예: 0.001)")
     args = parser.parse_args()
 
-    backtester = QuantBacktester(initial_capital=args.capital)
+    backtester = QuantBacktester(args.capital, args.fee_rate, args.slippage_rate)
     backtester.run_backtest(market=args.market, unit=args.unit, count=args.count)
 
 

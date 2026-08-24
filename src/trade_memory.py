@@ -3,6 +3,8 @@ import logging
 import os
 from typing import Any
 
+from order_safety import write_json_atomically
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,8 +33,7 @@ class TradeMemoryManager:
 
     def _save_memory(self):
         try:
-            with open(self.memory_file, "w", encoding="utf-8") as f:
-                json.dump(self.trades[-50:], f, indent=2, ensure_ascii=False)
+            write_json_atomically(self.memory_file, self.trades[-50:])
         except OSError as e:
             logger.warning(f"매매 메모리 저장 실패: {e}")
 

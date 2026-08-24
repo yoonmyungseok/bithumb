@@ -111,6 +111,27 @@ c:\AI\bithumb\
 
 ---
 
+## 6. 실거래 안전장치
+
+- **주문 저널**: 모든 주문 의도는 `data/order_journal.json`에 원자적으로 기록됩니다. 주문 POST의 응답이 유실되면 자동 재주문하지 않으며, 해당 마켓의 신규 매수를 차단합니다.
+- **시작/주기 동기화**: 거래소 미체결 주문과 주문 저널을 매 주기 동기화합니다. 응답 유실 주문은 거래소에서 확인할 수 있을 때만 상태를 해제합니다.
+- **신규 매수 한도**: `.env`에서 `MAX_OPEN_POSITIONS`(기본 3), `MAX_POSITION_PCT`(기본 0.35), `MAX_TOTAL_EXPOSURE_PCT`(기본 0.85), `MAX_ORDER_KRW`(기본 0=미설정)를 조정할 수 있습니다.
+- **상태 복구**: 포지션·일일 통계·매매 메모리는 원자적으로 저장하며, 시작 시 실제 거래소 잔고에 없는 오래된 포지션 추적 상태는 정리합니다.
+- **대시보드 접근**: 웹 대시보드는 기본적으로 `127.0.0.1`에만 바인딩됩니다. 외부 접근이 필요하다면 인증이 있는 프록시를 앞단에 두어야 합니다.
+- **페이퍼 트레이딩**: `TRADING_MODE=PAPER`로 설정하면 실거래 주문·잔고 대신 `data/paper_account.json`의 가상 원장을 사용합니다. `PAPER_INITIAL_KRW`, `PAPER_FEE_RATE`로 시작 자금과 수수료 가정을 설정할 수 있습니다.
+- **공통 전략 게이트**: LLM은 후보 평가와 근거 설명을 맡고, 실제 신규 매수는 `strategy_engine.py`의 결정론적 기술지표 게이트를 통과해야 합니다. `backtest.py`도 동일한 진입 게이트를 사용하며 `--fee-rate`, `--slippage-rate` 옵션으로 비용 가정을 명시할 수 있습니다.
+
+응답 유실로 `UNKNOWN` 상태가 남으면 `data/order_journal.json`의 주문 시각·종목·수량을 거래소 주문/체결 내역과 대조한 뒤, 확인된 상태로만 저널을 정리해야 합니다. 확인 전 저널 파일을 삭제하거나 봇을 재주문시키면 안 됩니다.
+
+### 권장 운영 전환
+
+1. `.env`에 `TRADING_MODE=PAPER`와 보수적인 `PAPER_INITIAL_KRW`를 설정해 최소 2주간 가상 운용합니다.
+2. 비용 민감도는 `python src/backtest.py --count 200 --fee-rate 0.0004 --slippage-rate 0.001`처럼 명시해 확인합니다. 수수료율은 사용 중인 빗썸 수수료 정책에 맞춰 직접 입력합니다.
+3. 페이퍼 운용에서 주문 저널, 일일 손실 한도, 재시작 복구 로그를 검토한 뒤에만 `TRADING_MODE=LIVE`로 전환합니다.
+4. LIVE 전환 직후에는 `MAX_ORDER_KRW`를 낮게 설정하고, 주문 응답 유실·미체결·수동 중지 절차를 먼저 점검합니다.
+
+---
+
 ## 요약 (For AI Agents)
 
 해당 프로젝트는 **Bithumb API, Gemini LLM 기반 퀀트 전략, 자동화된 리스크 관리 및 상태 모니터링(Telegram, Google Sheets, Web Dashboard)** 이 종합적으로 결합된 완성도 높은 트레이딩 시스템입니다. 수정 사항이나 새로운 전략을 추가할 때, 핵심 매매 로직은 `gemini_analyzer.py`와 `main.py`를, 데이터 파이프라인은 `bithumb_api.py` 및 `market_screener.py`를 주로 참고 및 수정하면 됩니다.

@@ -19,10 +19,12 @@ class DashboardWebServer:
     def __init__(
         self,
         port: int = 7979,
+        host: str = "127.0.0.1",
         get_status_data_func: Callable[[], dict[str, Any]] | None = None,
         action_handler_func: Callable[[str], str] | None = None,
     ):
         self.port = port
+        self.host = host
         self.get_status_data = get_status_data_func
         self.action_handler = action_handler_func
         self.server: ThreadingHTTPServer | None = None
@@ -31,7 +33,7 @@ class DashboardWebServer:
     def start(self):
         handler_cls = self._create_handler()
         try:
-            self.server = ThreadingHTTPServer(("0.0.0.0", self.port), handler_cls)
+            self.server = ThreadingHTTPServer((self.host, self.port), handler_cls)
             self._thread = threading.Thread(target=self.server.serve_forever, daemon=True, name="WebDashboard")
             self._thread.start()
             logger.info(f"🌐 [로컬 웹 대시보드 가동] 접속 주소: http://localhost:{self.port}")
