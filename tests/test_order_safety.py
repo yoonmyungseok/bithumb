@@ -27,7 +27,14 @@ except ModuleNotFoundError:  # Keep unit tests runnable before optional runtime 
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from order_safety import AmbiguousOrderError, OrderJournal, RiskGuard, SafeOrderExecutor
+from order_safety import (
+    AmbiguousOrderError,
+    CooldownManager,
+    OrderJournal,
+    RiskGuard,
+    SafeOrderExecutor,
+    calculate_risk_position_size,
+)
 
 
 class TimeoutBithumb:
@@ -95,6 +102,29 @@ class OrderSafetyTests(unittest.TestCase):
         self.assertEqual(guard.validate_buy("KRW-BTC", 400_000, 900_000, 1_000_000, []), (False, "종목당 비중 한도 초과"))
         self.assertEqual(guard.validate_buy("KRW-BTC", 100_000, 900_000, 1_000_000, ["KRW-ETH", "KRW-XRP"]), (False, "동시 보유 종목 수 한도 초과"))
         self.assertEqual(guard.validate_buy("KRW-BTC", 100_000, 900_000, 1_000_000, []), (True, "OK"))
+
+    def test_cooldown_manager(self):
+        cd = CooldownManager(default_sl_cooldown=100.0, default_tp_cooldown=50.0)
+        cd.record_exit("KRW-BTC", "STOP_LOSS")
+        is_cd, rem = cd.is_in_cooldown("KRW-BTC")
+        self.assertTrue(is_cd)
+        self.assertGreater(rem, 0.0)
+
+        is_cd_eth, _ = cd.is_in_cooldown("KRW-ETH")
+        self.assertFalse(is_cd_eth)
+
+    def test_calculate_risk_position_size(self):
+        # 1,000,000 total equity, entry=100,000, SL=98,000 (2% stop), risk 1% = 10,000 max loss
+        # Expected position = 10,000 / (~0.0218) ~= 450,000 -> capped at 35% (350,000)
+        size = calculate_risk_position_size(
+            total_equity=1_000_000.0,
+            entry_price=100_000.0,
+            stop_loss=98_000.0,
+            risk_fraction=0.01,
+            max_position_pct=0.35,
+        )
+        self.assertGreater(size, 5000.0)
+        self.assertLessEqual(size, 350_000.0)
 
 
 if __name__ == "__main__":

@@ -66,15 +66,43 @@ def calculate_ema(prices: list[float], period: int) -> float:
     return ema
 
 
+def calculate_ema_series(prices: list[float], period: int) -> list[float]:
+    """Calculate full EMA series for chronological prices (oldest-first)."""
+    if not prices:
+        return []
+    if len(prices) < period:
+        # Fallback: simple expanding mean
+        result = []
+        acc = 0.0
+        for i, p in enumerate(prices, 1):
+            acc += p
+            result.append(acc / i)
+        return result
+
+    k = 2.0 / (period + 1)
+    ema = sum(prices[:period]) / period
+    result = [prices[i] for i in range(period - 1)] + [ema]
+    for price in prices[period:]:
+        ema = (price * k) + (ema * (1.0 - k))
+        result.append(ema)
+    return result
+
+
 def calculate_macd(prices: list[float], fast: int = 12, slow: int = 26, signal: int = 9) -> dict[str, Any]:
-    """Calculate MACD Line, Signal Line, Histogram and Trend."""
-    if len(prices) < slow:
+    """Calculate MACD Line, Signal Line, Histogram and Trend using standard exponential series."""
+    if len(prices) < slow + signal:
         return {"macd": 0.0, "signal": 0.0, "hist": 0.0, "trend": "NEUTRAL"}
 
-    ema_fast = calculate_ema(prices, fast)
-    ema_slow = calculate_ema(prices, slow)
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line * 0.9  # Simplified signal estimate
+    chronological = prices[::-1]
+    ema_fast_series = calculate_ema_series(chronological, fast)
+    ema_slow_series = calculate_ema_series(chronological, slow)
+
+    # Compute MACD series for available overlap
+    macd_series = [f - s for f, s in zip(ema_fast_series, ema_slow_series)]
+    signal_series = calculate_ema_series(macd_series, signal)
+
+    macd_line = macd_series[-1]
+    signal_line = signal_series[-1]
     hist = macd_line - signal_line
 
     trend = "BULLISH" if macd_line > signal_line and macd_line > 0 else ("BEARISH" if macd_line < signal_line and macd_line < 0 else "NEUTRAL")
@@ -112,10 +140,33 @@ def atr(candles: list[dict[str, Any]], period: int = 14) -> float:
     return calculate_atr(candles, period=period)["atr"]
 
 
-def entry_signal(candles: list[dict[str, Any]]) -> dict[str, Any]:
-    """Deterministic entry rule: MA5 > MA20, RSI 45~65, Bollinger %B 0.30~0.75."""
+def calculate_chandelier_exit(candles: list[dict[str, Any]], period: int = 14, multiplier: float = 1.5) -> float:
+    """Calculate Chandelier Exit trailing stop price (Highest High - multiplier * ATR)."""
+    if not candles:
+        return 0.0
+    subset = candles[:min(len(candles), period)]
+    highest_high = max(float(c.get("high_price", 0.0)) for c in subset)
+    atr_val = atr(candles, period=period)
+    return round(highest_high - (multiplier * atr_val), 2)
+
+
+def entry_signal(
+    candles: list[dict[str, Any]],
+    candles_1h: list[dict[str, Any]] | None = None,
+    btc_regime: str = "NORMAL",
+) -> dict[str, Any]:
+    """Deterministic entry rule with MTF trend alignment and dynamic ATR risk bounds.
+
+    - 5M Signal: MA5 > MA20, RSI 45~65, Bollinger %B 0.35~0.75
+    - 1H MTF Filter: 1H Close > 1H EMA20 (if 1H candles provided)
+    - Regime Filter: Reject new entries if btc_regime == 'CRASH'
+    """
     if len(candles) < 25:
         return {"allow_buy": False, "reason": "캔들 데이터 부족"}
+
+    if btc_regime.upper() in ("CRASH", "BEAR_VOLATILE"):
+        return {"allow_buy": False, "reason": f"BTC 시장 레짐 경보 ({btc_regime})"}
+
     prices = [float(c.get("trade_price", 0.0)) for c in candles]
     current = prices[0]
     ma5 = sum(prices[:5]) / 5.0
@@ -123,14 +174,51 @@ def entry_signal(candles: list[dict[str, Any]]) -> dict[str, Any]:
     ma20 = bands["middle"]
     pct_b = bands["pct_b"]
     rsi = calculate_rsi(prices)
-    allowed = ma5 > ma20 and 45.0 <= rsi <= 65.0 and 0.30 <= pct_b <= 0.75
-    volatility = atr(candles)
+
+    # 1. 5분봉 정량 조건
+    signal_5m = ma5 > ma20 and 45.0 <= rsi <= 65.0 and 0.35 <= pct_b <= 0.75
+
+    # 2. 1시간봉 MTF 추세 필터 (옵션/제공 시)
+    mtf_allowed = True
+    mtf_reason = "1H MTF 미제공"
+    if candles_1h and len(candles_1h) >= 20:
+        prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
+        ema20_1h = calculate_ema(prices_1h, 20)
+        current_1h = prices_1h[0]
+        mtf_allowed = current_1h >= (ema20_1h * 0.995)  # 1H EMA20 지지 또는 상단
+        mtf_reason = f"1H {current_1h:.1f} {'>=' if mtf_allowed else '<'} EMA20 {ema20_1h:.1f}"
+
+    allowed = signal_5m and mtf_allowed
+
+    # 3. ATR 기반 동적 손익비 산출
+    atr_data = calculate_atr(candles, period=14)
+    volatility = atr_data["atr"]
+    atr_pct = atr_data["atr_pct"]
+
+    # 목표가: 최소 +2.0% 또는 ATR 2.0배
+    target_offset = max(current * 0.020, volatility * 2.0)
+    target_price = current + target_offset
+
+    # 손절가: 최소 -1.2% 또는 ATR 1.3배 (손익비 >= 1.54 보장)
+    stop_offset = max(current * 0.012, volatility * 1.3)
+    stop_loss = current - stop_offset
+
+    reasons = [
+        f"MA5 {'>' if ma5 > ma20 else '<='} MA20",
+        f"RSI {rsi:.1f}",
+        f"%B {pct_b:.2f}",
+        mtf_reason,
+    ]
+
     return {
         "allow_buy": allowed,
-        "reason": f"MA5 {'>' if ma5 > ma20 else '<='} MA20, RSI {rsi:.1f}, %B {pct_b:.2f}",
+        "reason": ", ".join(reasons),
         "entry_price": current,
-        "target_price": current + max(current * 0.025, volatility * 1.5),
-        "stop_loss": current - max(current * 0.015, volatility),
+        "target_price": round(target_price, 2),
+        "stop_loss": round(stop_loss, 2),
+        "atr": volatility,
+        "atr_pct": atr_pct,
         "rsi": rsi,
         "pct_b": pct_b,
+        "risk_reward_ratio": round(target_offset / stop_offset, 2) if stop_offset > 0 else 1.5,
     }

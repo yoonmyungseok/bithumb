@@ -38,14 +38,16 @@ class BithumbPrivateWebSocketClient:
 
     def _on_message(self, ws: Any, message: Any) -> None:
         try:
-            event = json.loads(message.decode() if isinstance(message, bytes) else message)
-            if not isinstance(event, dict):
-                return
-            event_type = str(event.get("type", "")).lower()
-            if event_type == "myorder" and self.on_order:
-                self.on_order(event)
-            elif event_type == "myasset" and self.on_asset:
-                self.on_asset(event)
+            raw = json.loads(message.decode() if isinstance(message, bytes) else message)
+            events = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
+            for event in events:
+                if not isinstance(event, dict):
+                    continue
+                event_type = str(event.get("type", "")).lower()
+                if event_type == "myorder" and self.on_order:
+                    self.on_order(event)
+                elif event_type == "myasset" and self.on_asset:
+                    self.on_asset(event)
         except (ValueError, TypeError):
             logger.warning("Private WebSocket 메시지 파싱 실패")
 

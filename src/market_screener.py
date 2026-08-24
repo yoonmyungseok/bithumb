@@ -31,11 +31,13 @@ class MarketScreener:
         min_trade_value_krw: float = 3_000_000_000.0,  # 최소 24시간 거래대금 30억 원
         min_change_rate: float = 0.015,                # 최소 당일 상승률 +1.5% (유효 모멘텀)
         max_change_rate: float = 0.15,                 # 최대 당일 상승률 +15.0% (초고점 설거지/폭탄돌리기 방지)
+        max_spread_pct: float = 0.0035,                # 최대 호가 스프레드 0.35% (유동성 부족 갭 방지)
     ):
         self.api = bithumb_api
         self.min_trade_value_krw = min_trade_value_krw
         self.min_change_rate = min_change_rate
         self.max_change_rate = max_change_rate
+        self.max_spread_pct = max_spread_pct
 
     def scan_markets(
         self,
@@ -79,7 +81,7 @@ class MarketScreener:
                 market = t.get("market", "")
                 trade_price = _safe_float(t.get("trade_price"))
                 change_rate = _safe_float(t.get("signed_change_rate", t.get("change_rate")))
-                acc_price_24h = _safe_float(t.get("acc_trade_price_24h"))
+                acc_price_24h = _safe_float(t.get("acc_trade_price_24h", t.get("acc_trade_value_24h", 0.0)))
 
                 if not market or trade_price <= 0:
                     logger.debug("유효하지 않은 티커 레코드 제외: market=%r trade_price=%r", market, t.get("trade_price"))
@@ -124,16 +126,38 @@ class MarketScreener:
             # 모멘텀 스코어 높은 순으로 정렬
             qualified_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
+            # 유동성 스프레드 필터 적용 (상위 후보군 대상)
+            screened_by_spread: list[dict[str, Any]] = []
+            for cand in qualified_candidates[: top_count * 2]:
+                m = cand["market"]
+                try:
+                    ob = self.api.get_orderbook(m)
+                    units = ob.get("orderbook_units", []) if ob else []
+                    if units:
+                        top_ask = float(units[0].get("ask_price", 0.0))
+                        top_bid = float(units[0].get("bid_price", 0.0))
+                        if top_bid > 0:
+                            spread = (top_ask - top_bid) / top_bid
+                            if spread > self.max_spread_pct:
+                                logger.debug("호가 스프레드 과다로 제외: %s (spread=%.3f%%)", m, spread * 100)
+                                continue
+                except Exception as exc:
+                    logger.debug("호가 확인 생략: %s (%s)", m, exc)
+                screened_by_spread.append(cand)
+
+            if screened_by_spread:
+                qualified_candidates = screened_by_spread
+
             # 만약 조건에 맞는 급등주가 부족하면, 단순히 거래대금 상위 종목으로 채움
             if len(qualified_candidates) < top_count:
                 fallback_tickers = [
                     t for t in all_tickers
                     if t.get("market", "") not in held_set
                     and _safe_float(t.get("trade_price")) > 0
-                    and _safe_float(t.get("acc_trade_price_24h")) >= 1_000_000_000.0
+                    and _safe_float(t.get("acc_trade_price_24h", t.get("acc_trade_value_24h", 0.0))) >= 1_000_000_000.0
                 ]
                 fallback_tickers.sort(
-                    key=lambda x: _safe_float(x.get("acc_trade_price_24h")), reverse=True
+                    key=lambda x: _safe_float(x.get("acc_trade_price_24h", x.get("acc_trade_value_24h", 0.0))), reverse=True
                 )
                 for ft in fallback_tickers:
                     if len(qualified_candidates) >= top_count:
@@ -144,7 +168,7 @@ class MarketScreener:
                             "market": m,
                             "trade_price": _safe_float(ft.get("trade_price")),
                             "change_rate": _safe_float(ft.get("signed_change_rate", ft.get("change_rate"))),
-                            "acc_trade_price_24h": _safe_float(ft.get("acc_trade_price_24h")),
+                            "acc_trade_price_24h": _safe_float(ft.get("acc_trade_price_24h", ft.get("acc_trade_value_24h", 0.0))),
                             "is_held": False,
                         })
 

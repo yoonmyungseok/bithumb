@@ -142,5 +142,65 @@
     "is_win": false,
     "reason": "60분 이상 박스권 횡보로 인한 자금 회전 타임스탑 청산",
     "lesson": "손절 발생 (-0.35%). 진입 당시 지표 과열 여부 및 거래량 지지 결여 확인 필요."
+  },
+  {
+    "timestamp": "2026-08-24 13:37:12",
+    "market": "KRW-SPK",
+    "side": "TRAILING_STOP",
+    "entry_price": 29.42,
+    "exit_price": 29.61,
+    "pnl_pct": 0.6458191706322152,
+    "pnl_krw": 35.28249066889958,
+    "is_win": true,
+    "reason": "가속 트레일링 스탑 최고점 익절 완료",
+    "lesson": "성공적 익절 (+0.65%). 명확한 지지선과 1:1.5 이상의 손익비 충족이 효과적이었음."
+  },
+  {
+    "timestamp": "2026-08-24 13:50:55",
+    "market": "KRW-VIRTUAL",
+    "side": "STOP_LOSS",
+    "entry_price": 990.0,
+    "exit_price": 970.0,
+    "pnl_pct": -2.0202020202020203,
+    "pnl_krw": -110.5555556,
+    "is_win": false,
+    "reason": "0.1초 실시간 웹소켓 즉각 손절 실행 (손절선 970.59원 터치)",
+    "lesson": "손절 발생 (-2.02%). 진입 당시 지표 과열 여부 및 거래량 지지 결여 확인 필요."
+  },
+  {
+    "timestamp": "2026-08-24 13:51:17",
+    "market": "KRW-CYS",
+    "side": "STOP_LOSS",
+    "entry_price": 790.0,
+    "exit_price": 782.0,
+    "pnl_pct": -1.0126582278481013,
+    "pnl_krw": -55.3476612,
+    "is_win": false,
+    "reason": "0.1초 실시간 웹소켓 즉각 손절 실행 (손절선 782.85원 터치)",
+    "lesson": "손절 발생 (-1.01%). 진입 당시 지표 과열 여부 및 거래량 지지 결여 확인 필요."
+  },
+  {
+    "timestamp": "2026-08-24 13:53:08",
+    "market": "KRW-VIRTUAL",
+    "side": "STOP_LOSS",
+    "entry_price": 969.0,
+    "exit_price": 965.0,
+    "pnl_pct": -0.41279669762641896,
+    "pnl_krw": -22.59029928,
+    "is_win": false,
+    "reason": "0.1초 실시간 웹소켓 즉각 손절 실행 (손절선 965.72원 터치)",
+    "lesson": "손절 발생 (-0.41%). 진입 당시 지표 과열 여부 및 거래량 지지 결여 확인 필요."
+  },
+  {
+    "timestamp": "2026-08-24 14:04:26",
+    "market": "KRW-PENGU",
+    "side": "STOP_LOSS",
+    "entry_price": 13.09,
+    "exit_price": 13.0,
+    "pnl_pct": -0.6875477463712747,
+    "pnl_krw": -37.626050420099936,
+    "is_win": false,
+    "reason": "0.1초 실시간 웹소켓 즉각 손절 실행 (손절선 13.01원 터치)",
+    "lesson": "손절 발생 (-0.69%). 진입 당시 지표 과열 여부 및 거래량 지지 결여 확인 필요."
   }
 ]

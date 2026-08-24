@@ -258,3 +258,57 @@ class RiskGuard:
         if projected_exposure > self.max_total_exposure_pct:
             return False, "총 투자 비중 한도 초과"
         return True, "OK"
+
+
+class CooldownManager:
+    """Tracks post-exit cooldown periods to prevent rapid whipsaw re-entries."""
+
+    def __init__(self, default_sl_cooldown: float = 2700.0, default_tp_cooldown: float = 900.0):
+        self._lock = threading.Lock()
+        self.default_sl_cooldown = default_sl_cooldown  # 45 minutes
+        self.default_tp_cooldown = default_tp_cooldown  # 15 minutes
+        self._cooldowns: dict[str, float] = {}
+
+    def record_exit(self, market: str, exit_type: str) -> None:
+        duration = self.default_sl_cooldown if "STOP" in exit_type.upper() else self.default_tp_cooldown
+        expire_at = time.time() + duration
+        with self._lock:
+            self._cooldowns[market.upper()] = expire_at
+        logger.info(f"⏳ [{market}] {exit_type} 발생으로 {duration/60:.0f}분간 재진입 쿨다운 적용")
+
+    def is_in_cooldown(self, market: str) -> tuple[bool, float]:
+        now = time.time()
+        with self._lock:
+            expire_at = self._cooldowns.get(market.upper(), 0.0)
+            if expire_at > now:
+                return True, expire_at - now
+            elif expire_at > 0:
+                del self._cooldowns[market.upper()]
+        return False, 0.0
+
+
+def calculate_risk_position_size(
+    total_equity: float,
+    entry_price: float,
+    stop_loss: float,
+    risk_fraction: float = 0.01,
+    fee_rate: float = 0.0004,
+    slippage_rate: float = 0.001,
+    max_position_pct: float = 0.35,
+    min_order_krw: float = 5000.0,
+) -> float:
+    """Calculate position size in KRW such that maximum loss is fixed at risk_fraction (e.g. 1% of equity)."""
+    if total_equity <= 0 or entry_price <= 0:
+        return 0.0
+
+    risk_capital = total_equity * risk_fraction
+    stop_dist_pct = abs(entry_price - stop_loss) / entry_price if entry_price > 0 else 0.02
+    friction = (2.0 * fee_rate) + slippage_rate
+    effective_loss_pct = max(0.008, stop_dist_pct + friction)
+
+    raw_position_krw = risk_capital / effective_loss_pct
+    max_allowed_krw = total_equity * max_position_pct
+    final_krw = min(raw_position_krw, max_allowed_krw)
+
+    return round(final_krw, 2) if final_krw >= min_order_krw else 0.0
+

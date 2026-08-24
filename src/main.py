@@ -17,7 +17,15 @@ from bithumb_api import BithumbAPI
 from chart_renderer import ChartRenderer
 from gemini_analyzer import GeminiAnalyzer
 from market_screener import MarketScreener
-from order_safety import AmbiguousOrderError, OrderJournal, RiskGuard, SafeOrderExecutor, write_json_atomically
+from order_safety import (
+    AmbiguousOrderError,
+    CooldownManager,
+    OrderJournal,
+    RiskGuard,
+    SafeOrderExecutor,
+    calculate_risk_position_size,
+    write_json_atomically,
+)
 from paper_broker import PaperBroker
 from private_websocket_manager import BithumbPrivateWebSocketClient
 from sheets_manager import SheetsManager
@@ -103,6 +111,7 @@ chart_renderer = ChartRenderer()
 trade_memory = TradeMemoryManager()
 order_journal = OrderJournal()
 order_executor = SafeOrderExecutor(order_journal)
+cooldown_manager = CooldownManager()
 risk_guard = RiskGuard(
     min_order_krw=MIN_ORDER_KRW,
     max_open_positions=MAX_OPEN_POSITIONS,
@@ -520,7 +529,9 @@ def clean_stale_orders(bithumb: BithumbAPI, max_age_seconds: int = 180) -> int:
         now_ts = time.time()
         for order in open_orders:
             created_at_str = order.get("created_at", "")
-            order_uuid = order.get("uuid", "")
+            order_uuid = order.get("uuid") or order.get("order_id", "")
+            if not order_uuid:
+                continue
             market = order.get("market", "")
             side = "매수" if order.get("side") == "bid" else "매도"
 
@@ -552,7 +563,9 @@ def requote_pending_orders(bithumb: BithumbAPI) -> int:
                 continue
 
             created_at_str = order.get("created_at", "")
-            order_uuid = order.get("uuid", "")
+            order_uuid = order.get("uuid") or order.get("order_id", "")
+            if not order_uuid:
+                continue
             market = order.get("market", "")
             order_price = float(order.get("price", 0.0))
             order_vol = float(order.get("volume", 0.0))
@@ -697,7 +710,9 @@ def get_telegram_panic_callback() -> str:
         bithumb = create_exchange_client()
         open_orders = bithumb.get_open_orders()
         for o in open_orders:
-            bithumb.cancel_order(o.get("uuid", ""))
+            o_id = o.get("uuid") or o.get("order_id", "")
+            if o_id:
+                bithumb.cancel_order(o_id)
 
         balances = bithumb.get_balances()
         sold_summary = []
@@ -806,22 +821,26 @@ def on_realtime_price_tick(market: str, current_price: float):
         korean_name = bithumb.get_korean_name(market)
         strat = LATEST_STRATEGIES.get(market, {})
         stop_loss = float(strat.get("STOP_LOSS", 0.0))
+        # 전략상 손절가가 0이면 평단가 대비 -3.0% 비상 하한선 기본 적용
+        effective_stop_loss = stop_loss if stop_loss > 0 else (avg_buy_price * 0.97)
         telegram = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
         now_str = get_kst_now_str()
 
         # 1. 실시간 손절 검사
-        if stop_loss > 0 and current_price <= stop_loss:
+        if effective_stop_loss > 0 and current_price <= effective_stop_loss:
             with _realtime_risk_lock:
                 if now_ts - _last_realtime_trigger.get(market, 0.0) < 5.0:
                     return
                 _last_realtime_trigger[market] = now_ts
 
             logger.warning(
-                f"⚡ [실시간 웹소켓 손절 발동] {korean_name}({market}) 현재가({current_price:,.2f}원) <= 손절가({stop_loss:,.2f}원). 즉시 시장가 매도!"
+                f"⚡ [실시간 웹소켓 손절 발동] {korean_name}({market}) 현재가({current_price:,.2f}원) <= 손절가({effective_stop_loss:,.2f}원). 즉시 시장가 매도!"
             )
             trailing_tracker.clear(market)
             for order in bithumb.get_open_orders(market):
-                bithumb.cancel_order(order.get("uuid", ""))
+                o_id = order.get("uuid") or order.get("order_id", "")
+                if o_id:
+                    bithumb.cancel_order(o_id)
 
             order_res = order_executor.submit(
                 bithumb,
@@ -833,6 +852,7 @@ def on_realtime_price_tick(market: str, current_price: float):
             pnl_krw = (current_price - avg_buy_price) * coin_available
             loss_pct = ((current_price - avg_buy_price) / avg_buy_price * 100)
             risk_manager.add_realized_trade(pnl_krw, is_win=False)
+            cooldown_manager.record_exit(market, "STOP_LOSS")
             trade_memory.record_completed_trade(
                 market=market,
                 side="STOP_LOSS",
@@ -840,13 +860,13 @@ def on_realtime_price_tick(market: str, current_price: float):
                 exit_price=current_price,
                 pnl_pct=loss_pct,
                 pnl_krw=pnl_krw,
-                reason=f"0.1초 실시간 웹소켓 즉각 손절 실행 (손절선 {stop_loss:,.2f}원 터치)",
+                reason=f"0.1초 실시간 웹소켓 즉각 손절 실행 (손절선 {effective_stop_loss:,.2f}원 터치)",
                 timestamp=now_str,
             )
             telegram.send_message(
                 f"🚨 <b>[실시간 초저지연 손절 매도 실행]</b>\n"
                 f"• 종목: {korean_name}({market})\n"
-                f"• 체결가: {current_price:,.2f} KRW (손절가: {stop_loss:,.2f} KRW)\n"
+                f"• 체결가: {current_price:,.2f} KRW (손절가: {effective_stop_loss:,.2f} KRW)\n"
                 f"• 손실: {pnl_krw:,.0f} KRW ({loss_pct:.2f}%)\n"
                 f"• 사유: 0.1초 실시간 급락 방어선 즉시 청산\n"
                 f"• 일시: {now_str}"
@@ -871,7 +891,9 @@ def on_realtime_price_tick(market: str, current_price: float):
                     f"⚡ [실시간 1차 50% 분할익절] {korean_name}({market}) 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 즉시 50% 시장가 익절!"
                 )
                 for order in bithumb.get_open_orders(market):
-                    bithumb.cancel_order(order.get("uuid", ""))
+                    o_id = order.get("uuid") or order.get("order_id", "")
+                    if o_id:
+                        bithumb.cancel_order(o_id)
 
                 order_executor.submit(
                     bithumb,
@@ -911,7 +933,9 @@ def on_realtime_price_tick(market: str, current_price: float):
                 f"⚡ [실시간 트레일링 스탑 최고점 익절] {korean_name}({market}) 최고 {peak_p:,.2f}원(+{peak_profit_pct:.2f}%) ➜ 현재 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 즉시 전량 시장가 익절!"
             )
             for order in bithumb.get_open_orders(market):
-                bithumb.cancel_order(order.get("uuid", ""))
+                o_id = order.get("uuid") or order.get("order_id", "")
+                if o_id:
+                    bithumb.cancel_order(o_id)
 
             order_executor.submit(
                 bithumb,
@@ -922,6 +946,7 @@ def on_realtime_price_tick(market: str, current_price: float):
             )
             pnl_krw = (current_price - avg_buy_price) * coin_available
             risk_manager.add_realized_trade(pnl_krw, is_win=True)
+            cooldown_manager.record_exit(market, "TRAILING_STOP")
             trade_memory.record_completed_trade(
                 market=market,
                 side="TRAILING_STOP",
@@ -1149,7 +1174,9 @@ def run_cycle():
                                 f"🎉 [{korean_name} / {market} 1차 50% 분할익절 발동] 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 50% 물량 시장가 익절!"
                             )
                             for order in bithumb.get_open_orders(market):
-                                bithumb.cancel_order(order["uuid"])
+                                o_id = order.get("uuid") or order.get("order_id", "")
+                                if o_id:
+                                    bithumb.cancel_order(o_id)
 
                             order_res = order_executor.submit(bithumb,
                                 market=market,
@@ -1221,7 +1248,9 @@ def run_cycle():
                         )
 
                         for order in bithumb.get_open_orders(market):
-                            bithumb.cancel_order(order["uuid"])
+                            o_id = order.get("uuid") or order.get("order_id", "")
+                            if o_id:
+                                bithumb.cancel_order(o_id)
 
                         order_res = order_executor.submit(bithumb,
                             market=market,
@@ -1304,7 +1333,9 @@ def run_cycle():
                             f"⏳ [{korean_name} / {market}] 60분 횡보 타임스탑 발동! (손익률: {pnl_pct_current:+.2f}%, 보유시간: {hold_duration_sec/60:.0f}분) ➜ 신규 기회를 위해 시장가 전량 청산"
                         )
                         for order in bithumb.get_open_orders(market):
-                            bithumb.cancel_order(order["uuid"])
+                            o_id = order.get("uuid") or order.get("order_id", "")
+                            if o_id:
+                                bithumb.cancel_order(o_id)
 
                         order_res = order_executor.submit(bithumb,
                             market=market,
@@ -1368,10 +1399,22 @@ def run_cycle():
 
                 # The LLM may explain and rank candidates, but it cannot bypass the
                 # deterministic entry rule used by the backtester.
-                local_entry = entry_signal(candles_5m)
+                in_cooldown, cd_remaining = cooldown_manager.is_in_cooldown(market)
+                if in_cooldown and action == "BUY":
+                    action = "HOLD"
+                    reason = f"재진입 쿨다운 대기중 ({cd_remaining/60:.0f}분 남음) | {reason}"
+
+                local_entry = entry_signal(
+                    candles=candles_5m,
+                    candles_1h=candles_1h,
+                    btc_regime="CRASH" if is_btc_crashing else "NORMAL",
+                )
                 if action == "BUY" and not local_entry["allow_buy"]:
                     action = "HOLD"
                     reason = f"정량 공통 진입 게이트 차단: {local_entry['reason']} | {reason}"
+                elif action == "BUY" and local_entry["allow_buy"]:
+                    target_price = local_entry["target_price"]
+                    stop_loss = local_entry["stop_loss"]
 
                 if fng["is_extreme_fear"] and action == "BUY":
                     alloc_pct = min(alloc_pct, 0.4)
@@ -1397,7 +1440,9 @@ def run_cycle():
 
                     trailing_tracker.clear(market)
                     for order in bithumb.get_open_orders(market):
-                        bithumb.cancel_order(order["uuid"])
+                        o_id = order.get("uuid") or order.get("order_id", "")
+                        if o_id:
+                            bithumb.cancel_order(o_id)
 
                     order_res = order_executor.submit(bithumb,
                         market=market,
@@ -1410,6 +1455,7 @@ def run_cycle():
                     pnl_krw = (current_price - avg_buy_price) * coin_available if avg_buy_price > 0 else 0.0
                     loss_pct = ((current_price - avg_buy_price) / avg_buy_price * 100) if avg_buy_price > 0 else 0.0
                     risk_manager.add_realized_trade(pnl_krw, is_win=False)
+                    cooldown_manager.record_exit(market, "STOP_LOSS")
                     trade_memory.record_completed_trade(
                         market=market,
                         side="STOP_LOSS",

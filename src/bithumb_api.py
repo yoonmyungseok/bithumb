@@ -353,13 +353,18 @@ class BithumbAPI:
     def cancel_order(self, uuid_str: str = "", client_order_id: str = "") -> dict[str, Any]:
         """
         미체결 주문 취소
-        - uuid_str: 취소할 주문의 UUID
+        - uuid_str: 취소할 주문의 UUID / order_id
         """
         if not uuid_str and not client_order_id:
             raise ValueError("취소할 order_id 또는 client_order_id가 필요합니다.")
         params = {"order_id": uuid_str} if uuid_str else {"client_order_id": client_order_id}
         logger.info("v2 주문 취소 요청: %s", uuid_str or client_order_id)
-        return self._request("DELETE", "/order", params=params, api_version="v2")
+        try:
+            return self._request("DELETE", "/order", params=params, api_version="v2")
+        except (requests.exceptions.RequestException, KeyError, ValueError) as e:
+            logger.warning(f"v2 주문 취소 실패 ({e}), v1 엔드포인트로 폴백 시도")
+            v1_params = {"uuid": uuid_str} if uuid_str else {"client_order_id": client_order_id}
+            return self._request("DELETE", "/order", params=v1_params, api_version="v1")
 
     def execute_twap_order(
         self,

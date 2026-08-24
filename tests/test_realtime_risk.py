@@ -74,6 +74,52 @@ class RealtimeRiskAndIndicatorTests(unittest.TestCase):
         self.assertIn("rsi", signal)
         self.assertIn("pct_b", signal)
 
+    def test_private_websocket_list_message_handling(self):
+        import json
+        from private_websocket_manager import BithumbPrivateWebSocketClient
+        
+        received_orders = []
+        received_assets = []
+        
+        client = BithumbPrivateWebSocketClient(
+            access_key="test-key",
+            secret_key="test-secret",
+            on_order=lambda ev: received_orders.append(ev),
+            on_asset=lambda ev: received_assets.append(ev),
+        )
+        
+        # Test handling a list of events
+        payload = json.dumps([
+            {"type": "myOrder", "order_id": "ord-1", "state": "trade"},
+            {"type": "myAsset", "currency": "KRW", "balance": "1000000"},
+        ])
+        client._on_message(None, payload)
+        
+        self.assertEqual(len(received_orders), 1)
+        self.assertEqual(received_orders[0]["order_id"], "ord-1")
+        self.assertEqual(len(received_assets), 1)
+        self.assertEqual(received_assets[0]["currency"], "KRW")
+
+    def test_bithumb_api_cancel_order_fallback_to_v1(self):
+        from bithumb_api import BithumbAPI
+        
+        api = BithumbAPI(access_key="test-key", secret_key="test-secret")
+        calls = []
+        
+        def mock_request(method, endpoint, params=None, data=None, api_version="v2"):
+            calls.append({"method": method, "endpoint": endpoint, "api_version": api_version, "params": params})
+            if api_version == "v2":
+                raise requests.exceptions.RequestException("v2 404 error")
+            return {"status": "0000", "uuid": params.get("uuid")}
+        
+        api._request = mock_request
+        res = api.cancel_order(uuid_str="uuid-123")
+        
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["api_version"], "v2")
+        self.assertEqual(calls[1]["api_version"], "v1")
+        self.assertEqual(res["status"], "0000")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -74,6 +74,7 @@ c:\AI\bithumb\
 - 전체 시스템의 **진입점**이자 컨트롤 타워입니다.
 - **주기적 실행**: `APScheduler`를 사용하여 5분마다 `run_cycle()`을 수행하여 마켓 스크리닝, 자산 평가, AI 분석, 신규 매수를 진행합니다.
 - **초저지연 이벤트 감시**: `ws_client`의 `on_realtime_price_tick` 콜백을 통해 0.1초 실시간 체결가를 감시하여, 손절가 또는 트레일링 익절가 도달 시 5분 주기를 기다리지 않고 **0.1초 만에 즉시 청산**합니다.
+- **비상 리스크 방어**: 전략상 손절가가 0인 초기 상태에서도 평단가 대비 **-3.0% 비상 하한선(Fallback Stop-Loss)**을 상시 적용하여 급락을 원천 차단합니다.
 - **일일 리스크 관리**: `DailyRiskManager`를 통해 매일 **00:00 KST(자정)** 기준으로 일일 손익을 리셋하고, 일일 최대 손실 도달 시 킬스위치(Kill-Switch)를 작동시킵니다.
 
 ### 3.2. `order_safety.py` (주문 안전성 & 리스크 가드)
@@ -91,8 +92,8 @@ c:\AI\bithumb\
 - 5대 정량적 매수 체크리스트를 통과해야만 매수 시그널을 출력합니다.
 
 ### 3.5. `bithumb_api.py` & `private_websocket_manager.py` (거래소 연동)
-- **`BithumbAPI`**: JWT 서명 생성, GET 요청에 대한 지수 백오프 자동 재시도, v1/v2 주문 생성/취소/조회 호환을 지원합니다.
-- **`BithumbPrivateWebSocketClient`**: Private WebSocket을 통해 `myOrder`, `myAsset` 실시간 체결 이벤트를 수신하여 저널에 자동 반영합니다.
+- **`BithumbAPI`**: JWT 서명 생성, GET 요청에 대한 지수 백오프 자동 재시도, v1/v2 주문 생성/조회/취소(v2 실패 시 v1 자동 폴백) 호환을 지원합니다.
+- **`BithumbPrivateWebSocketClient`**: Private WebSocket을 통해 `myOrder`, `myAsset` 실시간 체결 이벤트를 단일/배열 형식 무관하게 파싱하여 저널에 자동 반영합니다.
 
 ### 3.6. `paper_broker.py` (모의투자 시뮬레이터)
 - `TRADING_MODE=PAPER` 설정 시 실제 주문 없이 공용 시세를 바탕으로 가상 체결 및 잔고(`data/paper_account.json`)를 시뮬레이션합니다.
