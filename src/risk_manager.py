@@ -59,13 +59,34 @@ def get_fear_and_greed_index() -> dict[str, Any]:
     }
 
 
-def calculate_total_equity(balances: dict[str, dict[str, float]], bithumb: BithumbAPI) -> float:
-    """원화 잔고 및 보유 코인 평가금액을 합산하여 총 평가 자산 계산"""
+def get_excluded_manual_holdings() -> set[str]:
+    """
+    수동 매매 전용으로 봇의 자동 매매 및 자산 평가에서 완전히 격리할 종목/화폐 집합 반환
+    예: EXCLUDED_MANUAL_HOLDINGS="KRW-HOLO,HOLO" -> {"KRW-HOLO", "HOLO"}
+    """
+    raw = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO").strip()
+    if not raw:
+        return set()
+    items = set()
+    for item in raw.split(","):
+        s = item.strip().upper()
+        if s:
+            items.add(s)
+            if s.startswith("KRW-"):
+                items.add(s.replace("KRW-", ""))
+            else:
+                items.add(f"KRW-{s}")
+    return items
+
+
+def calculate_total_equity(balances: dict[str, dict[str, float]], bithumb: Any) -> float:
+    """원화 잔고 및 보유 코인 평가금액을 합산하여 총 평가 자산 계산 (수동 격리 종목 완전 배제)"""
     krw_balance = balances.get("KRW", {}).get("balance", 0.0) + balances.get("KRW", {}).get("locked", 0.0)
     total_coin_val = 0.0
+    excluded = get_excluded_manual_holdings()
 
     for cur, info in balances.items():
-        if cur == "KRW":
+        if cur == "KRW" or cur in excluded or f"KRW-{cur}" in excluded:
             continue
         vol = info.get("balance", 0.0) + info.get("locked", 0.0)
         if vol > 0:
@@ -78,11 +99,12 @@ def calculate_total_equity(balances: dict[str, dict[str, float]], bithumb: Bithu
     return krw_balance + total_coin_val
 
 
-def get_held_markets(balances: dict[str, dict[str, float]], bithumb: BithumbAPI, min_val_krw: float = 4000.0) -> list[str]:
-    """현재 의미 있게 보유 중인(4,000원 이상) 마켓 코드 목록 반환"""
+def get_held_markets(balances: dict[str, dict[str, float]], bithumb: Any, min_val_krw: float = 4000.0) -> list[str]:
+    """현재 의미 있게 보유 중인(4,000원 이상) 마켓 코드 목록 반환 (수동 격리 종목 완전 배제)"""
     held = []
+    excluded = get_excluded_manual_holdings()
     for cur, info in balances.items():
-        if cur in ("KRW", "P"):
+        if cur in ("KRW", "P") or cur in excluded or f"KRW-{cur}" in excluded:
             continue
         total_vol = info.get("balance", 0.0) + info.get("locked", 0.0)
         if total_vol > 0:
@@ -98,14 +120,15 @@ def get_held_markets(balances: dict[str, dict[str, float]], bithumb: BithumbAPI,
 
 def build_positions_data(
     balances: dict[str, dict[str, float]],
-    bithumb: BithumbAPI,
+    bithumb: Any,
     strategies: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """웹 대시보드 표시용 보유 코인 포지션 목록 생성"""
+    """웹 대시보드 표시용 보유 코인 포지션 목록 생성 (수동 격리 종목 완전 배제)"""
     positions = []
     strategies = strategies or {}
+    excluded = get_excluded_manual_holdings()
     for cur, info in balances.items():
-        if cur in ("KRW", "P"):
+        if cur in ("KRW", "P") or cur in excluded or f"KRW-{cur}" in excluded:
             continue
         vol = info.get("balance", 0.0) + info.get("locked", 0.0)
         if vol <= 0:

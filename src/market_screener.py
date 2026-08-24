@@ -1,5 +1,6 @@
 import logging
 import math
+import os
 from typing import Any
 
 import requests
@@ -26,6 +27,22 @@ EXCLUDED_STABLE_MARKETS: set[str] = {
     "KRW-FDUSD",
     "KRW-USDE",
 }
+
+
+def get_excluded_manual_holdings() -> set[str]:
+    raw = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO").strip()
+    if not raw:
+        return set()
+    items = set()
+    for item in raw.split(","):
+        s = item.strip().upper()
+        if s:
+            items.add(s)
+            if s.startswith("KRW-"):
+                items.add(s.replace("KRW-", ""))
+            else:
+                items.add(f"KRW-{s}")
+    return items
 
 
 class MarketScreener:
@@ -87,6 +104,7 @@ class MarketScreener:
             # 3. 퀀트 필터링 및 상승 초기 가중치 모멘텀 스코어링
             qualified_candidates: list[dict[str, Any]] = []
             held_candidates: list[dict[str, Any]] = []
+            excluded_manual = get_excluded_manual_holdings()
 
             for t in all_tickers:
                 market = t.get("market", "")
@@ -98,7 +116,7 @@ class MarketScreener:
                     logger.debug("유효하지 않은 티커 레코드 제외: market=%r trade_price=%r", market, t.get("trade_price"))
                     continue
 
-                if market in EXCLUDED_STABLE_MARKETS:
+                if market in EXCLUDED_STABLE_MARKETS or market in excluded_manual or market.replace("KRW-", "") in excluded_manual:
                     continue
 
                 ticker_info = {
@@ -181,6 +199,8 @@ class MarketScreener:
                     t for t in all_tickers
                     if t.get("market", "") not in held_set
                     and t.get("market", "") not in EXCLUDED_STABLE_MARKETS
+                    and t.get("market", "") not in excluded_manual
+                    and t.get("market", "").replace("KRW-", "") not in excluded_manual
                     and _safe_float(t.get("trade_price")) > 0
                     and _safe_float(t.get("acc_trade_price_24h", t.get("acc_trade_value_24h", 0.0))) >= 1_000_000_000.0
                 ]

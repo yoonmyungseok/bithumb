@@ -1,3 +1,6 @@
 @echo off
+chcp 65001 > nul
 cd /d "%~dp0"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop_bot.ps1"
+title Stop Bithumb Bot
+venv\Scripts\python.exe src\process_manager.py stop
+timeout /t 2 > nul

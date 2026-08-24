@@ -76,6 +76,7 @@ load_dotenv(override=True)
 
 BITHUMB_ACCESS_KEY = os.getenv("BITHUMB_ACCESS_KEY", "").strip()
 BITHUMB_SECRET_KEY = os.getenv("BITHUMB_SECRET_KEY", "").strip()
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "config/service_account.json").strip()
@@ -83,7 +84,7 @@ GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "https://docs.google.com/spre
 
 TOP_COUNT = int(os.getenv("TOP_COUNT", "3"))
 MIN_TRADE_VALUE = float(os.getenv("MIN_TRADE_VALUE", "1000000000"))  # 최소 10억 원
-MIN_CHANGE_RATE = float(os.getenv("MIN_CHANGE_RATE", "0.01"))        # 최소 +1.0%
+MIN_CHANGE_RATE = float(os.getenv("MIN_CHANGE_RATE", "0.005"))        # 최소 +0.5%
 MAX_CHANGE_RATE = float(os.getenv("MAX_CHANGE_RATE", "0.25"))        # 최대 +25.0%
 
 INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "5"))
@@ -147,6 +148,7 @@ def create_exchange_client() -> BithumbAPI | PaperBroker:
     """Use public market data in PAPER mode while keeping all money virtual."""
     global paper_broker
     live_client = BithumbAPI(BITHUMB_ACCESS_KEY, BITHUMB_SECRET_KEY)
+
     if TRADING_MODE != "PAPER":
         return live_client
     if paper_broker is None:
@@ -940,9 +942,10 @@ def main():
     )
     web_server.start()
 
-    # 3. 빗썸 실시간 웹소켓(WebSocket) 스트리밍 가동
+    # 3. 실시간 웹소켓(WebSocket) 스트리밍 가동
     ws_client.start()
-    private_ws.start()
+    if private_ws:
+        private_ws.start()
 
     # 4. APScheduler 스케줄러 등록
     scheduler = BackgroundScheduler(timezone="Asia/Seoul")
@@ -975,7 +978,8 @@ def main():
     def _handle_exit(sig, frame):
         logger.info("🛑 프로세스 종료 시그널 감지. 자원을 안전하게 해제합니다...")
         ws_client.stop()
-        private_ws.stop()
+        if private_ws:
+            private_ws.stop()
         web_server.stop()
         scheduler.shutdown(wait=False)
         sys.exit(0)

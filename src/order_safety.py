@@ -301,6 +301,14 @@ class RiskGuard:
             self.max_total_exposure_pct = max_total_exposure_pct
 
     def validate_buy(self, market: str, order_krw: float, available_krw: float, total_equity: float, held_markets: list[str]) -> tuple[bool, str]:
+        # 수동 관리 격리 종목(HOLO 등) 매수 원천 차단
+        raw_excluded = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO").strip()
+        if raw_excluded:
+            excluded_items = {x.strip().upper() for x in raw_excluded.split(",") if x.strip()}
+            m_upper = market.upper()
+            if m_upper in excluded_items or m_upper.replace("KRW-", "") in excluded_items:
+                return False, f"수동 관리 격리 종목 ({market}) 매수 불가"
+
         if order_krw < self.min_order_krw:
             return False, "최소 주문금액 미달"
         if order_krw > available_krw:

@@ -1,5 +1,6 @@
 import json
 import logging
+import sys
 import threading
 import urllib.parse
 from collections.abc import Callable
@@ -7,6 +8,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+class QuietThreadingHTTPServer(ThreadingHTTPServer):
+    """클라이언트 연결 끊김(새로고침, 탭 닫기 등) 시 발생하는 불필요한 스택트레이스 억제"""
+
+    def handle_error(self, request, client_address):
+        exc_type, exc_val, _ = sys.exc_info()
+        if exc_type in (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, ConnectionError):
+            logger.debug(f"웹 클라이언트({client_address}) 연결 조기 종료 감지: {exc_val}")
+            return
+        super().handle_error(request, client_address)
 
 
 class DashboardWebServer:
@@ -30,13 +42,13 @@ class DashboardWebServer:
         self.host = host
         self.get_status_data = get_status_data_func or data_provider or kwargs.get("data_provider")
         self.action_handler = action_handler_func or action_handler or kwargs.get("action_handler")
-        self.server: ThreadingHTTPServer | None = None
+        self.server: QuietThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     def start(self):
         handler_cls = self._create_handler()
         try:
-            self.server = ThreadingHTTPServer((self.host, self.port), handler_cls)
+            self.server = QuietThreadingHTTPServer((self.host, self.port), handler_cls)
             self._thread = threading.Thread(target=self.server.serve_forever, daemon=True, name="WebDashboard")
             self._thread.start()
             logger.info(f"🌐 [로컬 웹 대시보드 가동] 접속 주소: http://localhost:{self.port}")
@@ -62,47 +74,57 @@ class DashboardWebServer:
 
             def do_GET(self):
                 self.close_connection = True
-                parsed_url = urllib.parse.urlparse(self.path)
-                path = parsed_url.path
+                try:
+                    parsed_url = urllib.parse.urlparse(self.path)
+                    path = parsed_url.path
 
-                if path == "/api/status":
-                    data = server_self.get_status_data() if server_self.get_status_data else {}
-                    body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                    if path == "/api/status":
+                        data = server_self.get_status_data() if server_self.get_status_data else {}
+                        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+
+                    # 메인 HTML 페이지 렌더링
+                    body = server_self._render_html().encode("utf-8")
                     self.send_response(200)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(body)))
                     self.send_header("Connection", "close")
                     self.end_headers()
                     self.wfile.write(body)
-                    return
-
-                # 메인 HTML 페이지 렌더링
-                body = server_self._render_html().encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Connection", "close")
-                self.end_headers()
-                self.wfile.write(body)
+                except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, ConnectionError):
+                    pass
+                except Exception as e:
+                    logger.debug(f"웹 대시보드 GET 처리 예외: {e}")
 
             def do_POST(self):
                 self.close_connection = True
-                if self.path.startswith("/api/action/"):
-                    action_name = self.path.split("/")[-1]
-                    reply = ""
-                    if server_self.action_handler:
-                        reply = server_self.action_handler(action_name)
-                    body = json.dumps({"success": True, "message": reply}, ensure_ascii=False).encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self.send_header("Content-Length", str(len(body)))
-                    self.send_header("Connection", "close")
-                    self.end_headers()
-                    self.wfile.write(body)
-                    return
+                try:
+                    if self.path.startswith("/api/action/"):
+                        action_name = self.path.split("/")[-1]
+                        reply = ""
+                        if server_self.action_handler:
+                            reply = server_self.action_handler(action_name)
+                        body = json.dumps({"success": True, "message": reply}, ensure_ascii=False).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
 
-                self.send_response(404)
-                self.end_headers()
+                    self.send_response(404)
+                    self.end_headers()
+                except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, ConnectionError):
+                    pass
+                except Exception as e:
+                    logger.debug(f"웹 대시보드 POST 처리 예외: {e}")
 
         return DashboardHandler
 
