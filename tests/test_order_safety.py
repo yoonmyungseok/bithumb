@@ -66,6 +66,19 @@ class OrderSafetyTests(unittest.TestCase):
         self.assertEqual(self.journal.orders[-1]["status"], "FILLED")
         self.assertFalse(self.journal.has_unresolved_market("KRW-BTC"))
 
+    def test_private_fill_event_updates_journal_by_client_order_id(self):
+        client_id = self.journal.record_intent("KRW-BTC", "bid", 1, 10000, "limit")
+        self.assertTrue(self.journal.apply_private_order_event({
+            "client_order_id": client_id,
+            "state": "trade",
+            "order_id": "order-1",
+            "executed_volume": "0.4",
+            "remaining_volume": "0.6",
+        }))
+        order = self.journal.orders[-1]
+        self.assertEqual(order["status"], "PARTIALLY_FILLED")
+        self.assertEqual(order["exchange_order_id"], "order-1")
+
     def test_risk_guard_enforces_position_and_exposure_limits(self):
         guard = RiskGuard(5000, max_open_positions=2, max_position_pct=0.35, max_total_exposure_pct=0.85, max_order_krw=0)
         self.assertEqual(guard.validate_buy("KRW-BTC", 400_000, 900_000, 1_000_000, []), (False, "종목당 비중 한도 초과"))

@@ -9,6 +9,15 @@ from bithumb_api import BithumbAPI
 logger = logging.getLogger(__name__)
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    """Exchange payloads can contain null/empty/non-finite numeric fields."""
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else default
+    except (TypeError, ValueError):
+        return default
+
+
 class MarketScreener:
     """
     빗썸 실시간 거래대금 상위 + 급등 모멘텀 종목 동적 탐색기 (Screener)
@@ -68,9 +77,13 @@ class MarketScreener:
 
             for t in all_tickers:
                 market = t.get("market", "")
-                trade_price = float(t.get("trade_price", 0.0))
-                change_rate = float(t.get("signed_change_rate", t.get("change_rate", 0.0)))
-                acc_price_24h = float(t.get("acc_trade_price_24h", 0.0))
+                trade_price = _safe_float(t.get("trade_price"))
+                change_rate = _safe_float(t.get("signed_change_rate", t.get("change_rate")))
+                acc_price_24h = _safe_float(t.get("acc_trade_price_24h"))
+
+                if not market or trade_price <= 0:
+                    logger.debug("유효하지 않은 티커 레코드 제외: market=%r trade_price=%r", market, t.get("trade_price"))
+                    continue
 
                 ticker_info = {
                     "market": market,
@@ -115,10 +128,12 @@ class MarketScreener:
             if len(qualified_candidates) < top_count:
                 fallback_tickers = [
                     t for t in all_tickers
-                    if t.get("market", "") not in held_set and float(t.get("acc_trade_price_24h", 0.0)) >= 1_000_000_000.0
+                    if t.get("market", "") not in held_set
+                    and _safe_float(t.get("trade_price")) > 0
+                    and _safe_float(t.get("acc_trade_price_24h")) >= 1_000_000_000.0
                 ]
                 fallback_tickers.sort(
-                    key=lambda x: float(x.get("acc_trade_price_24h", 0.0)), reverse=True
+                    key=lambda x: _safe_float(x.get("acc_trade_price_24h")), reverse=True
                 )
                 for ft in fallback_tickers:
                     if len(qualified_candidates) >= top_count:
@@ -127,9 +142,9 @@ class MarketScreener:
                     if not any(c["market"] == m for c in qualified_candidates):
                         qualified_candidates.append({
                             "market": m,
-                            "trade_price": float(ft.get("trade_price", 0.0)),
-                            "change_rate": float(ft.get("signed_change_rate", ft.get("change_rate", 0.0))),
-                            "acc_trade_price_24h": float(ft.get("acc_trade_price_24h", 0.0)),
+                            "trade_price": _safe_float(ft.get("trade_price")),
+                            "change_rate": _safe_float(ft.get("signed_change_rate", ft.get("change_rate"))),
+                            "acc_trade_price_24h": _safe_float(ft.get("acc_trade_price_24h")),
                             "is_held": False,
                         })
 

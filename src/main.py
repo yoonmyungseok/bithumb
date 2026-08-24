@@ -18,6 +18,7 @@ from gemini_analyzer import GeminiAnalyzer
 from market_screener import MarketScreener
 from order_safety import AmbiguousOrderError, OrderJournal, RiskGuard, SafeOrderExecutor, write_json_atomically
 from paper_broker import PaperBroker
+from private_websocket_manager import BithumbPrivateWebSocketClient
 from sheets_manager import SheetsManager
 from strategy_engine import entry_signal
 from telegram_alert import TelegramAlert
@@ -109,6 +110,11 @@ risk_guard = RiskGuard(
     max_order_krw=MAX_ORDER_KRW,
 )
 paper_broker: PaperBroker | None = None
+private_ws = BithumbPrivateWebSocketClient(
+    BITHUMB_ACCESS_KEY,
+    BITHUMB_SECRET_KEY,
+    on_order=lambda event: order_journal.apply_private_order_event(event),
+)
 
 
 def create_exchange_client() -> BithumbAPI | PaperBroker:
@@ -802,7 +808,10 @@ def run_cycle():
 
         # A prior POST may have reached the exchange despite a lost response.  Reconcile
         # what can be proven; anything still unknown remains blocked from new BUY orders.
-        resolved = order_journal.reconcile_exchange_statuses(bithumb.get_order)
+        resolved = order_journal.reconcile_exchange_statuses(
+            bithumb.get_order,
+            lambda client_id: bithumb.get_order(client_order_id=client_id),
+        )
         reconciled = order_journal.reconcile_open_orders(bithumb.get_open_orders())
         if resolved:
             logger.info("주문 저널 동기화: 완료/취소 상태 %d건 반영", resolved)
@@ -1507,6 +1516,8 @@ def main():
 
     # 2. 빗썸 2.0 실시간 웹소켓(WebSocket) 0.1초 스트리밍 가동
     ws_client.start()
+    if TRADING_MODE == "LIVE":
+        private_ws.start()
 
     # 3. 로컬 실시간 웹 대시보드 (포트 7979) 가동
     web_dashboard = DashboardWebServer(

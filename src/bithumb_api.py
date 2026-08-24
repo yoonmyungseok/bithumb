@@ -19,7 +19,7 @@ class BithumbAPI:
     - 계좌 잔고, 시세, 미체결 조회, 주문 생성/취소 기능 제공
     """
 
-    BASE_URL = "https://api.bithumb.com/v1"
+    API_ROOT = "https://api.bithumb.com"
 
     def __init__(self, access_key: str = "", secret_key: str = ""):
         self.access_key = (access_key or os.getenv("BITHUMB_ACCESS_KEY", "")).strip()
@@ -54,6 +54,7 @@ class BithumbAPI:
         params: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
         max_retries: int = 3,
+        api_version: str = "v1",
     ) -> Any:
         """
         API 요청 공통 핸들러.
@@ -61,7 +62,7 @@ class BithumbAPI:
         조회(GET)만 자동 재시도합니다. 주문 POST는 응답 유실 뒤 재시도하면
         중복 주문이 될 수 있으므로 호출자에게 불확실한 결과를 전달합니다.
         """
-        url = f"{self.BASE_URL}{endpoint}"
+        url = f"{self.API_ROOT}/{api_version}{endpoint}"
         last_exception = None
 
         retryable = method.upper() == "GET"
@@ -257,21 +258,36 @@ class BithumbAPI:
             return round(price, 4)
 
     def get_open_orders(self, market: str | None = None) -> list[dict[str, Any]]:
-        """
-        현재 미체결 주문 목록 조회 (state='wait')
-        - market이 None이면 전체 마켓 미체결 주문 조회
-        """
-        params = {"state": "wait"}
+        """v2 대기 주문 목록 조회. 반환 스키마를 기존 호출부와 호환시킨다."""
+        params: dict[str, Any] = {}
         if market:
             params["market"] = market
-        data = self._request("GET", "/orders", params=params)
-        return data if isinstance(data, list) else []
+        data = self._request("GET", "/orders/pending", params=params, api_version="v2")
+        orders = data if isinstance(data, list) else data.get("orders", data.get("data", [])) if isinstance(data, dict) else []
+        normalized = []
+        for order in orders:
+            if not isinstance(order, dict):
+                continue
+            item = dict(order)
+            item.setdefault("uuid", item.get("order_id", ""))
+            item.setdefault("ord_type", item.get("order_type", ""))
+            normalized.append(item)
+        return normalized
 
-    def get_order(self, uuid_str: str) -> dict[str, Any]:
+    def get_closed_orders(self, market: str | None = None) -> list[dict[str, Any]]:
+        """v2 종료 주문(done/cancel) 목록으로 재시작 복구에 사용한다."""
+        params: dict[str, Any] = {}
+        if market:
+            params["market"] = market
+        data = self._request("GET", "/orders/history", params=params, api_version="v2")
+        return data if isinstance(data, list) else data.get("orders", data.get("data", [])) if isinstance(data, dict) else []
+
+    def get_order(self, uuid_str: str = "", client_order_id: str = "") -> dict[str, Any]:
         """Fetch one order's current exchange state for crash-recovery reconciliation."""
-        if not uuid_str:
-            raise ValueError("주문 UUID가 비어 있습니다.")
-        data = self._request("GET", "/order", params={"uuid": uuid_str})
+        if not uuid_str and not client_order_id:
+            raise ValueError("주문 UUID 또는 client_order_id가 필요합니다.")
+        params = {"uuid": uuid_str} if uuid_str else {"client_order_id": client_order_id}
+        data = self._request("GET", "/order", params=params)
         return data if isinstance(data, dict) else {}
 
     def create_order(
@@ -281,6 +297,7 @@ class BithumbAPI:
         volume: float | None = None,
         price: float | None = None,
         ord_type: str = "limit",
+        client_order_id: str = "",
     ) -> dict[str, Any]:
         """
         주문 생성
@@ -289,11 +306,15 @@ class BithumbAPI:
         - volume: 주문 수량 (limit, market 필수)
         - price: 주문 가격 (limit, price 필수)
         """
+        # v2 is used intentionally: it is the documented order endpoint that
+        # accepts client_order_id, which is essential for idempotent recovery.
         data: dict[str, Any] = {
             "market": market,
             "side": side,
-            "ord_type": ord_type,
+            "order_type": ord_type,
         }
+        if client_order_id:
+            data["client_order_id"] = client_order_id
 
         if ord_type == "limit":
             if volume is None or price is None:
@@ -315,16 +336,18 @@ class BithumbAPI:
             data["volume"] = f"{volume:.8f}".rstrip("0").rstrip(".")
 
         logger.info(f"주문 요청 데이터: {data}")
-        return self._request("POST", "/orders", data=data)
+        return self._request("POST", "/orders", data=data, api_version="v2")
 
-    def cancel_order(self, uuid_str: str) -> dict[str, Any]:
+    def cancel_order(self, uuid_str: str = "", client_order_id: str = "") -> dict[str, Any]:
         """
         미체결 주문 취소
         - uuid_str: 취소할 주문의 UUID
         """
-        params = {"uuid": uuid_str}
-        logger.info(f"주문 취소 요청 (UUID: {uuid_str})")
-        return self._request("DELETE", "/order", params=params)
+        if not uuid_str and not client_order_id:
+            raise ValueError("취소할 order_id 또는 client_order_id가 필요합니다.")
+        params = {"order_id": uuid_str} if uuid_str else {"client_order_id": client_order_id}
+        logger.info("v2 주문 취소 요청: %s", uuid_str or client_order_id)
+        return self._request("DELETE", "/order", params=params, api_version="v2")
 
     def execute_twap_order(
         self,

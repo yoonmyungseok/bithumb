@@ -100,21 +100,34 @@ class OrderJournal:
             for order in self.orders
         )
 
-    def reconcile_exchange_statuses(self, get_order: Any) -> int:
+    def reconcile_exchange_statuses(self, get_order: Any, get_order_by_client_id: Any | None = None) -> int:
         """Update acknowledged orders from the exchange's canonical order endpoint."""
         updated = 0
         state_map = {"wait": "OPEN", "watch": "OPEN", "done": "FILLED", "cancel": "CANCELED"}
         for local in self.orders:
             exchange_uuid = local.get("exchange_uuid")
-            if local.get("status") not in {"ACKNOWLEDGED", "OPEN"} or not exchange_uuid:
+            if local.get("status") not in {"PENDING_SUBMISSION", "UNKNOWN", "ACKNOWLEDGED", "OPEN"}:
                 continue
             try:
-                remote = get_order(exchange_uuid)
+                if exchange_uuid:
+                    remote = get_order(exchange_uuid)
+                elif get_order_by_client_id:
+                    remote = get_order_by_client_id(local["client_order_id"])
+                else:
+                    continue
             except requests.exceptions.RequestException:
                 continue
             state = state_map.get(str(remote.get("state", "")).lower())
             if state and state != local.get("status"):
-                self.mark(local["client_order_id"], state, exchange_state=remote.get("state"))
+                self.mark(
+                    local["client_order_id"],
+                    state,
+                    exchange_state=remote.get("state"),
+                    exchange_uuid=remote.get("uuid", exchange_uuid),
+                    executed_volume=remote.get("executed_volume"),
+                    remaining_volume=remote.get("remaining_volume"),
+                    trades=remote.get("trades", []),
+                )
                 updated += 1
         return updated
 
@@ -140,6 +153,21 @@ class OrderJournal:
                     break
         return matched
 
+    def apply_private_order_event(self, event: dict[str, Any]) -> bool:
+        """Apply a v2 MyOrder event keyed by the exchange client_order_id."""
+        client_id = event.get("client_order_id") or event.get("coid")
+        state = str(event.get("state") or event.get("s") or "").lower()
+        mapped = {"wait": "OPEN", "trade": "PARTIALLY_FILLED", "done": "FILLED", "cancel": "CANCELED"}.get(state)
+        if not client_id or not mapped:
+            return False
+        self.mark(str(client_id), mapped,
+            exchange_order_id=event.get("order_id") or event.get("oid"),
+            executed_volume=event.get("executed_volume") or event.get("ev"),
+            remaining_volume=event.get("remaining_volume") or event.get("rv"),
+            last_event_at=time.time(),
+        )
+        return True
+
 
 class SafeOrderExecutor:
     def __init__(self, journal: OrderJournal):
@@ -148,7 +176,9 @@ class SafeOrderExecutor:
     def submit(self, bithumb: Any, market: str, side: str, volume: float | None = None, price: float | None = None, ord_type: str = "limit") -> dict[str, Any]:
         client_order_id = self.journal.record_intent(market, side, volume, price, ord_type)
         try:
-            response = bithumb.create_order(market, side, volume, price, ord_type)
+            response = bithumb.create_order(
+                market, side, volume, price, ord_type, client_order_id=client_order_id
+            )
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
             self.journal.mark(client_order_id, "UNKNOWN", error=str(exc))
             raise AmbiguousOrderError(
@@ -159,8 +189,14 @@ class SafeOrderExecutor:
             raise
 
         exchange_uuid = response.get("uuid") if isinstance(response, dict) else None
-        self.journal.mark(client_order_id, "ACKNOWLEDGED", exchange_uuid=exchange_uuid)
-        logger.info("주문 접수 확인: client_order_id=%s exchange_uuid=%s", client_order_id, exchange_uuid)
+        exchange_order_id = response.get("order_id") if isinstance(response, dict) else None
+        self.journal.mark(
+            client_order_id,
+            "ACKNOWLEDGED",
+            exchange_uuid=exchange_uuid,
+            exchange_order_id=exchange_order_id,
+        )
+        logger.info("주문 접수 확인: client_order_id=%s exchange_id=%s", client_order_id, exchange_uuid or exchange_order_id)
         return response
 
     def execute_twap(self, bithumb: Any, market: str, side: str, volume: float, price: float, splits: int = 3, interval_seconds: float = 2.0) -> list[dict[str, Any]]:

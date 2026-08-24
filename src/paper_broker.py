@@ -47,7 +47,7 @@ class PaperBroker:
     def cancel_order(self, uuid_str: str) -> dict[str, Any]:
         return {"uuid": uuid_str, "state": "cancel"}
 
-    def create_order(self, market: str, side: str, volume: float | None = None, price: float | None = None, ord_type: str = "limit") -> dict[str, Any]:
+    def create_order(self, market: str, side: str, volume: float | None = None, price: float | None = None, ord_type: str = "limit", client_order_id: str = "") -> dict[str, Any]:
         currency = market.split("-")[-1]
         fill_price = float(price or self.get_current_price(market))
         if fill_price <= 0:
@@ -74,7 +74,7 @@ class PaperBroker:
             raise ValueError(f"지원하지 않는 주문 방향: {side}")
 
         self._save()
-        return {"uuid": f"paper-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}", "state": "done", "market": market}
+        return {"uuid": f"paper-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}", "client_order_id": client_order_id, "state": "done", "market": market}
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.public_api, name)
