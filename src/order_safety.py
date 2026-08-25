@@ -19,14 +19,16 @@ import requests
 logger = logging.getLogger(__name__)
 
 
-_FILE_WRITE_LOCK = threading.Lock()
+_FILE_WRITE_LOCK = threading.RLock()
 
 
 def write_json_atomically(path: str, payload: Any) -> None:
     """Persist JSON without leaving a partially-written state file after a crash,
-    with robust retry and fallback logic for Windows file-locking quirks (WinError 5 / 32)."""
+    with robust retry and fallback logic for Windows file-locking quirks (WinError 5 / 32).
+    Also maintains a .bak file for self-healing crash recovery."""
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
+    backup_path = f"{path}.bak"
 
     with _FILE_WRITE_LOCK:
         fd, temporary_path = tempfile.mkstemp(prefix="state_", suffix=".tmp", dir=directory, text=True)
@@ -38,31 +40,71 @@ def write_json_atomically(path: str, payload: Any) -> None:
 
             # Windows 파일 잠금/안티바이러스 스캔 경합 해결을 위한 재시도 루프 (최대 5회)
             replaced = False
-            last_err = None
             for attempt in range(5):
                 try:
                     os.replace(temporary_path, path)
                     replaced = True
                     break
-                except OSError as err:
-                    last_err = err
-                    time.sleep(0.05 * (attempt + 1))
+                except (PermissionError, OSError):
+                    time.sleep(0.02 * (2**attempt))
 
             if not replaced:
-                # os.replace 실패 시 직접 쓰기 fallback
-                try:
-                    with open(path, "w", encoding="utf-8") as fallback_file:
-                        json.dump(payload, fallback_file, ensure_ascii=False, indent=2)
-                        fallback_file.flush()
-                except Exception:
-                    if last_err:
-                        raise last_err
+                # 최후의 수단: 직접 파일 덮어쓰기
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2)
+
+            # 성공적으로 주 파일 작성 후 자가 치유용 .bak 백업 파일 동기화
+            try:
+                with open(backup_path, "w", encoding="utf-8") as bf:
+                    json.dump(payload, bf, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.debug("백업 파일(.bak) 저장 예외 (무시 가능): %s", e)
+
         finally:
             if os.path.exists(temporary_path):
                 try:
                     os.unlink(temporary_path)
                 except OSError:
                     pass
+
+
+def load_json_with_backup_recovery(path: str, default: Any = None) -> Any:
+    """Load JSON from path with automatic fallback to .bak on corruption or decode failure."""
+    backup_path = f"{path}.bak"
+    if not os.path.exists(path):
+        if os.path.exists(backup_path):
+            try:
+                with open(backup_path, "r", encoding="utf-8") as bf:
+                    data = json.load(bf)
+                    logger.warning("주 파일(%s) 부재로 백업본(%s)에서 자동 복구", path, backup_path)
+                    # 주 파일 복원 시도
+                    try:
+                        write_json_atomically(path, data)
+                    except Exception:
+                        pass
+                    return data
+            except Exception as e:
+                logger.error("백업 파일(%s) 로드 실패: %s", backup_path, e)
+        return default
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("⚠️ 주 파일(%s) 손상 감지 (%s) ➜ 백업 파일(.bak) 자가 복구 시도", path, exc)
+        if os.path.exists(backup_path):
+            try:
+                with open(backup_path, "r", encoding="utf-8") as bf:
+                    recovered_data = json.load(bf)
+                    logger.info("✅ 백업 파일(%s)로부터 데이터 자가 복구 성공! 주 파일 복원", backup_path)
+                    try:
+                        write_json_atomically(path, recovered_data)
+                    except Exception:
+                        pass
+                    return recovered_data
+            except Exception as backup_exc:
+                logger.error("❌ 백업 파일(.bak) 복구마저 실패: %s", backup_exc)
+        return default
 
 
 
@@ -104,28 +146,21 @@ class OrderJournal:
     SCHEMA_VERSION = 2
 
     def __init__(self, path: str | None = None, data_dir: str | None = None):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         d_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(d_dir, exist_ok=True)
         self.path = path or os.path.join(d_dir, "order_journal.json")
         self.orders: list[dict[str, Any]] = self._load()
 
     def _load(self) -> list[dict[str, Any]]:
-        try:
-            with open(self.path, "r", encoding="utf-8") as file:
-                data = json.load(file)
-                if isinstance(data, dict):
-                    # Schema v2 object wrapper 호환
-                    return data.get("orders", [])
-                elif isinstance(data, list):
-                    # Schema v1 raw list 호환
-                    return data
-                return []
-        except FileNotFoundError:
-            return []
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning("주문 저널 로드 실패: %s", exc)
-            return []
+        data = load_json_with_backup_recovery(self.path, default=[])
+        if isinstance(data, dict):
+            # Schema v2 object wrapper 호환
+            return data.get("orders", [])
+        elif isinstance(data, list):
+            # Schema v1 raw list 호환
+            return data
+        return []
 
     def _save(self) -> None:
         try:
@@ -146,6 +181,9 @@ class OrderJournal:
         price: float | None,
         ord_type: str,
         position_id: str | None = None,
+        exit_reason: str | None = None,
+        avg_buy_price: float | None = None,
+        expected_price: float | None = None,
     ) -> str:
         client_order_id = f"bot-{int(time.time() * 1000)}-{uuid.uuid4().hex[:10]}"
         with self._lock:
@@ -155,23 +193,36 @@ class OrderJournal:
                 "market": market,
                 "side": side,
                 "volume": volume,
+                "requested_volume": volume or 0.0,
                 "price": price,
+                "expected_price": expected_price or price or 0.0,
+                "slippage_bps": 0.0,
                 "ord_type": ord_type,
                 "status": OrderStatus.PENDING_SUBMISSION,
                 "created_at": time.time(),
                 "exchange_uuid": None,
                 "executed_volume": 0.0,
+                "processed_executed_volume": 0.0,
                 "remaining_volume": volume or 0.0,
                 "avg_price": 0.0,
                 "fee": 0.0,
+                "processed_fee": 0.0,
+                "exit_reason": exit_reason or "",
+                "avg_buy_price": avg_buy_price or 0.0,
             })
             self._save()
         return client_order_id
 
     def mark(self, client_order_id: str, status: str, **fields: Any) -> None:
+        terminal_states = {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.FAILED, OrderStatus.REJECTED}
         with self._lock:
             for order in reversed(self.orders):
                 if order["client_order_id"] == client_order_id:
+                    # 단조성(Monotonicity) 가드: 이미 최종 상태(FILLED/CANCELED)인 경우 하위 상태(OPEN/ACK)로 역행 방지
+                    curr_status = order.get("status")
+                    if curr_status in terminal_states and status not in terminal_states:
+                        logger.debug("상태 역행 방지: %s -> %s (무시됨)", curr_status, status)
+                        return
                     order["status"] = status
                     order["updated_at"] = time.time()
                     order.update(fields)
@@ -260,8 +311,13 @@ class OrderJournal:
                 for order in self.orders
             )
 
-    def reconcile_exchange_statuses(self, get_order: Any, get_order_by_client_id: Any | None = None) -> int:
-        """Update acknowledged orders from the exchange's canonical order endpoint."""
+    def reconcile_exchange_statuses(
+        self,
+        get_order: Any,
+        get_order_by_client_id: Any | None = None,
+        fill_processor: Any | None = None,
+    ) -> int:
+        """Update acknowledged orders from the exchange's canonical order endpoint with execution reconciler (P0-1)."""
         updated = 0
         state_map = {
             "wait": OrderStatus.OPEN,
@@ -290,23 +346,41 @@ class OrderJournal:
                     remote = get_order_by_client_id(local["client_order_id"])
                 else:
                     continue
-            except requests.exceptions.RequestException:
+            except Exception:
                 continue
-            raw_state = str(remote.get("state") or remote.get("status") or "").lower()
-            state = state_map.get(raw_state)
-            if state and state != local.get("status"):
-                exec_vol = float(remote.get("executed_volume", 0.0) or 0.0)
-                rem_vol = float(remote.get("remaining_volume", 0.0) or 0.0)
-                paid_fee = float(remote.get("paid_fee", 0.0) or 0.0)
-                trades = remote.get("trades", [])
-                avg_p = 0.0
-                if trades:
-                    total_funds = sum(float(t.get("price", 0.0)) * float(t.get("volume", 0.0)) for t in trades)
-                    total_v = sum(float(t.get("volume", 0.0)) for t in trades)
-                    avg_p = (total_funds / total_v) if total_v > 0 else 0.0
-                elif exec_vol > 0 and float(remote.get("price", 0.0) or 0.0) > 0:
-                    avg_p = float(remote.get("price", 0.0))
 
+            if not isinstance(remote, dict):
+                continue
+
+            raw_state = str(remote.get("state") or remote.get("status") or "").lower()
+            state = state_map.get(raw_state, local.get("status"))
+            exec_vol = float(remote.get("executed_volume", 0.0) or 0.0)
+            rem_vol = float(remote.get("remaining_volume", 0.0) or 0.0)
+            paid_fee = float(remote.get("paid_fee", 0.0) or 0.0)
+            trades = remote.get("trades", [])
+            avg_p = 0.0
+            if trades:
+                total_funds = sum(float(t.get("price", 0.0)) * float(t.get("volume", 0.0)) for t in trades)
+                total_v = sum(float(t.get("volume", 0.0)) for t in trades)
+                avg_p = (total_funds / total_v) if total_v > 0 else 0.0
+            elif exec_vol > 0 and float(remote.get("price", 0.0) or 0.0) > 0:
+                avg_p = float(remote.get("price", 0.0))
+            elif float(local.get("price", 0.0) or 0.0) > 0:
+                avg_p = float(local.get("price", 0.0))
+
+            if fill_processor:
+                fill_processor.process_order_fill(
+                    order_identifier=local["client_order_id"],
+                    status=state,
+                    executed_volume=exec_vol,
+                    avg_price=avg_p,
+                    fee=paid_fee,
+                    remaining_volume=rem_vol,
+                    exchange_uuid=remote.get("uuid") or remote.get("order_id", exchange_uuid),
+                    exchange_state=raw_state,
+                )
+                updated += 1
+            else:
                 self.mark(
                     local["client_order_id"],
                     state,
@@ -342,7 +416,7 @@ class OrderJournal:
                     break
         return matched
 
-    def apply_private_order_event(self, event: dict[str, Any]) -> bool:
+    def apply_private_order_event(self, event: dict[str, Any], fill_processor: Any | None = None) -> bool:
         """Apply a v2 MyOrder event keyed by the exchange client_order_id."""
         client_id = event.get("client_order_id") or event.get("coid") or event.get("identifier")
         state = str(event.get("state") or event.get("s") or event.get("status") or "").lower()
@@ -359,9 +433,23 @@ class OrderJournal:
         rem_vol = float(event.get("remaining_volume") or event.get("rv") or 0.0)
         price_val = float(event.get("price") or event.get("p") or 0.0)
         fee_val = float(event.get("paid_fee") or event.get("fee") or 0.0)
+        oid = event.get("order_id") or event.get("oid") or event.get("uuid")
+
+        if fill_processor:
+            fill_processor.process_order_fill(
+                order_identifier=str(client_id),
+                status=mapped,
+                executed_volume=exec_vol,
+                avg_price=price_val,
+                fee=fee_val,
+                remaining_volume=rem_vol,
+                exchange_uuid=oid,
+                exchange_state=state,
+            )
+            return True
 
         update_kwargs: dict[str, Any] = {
-            "exchange_order_id": event.get("order_id") or event.get("oid") or event.get("uuid"),
+            "exchange_order_id": oid,
             "executed_volume": exec_vol,
             "remaining_volume": rem_vol,
             "last_event_at": time.time(),
@@ -388,6 +476,9 @@ class SafeOrderExecutor:
         price: float | None = None,
         ord_type: str = "limit",
         position_id: str | None = None,
+        exit_reason: str | None = None,
+        avg_buy_price: float | None = None,
+        expected_price: float | None = None,
     ) -> dict[str, Any]:
         # HOLO 및 수동 격리 종목 원천 차단 (P3-1)
         m_upper = market.upper()
@@ -401,7 +492,17 @@ class SafeOrderExecutor:
             logger.error(f"🛑 [{market}] 미해결 UNKNOWN 주문이 존재하여 신규 주문 제출 차단")
             raise RuntimeError(f"{market}에 확인되지 않은 이전 주문(UNKNOWN)이 존재합니다. REST 재조정 전까지 주문이 차단됩니다.")
 
-        client_order_id = self.journal.record_intent(market, side, volume, price, ord_type, position_id=position_id)
+        client_order_id = self.journal.record_intent(
+            market,
+            side,
+            volume,
+            price,
+            ord_type,
+            position_id=position_id,
+            exit_reason=exit_reason,
+            avg_buy_price=avg_buy_price,
+            expected_price=expected_price,
+        )
         try:
             response = exchange.create_order(
                 market, side, volume, price, ord_type, client_order_id=client_order_id
@@ -426,6 +527,8 @@ class SafeOrderExecutor:
         logger.info("주문 접수 확인 (ACKNOWLEDGED): client_order_id=%s exchange_id=%s", client_order_id, exchange_uuid or exchange_order_id)
         if isinstance(response, dict):
             response["client_order_id"] = client_order_id
+            if "status" not in response:
+                response["status"] = "ACKNOWLEDGED"
         return response
 
     def execute_twap(self, bithumb: Any, market: str, side: str, volume: float, price: float, splits: int = 3, interval_seconds: float = 2.0) -> list[dict[str, Any]]:
@@ -438,6 +541,170 @@ class SafeOrderExecutor:
                 bithumb, market, side, volume=volume / max(1, splits), price=price, ord_type="limit"
             ))
         return results
+
+
+class OrderFillProcessor:
+    """
+    공통 체결 처리기 (Execution Reconciler / OrderFillProcessor)
+    - “거래소의 주문 접수 ACK는 체결이 아니다. 실제 체결이 확인된 수량(fill_delta)만 포지션과 손익에 반영한다.”
+    - Private WebSocket, REST reconcile, 실시간 리스크 엔진, 5분 루프 공통 단일 진입점
+    """
+
+    def __init__(
+        self,
+        order_journal: OrderJournal,
+        risk_manager: Any = None,
+        trade_memory: Any = None,
+        trailing_tracker: Any = None,
+        telegram: Any = None,
+        sheets: Any = None,
+    ):
+        self.order_journal = order_journal
+        self.risk_manager = risk_manager
+        self.trade_memory = trade_memory
+        self.trailing_tracker = trailing_tracker
+        self.telegram = telegram
+        self.sheets = sheets
+
+    def process_order_fill(
+        self,
+        order_identifier: str,
+        status: str,
+        executed_volume: float,
+        avg_price: float = 0.0,
+        fee: float = 0.0,
+        remaining_volume: float = 0.0,
+        exchange_uuid: str | None = None,
+        exchange_state: str | None = None,
+        exit_reason: str | None = None,
+        avg_buy_price: float | None = None,
+        korean_name: str | None = None,
+        timestamp_str: str | None = None,
+        expected_price: float | None = None,
+    ) -> dict[str, Any]:
+        """
+        체결 내역을 멱등(Idempotent)하고 단조적(Monotonic)으로 반영하며 슬리피지를 추적하는 단일 체결 처리기 (P0-1, P0-3)
+        """
+        with self.order_journal._lock:
+            order = None
+            for o in self.order_journal.orders:
+                if (
+                    o.get("client_order_id") == order_identifier
+                    or (exchange_uuid and o.get("exchange_uuid") == exchange_uuid)
+                    or o.get("exchange_order_id") == order_identifier
+                ):
+                    order = o
+                    break
+
+            if not order:
+                logger.debug("체결 처리 대상 주문 미발견: %s", order_identifier)
+                return {"processed": False, "fill_delta": 0.0, "pnl_krw": 0.0, "status": status}
+
+            client_order_id = order["client_order_id"]
+            market = order["market"]
+            side = str(order.get("side", "")).lower()
+            is_buy = side in ("bid", "buy")
+            position_id = order.get("position_id") or market
+            stored_exit_reason = order.get("exit_reason") or exit_reason or "MANUAL_EXIT"
+
+            prev_processed_vol = float(order.get("processed_executed_volume", 0.0) or 0.0)
+            prev_processed_fee = float(order.get("processed_fee", 0.0) or 0.0)
+
+            fill_delta = max(0.0, float(executed_volume) - prev_processed_vol)
+            fee_delta = max(0.0, float(fee) - prev_processed_fee)
+
+            pnl_krw = 0.0
+            pnl_pct = 0.0
+            effective_price = avg_price if avg_price > 0 else float(order.get("price", 0.0) or 0.0)
+            now_str = timestamp_str or time.strftime("%Y-%m-%d %H:%M:%S")
+
+            # 실시간 체결 슬리피지(Slippage Bps) 연산
+            exp_p = expected_price or float(order.get("expected_price", 0.0) or order.get("price", 0.0) or 0.0)
+            slippage_bps = 0.0
+            if exp_p > 0 and effective_price > 0:
+                if is_buy:
+                    slippage_bps = ((effective_price - exp_p) / exp_p) * 10000.0
+                else:
+                    slippage_bps = ((exp_p - effective_price) / exp_p) * 10000.0
+
+            if abs(slippage_bps) >= 30.0:
+                logger.warning(
+                    f"⚠️ [{market}] 슬리피지 편차 감지: {slippage_bps:+.1f} bps (체결단가: {effective_price:,.2f} vs 목표단가: {exp_p:,.2f})"
+                )
+
+            # 1. 체결 증가분(fill_delta > 0)에 대해서만 포지션 및 손익 반영
+            if fill_delta > 0:
+                if is_buy:
+                    # 매수 첫 체결 시점에만 진입시간 생성 (P0-1)
+                    if prev_processed_vol == 0.0 and self.trailing_tracker:
+                        self.trailing_tracker.set_entry_time(market)
+                    logger.info(
+                        "🛒 [%s] 실제 매수 체결 확인: 증가분=%.6f, 체결단가=%.2f, 수수료=%.2f, 슬리피지=%+.1fbps",
+                        market, fill_delta, effective_price, fee_delta, slippage_bps,
+                    )
+                else:
+                    # 매도 체결: 실제 체결 증가분만 실현 손익 계산 (P0-1, P0-3)
+                    effective_avg_buy_price = avg_buy_price or float(order.get("avg_buy_price", 0.0) or 0.0)
+                    proceeds = (effective_price * fill_delta) - fee_delta
+                    cost_basis = effective_avg_buy_price * fill_delta
+                    pnl_krw = proceeds - cost_basis
+                    pnl_pct = ((effective_price - effective_avg_buy_price) / effective_avg_buy_price * 100.0) if effective_avg_buy_price > 0 else 0.0
+                    is_win = pnl_krw > 0
+
+                    if self.risk_manager:
+                        self.risk_manager.add_realized_trade(pnl_krw, is_win=is_win)
+
+                    if self.trade_memory:
+                        self.trade_memory.record_completed_trade(
+                            market=market,
+                            side=stored_exit_reason,
+                            entry_price=effective_avg_buy_price,
+                            exit_price=effective_price,
+                            filled_volume=fill_delta,
+                            fee=fee_delta,
+                            slippage=slippage_bps / 10000.0,
+                            pnl_pct=pnl_pct,
+                            pnl_krw=pnl_krw,
+                            reason=stored_exit_reason,
+                            timestamp=now_str,
+                            position_id=position_id,
+                            order_status=status,
+                        )
+                    logger.info(
+                        "🎉 [%s] 실제 매도 체결 확인 (%s): 증가분=%.6f, 체결단가=%.2f, 손익=%+.0f원(%.2f%%)",
+                        market, stored_exit_reason, fill_delta, effective_price, pnl_krw, pnl_pct,
+                    )
+
+            # 2. 완전 청산 상태 도달 시 트레일링 스탑 초기화
+            if not is_buy and status in (OrderStatus.FILLED, OrderStatus.CANCELED) and remaining_volume == 0.0:
+                if self.trailing_tracker:
+                    self.trailing_tracker.clear(market)
+
+            # 3. 저널 상태 영속 업데이트
+            update_fields: dict[str, Any] = {
+                "executed_volume": executed_volume,
+                "processed_executed_volume": executed_volume,
+                "remaining_volume": remaining_volume,
+                "avg_price": effective_price,
+                "fee": fee,
+                "processed_fee": fee,
+                "slippage_bps": round(slippage_bps, 1),
+                "last_event_at": time.time(),
+            }
+            if exchange_uuid:
+                update_fields["exchange_uuid"] = exchange_uuid
+            self.order_journal.mark(client_order_id, status, **update_fields)
+
+            return {
+                "processed": (fill_delta > 0),
+                "fill_delta": fill_delta,
+                "fee_delta": fee_delta,
+                "pnl_krw": pnl_krw,
+                "pnl_pct": pnl_pct,
+                "slippage_bps": round(slippage_bps, 1),
+                "status": status,
+                "order": order,
+            }
 
 
 def get_dynamic_portfolio_tiers(total_equity: float) -> tuple[int, float, int]:
@@ -514,7 +781,7 @@ class CooldownManager:
         state_file: str | None = None,
         data_dir: str | None = None,
     ):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.default_sl_cooldown = default_sl_cooldown  # 45 minutes
         self.default_tp_cooldown = default_tp_cooldown  # 15 minutes
         d_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
@@ -523,14 +790,10 @@ class CooldownManager:
         self._cooldowns: dict[str, float] = self._load()
 
     def _load(self) -> dict[str, float]:
-        try:
-            if os.path.exists(self.state_file):
-                with open(self.state_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    now = time.time()
-                    return {k: float(v) for k, v in data.items() if float(v) > now}
-        except Exception as exc:
-            logger.warning(f"쿨다운 상태 파일 로드 실패: {exc}")
+        data = load_json_with_backup_recovery(self.state_file, default={})
+        if isinstance(data, dict):
+            now = time.time()
+            return {str(k): float(v) for k, v in data.items() if float(v) > now}
         return {}
 
     def _save(self) -> None:
@@ -570,19 +833,21 @@ def calculate_risk_position_size(
     min_order_krw: float = 5000.0,
     available_krw: float | None = None,
     open_slots: int = 3,
+    risk_scale_factor: float = 1.0,
 ) -> float:
-    """Calculate position size in KRW such that maximum loss is fixed at risk_fraction with dynamic slot budget (P2-2)."""
+    """Calculate position size in KRW such that maximum loss is fixed at risk_fraction with dynamic slot budget & capital de-scaling."""
     if total_equity <= 0 or entry_price <= 0:
         return 0.0
 
-    risk_capital = total_equity * risk_fraction
+    scale = max(0.1, min(float(risk_scale_factor), 1.0))
+    risk_capital = total_equity * risk_fraction * scale
     stop_dist_pct = abs(entry_price - stop_loss) / entry_price if entry_price > 0 else 0.02
     friction = (2.0 * fee_rate) + slippage_rate
     effective_loss_pct = max(0.008, stop_dist_pct + friction)
 
     raw_position_krw = risk_capital / effective_loss_pct
-    slot_budget = total_equity / max(1, open_slots)
-    max_allowed_krw = min(total_equity * max_position_pct, slot_budget)
+    slot_budget = (total_equity / max(1, open_slots)) * scale
+    max_allowed_krw = min(total_equity * max_position_pct * scale, slot_budget)
 
     if available_krw is not None and available_krw > 0:
         max_allowed_krw = min(max_allowed_krw, available_krw)

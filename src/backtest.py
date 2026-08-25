@@ -6,7 +6,7 @@ from typing import Any
 
 from bithumb_api import BithumbAPI
 from order_safety import calculate_risk_position_size
-from strategy_engine import StrategyPolicy, calculate_chandelier_exit, entry_signal
+from strategy_engine import StrategyPolicy, calculate_chandelier_exit, classify_btc_regime, entry_signal
 
 # 윈도우 cp949 인코딩 표준화
 if sys.platform == "win32":
@@ -64,12 +64,13 @@ class QuantBacktester:
         fee_rate: float = 0.0004,
         slippage_rate: float = 0.001,
         risk_fraction: float = 0.01,
+        bithumb_api: Any = None,
     ):
         self.initial_capital = initial_capital
         self.fee_rate = max(0.0, fee_rate)
         self.slippage_rate = max(0.0, slippage_rate)
         self.risk_fraction = risk_fraction
-        self.bithumb = BithumbAPI()
+        self.bithumb = bithumb_api if bithumb_api is not None else BithumbAPI()
 
     def fetch_candles_paged(self, market: str, unit: int = 5, total_count: int = 200) -> list[dict[str, Any]]:
         """Fetch historical candles with pagination (Bithumb returns newest-first)."""
@@ -102,16 +103,20 @@ class QuantBacktester:
         market: str = "KRW-BTC",
         unit: int = 5,
         count: int = 200,
+        candles: list[dict[str, Any]] | None = None,
+        btc_candles: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         logger.info(f"🧪 [{market}] 과거 {count}개 {unit}분봉 캔들 백테스팅 시작 (초기 자본: {self.initial_capital:,.0f}원)")
 
-        candles = self.fetch_candles_paged(market=market, unit=unit, total_count=count)
+        if candles is None:
+            candles = self.fetch_candles_paged(market=market, unit=unit, total_count=count)
         if not candles or len(candles) < 30:
-            logger.warning(f"{market} 캔들 데이터 부족 ({len(candles)}개)")
+            logger.warning(f"{market} 캔들 데이터 부족 ({len(candles) if candles else 0}개)")
             return {}
 
         # 시간순(과거 ➜ 현재) 정렬
         sorted_candles = candles[::-1]
+        sorted_btc = btc_candles[::-1] if btc_candles else None
 
         capital = self.initial_capital
         peak_capital = capital
@@ -131,6 +136,8 @@ class QuantBacktester:
         pending_signal: dict[str, Any] = {}
 
         trade_logs = []
+        round_trip_positions: list[dict[str, Any]] = []
+        current_pos_info: dict[str, Any] = {}
         equity_curve = [capital]
 
         for i in range(25, len(sorted_candles)):
@@ -142,6 +149,14 @@ class QuantBacktester:
             low_price = float(c_candle.get("low_price", cur_price))
 
             window_desc = window[::-1]
+
+            # 과거 시점의 BTC 레짐 동적 계산
+            curr_btc_regime = "NORMAL"
+            if sorted_btc and i < len(sorted_btc):
+                btc_window = sorted_btc[: i + 1]
+                btc_window_desc = btc_window[::-1]
+                btc_regime_res = classify_btc_regime(btc_window_desc)
+                curr_btc_regime = btc_regime_res.get("regime", "NORMAL")
 
             # 0. 익봉 시가 진입 처리 (Next-Bar Open Execution & Gap Protection)
             if pending_entry and not in_position:
@@ -158,13 +173,14 @@ class QuantBacktester:
                         entry_price = open_price * (1.0 + self.slippage_rate)
 
                         # 실제 체결가 기준으로 ATR 동적 목표가/손절가 재계산
-                        target_offset = max(entry_price * 0.020, prior_atr * 2.0)
-                        stop_offset = max(entry_price * 0.012, prior_atr * 1.3)
+                        current_atr = prior_atr
+                        target_offset = max(entry_price * 0.020, current_atr * 1.8)
+                        stop_offset = max(entry_price * 0.015, current_atr * 1.2)
                         active_target = entry_price + target_offset
                         active_stop = entry_price - stop_offset
 
                         # 1% 고정 리스크 포지션 사이징
-                        invest_amt = calculate_risk_position_size(
+                        trade_budget = calculate_risk_position_size(
                             total_equity=capital,
                             entry_price=entry_price,
                             stop_loss=active_stop,
@@ -172,14 +188,23 @@ class QuantBacktester:
                             fee_rate=self.fee_rate,
                             slippage_rate=self.slippage_rate,
                             max_position_pct=0.35,
+                            min_order_krw=5000.0,
                         )
-                        if invest_amt >= 5000.0 and capital >= invest_amt:
-                            capital -= invest_amt
-                            position_vol = invest_amt * (1.0 - self.fee_rate) / entry_price
+
+                        if trade_budget >= 5000.0:
+                            position_vol = (trade_budget * (1.0 - self.fee_rate)) / entry_price
+                            capital -= trade_budget
                             in_position = True
                             partial_tp_done = False
                             peak_price = entry_price
                             bars_held = 0
+                            current_pos_info = {
+                                "entry_idx": i,
+                                "entry_price": entry_price,
+                                "trade_budget": trade_budget,
+                                "pnl_krw": 0.0,
+                                "events": ["BUY"],
+                            }
                             trade_logs.append({
                                 "type": "BUY",
                                 "price": entry_price,
@@ -206,6 +231,11 @@ class QuantBacktester:
                     capital += proceeds
                     in_position = False
                     cooldown_until_idx = i + 9  # 45분(9개 5분봉) 쿨다운
+                    if current_pos_info:
+                        current_pos_info["pnl_krw"] += loss_krw
+                        current_pos_info["events"].append("STOP_LOSS")
+                        round_trip_positions.append(dict(current_pos_info))
+                        current_pos_info = {}
                     trade_logs.append({
                         "type": "STOP_LOSS",
                         "price": exit_p,
@@ -222,14 +252,18 @@ class QuantBacktester:
                     sell_vol = position_vol * 0.5
                     exit_price = active_target * (1.0 - self.slippage_rate)
                     realized_val = sell_vol * exit_price * (1.0 - self.fee_rate)
+                    realized_profit = realized_val - (sell_vol * entry_price)
                     capital += realized_val
                     position_vol -= sell_vol
                     pnl_pct = ((exit_price - entry_price) / entry_price) * 100.0
+                    if current_pos_info:
+                        current_pos_info["pnl_krw"] += realized_profit
+                        current_pos_info["events"].append("PARTIAL_TP")
                     trade_logs.append({
                         "type": "PARTIAL_TP",
                         "price": exit_price,
                         "pnl_pct": pnl_pct,
-                        "profit_krw": realized_val - (sell_vol * entry_price),
+                        "profit_krw": realized_profit,
                         "candle_idx": i,
                     })
                     # 본절가 방어선 가동 (수수료 보전)
@@ -247,6 +281,11 @@ class QuantBacktester:
                         capital += proceeds
                         in_position = False
                         cooldown_until_idx = i + 3  # 15분 쿨다운
+                        if current_pos_info:
+                            current_pos_info["pnl_krw"] += profit_krw
+                            current_pos_info["events"].append("TRAILING_STOP")
+                            round_trip_positions.append(dict(current_pos_info))
+                            current_pos_info = {}
                         trade_logs.append({
                             "type": "TRAILING_STOP",
                             "price": exit_p,
@@ -266,6 +305,11 @@ class QuantBacktester:
                     capital += proceeds
                     in_position = False
                     cooldown_until_idx = i + 3
+                    if current_pos_info:
+                        current_pos_info["pnl_krw"] += profit_krw
+                        current_pos_info["events"].append("TIME_STOP")
+                        round_trip_positions.append(dict(current_pos_info))
+                        current_pos_info = {}
                     trade_logs.append({
                         "type": "TIME_STOP",
                         "price": exit_p,
@@ -276,10 +320,10 @@ class QuantBacktester:
                     position_vol = 0.0
                     continue
 
-            # 2. 미보유 상태: 퀀트 진입 신호 검사 (합성 1시간봉 MTF 결합)
+            # 2. 미보유 상태: 퀀트 진입 신호 검사 (동적 BTC 레짐 및 합성 1시간봉 MTF 결합)
             elif not in_position and capital >= 10_000 and i >= cooldown_until_idx:
                 candles_1h_synth = synthesize_1h_candles(sorted_candles[: i + 1])
-                signal = entry_signal(window_desc, candles_1h=candles_1h_synth, btc_regime="NORMAL")
+                signal = entry_signal(window_desc, candles_1h=candles_1h_synth, btc_regime=curr_btc_regime)
                 if signal["allow_buy"]:
                     # 익봉 시가에 진입하기 위해 예약
                     pending_entry = True
@@ -295,13 +339,22 @@ class QuantBacktester:
         # 미청산 포지션 잔여 가치 합산
         if in_position:
             last_price = float(sorted_candles[-1].get("trade_price", entry_price))
-            capital += position_vol * last_price * (1.0 - self.slippage_rate) * (1.0 - self.fee_rate)
+            leftover_val = position_vol * last_price * (1.0 - self.slippage_rate) * (1.0 - self.fee_rate)
+            leftover_profit = leftover_val - (position_vol * entry_price)
+            capital += leftover_val
+            if current_pos_info:
+                current_pos_info["pnl_krw"] += leftover_profit
+                current_pos_info["events"].append("UNREALIZED_CLOSE")
+                round_trip_positions.append(dict(current_pos_info))
 
         total_return_pct = ((capital - self.initial_capital) / self.initial_capital) * 100.0
         completed_trades = [t for t in trade_logs if t["type"] in ("PARTIAL_TP", "TRAILING_STOP", "STOP_LOSS", "TIME_STOP")]
         win_trades = [t for t in completed_trades if t.get("profit_krw", 0) > 0]
         loss_trades = [t for t in completed_trades if t.get("profit_krw", 0) <= 0]
         win_rate = (len(win_trades) / len(completed_trades) * 100.0) if completed_trades else 0.0
+
+        pos_win_trades = [p for p in round_trip_positions if p.get("pnl_krw", 0) > 0]
+        position_win_rate = (len(pos_win_trades) / len(round_trip_positions) * 100.0) if round_trip_positions else win_rate
 
         total_win_krw = sum(t.get("profit_krw", 0) for t in win_trades)
         total_loss_krw = abs(sum(t.get("profit_krw", 0) for t in loss_trades))
@@ -333,16 +386,234 @@ class QuantBacktester:
             "win_trades": len(win_trades),
             "loss_trades": len(loss_trades),
             "win_rate": round(win_rate, 1),
+            "round_trip_count": len(round_trip_positions),
+            "position_win_rate": round(position_win_rate, 1),
             "profit_factor": round(profit_factor, 2),
             "max_consecutive_losses": max_consecutive_losses,
             "expectancy_pct": round(expectancy_pct, 2),
             "fee_rate": self.fee_rate,
             "slippage_rate": self.slippage_rate,
             "timestop_bars": StrategyPolicy.TIME_STOP_BARS_5M,
+            "completed_trades": completed_trades,
+            "equity_curve": equity_curve,
         }
 
         self._print_report(result)
         return result
+
+    def run_walk_forward_backtest(
+        self,
+        market: str = "KRW-BTC",
+        unit: int = 5,
+        candles: list[dict[str, Any]] | None = None,
+        btc_candles: list[dict[str, Any]] | None = None,
+        num_windows: int = 4,
+        train_ratio: float = 0.7,
+    ) -> dict[str, Any]:
+        """
+        Walk-Forward 시계열 롤링 전진 검증 (과최적화 방지 및 전략 견고성 입증)
+        """
+        if candles is None:
+            candles = self.fetch_candles_paged(market=market, unit=unit, total_count=400)
+        if not candles or len(candles) < 60:
+            logger.warning("Walk-Forward 검증에 필요한 최소 캔들 수(60개) 부족")
+            return {}
+
+        sorted_candles = candles[::-1]
+        sorted_btc = btc_candles[::-1] if btc_candles else None
+        total_len = len(sorted_candles)
+        window_size = total_len // num_windows
+
+        if window_size < 30:
+            window_size = total_len
+            num_windows = 1
+
+        windows_results = []
+        out_returns = []
+        out_win_rates = []
+
+        for w_idx in range(num_windows):
+            start_idx = w_idx * (window_size // 2) if num_windows > 1 else 0
+            end_idx = min(start_idx + window_size, total_len)
+            sub_candles = sorted_candles[start_idx:end_idx]
+            sub_btc = sorted_btc[start_idx:end_idx] if sorted_btc else None
+
+            if len(sub_candles) < 30:
+                continue
+
+            split_pt = int(len(sub_candles) * train_ratio)
+            train_candles = sub_candles[:split_pt][::-1]
+            test_candles = sub_candles[split_pt:][::-1]
+            train_btc = sub_btc[:split_pt][::-1] if sub_btc else None
+            test_btc = sub_btc[split_pt:][::-1] if sub_btc else None
+
+            # In-Sample (Train) 백테스트
+            in_sample_res = self.run_backtest(
+                market=market,
+                unit=unit,
+                candles=train_candles,
+                btc_candles=train_btc,
+            )
+
+            # Out-of-Sample (Test) 전진 검증
+            out_sample_res = self.run_backtest(
+                market=market,
+                unit=unit,
+                candles=test_candles,
+                btc_candles=test_btc,
+            )
+
+            out_ret = out_sample_res.get("total_return_pct", 0.0)
+            out_wr = out_sample_res.get("win_rate", 0.0)
+            out_returns.append(out_ret)
+            out_win_rates.append(out_wr)
+
+            windows_results.append({
+                "window_index": w_idx + 1,
+                "in_sample": in_sample_res,
+                "out_of_sample": out_sample_res,
+            })
+
+        mean_out_return = sum(out_returns) / len(out_returns) if out_returns else 0.0
+        mean_out_win_rate = sum(out_win_rates) / len(out_win_rates) if out_win_rates else 0.0
+        robustness_score = round(max(0.0, min(100.0, 50.0 + (mean_out_return * 5.0) + (mean_out_win_rate * 0.5))), 1)
+
+        summary = {
+            "market": market,
+            "num_windows": len(windows_results),
+            "mean_out_of_sample_return_pct": round(mean_out_return, 2),
+            "mean_out_of_sample_win_rate": round(mean_out_win_rate, 1),
+            "robustness_score": robustness_score,
+            "windows": windows_results,
+        }
+
+        print("\n" + "=" * 65)
+        print(f" 🔄 [Walk-Forward 시계열 전진 검증 리포트 - {market}]")
+        print("=" * 65)
+        print(f"• 분할 검증 윈도우 수: {len(windows_results)}개 구간")
+        print(f"• Out-of-Sample 평균 수익률: {mean_out_return:+.2f}%")
+        print(f"• Out-of-Sample 평균 승률: {mean_out_win_rate:.1f}%")
+        print(f"• 전략 견고성 지수 (Robustness Score): {robustness_score} / 100 점")
+        print("=" * 65 + "\n")
+
+        return summary
+
+    def run_monte_carlo_simulation(
+        self,
+        completed_trades: list[dict[str, Any]],
+        num_simulations: int = 1000,
+        initial_capital: float | None = None,
+    ) -> dict[str, Any]:
+        """
+        1,000회 부트스트랩 리샘플링 몬테카를로 시뮬레이션 (MDD VaR 95% 및 파산 위험도 산출)
+        """
+        import random
+        base_capital = initial_capital or self.initial_capital
+        profits = [float(t.get("profit_krw", 0.0)) for t in completed_trades]
+
+        if not profits:
+            return {
+                "simulations": num_simulations,
+                "trades_count": 0,
+                "mdd_var_95_pct": 0.0,
+                "mdd_var_99_pct": 0.0,
+                "worst_mdd_pct": 0.0,
+                "ruin_probability_pct": 0.0,
+            }
+
+        simulated_mdds = []
+        simulated_returns = []
+        ruin_count = 0
+
+        for _ in range(num_simulations):
+            # 복원 무작위 리샘플링
+            sampled_profits = [random.choice(profits) for _ in range(len(profits))]
+            cap = base_capital
+            peak = cap
+            max_dd = 0.0
+
+            for p in sampled_profits:
+                cap += p
+                peak = max(peak, cap)
+                dd = (peak - cap) / peak * 100.0 if peak > 0 else 0.0
+                max_dd = max(max_dd, dd)
+
+            ret = ((cap - base_capital) / base_capital) * 100.0
+            simulated_mdds.append(max_dd)
+            simulated_returns.append(ret)
+
+            if max_dd >= 50.0 or cap <= (base_capital * 0.5):
+                ruin_count += 1
+
+        simulated_mdds.sort()
+        simulated_returns.sort()
+
+        idx_95 = int(num_simulations * 0.95)
+        idx_99 = int(num_simulations * 0.99)
+
+        mdd_var_95 = round(simulated_mdds[min(idx_95, num_simulations - 1)], 2)
+        mdd_var_99 = round(simulated_mdds[min(idx_99, num_simulations - 1)], 2)
+        worst_mdd = round(simulated_mdds[-1], 2)
+        ruin_prob = round((ruin_count / num_simulations) * 100.0, 2)
+
+        res = {
+            "simulations": num_simulations,
+            "trades_count": len(profits),
+            "mdd_var_95_pct": mdd_var_95,
+            "mdd_var_99_pct": mdd_var_99,
+            "worst_mdd_pct": worst_mdd,
+            "ruin_probability_pct": ruin_prob,
+            "median_return_pct": round(simulated_returns[num_simulations // 2], 2),
+        }
+
+        print("\n" + "=" * 65)
+        print(" 🎲 [몬테카를로 1,000회 리샘플링 스트레스 테스트 리포트]")
+        print("=" * 65)
+        print(f"• 시뮬레이션 반복 횟수: {num_simulations:,}회")
+        print(f"• 표본 거래 수: {len(profits)}건")
+        print(f"• 95% 신뢰수준 최대 낙폭 (MDD VaR 95%): {mdd_var_95:.2f}%")
+        print(f"• 99% 신뢰수준 최대 낙폭 (MDD VaR 99%): {mdd_var_99:.2f}%")
+        print(f"• 최악의 시나리오 낙폭 (Worst MDD): {worst_mdd:.2f}%")
+        print(f"• 계좌 반토막(파산) 위험률 (Risk of Ruin): {ruin_prob:.2f}%")
+        print("=" * 65 + "\n")
+
+        return res
+
+    def run_sensitivity_analysis(
+        self,
+        market: str = "KRW-BTC",
+        unit: int = 5,
+        candles: list[dict[str, Any]] | None = None,
+        btc_candles: list[dict[str, Any]] | None = None,
+        risk_fractions: list[float] | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        리스크 비율 및 파라미터 민감도 분석 (Parameter Sensitivity Grid)
+        """
+        if risk_fractions is None:
+            risk_fractions = [0.005, 0.010, 0.015, 0.020]
+
+        results = []
+        orig_risk = self.risk_fraction
+
+        for rf in risk_fractions:
+            self.risk_fraction = rf
+            res = self.run_backtest(
+                market=market,
+                unit=unit,
+                candles=candles,
+                btc_candles=btc_candles,
+            )
+            results.append({
+                "risk_fraction_pct": round(rf * 100.0, 2),
+                "total_return_pct": res.get("total_return_pct", 0.0),
+                "max_drawdown_pct": res.get("max_drawdown_pct", 0.0),
+                "win_rate": res.get("win_rate", 0.0),
+                "profit_factor": res.get("profit_factor", 0.0),
+            })
+
+        self.risk_fraction = orig_risk
+        return results
 
     def _print_report(self, r: dict[str, Any]):
         print("\n" + "=" * 65)

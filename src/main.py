@@ -18,7 +18,9 @@ from market_screener import MarketScreener
 from order_safety import (
     AmbiguousOrderError,
     CooldownManager,
+    OrderFillProcessor,
     OrderJournal,
+    OrderStatus,
     RiskGuard,
     SafeOrderExecutor,
     calculate_risk_position_size,
@@ -59,52 +61,50 @@ os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "trading.log")
 
 file_handler = TimedRotatingFileHandler(
-    LOG_FILE, when="midnight", interval=1, backupCount=30, encoding="utf-8"
+    filename=LOG_FILE, when="midnight", interval=1, backupCount=30, encoding="utf-8"
 )
-file_handler.suffix = "%Y-%m-%d"
-formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s")
-file_handler.setFormatter(formatter)
+file_handler.setFormatter(
+    logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+)
 
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setFormatter(formatter)
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(
+    logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+)
 
-logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler])
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[file_handler, stream_handler],
+)
 logger = logging.getLogger(__name__)
 
-# 2. 환경변수 로드
+# 2. .env 환경 변수 로드
 load_dotenv(override=True)
 
-BITHUMB_ACCESS_KEY = os.getenv("BITHUMB_ACCESS_KEY", "").strip()
-BITHUMB_SECRET_KEY = os.getenv("BITHUMB_SECRET_KEY", "").strip()
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "config/service_account.json").strip()
-GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "https://docs.google.com/spreadsheets/d/1BTIxerKa6Dxqwto0Y9A50cAiPMLBJFhuVzhg_8424N4/edit").strip()
-
-TOP_COUNT = int(os.getenv("TOP_COUNT", "3"))
-MIN_TRADE_VALUE = float(os.getenv("MIN_TRADE_VALUE", "1000000000"))  # 최소 10억 원
-MIN_CHANGE_RATE = float(os.getenv("MIN_CHANGE_RATE", "0.005"))        # 최소 +0.5%
-MAX_CHANGE_RATE = float(os.getenv("MAX_CHANGE_RATE", "0.25"))        # 최대 +25.0%
+BITHUMB_ACCESS_KEY = os.getenv("BITHUMB_ACCESS_KEY", "")
+BITHUMB_SECRET_KEY = os.getenv("BITHUMB_SECRET_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "service_account.json")
+GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "비트코인자동매매")
 
 INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "5"))
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+TARGET_MARKETS = os.getenv("TARGET_MARKETS", "KRW-BTC,KRW-ETH,KRW-XRP,KRW-SOL,KRW-DOGE")
+MIN_ORDER_KRW = float(os.getenv("MIN_ORDER_KRW", "5000"))
+MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
+MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.35"))
+MAX_TOTAL_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_EXPOSURE_PCT", "0.90"))
+MAX_ORDER_KRW = float(os.getenv("MAX_ORDER_KRW", "20000000"))
+MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "-5.0"))
+TRAILING_START_PCT = float(os.getenv("TRAILING_START_PCT", "2.0"))
+TRAILING_STOP_PCT = float(os.getenv("TRAILING_STOP_PCT", "1.2"))
+BTC_CRASH_THRESHOLD_PCT = float(os.getenv("BTC_CRASH_THRESHOLD_PCT", "-3.0"))
 
-BTC_CRASH_THRESHOLD_PCT = float(os.getenv("BTC_CRASH_THRESHOLD_PCT", "0.015"))
-MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "0.05"))
-TRAILING_START_PCT = float(os.getenv("TRAILING_START_PCT", "0.02"))
-TRAILING_STOP_PCT = float(os.getenv("TRAILING_STOP_PCT", "0.012"))
+TRADING_MODE = os.getenv("TRADING_MODE", "REAL").upper()
+PAPER_INITIAL_KRW = float(os.getenv("PAPER_INITIAL_KRW", "1000000.0"))
+PAPER_FEE_RATE = float(os.getenv("PAPER_FEE_RATE", "0.0004"))
 
-MIN_ORDER_KRW = 5000.0
-MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "2"))
-MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.50"))
-MAX_TOTAL_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_EXPOSURE_PCT", "0.95"))
-MAX_ORDER_KRW = float(os.getenv("MAX_ORDER_KRW", "0"))
-TRADING_MODE = os.getenv("TRADING_MODE", "LIVE").strip().upper()
-PAPER_INITIAL_KRW = float(os.getenv("PAPER_INITIAL_KRW", "1000000"))
-PAPER_FEE_RATE = float(os.getenv("PAPER_FEE_RATE", "0"))
-
-# 봇 일시정지 상태 플래그
 IS_BOT_PAUSED = False
 LATEST_STRATEGIES: dict[str, dict[str, Any]] = {}
 
@@ -139,6 +139,15 @@ telegram = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
 sheets = SheetsManager(
     json_key_path=GOOGLE_SERVICE_ACCOUNT_JSON,
     sheet_name=GOOGLE_SHEET_NAME,
+)
+
+fill_processor = OrderFillProcessor(
+    order_journal=order_journal,
+    risk_manager=risk_manager,
+    trade_memory=trade_memory,
+    trailing_tracker=trailing_tracker,
+    telegram=telegram,
+    sheets=sheets,
 )
 
 paper_broker: PaperBroker | None = None
@@ -321,8 +330,9 @@ def run_cycle():
 
         # 3-3. 비트코인 급락 및 시장 레짐 감시
         is_btc_crashing, btc_regime, btc_status_msg = check_btc_market_crash(bithumb, threshold_pct=btc_crash_pct)
+        trailing_tracker.set_macro_defensive_mode(is_btc_crashing)
         if is_btc_crashing:
-            logger.warning(f"⚠️ [비트코인 급락 위험 감지] 레짐: {btc_regime} ({btc_status_msg})")
+            logger.warning(f"⚠️ [비트코인 급락 위험 감지] 레짐: {btc_regime} ({btc_status_msg}) ➜ 보유 알트코인 비상 방어 모드 가동")
 
         fng = get_fear_and_greed_index()
         tot_disp = f"{current_total_equity:,.2f}원" if (0 < current_total_equity < 100 or current_total_equity % 1 != 0 and current_total_equity < 1000) else f"{current_total_equity:,.0f}원"
@@ -438,51 +448,42 @@ def run_cycle():
                                     volume=sell_vol,
                                     ord_type="market",
                                     position_id=market,
+                                    exit_reason="PARTIAL_TP",
+                                    avg_buy_price=avg_buy_price,
                                 )
-                                order_uuid = order_res.get("uuid", "UNKNOWN")
-                                pnl_krw = (current_price - avg_buy_price) * sell_vol
-                                risk_manager.add_realized_trade(pnl_krw, is_win=True)
-                                trade_memory.record_completed_trade(
-                                    market=market,
-                                    side="PARTIAL_TP",
-                                    entry_price=avg_buy_price,
-                                    exit_price=current_price,
-                                    filled_volume=sell_vol,
-                                    pnl_pct=realized_profit_pct,
-                                    pnl_krw=pnl_krw,
-                                    reason="1차 +2.5% 도달 50% 분할 익절 완료",
-                                    timestamp=now_str,
-                                    position_id=market,
-                                )
+                                order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
+                                client_order_id = order_res.get("client_order_id", "")
+
+                                # 실제 체결 내역 조회 (가상 손익 미생성, P0-1, P0-3)
+                                time.sleep(0.05)
+                                try:
+                                    remote = bithumb.get_order(order_uuid) if order_uuid != "UNKNOWN" else None
+                                    if isinstance(remote, dict) and float(remote.get("executed_volume", 0.0) or 0.0) > 0:
+                                        fill_processor.process_order_fill(
+                                            order_identifier=client_order_id or order_uuid,
+                                            status=OrderStatus.FILLED if float(remote.get("remaining_volume", 0.0) or 0.0) == 0 else OrderStatus.PARTIALLY_FILLED,
+                                            executed_volume=float(remote.get("executed_volume", 0.0)),
+                                            avg_price=float(remote.get("price", 0.0) or current_price),
+                                            fee=float(remote.get("paid_fee", 0.0) or 0.0),
+                                            remaining_volume=float(remote.get("remaining_volume", 0.0) or 0.0),
+                                            exchange_uuid=order_uuid,
+                                            exit_reason="PARTIAL_TP",
+                                            avg_buy_price=avg_buy_price,
+                                            korean_name=korean_name,
+                                            timestamp_str=now_str,
+                                        )
+                                except Exception as exc:
+                                    logger.debug("PARTIAL_TP 체결 조회 예외: %s", exc)
 
                                 caption = (
-                                    f"🎉 <b>[{korean_name}({market}) 1차 50% 분할익절 체결]</b>\n"
-                                    f"• 체결가: {current_price:,.2f} KRW (+{realized_profit_pct:.2f}%)\n"
-                                    f"• 실현수익: +{pnl_krw:,.0f} KRW 💰\n"
-                                    f"• 매도수량: {sell_vol:.8f} {currency}\n"
-                                    f"• 남은 50%: 무한 트레일링 러너 자동 전환\n"
+                                    f"🎉 <b>[{korean_name}({market}) 1차 50% 분할익절 접수]</b>\n"
+                                    f"• 요청단가: {current_price:,.2f} KRW (+{realized_profit_pct:.2f}%)\n"
+                                    f"• 주문수량: {sell_vol:.8f} {currency}\n"
+                                    f"• 주문 ID: <code>{order_uuid}</code>\n"
+                                    f"• 상태: <i>거래소 접수 완료 (실체결 시 정산)</i>\n"
                                     f"• 일시: {now_str}"
                                 )
                                 telegram.send_message(caption)
-
-                                sheets.append_trade_log(
-                                    {
-                                        "Timestamp": now_str,
-                                        "Korean_Name": korean_name,
-                                        "Market": market,
-                                        "Order_UUID": order_uuid,
-                                        "Side": "PARTIAL_TP",
-                                        "Order_Type": "MARKET",
-                                        "Price": current_price,
-                                        "Volume": f"{sell_vol:.8f}",
-                                        "Total_KRW": int(sell_val),
-                                        "Realized_PnL_Pct": f"+{realized_profit_pct:.2f}%",
-                                        "Stop_Loss": avg_buy_price,
-                                        "Target_Price": current_price,
-                                        "Current_Balance_KRW": int(krw_available + sell_val),
-                                        "Status_Reason": f"1차 50% 분할 익절 (+{realized_profit_pct:.2f}%)",
-                                    }
-                                )
                             finally:
                                 trailing_tracker.release_exit_lock(market)
 
@@ -501,24 +502,32 @@ def run_cycle():
                                     volume=coin_available,
                                     ord_type="market",
                                     position_id=market,
+                                    exit_reason="TRAILING_STOP",
+                                    avg_buy_price=avg_buy_price,
                                 )
-                                order_uuid = order_res.get("uuid", "UNKNOWN")
+                                order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
+                                client_order_id = order_res.get("client_order_id", "")
 
-                                pnl_krw = (current_price - avg_buy_price) * coin_available
-                                risk_manager.add_realized_trade(pnl_krw, is_win=True)
-                                trade_memory.record_completed_trade(
-                                    market=market,
-                                    side="TRAILING_STOP",
-                                    entry_price=avg_buy_price,
-                                    exit_price=current_price,
-                                    filled_volume=coin_available,
-                                    pnl_pct=realized_profit_pct,
-                                    pnl_krw=pnl_krw,
-                                    reason="가속 트레일링 스탑 최고점 익절 완료",
-                                    timestamp=now_str,
-                                    position_id=market,
-                                )
-                                trailing_tracker.clear(market)
+                                # 실제 체결 내역 조회 (가상 손익 미생성, P0-1, P0-3)
+                                time.sleep(0.05)
+                                try:
+                                    remote = bithumb.get_order(order_uuid) if order_uuid != "UNKNOWN" else None
+                                    if isinstance(remote, dict) and float(remote.get("executed_volume", 0.0) or 0.0) > 0:
+                                        fill_processor.process_order_fill(
+                                            order_identifier=client_order_id or order_uuid,
+                                            status=OrderStatus.FILLED if float(remote.get("remaining_volume", 0.0) or 0.0) == 0 else OrderStatus.PARTIALLY_FILLED,
+                                            executed_volume=float(remote.get("executed_volume", 0.0)),
+                                            avg_price=float(remote.get("price", 0.0) or current_price),
+                                            fee=float(remote.get("paid_fee", 0.0) or 0.0),
+                                            remaining_volume=float(remote.get("remaining_volume", 0.0) or 0.0),
+                                            exchange_uuid=order_uuid,
+                                            exit_reason="TRAILING_STOP",
+                                            avg_buy_price=avg_buy_price,
+                                            korean_name=korean_name,
+                                            timestamp_str=now_str,
+                                        )
+                                except Exception as exc:
+                                    logger.debug("TRAILING_STOP 체결 조회 예외: %s", exc)
 
                                 chart_img = chart_renderer.render_trade_chart(
                                     market=market,
@@ -590,28 +599,37 @@ def run_cycle():
                                     volume=coin_available,
                                     ord_type="market",
                                     position_id=market,
+                                    exit_reason="TIME_STOP",
+                                    avg_buy_price=avg_buy_price,
                                 )
-                                order_uuid = order_res.get("uuid", "UNKNOWN")
-                                pnl_krw = (current_price - avg_buy_price) * coin_available
-                                risk_manager.add_realized_trade(pnl_krw, is_win=(pnl_krw >= 0))
-                                trade_memory.record_completed_trade(
-                                    market=market,
-                                    side="TIME_STOP",
-                                    entry_price=avg_buy_price,
-                                    exit_price=current_price,
-                                    filled_volume=coin_available,
-                                    pnl_pct=pnl_pct_current,
-                                    pnl_krw=pnl_krw,
-                                    reason="60분 이상 박스권 횡보로 인한 자금 회전 타임스탑 청산",
-                                    timestamp=now_str,
-                                    position_id=market,
-                                )
-                                trailing_tracker.clear(market)
+                                order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
+                                client_order_id = order_res.get("client_order_id", "")
+
+                                # 실제 체결 내역 조회 (가상 손익 미생성, P0-1, P0-3)
+                                time.sleep(0.05)
+                                try:
+                                    remote = bithumb.get_order(order_uuid) if order_uuid != "UNKNOWN" else None
+                                    if isinstance(remote, dict) and float(remote.get("executed_volume", 0.0) or 0.0) > 0:
+                                        fill_processor.process_order_fill(
+                                            order_identifier=client_order_id or order_uuid,
+                                            status=OrderStatus.FILLED if float(remote.get("remaining_volume", 0.0) or 0.0) == 0 else OrderStatus.PARTIALLY_FILLED,
+                                            executed_volume=float(remote.get("executed_volume", 0.0)),
+                                            avg_price=float(remote.get("price", 0.0) or current_price),
+                                            fee=float(remote.get("paid_fee", 0.0) or 0.0),
+                                            remaining_volume=float(remote.get("remaining_volume", 0.0) or 0.0),
+                                            exchange_uuid=order_uuid,
+                                            exit_reason="TIME_STOP",
+                                            avg_buy_price=avg_buy_price,
+                                            korean_name=korean_name,
+                                            timestamp_str=now_str,
+                                        )
+                                except Exception as exc:
+                                    logger.debug("TIME_STOP 체결 조회 예외: %s", exc)
 
                                 caption = (
-                                    f"⏳ <b>[{korean_name}({market}) 60분 횡보 타임스탑 청산]</b>\n"
-                                    f"• 청산가: {current_price:,.2f} KRW | 평단가: {avg_buy_price:,.2f} KRW\n"
-                                    f"• 실현 손익: {pnl_krw:+,.0f} KRW ({pnl_pct_current:+.2f}%)\n"
+                                    f"⏳ <b>[{korean_name}({market}) 60분 횡보 타임스탑 접수]</b>\n"
+                                    f"• 요청단가: {current_price:,.2f} KRW | 평단가: {avg_buy_price:,.2f} KRW\n"
+                                    f"• 주문 ID: <code>{order_uuid}</code>\n"
                                     f"• 사유: <i>장기 횡보에 따른 자금 잠김 방지 및 다음 급등 유망주 순환매 확보</i>\n"
                                     f"• 일시: {now_str}"
                                 )
@@ -631,7 +649,7 @@ def run_cycle():
                 )
                 in_cooldown, cd_remaining = cooldown_manager.is_in_cooldown(market)
                 is_holding = (coin_value >= MIN_ORDER_KRW and avg_buy_price > 0)
-                ws_health = ws_client.get_health_status() if hasattr(ws_client, "get_health_status") else {"is_healthy": True, "status": "OK"}
+                ws_health = ws_client.get_health_status(market=market) if hasattr(ws_client, "get_health_status") else {"is_healthy": True, "status": "OK"}
                 ws_healthy = ws_health.get("is_healthy", True)
 
                 should_call_ai = (
@@ -765,25 +783,35 @@ def run_cycle():
                                 volume=coin_available,
                                 ord_type="market",
                                 position_id=market,
+                                exit_reason="STOP_LOSS",
+                                avg_buy_price=avg_buy_price,
+                                expected_price=current_price,
                             )
-                            order_uuid = order_res.get("uuid", "UNKNOWN")
-
-                            pnl_krw = (current_price - avg_buy_price) * coin_available if avg_buy_price > 0 else 0.0
-                            loss_pct = ((current_price - avg_buy_price) / avg_buy_price * 100) if avg_buy_price > 0 else 0.0
-                            risk_manager.add_realized_trade(pnl_krw, is_win=False)
+                            order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
+                            client_order_id = order_res.get("client_order_id", "")
                             cooldown_manager.record_exit(market, "STOP_LOSS")
-                            trade_memory.record_completed_trade(
-                                market=market,
-                                side="STOP_LOSS",
-                                entry_price=avg_buy_price,
-                                exit_price=current_price,
-                                filled_volume=coin_available,
-                                pnl_pct=loss_pct,
-                                pnl_krw=pnl_krw,
-                                reason=reason,
-                                timestamp=now_str,
-                                position_id=market,
-                            )
+
+                            # 실제 체결 내역 조회 (가상 손익 미생성, P0-1, P0-3)
+                            time.sleep(0.05)
+                            try:
+                                remote = bithumb.get_order(order_uuid) if order_uuid != "UNKNOWN" else None
+                                if isinstance(remote, dict) and float(remote.get("executed_volume", 0.0) or 0.0) > 0:
+                                    fill_processor.process_order_fill(
+                                        order_identifier=client_order_id or order_uuid,
+                                        status=OrderStatus.FILLED if float(remote.get("remaining_volume", 0.0) or 0.0) == 0 else OrderStatus.PARTIALLY_FILLED,
+                                        executed_volume=float(remote.get("executed_volume", 0.0)),
+                                        avg_price=float(remote.get("price", 0.0) or current_price),
+                                        fee=float(remote.get("paid_fee", 0.0) or 0.0),
+                                        remaining_volume=float(remote.get("remaining_volume", 0.0) or 0.0),
+                                        exchange_uuid=order_uuid,
+                                        exit_reason="STOP_LOSS",
+                                        avg_buy_price=avg_buy_price,
+                                        korean_name=korean_name,
+                                        timestamp_str=now_str,
+                                        expected_price=current_price,
+                                    )
+                            except Exception as exc:
+                                logger.debug("STOP_LOSS 체결 조회 예외: %s", exc)
                         finally:
                             trailing_tracker.release_exit_lock(market)
 
@@ -799,37 +827,17 @@ def run_cycle():
                     )
 
                     caption = (
-                        f"🚨 <b>[{korean_name}({market}) 손절 매도 실행]</b>\n"
+                        f"🚨 <b>[{korean_name}({market}) 손절 주문 접수]</b>\n"
                         f"• 진입 평단가: {avg_buy_price:,.2f} KRW\n"
-                        f"• 손절 체결가: {current_price:,.2f} KRW\n"
-                        f"• <b>실현 손실: {pnl_krw:,.0f} KRW ({loss_pct:.2f}%)</b>\n"
-                        f"• 사유: <i>{reason}</i>\n"
+                        f"• 요청 단가: {current_price:,.2f} KRW\n"
                         f"• 주문 ID: <code>{order_uuid}</code>\n"
+                        f"• 사유: <i>{reason}</i>\n"
                         f"• 일시: {now_str}"
                     )
                     if chart_img:
                         telegram.send_photo(chart_img, caption=caption)
                     else:
                         telegram.send_message(caption)
-
-                    sheets.append_trade_log(
-                        {
-                            "Timestamp": now_str,
-                            "Korean_Name": korean_name,
-                            "Market": market,
-                            "Order_UUID": order_uuid,
-                            "Side": "STOP_LOSS",
-                            "Order_Type": "MARKET",
-                            "Price": current_price,
-                            "Volume": f"{coin_available:.8f}",
-                            "Total_KRW": int(coin_available * current_price),
-                            "Realized_PnL_Pct": f"{loss_pct:.2f}%",
-                            "Stop_Loss": stop_loss,
-                            "Target_Price": target_price,
-                            "Current_Balance_KRW": int(krw_available),
-                            "Status_Reason": "손절 조건 충족으로 인한 시장가 전량 매도",
-                        }
-                    )
                     continue
 
                 # 6. [신규 주문 실행 - 동적 복리 자금 관리 적용]
@@ -874,6 +882,7 @@ def run_cycle():
                     order_price = entry_price if (0 < entry_price <= current_price * 1.002) else current_price
                     order_price = bithumb.round_price_to_tick(order_price)
 
+                    risk_scale = risk_manager.get_risk_scale_factor()
                     risk_based_budget = calculate_risk_position_size(
                         total_equity=effective_capital,
                         entry_price=order_price,
@@ -883,6 +892,7 @@ def run_cycle():
                         slippage_rate=0.001,
                         max_position_pct=dyn_max_pos_pct,
                         min_order_krw=MIN_ORDER_KRW,
+                        risk_scale_factor=risk_scale,
                     )
 
                     effective_risk_budget = risk_based_budget if risk_based_budget > 0 else slot_budget
@@ -929,9 +939,31 @@ def run_cycle():
                         price=order_price,
                         volume=formatted_volume,
                         ord_type="limit",
+                        position_id=market,
+                        expected_price=order_price,
                     )
-                    order_uuid = order_res.get("uuid", "UNKNOWN")
-                    trailing_tracker.set_entry_time(market)
+                    order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
+                    client_order_id = order_res.get("client_order_id", "")
+
+                    # 즉시 체결 여부 확인 (실제 체결 시에만 진입시간 생성, P0-1)
+                    time.sleep(0.05)
+                    try:
+                        remote = bithumb.get_order(order_uuid) if order_uuid != "UNKNOWN" else None
+                        if isinstance(remote, dict) and float(remote.get("executed_volume", 0.0) or 0.0) > 0:
+                            fill_processor.process_order_fill(
+                                order_identifier=client_order_id or order_uuid,
+                                status=OrderStatus.FILLED if float(remote.get("remaining_volume", 0.0) or 0.0) == 0 else OrderStatus.PARTIALLY_FILLED,
+                                executed_volume=float(remote.get("executed_volume", 0.0)),
+                                avg_price=float(remote.get("price", 0.0) or order_price),
+                                fee=float(remote.get("paid_fee", 0.0) or 0.0),
+                                remaining_volume=float(remote.get("remaining_volume", 0.0) or 0.0),
+                                exchange_uuid=order_uuid,
+                                korean_name=korean_name,
+                                timestamp_str=now_str,
+                                expected_price=order_price,
+                            )
+                    except Exception as exc:
+                        logger.debug("BUY 체결 조회 예외: %s", exc)
 
                     chart_img = chart_renderer.render_trade_chart(
                         market=market,
@@ -945,12 +977,12 @@ def run_cycle():
                     )
 
                     caption = (
-                        f"🛒 <b>[{korean_name}({market}) AI 신규 매수 체결]</b>\n"
-                        f"• 매수가: {order_price:,.2f} KRW\n"
+                        f"🛒 <b>[{korean_name}({market}) AI 신규 매수 주문 접수]</b>\n"
+                        f"• 지정가: {order_price:,.2f} KRW\n"
                         f"• 주문수량: {formatted_volume:.6f} {currency}\n"
-                        f"• <b>투입금액: {int(trade_budget):,d} KRW (슬롯비중: {alloc_pct*100:.0f}%)</b>\n"
+                        f"• <b>투입예산: {int(trade_budget):,d} KRW (슬롯비중: {alloc_pct*100:.0f}%)</b>\n"
                         f"• 목표가: {target_price:,.2f} KRW | 손절가: {stop_loss:,.2f} KRW\n"
-                        f"• 사유: <i>{reason}</i>\n"
+                        f"• 상태: <i>거래소 접수 완료 (체결 대기)</i>\n"
                         f"• 주문 ID: <code>{order_uuid}</code>\n"
                         f"• 일시: {now_str}"
                     )
@@ -959,25 +991,6 @@ def run_cycle():
                     else:
                         telegram.send_message(caption)
 
-                    sheets.append_trade_log(
-                        {
-                            "Timestamp": now_str,
-                            "Korean_Name": korean_name,
-                            "Market": market,
-                            "Order_UUID": order_uuid,
-                            "Side": "BUY",
-                            "Order_Type": "LIMIT",
-                            "Price": order_price,
-                            "Volume": f"{formatted_volume:.6f}",
-                            "Total_KRW": int(trade_budget),
-                            "Realized_PnL_Pct": "0.00%",
-                            "Stop_Loss": stop_loss,
-                            "Target_Price": target_price,
-                            "Current_Balance_KRW": int(krw_available - trade_budget),
-                            "Status_Reason": f"정량 5대 지표 및 Gemini AI 승인 진입 ({reason})",
-                        }
-                    )
-
             except Exception as e:
                 logger.error(f"[{market}] 매매 사이클 오류 발생: {e}", exc_info=True)
 
@@ -985,10 +998,29 @@ def run_cycle():
         logger.error(f"전체 트레이딩 사이클 예외 발생: {e}", exc_info=True)
 
 
+def update_heartbeat() -> None:
+    """워치독 헬스체크 및 무응답(Hang) 방지를 위한 하트비트 파일 원자적 갱신"""
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+    hb_file = os.path.join(data_dir, ".heartbeat")
+    try:
+        write_json_atomically(hb_file, {
+            "timestamp": time.time(),
+            "pid": os.getpid(),
+            "datetime": get_kst_now_str(),
+            "status": "RUNNING",
+            "bot": "bithumb",
+        })
+    except Exception as e:
+        logger.debug(f"하트비트 기록 예외: {e}")
+
+
 def main():
     logger.info("============================================================")
-    logger.info("  Bithumb AI Pro Quant Trading Bot v4.5 가동 시작")
+    logger.info("  Bithumb AI Pro Quant Trading Bot v5.0 가동 시작")
     logger.info("============================================================")
+
+    # 0. 즉시 첫 하트비트 기록
+    update_heartbeat()
 
     # 1. 텔레그램 명령어 리스너 가동
     telegram.start_command_listener(
@@ -997,6 +1029,8 @@ def main():
         panic_callback=bot_controller.execute_panic_sell,
         pause_callback=bot_controller.pause_bot,
         resume_callback=bot_controller.resume_bot,
+        diag_callback=bot_controller.get_diagnostics_message,
+        trades_callback=bot_controller.get_trades_summary_message,
     )
 
     # 2. 로컬 실시간 웹 대시보드 서버 가동
@@ -1041,21 +1075,51 @@ def main():
         logger.error(f"초기 사이클 실행 중 오류: {e}")
 
     # 6. 프로세스 종료 시그널 핸들러 등록
-    def _handle_exit(sig, frame):
+    is_exiting = False
+
+    def _handle_exit(sig=None, frame=None):
+        nonlocal is_exiting
+        if is_exiting:
+            return
+        is_exiting = True
         logger.info("🛑 프로세스 종료 시그널 감지. 자원을 안전하게 해제합니다...")
-        ws_client.stop()
+        try:
+            telegram.stop()
+        except Exception as e:
+            logger.debug(f"텔레그램 종료 예외: {e}")
+        try:
+            ws_client.stop()
+        except Exception as e:
+            logger.debug(f"WebSocket 종료 예외: {e}")
         if private_ws:
-            private_ws.stop()
-        web_server.stop()
-        scheduler.shutdown(wait=False)
+            try:
+                private_ws.stop()
+            except Exception as e:
+                logger.debug(f"Private WS 종료 예외: {e}")
+        try:
+            web_server.stop()
+        except Exception as e:
+            logger.debug(f"웹 대시보드 종료 예외: {e}")
+        try:
+            scheduler.shutdown(wait=False)
+        except Exception as e:
+            logger.debug(f"스케줄러 종료 예외: {e}")
+        logger.info("✅ 빗썸 봇 모든 자원 정상 해제 완료")
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _handle_exit)
     signal.signal(signal.SIGTERM, _handle_exit)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _handle_exit)
 
-    # 7. 메인 스레드 유지 루프
+    # 7. 메인 스레드 유지 및 주기적 하트비트 루프
+    last_hb_ts = 0.0
     while True:
         try:
+            now_ts = time.time()
+            if now_ts - last_hb_ts >= 15.0:
+                update_heartbeat()
+                last_hb_ts = now_ts
             time.sleep(1)
         except (KeyboardInterrupt, SystemExit):
             _handle_exit(None, None)

@@ -125,7 +125,7 @@ class UpbitHoloGuardTests(unittest.TestCase):
     def test_panic_sell_never_sells_holo(self):
         submitted_orders = []
 
-        def mock_submit(exchange, market, side, volume, ord_type="market"):
+        def mock_submit(exchange, market, side, volume, ord_type="market", **kwargs):
             submitted_orders.append({"market": market, "side": side, "volume": volume})
             return {"uuid": "ord-123"}
 

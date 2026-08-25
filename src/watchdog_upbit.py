@@ -74,6 +74,7 @@ def main():
             python_exe = sys.executable
 
     main_script = os.path.join(project_root, "src", "main_upbit.py")
+    hb_file = os.path.join(project_root, "data", "upbit", ".heartbeat")
 
     recent_crashes: list[float] = []
     is_terminating = False
@@ -86,10 +87,19 @@ def main():
 
     signal.signal(signal.SIGINT, _sig_handler)
     signal.signal(signal.SIGTERM, _sig_handler)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _sig_handler)
 
     while not is_terminating:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         logger.info(f"🚀 [업비트 봇 프로세스 시작] {main_script}")
+
+        # 기존 오래된 하트비트 파일 제거
+        if os.path.exists(hb_file):
+            try:
+                os.remove(hb_file)
+            except Exception:
+                pass
 
         try:
             process = subprocess.Popen(
@@ -101,11 +111,34 @@ def main():
             time.sleep(5)
             continue
 
-        try:
-            return_code = process.wait()
-        except KeyboardInterrupt:
-            is_terminating = True
-            logger.info("🛑 사용자에 의한 수동 종료 감지 (Ctrl+C).")
+        start_ts = time.time()
+        hung_detected = False
+
+        while process.poll() is None:
+            if is_terminating:
+                break
+            time.sleep(5)
+
+            # 프로세스 시작 후 2분이 경과한 시점부터 하트비트 타임아웃 감시 (최대 10분 허용)
+            if time.time() - start_ts > 120.0 and os.path.exists(hb_file):
+                try:
+                    with open(hb_file, "r", encoding="utf-8") as hbf:
+                        import json
+                        hb_data = json.load(hbf)
+                        last_hb = float(hb_data.get("timestamp", 0.0))
+                        if last_hb > 0 and (time.time() - last_hb) > 600.0:  # 10분 무응답
+                            logger.critical("🛑 [Upbit Hang 감지] 업비트 봇이 10분 이상 무응답 상태입니다. 프로세스를 강제 재시작합니다.")
+                            hung_detected = True
+                            process.terminate()
+                            try:
+                                process.wait(timeout=5)
+                            except Exception:
+                                process.kill()
+                            break
+                except Exception as e:
+                    logger.debug(f"업비트 하트비트 검사 예외 (무시): {e}")
+
+        if is_terminating:
             try:
                 process.terminate()
                 process.wait(timeout=3)
@@ -113,19 +146,19 @@ def main():
                 process.kill()
             break
 
-        if is_terminating:
-            break
+        return_code = process.poll() if process.poll() is not None else (process.returncode or 0)
 
         now_ts = time.time()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 정상 종료 (returncode == 0)인 경우
-        if return_code == 0:
+        # 정상 종료 (returncode == 0)이고 Hang이 아니었던 경우
+        if return_code == 0 and not hung_detected:
             logger.info("✅ 업비트 봇 프로세스가 정상 종료되었습니다.")
             break
 
-        # 비정상 종료 (returncode != 0)
-        logger.warning(f"⚠️ [업비트 봇 비정상 종료 감지] 종료 코드(Exit Code): {return_code}")
+        # 비정상 종료 (returncode != 0 또는 Hang)
+        reason_desc = "10분 이상 응답 없음(Hang/Deadlock 감지)" if hung_detected else f"종료 코드: {return_code}"
+        logger.warning(f"⚠️ [업비트 봇 비정상 종료 감지] {reason_desc}")
         recent_crashes.append(now_ts)
         recent_crashes = [t for t in recent_crashes if now_ts - t <= 60]
 
@@ -135,7 +168,7 @@ def main():
                 f"🚨 <b>[업비트 봇 긴급 알림 - 연속 크래시 감지]</b>\n\n"
                 f"• 1분 내 {len(recent_crashes)}회 연속 비정상 종료가 발생했습니다.\n"
                 f"• API 키 또는 환경 설정을 점검해 주세요.\n"
-                f"• <b>종료 코드:</b> {return_code}\n"
+                f"• <b>사유:</b> {reason_desc}\n"
                 f"• <b>일시:</b> {now_str}\n\n"
                 f"⚠️ 무한 재시작을 방지하기 위해 60초간 대기합니다."
             )
@@ -148,7 +181,7 @@ def main():
         alert_msg = (
             f"⚠️ <b>[업비트 봇 비정상 종료 감지 & 자동 복구]</b>\n\n"
             f"• 업비트 봇 프로세스가 예기치 않게 종료되었습니다.\n"
-            f"• <b>종료 코드:</b> <code>{return_code}</code>\n"
+            f"• <b>사유:</b> <code>{reason_desc}</code>\n"
             f"• <b>일시:</b> {now_str}\n\n"
             f"🔄 <b>5초 후 자동으로 업비트 봇을 재가동합니다...</b>"
         )

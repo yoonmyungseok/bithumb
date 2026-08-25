@@ -35,9 +35,28 @@ class TelegramAlert:
         self.enable_async = enable_async
         self._queue: queue.Queue = queue.Queue(maxsize=500)
         self._is_running = True
+        self._worker_thread: threading.Thread | None = None
+        self._listener_thread: threading.Thread | None = None
         if self.enable_async and self.bot_token and self.chat_id:
             self._worker_thread = threading.Thread(target=self._queue_worker, daemon=True, name="TelegramQueueWorker")
             self._worker_thread.start()
+
+    def stop(self, timeout: float = 2.0) -> None:
+        """텔레그램 리스너 및 비동기 워커 스레드를 안전하게 종료"""
+        if not self._is_running:
+            return
+        logger.info("🛑 TelegramAlert 자원 해제 중...")
+        self._is_running = False
+        try:
+            self._queue.put_nowait(None)
+        except Exception:
+            pass
+
+        if self._worker_thread and self._worker_thread.is_alive():
+            self._worker_thread.join(timeout=timeout)
+        if self._listener_thread and self._listener_thread.is_alive():
+            self._listener_thread.join(timeout=timeout)
+        logger.info("✅ TelegramAlert 안전 종료 완료")
 
     def _queue_worker(self):
         while self._is_running:
@@ -215,33 +234,38 @@ class TelegramAlert:
         pause_callback: Callable[[], str] | None = None,
         resume_callback: Callable[[], str] | None = None,
         buy_approval_callback: Callable[[str], str] | None = None,
+        diag_callback: Callable[[], str] | None = None,
+        trades_callback: Callable[[], str] | None = None,
     ):
-        """텔레그램 양방향 명령어 & 인라인 버튼 콜백 리스너 가동"""
-        if not self.bot_token or not self.chat_id:
-            return
-
         self._status_callback = status_callback
         self._balance_callback = balance_callback
         self._panic_callback = panic_callback
         self._pause_callback = pause_callback
         self._resume_callback = resume_callback
         self._buy_approval_callback = buy_approval_callback
+        self._diag_callback = diag_callback
+        self._trades_callback = trades_callback
+
+        if not self.bot_token or not self.chat_id:
+            return
 
         def _listen_loop():
             offset = 0
             logger.info("📱 텔레그램 양방향 인터랙티브 명령어 & 인라인 버튼 리스너 가동 시작")
-            while True:
+            while self._is_running:
                 try:
                     url = f"{self.base_url}/getUpdates"
-                    params = {"offset": offset, "timeout": 20}
-                    res = requests.get(url, params=params, timeout=25)
+                    params = {"offset": offset, "timeout": 5}
+                    res = requests.get(url, params=params, timeout=10)
+                    if not self._is_running:
+                        break
                     if res.status_code == 200:
                         data = res.json()
                         for update in data.get("result", []):
                             offset = update["update_id"] + 1
 
                             # 1. 일반 텍스트 명령어 처리
-                            if "message" in update:
+                            if "message" in update and "text" in update["message"]:
                                 message = update.get("message", {})
                                 text = message.get("text", "").strip()
                                 sender_chat_id = str(message.get("chat", {}).get("id", ""))
@@ -269,12 +293,22 @@ class TelegramAlert:
                                 elif cmd in ("/resume", "/재개", "/시작"):
                                     reply = self._resume_callback() if self._resume_callback else "▶️ 봇 자동매매 재개 완료"
                                     self.send_message(reply, reply_markup=self.get_dashboard_keyboard())
+                                
+                                elif cmd in ("/diag", "/health", "/진단", "/상태진단"):
+                                    reply = self._diag_callback() if self._diag_callback else "🩺 시스템 진단 준비 중"
+                                    self.send_message(reply, reply_markup=self.get_dashboard_keyboard())
+
+                                elif cmd in ("/trades", "/내역", "/체결", "/매매내역"):
+                                    reply = self._trades_callback() if self._trades_callback else "📋 최근 거래 조회 중"
+                                    self.send_message(reply, reply_markup=self.get_dashboard_keyboard())
 
                                 elif cmd in ("/help", "/도움말", "/start"):
                                     help_msg = (
-                                        "🤖 <b>[빗썸 AI 퀀트 봇 원격 제어 센터]</b>\n\n"
+                                        "🤖 <b>[AI 퀀트 봇 원격 제어 센터]</b>\n\n"
                                         "• <code>/status</code> 또는 <code>/상태</code> : 종합 대시보드 브리핑\n"
                                         "• <code>/balance</code> 또는 <code>/잔고</code> : 보유 코인별 실시간 잔고/손익\n"
+                                        "• <code>/diag</code> 또는 <code>/진단</code> : 🩺 실시간 시스템 헬스 및 슬리피지 진단\n"
+                                        "• <code>/trades</code> 또는 <code>/내역</code> : 📋 당일 체결 및 슬리피지/손익 요약\n"
                                         "• <code>/panic</code> 또는 <code>/긴급매도</code> : 🚨 <b>전 코인 즉시 전량 매도 및 100% 현금화</b>\n"
                                         "• <code>/pause</code> 또는 <code>/일시정지</code> : 신규 매매 일시정지 (관망 모드)\n"
                                         "• <code>/resume</code> 또는 <code>/재개</code> : 자동매매 정상 재개\n"
@@ -327,10 +361,10 @@ class TelegramAlert:
 
                 except requests.exceptions.RequestException as e:
                     logger.debug(f"텔레그램 리스너 네트워크 예외: {e}")
-                    time.sleep(3)
+                    time.sleep(2)
                 except (ValueError, KeyError) as e:
                     logger.debug(f"텔레그램 리스너 처리 예외: {e}")
                     time.sleep(1)
 
-        t = threading.Thread(target=_listen_loop, daemon=True, name="TelegramListener")
-        t.start()
+        self._listener_thread = threading.Thread(target=_listen_loop, daemon=True, name="TelegramListener")
+        self._listener_thread.start()

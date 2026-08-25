@@ -53,22 +53,35 @@ class UpbitWebSocketClient:
         self._lock = threading.Lock()
         self._whale_trades: list[dict[str, Any]] = []
         self.last_tick_time: float = 0.0
+        self.last_tick_time_by_market: dict[str, float] = {}
+        self.confirmed_markets: set[str] = set()
+        self.subscription_error: bool = False
         self.reconnect_count: int = 0
         self.is_connected: bool = False
 
-    def get_health_status(self, max_stale_seconds: float = 15.0) -> dict[str, Any]:
-        """업비트 웹소켓 데이터 건강상태 검사 (Fail-Closed 판정용, P1-2)"""
+    def get_health_status(self, market: str | None = None, max_stale_seconds: float = 15.0) -> dict[str, Any]:
+        """업비트 웹소켓 데이터 건강상태 검사 (시장별 개별 상태 판정 지원, P1-2)"""
         now = time.time()
         with self._lock:
-            last_tick = self.last_tick_time
             connected = self.is_connected
             reconnects = self.reconnect_count
             sub_count = len(self.subscribed_markets)
+            sub_markets = list(self.subscribed_markets)
+
+            if market:
+                last_tick = self.last_tick_time_by_market.get(market.upper(), 0.0)
+                is_sub = market.upper() in [m.upper() for m in sub_markets]
+            else:
+                last_tick = self.last_tick_time
+                is_sub = True
 
         latency = (now - last_tick) if last_tick > 0 else 9999.0
 
         if not connected:
             state = WebSocketHealthState.DISCONNECTED
+            is_healthy = False
+        elif market and not is_sub:
+            state = WebSocketHealthState.SUBSCRIPTION_FAILED
             is_healthy = False
         elif last_tick <= 0:
             state = WebSocketHealthState.DATA_UNAVAILABLE
@@ -85,6 +98,7 @@ class UpbitWebSocketClient:
             "is_healthy": is_healthy,
             "latency_seconds": round(latency, 2),
             "last_tick_time": last_tick,
+            "market": market,
             "reconnect_count": reconnects,
             "subscribed_count": sub_count,
         }
@@ -176,13 +190,16 @@ class UpbitWebSocketClient:
             msg_type = data.get("type", "")
             code = data.get("code", "")
 
+            now_ts = time.time()
             # 1. 실시간 시세 (Ticker) 수신
             if msg_type == "ticker":
                 price = float(data.get("trade_price", 0.0))
                 if code and price > 0:
                     with self._lock:
                         self.latest_prices[code] = price
-                        self.last_tick_time = time.time()
+                        self.last_tick_time = now_ts
+                        self.last_tick_time_by_market[code] = now_ts
+                        self.confirmed_markets.add(code)
                         self.is_connected = True
 
                     if self.on_price_callback:
@@ -197,7 +214,10 @@ class UpbitWebSocketClient:
                 side = "매수" if ask_bid in ("BID", "BUY", "1") else "매도"
 
                 with self._lock:
-                    self.last_tick_time = time.time()
+                    self.last_tick_time = now_ts
+                    if code:
+                        self.last_tick_time_by_market[code] = now_ts
+                        self.confirmed_markets.add(code)
                     self.is_connected = True
 
                 # 3,000만 원 이상 대량 체결 포착

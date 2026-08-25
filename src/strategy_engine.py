@@ -1,18 +1,25 @@
 import math
+import os
 from typing import Any
 
 
 class StrategyPolicy:
-    """실거래 및 백테스트 공통 전략 파라미터 및 실행 정책 (P1-3)"""
-    TIME_STOP_SECONDS: int = 3600  # 60분 타임스탑 (실거래)
-    TIME_STOP_BARS_5M: int = 12   # 5분봉 12개 = 60분 (백테스트)
-    PARTIAL_TP_PCT: float = 0.025 # +2.5% 1차 50% 분할익절
-    TRAILING_DROP_PCT: float = 0.012 # 최고점 대비 1.2% 하락 시 트레일링 스탑
-    STOP_LOSS_PCT: float = 0.025  # 기본 손절 -2.5%
-    FEE_RATE: float = 0.0004      # 편도 수수료 0.04%
-    SLIPPAGE_RATE: float = 0.001  # 보수적 슬리피지 0.1%
-    MIN_ORDER_KRW: float = 5000.0 # 최소 주문금액
-    MAX_DAILY_LOSS_PCT: float = 0.05 # 일일 손실 한도 5%
+    """실거래 및 백테스트 공통 전략 파라미터 및 단일 실행 정책 (Single Source of Truth, P1)"""
+    TIME_STOP_SECONDS: int = 3600      # 60분 타임스탑 (실거래 초 단위)
+    TIME_STOP_BARS_5M: int = 12       # 5분봉 12개 = 60분 (백테스트 캔들 단위)
+    PARTIAL_TP_PCT: float = 0.025     # +2.5% 1차 50% 분할익절
+    TRAILING_START_PCT: float = 0.020 # +2.0% 트레일링 스탑 활성화
+    TRAILING_DROP_PCT: float = 0.012  # 최고점 대비 1.2% 하락 시 시장가 청산
+    STOP_LOSS_PCT: float = 0.025      # 기본 손절 -2.5%
+    ATR_STOP_MULTIPLIER: float = 1.5  # Chandelier / ATR 손절 배수
+    ATR_TARGET_MULTIPLIER: float = 2.5 # ATR 목표가 배수
+    FEE_RATE: float = 0.0004          # 편도 수수료 0.04%
+    SLIPPAGE_RATE: float = 0.001      # 편도 슬리피지 0.10%
+    MIN_ORDER_KRW: float = 5000.0     # 최소 주문금액
+    MAX_DAILY_LOSS_PCT: float = 0.05  # 일일 손실 한도 5%
+    COOLDOWN_STOP_LOSS_SEC: float = 2700.0  # 손절 후 쿨다운 45분
+    COOLDOWN_TP_SEC: float = 900.0          # 익절 후 쿨다운 15분
+    BTC_CRASH_THRESHOLD_PCT: float = 0.015  # BTC 15분 -1.5% 급락 시 차단
 
 
 
@@ -203,23 +210,219 @@ def classify_btc_regime(
     return {"regime": "NORMAL", "drop_pct": round(recent_drop * 100.0, 2), "reason": "BTC 정상 안정세"}
 
 
+def calculate_vwap(candles: list[dict[str, Any]]) -> dict[str, Any]:
+    """Calculate Volume Weighted Average Price (VWAP) from recent candles."""
+    if not candles:
+        return {"vwap": 0.0, "disparity_pct": 0.0, "is_above": False}
+
+    cum_pv = 0.0
+    cum_vol = 0.0
+    for c in candles[:min(len(candles), 30)]:
+        h = float(c.get("high_price", 0.0))
+        l = float(c.get("low_price", 0.0))
+        close_p = float(c.get("trade_price", 0.0))
+        vol = float(c.get("candle_acc_trade_volume", 0.0))
+        typical_p = (h + l + close_p) / 3.0 if (h > 0 and l > 0 and close_p > 0) else close_p
+        cum_pv += typical_p * vol
+        cum_vol += vol
+
+    current_price = float(candles[0].get("trade_price", 0.0))
+    if cum_vol <= 0 or cum_pv <= 0:
+        return {"vwap": current_price, "disparity_pct": 0.0, "is_above": True}
+
+    vwap_val = cum_pv / cum_vol
+    disparity_pct = ((current_price - vwap_val) / vwap_val * 100.0) if vwap_val > 0 else 0.0
+    is_above = current_price >= (vwap_val * 0.998)
+
+    return {
+        "vwap": round(vwap_val, 2),
+        "disparity_pct": round(disparity_pct, 2),
+        "is_above": is_above,
+    }
+
+
+def calculate_macd_acceleration(
+    prices: list[float], fast: int = 12, slow: int = 26, signal: int = 9
+) -> dict[str, Any]:
+    """Calculate MACD Histogram Slope & Momentum Acceleration."""
+    if len(prices) < slow + signal + 3:
+        macd_base = calculate_macd(prices, fast, slow, signal)
+        return {
+            "macd": macd_base.get("macd", 0.0),
+            "signal": macd_base.get("signal", 0.0),
+            "hist": macd_base.get("hist", 0.0),
+            "slope": 0.0,
+            "is_accelerating": False,
+            "momentum_state": "NEUTRAL",
+        }
+
+    chronological = prices[::-1]
+    ema_fast_series = calculate_ema_series(chronological, fast)
+    ema_slow_series = calculate_ema_series(chronological, slow)
+
+    macd_series = [f - s for f, s in zip(ema_fast_series, ema_slow_series)]
+    signal_series = calculate_ema_series(macd_series, signal)
+
+    hist_series = [m - s for m, s in zip(macd_series, signal_series)]
+    hist_now = hist_series[-1]
+    hist_prev1 = hist_series[-2] if len(hist_series) >= 2 else hist_now
+    hist_prev2 = hist_series[-3] if len(hist_series) >= 3 else hist_prev1
+
+    slope = hist_now - hist_prev1
+    is_accelerating = (slope > 0) and (hist_now > hist_prev1 >= hist_prev2 or hist_now > 0)
+
+    if hist_now > 0 and is_accelerating:
+        state = "ACCELERATING_BULL"
+    elif hist_now > 0 and not is_accelerating:
+        state = "DECELERATING_BULL"
+    elif is_accelerating:
+        state = "RECOVERING"
+    else:
+        state = "BEARISH"
+
+    return {
+        "macd": round(macd_series[-1], 2),
+        "signal": round(signal_series[-1], 2),
+        "hist": round(hist_now, 2),
+        "slope": round(slope, 4),
+        "is_accelerating": is_accelerating,
+        "momentum_state": state,
+    }
+
+
+def calculate_composite_alpha_score(
+    candles: list[dict[str, Any]],
+    candles_1h: list[dict[str, Any]] | None = None,
+    orderbook: dict[str, Any] | None = None,
+    btc_regime: str = "NORMAL",
+) -> dict[str, Any]:
+    """Calculate 7-Factor Composite Quantitative Alpha Score (0 ~ 100 points)."""
+    if not candles or len(candles) < 20:
+        return {"total_score": 0, "allow_buy": False, "factor_breakdown": {}, "reason": "데이터 부족"}
+
+    prices = [float(c.get("trade_price", 0.0)) for c in candles]
+    current = prices[0]
+
+    # 1. MTF 1H 추세 (15점)
+    score_mtf = 0
+    mtf_reason = "1H 미제공"
+    if candles_1h and len(candles_1h) >= 20:
+        prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
+        ema20_1h = calculate_ema(prices_1h, 20)
+        if prices_1h[0] >= ema20_1h:
+            score_mtf = 15
+            mtf_reason = "1H 정배열 강세"
+        elif prices_1h[0] >= (ema20_1h * 0.990):
+            score_mtf = 10
+            mtf_reason = "1H 지지선 유지"
+        else:
+            score_mtf = 0
+            mtf_reason = "1H 역배열 약세"
+    else:
+        score_mtf = 10
+
+    # 2. VWAP 지지/돌파 (15점)
+    vwap_data = calculate_vwap(candles)
+    score_vwap = 15 if vwap_data["is_above"] and vwap_data["disparity_pct"] <= 3.5 else (8 if vwap_data["is_above"] else 0)
+
+    # 3. MACD 히스토그램 가속도 (15점)
+    macd_acc = calculate_macd_acceleration(prices)
+    if macd_acc["momentum_state"] == "ACCELERATING_BULL":
+        score_macd = 15
+    elif macd_acc["is_accelerating"]:
+        score_macd = 12
+    elif macd_acc["hist"] > 0:
+        score_macd = 8
+    else:
+        score_macd = 0
+
+    # 4. RSI 골든존 (15점)
+    rsi_val = calculate_rsi(prices, 14)
+    if 45.0 <= rsi_val <= 65.0:
+        score_rsi = 15
+    elif 38.0 <= rsi_val <= 72.0:
+        score_rsi = 10
+    else:
+        score_rsi = 0
+
+    # 5. 볼린저 밴드 중심선 돌파 및 밴드 확장 (15점)
+    bb = calculate_bollinger_bands(prices, 20, 2.0)
+    ma5 = sum(prices[:5]) / 5.0
+    if ma5 > bb["middle"] and (0.30 <= bb["pct_b"] <= 0.85):
+        score_bb = 15
+    elif ma5 >= bb["middle"] * 0.995:
+        score_bb = 10
+    else:
+        score_bb = 0
+
+    # 6. 수급 / 체결강도 및 호가창 잔량비 (15점)
+    score_orderflow = 10  # 기본
+    if orderbook:
+        total_ask = float(orderbook.get("total_ask_size", 1.0))
+        total_bid = float(orderbook.get("total_bid_size", 1.0))
+        ratio = total_bid / total_ask if total_ask > 0 else 1.0
+        if ratio >= 1.4:
+            score_orderflow = 15
+        elif ratio < 0.6:
+            score_orderflow = 3
+
+    # 7. 볼륨 스파이크 (10점)
+    vols = [float(c.get("candle_acc_trade_volume", 0.0)) for c in candles]
+    avg_vol_20 = (sum(vols[1:21]) / 20.0) if len(vols) >= 21 else (vols[0] if vols else 1.0)
+    current_vol = vols[0] if vols else 0.0
+    vol_ratio = (current_vol / avg_vol_20) if avg_vol_20 > 0 else 1.0
+    if vol_ratio >= 2.0 and current >= float(candles[0].get("opening_price", current)):
+        score_vol = 10
+    elif vol_ratio >= 1.2:
+        score_vol = 7
+    else:
+        score_vol = 4
+
+    total_score = score_mtf + score_vwap + score_macd + score_rsi + score_bb + score_orderflow + score_vol
+    allow_buy = (total_score >= 65) and (btc_regime.upper() not in ("CRASH", "BEAR_VOLATILE"))
+
+    breakdown = {
+        "mtf_score": score_mtf,
+        "vwap_score": score_vwap,
+        "macd_score": score_macd,
+        "rsi_score": score_rsi,
+        "bollinger_score": score_bb,
+        "orderflow_score": score_orderflow,
+        "volume_score": score_vol,
+    }
+
+    return {
+        "total_score": total_score,
+        "allow_buy": allow_buy,
+        "factor_breakdown": breakdown,
+        "vwap": vwap_data["vwap"],
+        "macd_state": macd_acc["momentum_state"],
+        "rsi": rsi_val,
+        "pct_b": bb["pct_b"],
+        "reason": f"알파 스코어 {total_score}/100점 ({'🟢 승인' if allow_buy else '⚪ 미달'}) | MTF:{score_mtf} VWAP:{score_vwap} MACD:{score_macd} RSI:{score_rsi} BB:{score_bb}",
+    }
+
+
 def entry_signal(
     candles: list[dict[str, Any]],
     candles_1h: list[dict[str, Any]] | None = None,
     btc_regime: str = "NORMAL",
+    orderbook: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Deterministic entry rule with MTF trend alignment, 3-tier BTC regime, and dynamic ATR risk bounds.
-
-    - 5M Signal: MA5 > MA20, RSI 38~72 (RISK_OFF: 42~65), Bollinger %B 0.20~0.88 (RISK_OFF: 0.30~0.75)
-    - 1H MTF Filter: 1H Close >= 1H EMA20 * 0.990 (if 1H candles provided)
-    - Regime Filter: Reject new entries if btc_regime == 'CRASH'
-    """
+    """Deterministic entry rule with MTF trend alignment, 7-factor alpha score, and dynamic ATR risk bounds."""
     if len(candles) < 25:
         return {"allow_buy": False, "reason": "캔들 데이터 부족"}
 
     regime_upper = btc_regime.upper()
     if regime_upper in ("CRASH", "BEAR_VOLATILE"):
         return {"allow_buy": False, "reason": f"BTC 시장 레짐 경보 ({btc_regime})"}
+
+    alpha_res = calculate_composite_alpha_score(
+        candles=candles,
+        candles_1h=candles_1h,
+        orderbook=orderbook,
+        btc_regime=btc_regime,
+    )
 
     prices = [float(c.get("trade_price", 0.0)) for c in candles]
     current = prices[0]
@@ -229,38 +432,47 @@ def entry_signal(
     pct_b = bands["pct_b"]
     rsi = calculate_rsi(prices)
 
-    # 1. 5분봉 정량 조건 (적극적 매매를 위한 유연한 모멘텀/눌림목 범위)
+    # 1. 5분봉 정량 조건
     rsi_min, rsi_max = (42.0, 65.0) if regime_upper == "RISK_OFF" else (38.0, 72.0)
     pct_b_min, pct_b_max = (0.30, 0.75) if regime_upper == "RISK_OFF" else (0.20, 0.88)
 
     signal_5m = ma5 > ma20 and (rsi_min <= rsi <= rsi_max) and (pct_b_min <= pct_b <= pct_b_max)
 
-    # 2. 1시간봉 MTF 추세 필터 (옵션/제공 시)
+    # 2. 1시간봉 MTF 추세 필터
     mtf_allowed = True
     mtf_reason = "1H MTF 미제공"
     if candles_1h and len(candles_1h) >= 20:
         prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
         ema20_1h = calculate_ema(prices_1h, 20)
         current_1h = prices_1h[0]
-        mtf_allowed = current_1h >= (ema20_1h * 0.990)  # 1H EMA20 부근 지지 또는 상단
+        mtf_allowed = current_1h >= (ema20_1h * 0.990)
         mtf_reason = f"1H {current_1h:.1f} {'>=' if mtf_allowed else '<'} EMA20 {ema20_1h:.1f}"
 
-    allowed = signal_5m and mtf_allowed
+    allowed = (signal_5m and mtf_allowed) or (alpha_res["allow_buy"] and mtf_allowed)
 
     # 3. ATR 기반 동적 손익비 산출
     atr_data = calculate_atr(candles, period=14)
     volatility = atr_data["atr"]
     atr_pct = atr_data["atr_pct"]
 
-    # 목표가: 최소 +2.0% 또는 ATR 1.8배 (빠른 익절 및 회전율 향상)
     target_offset = max(current * 0.020, volatility * 1.8)
     target_price = current + target_offset
 
-    # 손절가: 최소 -1.5% 또는 ATR 1.2배 (수수료 및 1틱 휩소 방지, 손익비 >= 1.3 보장)
     stop_offset = max(current * 0.015, volatility * 1.2)
     stop_loss = current - stop_offset
 
+    checklist_details = {
+        "alpha_score": alpha_res["total_score"],
+        "factor_breakdown": alpha_res["factor_breakdown"],
+        "ma_alignment": {"pass": ma5 > ma20, "ma5": round(ma5, 2), "ma20": round(ma20, 2)},
+        "rsi_range": {"pass": (rsi_min <= rsi <= rsi_max), "value": rsi, "min": rsi_min, "max": rsi_max},
+        "bollinger_pct_b": {"pass": (pct_b_min <= pct_b <= pct_b_max), "value": round(pct_b, 3), "min": pct_b_min, "max": pct_b_max},
+        "mtf_1h_trend": {"pass": mtf_allowed, "detail": mtf_reason},
+        "btc_regime": {"pass": regime_upper not in ("CRASH", "BEAR_VOLATILE"), "regime": btc_regime},
+    }
+
     reasons = [
+        f"알파스코어 {alpha_res['total_score']}점",
         f"MA5 {'>' if ma5 > ma20 else '<='} MA20",
         f"RSI {rsi:.1f}",
         f"%B {pct_b:.2f}",
@@ -277,5 +489,7 @@ def entry_signal(
         "atr_pct": atr_pct,
         "rsi": rsi,
         "pct_b": pct_b,
+        "alpha_score": alpha_res["total_score"],
         "risk_reward_ratio": round(target_offset / stop_offset, 2) if stop_offset > 0 else 1.5,
+        "checklist_details": checklist_details,
     }

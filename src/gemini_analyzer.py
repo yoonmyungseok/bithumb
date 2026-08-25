@@ -11,9 +11,12 @@ import requests
 from strategy_engine import (
     calculate_atr as se_calculate_atr,
     calculate_bollinger_bands as se_calculate_bollinger_bands,
+    calculate_composite_alpha_score as se_calculate_composite_alpha_score,
     calculate_ema as se_calculate_ema,
     calculate_macd as se_calculate_macd,
+    calculate_macd_acceleration as se_calculate_macd_acceleration,
     calculate_rsi as se_calculate_rsi,
+    calculate_vwap as se_calculate_vwap,
 )
 
 logger = logging.getLogger(__name__)
@@ -21,13 +24,14 @@ logger = logging.getLogger(__name__)
 
 class GeminiAnalyzer:
     """
-    Google Gemini API 연동 프로 퀀트 트레이딩 분석 엔진 v4.0
+    Google Gemini API 연동 프로 퀀트 트레이딩 분석 엔진 v5.0
+    - [7대 복합 팩터 앙상블]: MTF 1H + VWAP + MACD 가속도 + RSI + 볼린저 + 수급/오더북 + 볼륨 스파이크
     - [MTF 3중 정렬]: 1시간봉 대세 추세 + 5분봉 정밀 진입 타점 동시 분석
+    - [VWAP 기관 수급 & MACD 가속도]: 스마트 머니 평단가 지지 및 모멘텀 확장 구간 정밀 포착
     - [호가창 & 체결강도 수급 분석]: 매수/매도 잔량비 + 실시간 매수체결강도(허매수벽 트랩 회피)
     - [ATR 변동성 & 이격도 퀀트]: MA5/MA20/MA60 이격도 + ATR 기반 동적 익절/손절선 산출
     - [대장주(BTC) 거시 환경 주입]: 비트코인 급락 위험 및 거시 추세 연동
-    - [5대 정량적 매수 승인 체크리스트]: 5개 핵심 퀀트 조건 중 4개 이상 충족 시에만 BUY 승인
-    - [안정형 모델 라우터]: Rate Limit 429 방지를 위해 프로덕션 안정 모델 우선 배치
+    - [안정형 모델 라우터 & 무중단 로컬 퀀트 폴백]: Rate Limit 429 시 100% 로컬 앙상블 자율 전환
     """
 
     # 1. 안정적인 프로덕션 공식 Flash 모델 군 (쿼터 효율 최고인 Lite 우선 배치)
@@ -62,6 +66,16 @@ class GeminiAnalyzer:
         self, prices: list[float], fast: int = 12, slow: int = 26, signal: int = 9
     ) -> dict[str, Any]:
         return se_calculate_macd(prices, fast, slow, signal)
+
+    @staticmethod
+    def calculate_macd_acceleration(
+        prices: list[float], fast: int = 12, slow: int = 26, signal: int = 9
+    ) -> dict[str, Any]:
+        return se_calculate_macd_acceleration(prices, fast, slow, signal)
+
+    @staticmethod
+    def calculate_vwap(candles: list[dict[str, Any]]) -> dict[str, Any]:
+        return se_calculate_vwap(candles)
 
     @staticmethod
     def calculate_atr(candles: list[dict[str, Any]], period: int = 14) -> dict[str, float]:
@@ -255,61 +269,86 @@ class GeminiAnalyzer:
         dynamic_sl: float,
         is_holding: bool,
         pnl_pct: float,
+        vwap_info: dict[str, Any] | None = None,
+        macd_acc: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
-        AI API 소진(429) 시 100% 자립 작동하는 정량적 퀀트 수학 알고리즘 엔진
+        AI API 소진(429) 시 100% 자립 작동하는 7대 복합 팩터 앙상블 퀀트 엔진
         """
-        score = 0
+        alpha_score = 0
         reasons = []
 
-        # 1. MTF 1시간봉 추세
+        # 1. MTF 1시간봉 추세 (15점)
         if mtf_1h.get("trend") != "BEARISH":
-            score += 1
-            reasons.append("1h 추세 양호")
+            alpha_score += 15
+            reasons.append("1H 추세 양호(+15)")
         else:
-            reasons.append("1h 하락장")
+            reasons.append("1H 하락장(+0)")
 
-        # 2. 5분봉 모멘텀 RSI 38 ~ 72
-        if 38.0 <= rsi_val <= 72.0:
-            score += 1
-            reasons.append(f"RSI 적정({rsi_val})")
+        # 2. VWAP 지지/돌파 (15점)
+        if vwap_info and vwap_info.get("is_above", False):
+            alpha_score += 15
+            reasons.append("VWAP 상향 지지(+15)")
         else:
-            reasons.append(f"RSI 이탈({rsi_val})")
+            alpha_score += 5
+            reasons.append("VWAP 보통(+5)")
 
-        # 3. MA20 지지/모멘텀 이격도 & 볼린저 위치
+        # 3. MACD 히스토그램 가속도 (15점)
+        if macd_acc and macd_acc.get("is_accelerating", False):
+            alpha_score += 15
+            reasons.append(f"MACD 가속({macd_acc.get('momentum_state', '')})(+15)")
+        else:
+            alpha_score += 5
+            reasons.append("MACD 중립(+5)")
+
+        # 4. 5분봉 모멘텀 RSI 38 ~ 72 (15점)
+        if 42.0 <= rsi_val <= 65.0:
+            alpha_score += 15
+            reasons.append(f"RSI 골든존({rsi_val})(+15)")
+        elif 38.0 <= rsi_val <= 72.0:
+            alpha_score += 10
+            reasons.append(f"RSI 적정({rsi_val})(+10)")
+        else:
+            reasons.append(f"RSI 이탈({rsi_val})(+0)")
+
+        # 5. MA20 지지/모멘텀 이격도 & 볼린저 위치 (15점)
         pct_b = bb.get("pct_b", 0.5)
         if 97.5 <= disparity_ma20 <= 103.5 and pct_b <= 0.88:
-            score += 1
-            reasons.append(f"이격/볼린저 적정(이격 {disparity_ma20:.1f}%, %B {pct_b:.2f})")
+            alpha_score += 15
+            reasons.append(f"이격/볼린저 적정(%B {pct_b:.2f})(+15)")
         else:
-            reasons.append(f"이격도 과열/이탈({disparity_ma20:.1f}%)")
+            reasons.append(f"이격도 과열/이탈({disparity_ma20:.1f}%)(+0)")
 
-        # 4. 수급 체결강도 & 호가 스프레드
+        # 6. 수급 체결강도 & 호가 스프레드 (15점)
         spread = ob_info.get("spread_pct", 0.0)
         t_power = trade_strength.get("trade_power_pct", 100.0)
-        if spread <= 0.6 and t_power >= 95.0:
-            score += 1
-            reasons.append(f"수급 양호(체결강도 {t_power}%, 스프레드 {spread}%)")
+        if spread <= 0.6 and t_power >= 110.0:
+            alpha_score += 15
+            reasons.append(f"수급 압도(체결강도 {t_power}%)(+15)")
+        elif spread <= 0.6 and t_power >= 90.0:
+            alpha_score += 10
+            reasons.append(f"수급 양호(체결강도 {t_power}%)(+10)")
         else:
-            reasons.append(f"수급 미달(체결강도 {t_power}%, 스프레드 {spread}%)")
+            reasons.append(f"수급 미달({t_power}%)(+0)")
 
-        # 5. 기대 손익비
-        reward = dynamic_tp - current_price
-        risk = current_price - dynamic_sl
-        if risk > 0 and (reward / risk) >= 1.2:
-            score += 1
-            reasons.append("손익비 적정")
+        # 7. 거래량 / 볼륨 스파이크 (10점)
+        if vol_info.get("is_spike", False):
+            alpha_score += 10
+            reasons.append("볼륨 폭발(+10)")
+        else:
+            alpha_score += 5
+            reasons.append("거래량 평이(+5)")
 
-        # 판정 (5개 중 3개 이상 충족 시 적극 BUY)
+        # 판정 (총 100점 만점 중 65점 이상 충족 시 적극 BUY)
         if not is_holding:
-            if score >= 3:
+            if alpha_score >= 65:
                 action = "BUY"
                 alloc_pct = 0.5
-                reason = f"⚡ [로컬 퀀트 알고리즘 BUY] 5대 조건 중 {score}개 충족: {', '.join(reasons[:3])}"
+                reason = f"⚡ [로컬 퀀트 앙상블 BUY] 알파 스코어 {alpha_score}/100점: {', '.join(reasons[:3])}"
             else:
                 action = "HOLD"
                 alloc_pct = 0.0
-                reason = f"⚪ [로컬 퀀트 알고리즘 HOLD] 조건 미달({score}/5개): {', '.join(reasons[:2])}"
+                reason = f"⚪ [로컬 퀀트 앙상블 HOLD] 알파 스코어 미달({alpha_score}/100점): {', '.join(reasons[:2])}"
         else:
             # 보유 중일 때
             if rsi_val >= 75.0 or disparity_ma20 >= 105.0:
@@ -329,6 +368,7 @@ class GeminiAnalyzer:
             "stop_loss": dynamic_sl,
             "alloc_pct": alloc_pct,
             "reason": reason,
+            "alpha_score": alpha_score,
         }
 
     def analyze(
@@ -346,7 +386,7 @@ class GeminiAnalyzer:
         whale_context: str = "최근 5분간 고래 대량 체결 없음 (수급 평온)",
     ) -> dict[str, Any]:
         """
-        [MTF 3중 정렬 + 호가창 수급 + 실시간 고래 수급 + 체결강도 + ATR 변동성 + 자가학습 메모리] 퀀트 분석 엔진 v4.2
+        [7대 팩터 앙상블 + VWAP + MACD 가속도 + MTF + 호가수급 + ATR 변동성] 퀀트 분석 엔진 v5.0
         """
         if not self.api_key:
             logger.warning("Gemini API Key가 설정되지 않았습니다.")
@@ -355,10 +395,12 @@ class GeminiAnalyzer:
         currency = market.split("-")[-1] if "-" in market else market
         close_prices = [float(c.get("trade_price", 0)) for c in candles if "trade_price" in c]
 
-        # 1. 종합 기술 지표 연산
+        # 1. 종합 기술 지표 및 신규 알파 팩터 연산
         rsi_val = self.calculate_rsi(close_prices, 14) if close_prices else 50.0
         bb = self.calculate_bollinger_bands(close_prices, 20, 2.0)
         macd = self.calculate_macd(close_prices, 12, 26, 9)
+        macd_acc = self.calculate_macd_acceleration(close_prices, 12, 26, 9)
+        vwap_info = self.calculate_vwap(candles)
         vol_info = self.analyze_volume_spike(candles)
         sr_levels = self.analyze_support_resistance(candles)
         candle_pattern = self.analyze_candle_patterns(candles)
@@ -413,23 +455,25 @@ class GeminiAnalyzer:
             logger.warning(f"[{market}] 모든 Gemini AI 모델이 429 쿨다운 상태입니다 ➜ [로컬 퀀트 알고리즘 엔진]으로 즉시 자동 전환")
             return self._run_local_quant_engine(
                 current_price, mtf_1h, disparity_ma20, rsi_val, bb, vol_info, candle_pattern,
-                trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct
+                trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct,
+                vwap_info=vwap_info, macd_acc=macd_acc
             )
 
         candidate_models = available_models[:2]
 
-        # 6. 기관 퀀트 헤지펀드 시스템 프롬프트 v4.2
+        # 6. 기관 퀀트 헤지펀드 시스템 프롬프트 v5.0
         memory_section = f"\n{trade_memory_context}\n" if trade_memory_context else ""
 
         prompt = f"""당신은 월스트리트 헤지펀드 출신의 수석 암호화폐 퀀트 트레이더이자 리스크 관리 책임자(CRO)입니다.
-제공된 실시간 {market}의 [BTC 거시 환경], [MTF 상위 추세], [호가창 & 실시간 고래 체결 수급], [5분봉 퀀트 지표]를 종합 분석하여 최적의 트레이딩 지침을 JSON으로 제시하세요.
+제공된 실시간 {market}의 [BTC 거시 환경], [MTF 상위 추세], [VWAP 기관 수급], [MACD 가속도], [호가창 & 고래 수급], [5분봉 퀀트 지표]를 종합 분석하여 최적의 트레이딩 지침을 JSON으로 제시하세요.
 
 ### [0. 대장주(BTC) 거시 시장 환경]
 - 비트코인 시장 상태: {btc_context}
 ※ 알트코인은 비트코인의 단기 급락세에 매우 취약하므로, BTC 급락 위험 감지 시에는 신규 매수를 전면 금지하고 HOLD하세요.
 
-### [1. MTF(멀티 타임프레임) 상위 추세 & 호가창/고래 체결 수급 데이터]
+### [1. MTF 상위 추세 & VWAP 기관 수급 & 호가창 수급 데이터]
 - 1시간봉 대세 방향: {mtf_1h['desc']}
+- VWAP(거래량가중평균가): {vwap_info['vwap']:,.2f} KRW (현재가 대비 이격: {vwap_info['disparity_pct']:+.2f}%, {'🟢 VWAP 상단 지지' if vwap_info['is_above'] else '🔴 VWAP 하단 저항'})
 - 실시간 호가창 잔량: {ob_info['imbalance_desc']}
 - 실시간 실질 체결강도: {trade_strength['desc']}
 - 실시간 고래(3,000만 원↑) 수급 흐름: {whale_context}
@@ -440,7 +484,8 @@ class GeminiAnalyzer:
 - 캔들 패턴: {candle_pattern}
 - 이동평균선: MA5={ma5:,.2f} | MA20={ma20:,.2f} | MA60={ma60:,.2f}
 - MA20 이격도(Disparity): {disparity_ma20:.2f}% ({'⚠️ 과열 이격' if disparity_ma20 >= 104.0 else ('🟢 눌림목 적정' if 98.0 <= disparity_ma20 <= 102.5 else '과매도 이격')})
-- 모멘텀(RSI 14): {rsi_val} | MACD 상태: {macd['trend']} (Line={macd['macd']} | Signal={macd['signal']})
+- 모멘텀(RSI 14): {rsi_val}
+- MACD 가속도: 상태={macd_acc['momentum_state']} | Slope={macd_acc['slope']} | Hist={macd_acc['hist']} ({'🟢 모멘텀 확장 가속' if macd_acc['is_accelerating'] else '모멘텀 둔화/하락'})
 - 볼린저 밴드(20, 2.0): 상단={bb['upper']:,.2f} | 중심={bb['middle']:,.2f} | 하단={bb['lower']:,.2f} | 위치(%B)={bb['pct_b']}
 - 거래량 상태: 현재={vol_info['current_vol']} | 5봉평균={vol_info['avg_vol_5']} ({vol_info['vol_ratio']}배 {'🚨 급증 폭발' if vol_info['is_spike'] else '평이'})
 - 최근 주요 레벨: 전고점 저항={sr_levels['resistance_high']:,.2f} | 전저점 지지={sr_levels['support_low']:,.2f}
@@ -451,13 +496,15 @@ class GeminiAnalyzer:
 - 보유 여부: {'🔒 [보유 중]' if is_holding else '⚪ [미보유 (현금)]'} | 가용 원화: {krw_balance:,.0f} KRW
 - 보유 수량: {coin_balance:.8f} {currency} (평가: {coin_value:,.0f} KRW) | 평단가: {avg_buy_price:,.2f} KRW (손익률: {pnl_pct:+.2f}%)
 
-### [4. 5대 정량적 매수 승인 체크리스트 (5개 조건 중 3개 이상 충족 시 적극 BUY 승인)]
-신규 매수(BUY) 승인을 내리기 위해서는 아래 5가지 조건 중 **3개 이상을 충족**하면 적극적으로 진입을 권장합니다. 극단적 고점 과열이 아니라면 **"상승 모멘텀 지속형 돌파"** 및 **"눌림목 지지 반등(Pullback Bounce)"** 모두 진입을 허용합니다:
-1. [MTF 추세 정렬]: 1시간봉 추세가 '대세 하락장'이 아닐 것 (1시간봉 하락장 속 5분봉 일시 반등은 데드캣 속임수이므로 매수 금지).
-2. [모멘텀 범위]: 5분봉 RSI가 38 ~ 72 사이일 것 (RSI 72 이하의 건강한 상승 모멘텀 및 눌림목 반등 적극 수용).
-3. [이격도 & 볼린저]: MA20 이격도가 97.5% ~ 103.5% 이내이며, %B <= 0.88 (모멘텀 돌파 및 5분봉 MA20 지지선 부근 진입 허용).
-4. [캔들 형태 & 수급 & 스프레드]: 캔들 윗꼬리 비율이 35% 이하이며, 호가 갭(스프레드) <= 0.6% (유동성 양호), 실시간 고래 순매수 유입 또는 실질 체결강도 95% 이상 확인.
-5. [기대 손익비]: (목표가 - 진입가) >= 1.2 * (진입가 - 손절가) 수학적 보장.
+### [4. 7대 복합 팩터 앙상블 매수 승인 규칙 (알파 스코어 65점 이상 시 BUY 승인)]
+신규 매수(BUY) 승인을 내리기 위해서는 아래 7대 팩터 종합 점수가 **65점 이상**이어야 합니다:
+1. [MTF 1H 추세] 1시간봉 대세 하락장이 아닐 것.
+2. [VWAP 기관 수급] 현재가가 VWAP 상단에 안착 지지 또는 돌파할 것.
+3. [MACD 가속도] 히스토그램 기울기가 양의 방향으로 가속 확장 중일 것.
+4. [RSI 골든존] 5분봉 RSI가 38 ~ 72 사이일 것 (RSI 45~65 최적).
+5. [볼린저 밴드 & 이격] MA20 이격도 97.5%~103.5% 및 %B <= 0.88.
+6. [수급 & 호가창] 호가 갭 <= 0.6%, 체결강도 90% 이상 또는 고래 유입.
+7. [기대 손익비] (목표가 - 진입가) >= 1.2 * (진입가 - 손절가) 수학적 보장.
 
 ※ 극단적인 과열(RSI > 75, 이격도 > 105%)이나 1시간봉 하락 추세가 아니라면, 유망한 상승 모멘텀 또는 지지 반등 시 적극적으로 BUY를 결정하세요.
 

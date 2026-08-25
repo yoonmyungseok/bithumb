@@ -54,16 +54,37 @@ def find_bot_processes(exchange: str = "bithumb") -> list[str]:
 
 def status_action(exchange: str = "bithumb"):
     ex_name = "업비트 (Upbit)" if exchange.lower() == "upbit" else "빗썸 (Bithumb)"
+    web_port = 7980 if exchange.lower() == "upbit" else 7979
+    data_subdir = "upbit" if exchange.lower() == "upbit" else ""
+    hb_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", data_subdir)
+    hb_file = os.path.join(hb_dir, ".heartbeat")
+
     print("======================================================")
-    print(f" [{ex_name} AI Pro Quant Trading Bot 실행 상태] ")
-    print("======================================================\n")
+    print(f" [{ex_name} AI Pro Quant Trading Bot 실행 및 진단 상태] ")
+    print("======================================================")
 
     pids = find_bot_processes(exchange)
     if pids:
         for pid in pids:
-            print(f"🟢 [{ex_name} 봇 정상 가동 중] PID: {pid}")
+            print(f"🟢 [{ex_name} 봇 가동 중] PID: {pid}")
     else:
         print(f"⚪ [중지됨] 현재 실행 중인 {ex_name} 봇 프로세스가 없습니다.")
+
+    # 하트비트 파일 진단
+    if os.path.exists(hb_file):
+        try:
+            import json
+            with open(hb_file, "r", encoding="utf-8") as f:
+                hb_data = json.load(f)
+            hb_age = time.time() - float(hb_data.get("timestamp", 0.0))
+            hb_status = "🟢 신선 (정상)" if hb_age < 600 else f"🔴 지연 ({hb_age/60:.1f}분 전 갱신)"
+            print(f"💓 [하트비트 상태] {hb_status} (최근 갱신: {hb_data.get('datetime', 'N/A')})")
+        except Exception:
+            print("💓 [하트비트 상태] 파일 읽기 실패")
+    else:
+        print("💓 [하트비트 상태] ⚠️ 하트비트 파일 없음")
+
+    print(f"🌐 [웹 대시보드 URL] http://localhost:{web_port}")
     print()
 
 

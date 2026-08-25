@@ -329,19 +329,32 @@ class BithumbAPI:
         if not uuid_str and not client_order_id:
             raise ValueError("주문 UUID 또는 client_order_id가 필요합니다.")
         
-        # v2 endpoint with fallback to v1
-        params = {"order_id": uuid_str} if uuid_str else {"client_order_id": client_order_id}
-        try:
-            data = self._request("GET", "/order", params=params, api_version="v2")
-        except (requests.exceptions.RequestException, KeyError, ValueError):
-            v1_params = {"uuid": uuid_str} if uuid_str else {"client_order_id": client_order_id}
-            data = self._request("GET", "/order", params=v1_params, api_version="v1")
+        # 빗썸 v1 개별 주문 단건 조회 표준 규격: GET /v1/order?uuid=... or identifier=...
+        params: dict[str, Any] = {}
+        if uuid_str:
+            params["uuid"] = uuid_str
+        if client_order_id:
+            params["identifier"] = client_order_id
 
-        if isinstance(data, dict):
-            # 필드 정규화
-            data.setdefault("uuid", data.get("order_id", ""))
-            data.setdefault("state", data.get("status", ""))
-            return data
+        try:
+            data = self._request("GET", "/order", params=params, api_version="v1")
+            if isinstance(data, dict):
+                data.setdefault("uuid", data.get("order_id", uuid_str))
+                data.setdefault("state", data.get("status", ""))
+                return data
+        except (requests.exceptions.RequestException, KeyError, ValueError) as exc:
+            logger.debug("빗썸 단건 주문(v1) 조회 실패 (%s): %s", uuid_str or client_order_id, exc)
+
+        # Fallback: 대기 주문 목록에서 검색
+        try:
+            open_orders = self.get_open_orders()
+            for o in open_orders:
+                if (uuid_str and (o.get("uuid") == uuid_str or o.get("order_id") == uuid_str)) or (client_order_id and o.get("client_order_id") == client_order_id):
+                    o.setdefault("state", "wait")
+                    return o
+        except Exception:
+            pass
+
         return {}
 
     def create_order(

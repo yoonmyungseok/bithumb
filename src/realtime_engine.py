@@ -5,7 +5,7 @@ import time
 from typing import Any
 
 from bithumb_api import BithumbAPI
-from order_safety import CooldownManager, OrderJournal, SafeOrderExecutor
+from order_safety import CooldownManager, OrderFillProcessor, OrderJournal, OrderStatus, SafeOrderExecutor
 from risk_manager import DailyRiskManager, TrailingStopTracker, get_kst_now_str
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
@@ -43,6 +43,14 @@ class RealtimeRiskEngine:
         self.min_order_krw = min_order_krw
         self.latest_strategies = latest_strategies if latest_strategies is not None else {}
         self.sheets = sheets
+        self.fill_processor = OrderFillProcessor(
+            order_journal=self.order_journal,
+            risk_manager=self.risk_manager,
+            trade_memory=self.trade_memory,
+            trailing_tracker=self.trailing_tracker,
+            telegram=self.telegram,
+            sheets=self.sheets,
+        )
         self._lock = threading.Lock()
         self._last_trigger: dict[str, float] = {}
         self._sl_hit_count: dict[str, int] = {}
@@ -185,89 +193,97 @@ class RealtimeRiskEngine:
         sheet_status_reason: str,
         now_str: str,
     ) -> dict[str, Any]:
-        """주문 접수 후 거래소 체결 조회를 통해 실제 체결가/수수료 기반으로 손익 및 거래 기록 확정 (P0-1, P0-3)"""
-        exec_price = fallback_price
-        exec_vol = fallback_vol
-        paid_fee = 0.0
+        """주문 접수 후 거래소 체결 조회를 통해 실제 체결가/수수료 기반으로만 손익 확정 (가상 체결/손익 완전 제거, P0-1)"""
         order_uuid = order_res.get("uuid") or order_res.get("order_id") if isinstance(order_res, dict) else None
         client_order_id = order_res.get("client_order_id") if isinstance(order_res, dict) else None
+        if not client_order_id and order_uuid:
+            ord_obj = self.order_journal.get_order_by_uuid(order_uuid)
+            client_order_id = ord_obj.get("client_order_id") if ord_obj else None
 
-        # 1. 즉시 체결 내역 조회 시도 (최대 1~2회)
+        identifier = client_order_id or order_uuid
+        if not identifier:
+            return {"confirmed": False, "status": OrderStatus.UNKNOWN, "filled_delta": 0.0, "pnl_krw": 0.0, "message": "주문 식별자 부재"}
+
+        exec_price = 0.0
+        exec_vol = 0.0
+        rem_vol = 0.0
+        paid_fee = 0.0
+        raw_state = "wait"
+
+        # 1. 거래소 체결 내역 조회 시도
         if order_uuid:
-            try:
-                time.sleep(0.1)  # 시장가 체결 틱 반영 대기
-                remote = exchange.get_order(order_uuid)
-                if isinstance(remote, dict):
-                    trades = remote.get("trades", [])
-                    remote_exec_vol = float(remote.get("executed_volume", 0.0) or 0.0)
-                    remote_fee = float(remote.get("paid_fee", 0.0) or 0.0)
-                    if trades:
-                        total_funds = sum(float(t.get("price", 0.0)) * float(t.get("volume", 0.0)) for t in trades)
-                        total_v = sum(float(t.get("volume", 0.0)) for t in trades)
-                        if total_v > 0:
-                            exec_price = total_funds / total_v
-                            exec_vol = total_v
-                    elif remote_exec_vol > 0 and float(remote.get("price", 0.0) or 0.0) > 0:
-                        exec_price = float(remote.get("price", 0.0))
-                        exec_vol = remote_exec_vol
-                    if remote_fee > 0:
-                        paid_fee = remote_fee
-            except Exception as e:
-                logger.debug(f"[{market}] 청산 주문 즉시 조회 예외 (fallback 가격 사용): {e}")
+            for attempt in range(2):
+                try:
+                    time.sleep(0.05 * (attempt + 1))
+                    remote = exchange.get_order(order_uuid)
+                    if isinstance(remote, dict):
+                        raw_state = str(remote.get("state") or remote.get("status") or "").lower()
+                        remote_exec_vol = float(remote.get("executed_volume", 0.0) or 0.0)
+                        remote_fee = float(remote.get("paid_fee", 0.0) or 0.0)
+                        rem_vol = float(remote.get("remaining_volume", 0.0) or 0.0)
+                        trades = remote.get("trades", [])
+                        if trades:
+                            total_funds = sum(float(t.get("price", 0.0)) * float(t.get("volume", 0.0)) for t in trades)
+                            total_v = sum(float(t.get("volume", 0.0)) for t in trades)
+                            if total_v > 0:
+                                exec_price = total_funds / total_v
+                                exec_vol = total_v
+                        elif remote_exec_vol > 0 and float(remote.get("price", 0.0) or 0.0) > 0:
+                            exec_price = float(remote.get("price", 0.0))
+                            exec_vol = remote_exec_vol
+                        if remote_fee > 0:
+                            paid_fee = remote_fee
 
-        # 2. 실제 체결가 기준 손익 계산
-        proceeds = (exec_price * exec_vol) - paid_fee
-        cost_basis = avg_buy_price * exec_vol
-        pnl_krw = proceeds - cost_basis
-        pnl_pct = ((exec_price - avg_buy_price) / avg_buy_price * 100.0) if avg_buy_price > 0 else 0.0
-        is_win = pnl_krw > 0
+                        if exec_vol > 0:
+                            break
+                except Exception as e:
+                    logger.debug(f"[{market}] 청산 주문 즉시 조회 예외: {e}")
 
-        # 3. 리스크 매니저 및 거래 메모리 기록 (P0-3 체결 기반)
-        self.risk_manager.add_realized_trade(pnl_krw, is_win=is_win)
-        self.trade_memory.record_completed_trade(
-            market=market,
-            side=side_label,
-            entry_price=avg_buy_price,
-            exit_price=exec_price,
-            filled_volume=exec_vol,
+        # 2. 미체결 또는 조회 실패 시: 절대로 가상 손익을 기록하지 않음 (P0-1)
+        if exec_vol <= 0:
+            logger.info("⏳ [%s] 주문 접수 완료 (ACK/OPEN). 실제 체결 대기 중 (가상 손익 미생성)", market)
+            return {
+                "confirmed": False,
+                "status": OrderStatus.OPEN if raw_state in ("wait", "watch") else OrderStatus.ACKNOWLEDGED,
+                "filled_delta": 0.0,
+                "pnl_krw": 0.0,
+                "message": "체결 확인 대기",
+            }
+
+        # 3. 실제 체결 확인된 경우에만 공통 체결 처리기 호출
+        order_status = OrderStatus.FILLED if rem_vol == 0.0 or raw_state == "done" else OrderStatus.PARTIALLY_FILLED
+        fill_res = self.fill_processor.process_order_fill(
+            order_identifier=identifier,
+            status=order_status,
+            executed_volume=exec_vol,
+            avg_price=exec_price,
             fee=paid_fee,
-            slippage=abs(exec_price - fallback_price),
-            pnl_pct=pnl_pct,
-            pnl_krw=pnl_krw,
-            reason=exit_reason,
-            timestamp=now_str,
-            position_id=market,
-            order_status="FILLED",
+            remaining_volume=rem_vol,
+            exchange_uuid=order_uuid,
+            exchange_state=raw_state,
+            exit_reason=exit_reason,
+            avg_buy_price=avg_buy_price,
+            korean_name=korean_name,
+            timestamp_str=now_str,
+            expected_price=fallback_price,
         )
 
-        # 4. 저널 상태 업데이트
-        if client_order_id:
-            self.order_journal.mark(
-                client_order_id,
-                "FILLED",
-                executed_volume=exec_vol,
-                avg_price=exec_price,
-                fee=paid_fee,
-            )
-
-        # 5. 구글 시트 기록
-        if self.sheets:
+        # 4. 구글 시트 기록 (실제 체결 확인 시에만 발송)
+        if self.sheets and fill_res.get("fill_delta", 0.0) > 0:
             try:
                 self.sheets.append_trade_log({
                     "Timestamp": now_str,
                     "Korean_Name": korean_name,
                     "Market": market,
-                    "Order_UUID": sheet_order_uuid,
+                    "Order_UUID": sheet_order_uuid or order_uuid or identifier,
                     "Side": "SELL",
                     "Order_Type": "MARKET",
                     "Price": exec_price,
                     "Volume": f"{exec_vol:.6f}",
                     "Total_KRW": int(exec_vol * exec_price),
-                    "Realized_PnL_Pct": f"{pnl_pct:+.2f}%",
-                    "Stop_Loss": "-",
-                    "Target_Price": "-",
-                    "Current_Balance_KRW": "-",
-                    "Status_Reason": sheet_status_reason,
+                    "Realized_PnL_Pct": f"{fill_res.get('pnl_pct', 0.0):+.2f}%",
+                    "Current_Balance_KRW": 0,
+                    "Status_Reason": f"[{exit_reason}] {sheet_status_reason} (실체결 완료)",
                 })
             except Exception as sheet_err:
                 logger.debug(f"청산 시트 기록 오류: {sheet_err}")
@@ -314,12 +330,16 @@ class RealtimeRiskEngine:
             effective_stop_loss = min(raw_stop_loss, min_sl_threshold) if raw_stop_loss > 0 else (avg_buy_price * 0.970)
             now_str = get_kst_now_str()
 
-            # 1. 실시간 손절 검사 (단일 틱 휩소 방지: 2회 연속 하회 또는 급락 -2.5% 이하 시 즉시 실행)
-            if effective_stop_loss > 0 and current_price <= effective_stop_loss:
+            # 0. 단일 종목 절대 손실 하드 스탑 (Hard-Stop Guard: -4.5% 도달 시 틱 카운트 지연 없이 즉각 청산)
+            hard_stop_price = avg_buy_price * 0.955
+            is_hard_stop = current_price <= hard_stop_price
+
+            # 1. 실시간 손절 검사 (단일 틱 휩소 방지: 2회 연속 하회 또는 급락 -2.5% 이하, 또는 하드스탑 -4.5% 시 즉시 실행)
+            if (effective_stop_loss > 0 and current_price <= effective_stop_loss) or is_hard_stop:
                 with self._lock:
                     self._sl_hit_count[market] = self._sl_hit_count.get(market, 0) + 1
                     is_severe_drop = current_price <= (avg_buy_price * 0.975)
-                    if self._sl_hit_count[market] < 2 and not is_severe_drop:
+                    if not is_hard_stop and not is_severe_drop and self._sl_hit_count[market] < 2:
                         logger.debug(f"⚠️ [{market}] 1차 손절선 터치 ({current_price:,.2f}원 <= {effective_stop_loss:,.2f}원) - 휩소 확인 중")
                         return
 
@@ -333,8 +353,9 @@ class RealtimeRiskEngine:
                     return
 
                 try:
+                    stop_type = "절대 하드스탑(Hard-Stop)" if is_hard_stop else "손절"
                     logger.warning(
-                        f"⚡ [실시간 웹소켓 손절 발동] {korean_name}({market}) 현재가({current_price:,.2f}원) <= 손절가({effective_stop_loss:,.2f}원). 즉시 시장가 매도!"
+                        f"⚡ [실시간 웹소켓 {stop_type} 발동] {korean_name}({market}) 현재가({current_price:,.2f}원) <= 기준선({hard_stop_price if is_hard_stop else effective_stop_loss:,.2f}원). 즉시 시장가 매도!"
                     )
                     self.trailing_tracker.clear(market)
                     self.cancel_bot_open_orders(market)

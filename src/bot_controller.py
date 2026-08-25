@@ -1,4 +1,7 @@
 import logging
+import os
+import threading
+import time
 from typing import Any, Callable
 
 from bithumb_api import BithumbAPI
@@ -52,6 +55,7 @@ class BotController:
         self.latest_strategies = latest_strategies if latest_strategies is not None else {}
         self.exchange_name = exchange_name
         self.web_port = web_port
+        self.start_time = time.time()
         self.latest_dashboard_data: dict[str, Any] = {
             "total_equity": 0,
             "krw_available": 0,
@@ -176,6 +180,8 @@ class BotController:
                             side="ask",
                             volume=vol,
                             ord_type="market",
+                            position_id=market,
+                            exit_reason="PANIC_SELL",
                         )
                         k_name = exchange.get_korean_name(market)
                         sold_list.append(f"{k_name}({cur}) {vol:.4f}개")
@@ -314,3 +320,84 @@ class BotController:
         elif action == "resume":
             return self.resume_bot()
         return "알 수 없는 작업"
+
+    def get_diagnostics_data(self) -> dict[str, Any]:
+        """실시간 원격 시스템 진단 텔레메트리 데이터 반환"""
+        now = time.time()
+        uptime_sec = int(now - self.start_time)
+        hours, rem = divmod(uptime_sec, 3600)
+        minutes, seconds = divmod(rem, 60)
+        uptime_str = f"{hours}시간 {minutes}분 {seconds}초"
+
+        # 최근 완료 거래 슬리피지 통계
+        recent_trades = self.trade_memory.get_recent_trades(limit=20) if hasattr(self.trade_memory, "get_recent_trades") else []
+        slippages = [abs(float(t.get("slippage", 0.0))) * 10000.0 for t in recent_trades if "slippage" in t]
+        avg_slip_bps = round(sum(slippages) / len(slippages), 1) if slippages else 0.0
+
+        excluded = get_excluded_manual_holdings()
+        active_threads = threading.active_count()
+        unknown_orders = sum(1 for o in self.order_journal.orders if o.get("status") == "UNKNOWN")
+
+        return {
+            "exchange": self.exchange_name,
+            "pid": os.getpid(),
+            "uptime_seconds": uptime_sec,
+            "uptime_str": uptime_str,
+            "active_threads": active_threads,
+            "bot_paused": self.get_is_paused(),
+            "kill_switch_active": self.risk_manager.kill_switch_active,
+            "kill_switch_latched_date": getattr(self.risk_manager, "kill_switch_latched_date", ""),
+            "consecutive_losses": self.risk_manager.consecutive_losses,
+            "risk_scale_factor": self.risk_manager.get_risk_scale_factor(),
+            "total_trades_today": self.risk_manager.total_trades_today,
+            "realized_pnl_krw": self.risk_manager.realized_pnl_krw,
+            "avg_slippage_bps": avg_slip_bps,
+            "unknown_orders_count": unknown_orders,
+            "excluded_holdings": sorted(list(excluded)),
+            "web_port": self.web_port,
+        }
+
+    def get_diagnostics_message(self) -> str:
+        """텔레그램 /diag, /health 회신용 상세 시스템 진단 메시지"""
+        diag = self.get_diagnostics_data()
+        now_str = get_kst_now_str()
+        state_icon = "⏸️ 일시정지" if diag["bot_paused"] else "🟢 정상 가동"
+        ks_icon = "🛑 활성화 (매수 차단)" if diag["kill_switch_active"] else "🟢 비활성 (안전)"
+
+        excl_str = ", ".join(diag["excluded_holdings"]) if diag["excluded_holdings"] else "없음"
+
+        return (
+            f"🩺 <b>[{self.exchange_name} AI 트레이딩 시스템 정밀 진단 리포트]</b>\n\n"
+            f"• <b>운영 상태:</b> {state_icon}\n"
+            f"• <b>시스템 Uptime:</b> {diag['uptime_str']} (PID: {diag['pid']})\n"
+            f"• <b>활성 스레드:</b> {diag['active_threads']}개 스레드\n"
+            f"• <b>일일 킬스위치:</b> {ks_icon}\n"
+            f"• <b>연속 손실 횟수:</b> {diag['consecutive_losses']}회 (자본 배율: {diag['risk_scale_factor']*100:.0f}%)\n"
+            f"• <b>최근 평균 슬리피지:</b> {diag['avg_slippage_bps']:.1f} bps\n"
+            f"• <b>미해결(UNKNOWN) 주문:</b> {diag['unknown_orders_count']}건\n"
+            f"• <b>수동 격리 보호 종목:</b> {excl_str}\n"
+            f"• <b>웹 대시보드 포트:</b> <code>http://localhost:{diag['web_port']}</code>\n"
+            f"• <b>진단 일시:</b> {now_str}"
+        )
+
+    def get_trades_summary_message(self) -> str:
+        """텔레그램 /trades 회신용 당일 매매 내역 및 슬리피지 요약 메시지"""
+        now_str = get_kst_now_str()
+        recent = self.trade_memory.get_recent_trades(limit=10) if hasattr(self.trade_memory, "get_recent_trades") else []
+        if not recent:
+            return f"📋 <b>[{self.exchange_name} 최근 매매 내역]</b>\n\n금일 완료된 청산 거래 내역이 없습니다.\n• 조회 일시: {now_str}"
+
+        lines = [f"📋 <b>[{self.exchange_name} 최근 매매 및 체결 품질 내역]</b>\n"]
+        for idx, t in enumerate(recent[:8], start=1):
+            m = t.get("market", "")
+            reason = t.get("reason", t.get("side", ""))
+            pnl_krw = float(t.get("pnl_krw", 0.0))
+            pnl_pct = float(t.get("pnl_pct", 0.0))
+            slip = float(t.get("slippage", 0.0)) * 10000.0
+            icon = "🟢" if pnl_krw > 0 else "🔴"
+            lines.append(f"{idx}. {icon} <b>{m}</b> [{reason}]: {pnl_krw:+,.0f}원 ({pnl_pct:+.2f}%) | 슬리피지: {slip:+.1f}bps")
+
+        lines.append(f"\n• <b>금일 누적 실현손익:</b> {self.risk_manager.realized_pnl_krw:+,.0f}원 (총 {self.risk_manager.total_trades_today}회)")
+        lines.append(f"• <b>조회 일시:</b> {now_str}")
+        return "\n".join(lines)
+
