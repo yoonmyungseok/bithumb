@@ -94,6 +94,7 @@ class RealtimeRiskAndIndicatorTests(unittest.TestCase):
             {"type": "myAsset", "currency": "KRW", "balance": "1000000"},
         ])
         client._on_message(None, payload)
+        client.drain_order_events()
         
         self.assertEqual(len(received_orders), 1)
         self.assertEqual(received_orders[0]["order_id"], "ord-1")
@@ -177,7 +178,7 @@ class RealtimeRiskAndIndicatorTests(unittest.TestCase):
 
             # Reach partial TP (+2.5%)
             action2, _, _, _, _ = tst.check_position("KRW-BTC", 10250.0, 10000.0)
-            self.assertEqual(action2, "PARTIAL_TP")
+            self.assertEqual(action2, "PARTIAL_TP_1")
 
     def test_bot_controller_dashboard_and_pause(self):
         from bot_controller import BotController

@@ -92,7 +92,7 @@ class TestConcurrencyRisk(unittest.TestCase):
 
         # +3.0% 도달 시 check_position 호출
         action, peak_p, trig_p, peak_pct, real_pct = self.trailing.check_position(market, 1030.0, avg_buy)
-        self.assertEqual(action, "PARTIAL_TP")
+        self.assertEqual(action, "PARTIAL_TP_1")
         self.assertTrue(self.trailing.partial_tp_done.get(market, False))
 
         # 청산 락 획득 후 추가 청산 시도 시 거부 확인

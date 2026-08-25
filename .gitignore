@@ -46,7 +46,7 @@ env/
 ENV/
 
 # ==========================================
-# 로그 및 임시 파일
+# 로그 및 임시 파일 / 런타임 데이터
 # ==========================================
 logs/
 *.log
@@ -56,11 +56,11 @@ logs/
 *.audit.json
 .watchdog*
 .heartbeat*
-data/**/.watchdog*
-data/**/.heartbeat*
-data/test_scratch/
-data/order_journal.json
-data/paper_account.json
+data/*
+!data/.gitkeep
+!data/upbit/
+data/upbit/*
+!data/upbit/.gitkeep
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
