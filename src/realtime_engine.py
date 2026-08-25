@@ -156,9 +156,18 @@ class RealtimeRiskEngine:
                     order_age = 0
 
                 if 60 <= order_age <= 300:
-                    current_price = bithumb.get_current_price(market)
+                    current_price = float(bithumb.get_current_price(market))
                     if current_price > order_price and current_price <= order_price * 1.008:
-                        new_price = bithumb.round_price_to_tick(current_price)
+                        if hasattr(bithumb, "adjust_price_to_tick") and callable(getattr(bithumb, "adjust_price_to_tick")):
+                            try:
+                                adj = bithumb.adjust_price_to_tick(current_price, side="bid")
+                                new_price = float(adj)
+                            except (TypeError, ValueError):
+                                new_price = float(bithumb.round_price_to_tick(current_price)) if hasattr(bithumb, "round_price_to_tick") else current_price
+                        elif hasattr(bithumb, "round_price_to_tick") and callable(getattr(bithumb, "round_price_to_tick")):
+                            new_price = float(bithumb.round_price_to_tick(current_price))
+                        else:
+                            new_price = current_price
                         logger.info(
                             f"🎛️ [스마트 호가 재정정] {market} 봇 지정가({order_price:,.2f}원) ➜ 최신 체결가({new_price:,.2f}원)로 자동 정정"
                         )
@@ -503,12 +512,25 @@ class RealtimeRiskEngine:
                         now_str=now_str,
                     )
 
+                    pnl_krw = res_data['pnl_krw']
+                    pnl_pct = res_data['pnl_pct']
+
+                    if pnl_krw > 0:
+                        header = "🏆 <b>[실시간 트레일링 스탑 전량 익절 완료]</b>"
+                        pnl_line = f"• 확정 수익: +{pnl_krw:,.0f} KRW 💰"
+                    elif pnl_pct >= -0.5:
+                        header = "🛡️ <b>[실시간 트레일링 스탑 본전 방어 완료]</b>"
+                        pnl_line = f"• 실현 손익: {pnl_krw:+,.0f} KRW (수수료/슬리피지 본전 방어)"
+                    else:
+                        header = "🛑 <b>[실시간 트레일링 스탑 방어 매도 완료]</b>"
+                        pnl_line = f"• 실현 손익: {pnl_krw:+,.0f} KRW (고점 꺾임 후 비상 탈출)"
+
                     self.telegram.send_message(
-                        f"🏆 <b>[실시간 트레일링 스탑 전량 익절 완료]</b>\n"
+                        f"{header}\n"
                         f"• 종목: {korean_name}({market})\n"
                         f"• 최고가: {peak_p:,.2f} KRW (+{peak_profit_pct:.2f}%)\n"
-                        f"• 최종 체결가: {res_data['exec_price']:,.2f} KRW (+{res_data['pnl_pct']:.2f}%)\n"
-                        f"• 확정 수익: +{res_data['pnl_krw']:,.0f} KRW 💰\n"
+                        f"• 최종 체결가: {res_data['exec_price']:,.2f} KRW ({pnl_pct:+.2f}%)\n"
+                        f"{pnl_line}\n"
                         f"• 일시: {now_str}"
                     )
                 finally:

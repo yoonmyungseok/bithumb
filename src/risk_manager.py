@@ -280,8 +280,8 @@ class TrailingStopTracker:
 
                 trailing_stop_price = current_peak * (1.0 - active_drop_pct)
 
-                # 수수료(0.1%) 차감 후 최소 +0.2% 순수익 안전 보장
-                min_guaranteed_profit = avg_buy_price * 1.002
+                # 수수료(0.08%) 및 슬리피지(0.2~0.3%) 차감 후 최소 +0.5% 순수익 안전 마진 확보
+                min_guaranteed_profit = avg_buy_price * 1.005
                 trailing_stop_price = max(trailing_stop_price, min_guaranteed_profit)
 
                 now_ts = time.time()

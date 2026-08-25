@@ -649,7 +649,16 @@ class OrderFillProcessor:
                     cost_basis = effective_avg_buy_price * fill_delta
                     pnl_krw = proceeds - cost_basis
                     pnl_pct = ((effective_price - effective_avg_buy_price) / effective_avg_buy_price * 100.0) if effective_avg_buy_price > 0 else 0.0
+                    # 실현 손익 기반 청산 사유 레이블 직관화
+                    refined_exit_reason = stored_exit_reason
                     is_win = pnl_krw > 0
+                    if "TRAILING" in stored_exit_reason.upper() or "트레일링" in stored_exit_reason:
+                        if pnl_krw > 0:
+                            refined_exit_reason = "트레일링 익절"
+                        elif pnl_pct >= -0.5:
+                            refined_exit_reason = "트레일링 본전방어"
+                        else:
+                            refined_exit_reason = "트레일링 방어매도"
 
                     if self.risk_manager:
                         self.risk_manager.add_realized_trade(pnl_krw, is_win=is_win)
@@ -657,7 +666,7 @@ class OrderFillProcessor:
                     if self.trade_memory:
                         self.trade_memory.record_completed_trade(
                             market=market,
-                            side=stored_exit_reason,
+                            side=refined_exit_reason,
                             entry_price=effective_avg_buy_price,
                             exit_price=effective_price,
                             filled_volume=fill_delta,
@@ -665,14 +674,14 @@ class OrderFillProcessor:
                             slippage=slippage_bps / 10000.0,
                             pnl_pct=pnl_pct,
                             pnl_krw=pnl_krw,
-                            reason=stored_exit_reason,
+                            reason=refined_exit_reason,
                             timestamp=now_str,
                             position_id=position_id,
                             order_status=status,
                         )
                     logger.info(
-                        "🎉 [%s] 실제 매도 체결 확인 (%s): 증가분=%.6f, 체결단가=%.2f, 손익=%+.0f원(%.2f%%)",
-                        market, stored_exit_reason, fill_delta, effective_price, pnl_krw, pnl_pct,
+                        "🎉 [%s] 실제 매도 체결 확인 (%s): 증가분=%.6f, 체결단가=%.2f, 손익=%+.0f원(%.2f%%), 슬리피지=%+.1fbps",
+                        market, refined_exit_reason, fill_delta, effective_price, pnl_krw, pnl_pct, slippage_bps,
                     )
 
             # 2. 완전 청산 상태 도달 시 트레일링 스탑 초기화

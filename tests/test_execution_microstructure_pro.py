@@ -110,6 +110,7 @@ class ExecutionMicrostructureProTests(unittest.TestCase):
         # 현재가가 200,500원(+0.25%)으로 소폭 상승
         mock_exchange.get_current_price.return_value = 200500.0
         mock_exchange.round_price_to_tick.side_effect = lambda p: p
+        mock_exchange.adjust_price_to_tick.side_effect = lambda p, **kw: p
 
         journal = OrderJournal(data_dir=self.test_dir)
         # 봇 관리 주문으로 등록

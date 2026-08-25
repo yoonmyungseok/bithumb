@@ -203,7 +203,7 @@ ws_client = BithumbWebSocketClient(
 private_ws = BithumbPrivateWebSocketClient(
     BITHUMB_ACCESS_KEY,
     BITHUMB_SECRET_KEY,
-    on_order=lambda event: order_journal.apply_private_order_event(event),
+    on_order=lambda event: order_journal.apply_private_order_event(event, fill_processor=fill_processor),
 )
 
 
@@ -297,6 +297,18 @@ def run_cycle():
     try:
         bithumb = create_exchange_client()
         analyzer = GeminiAnalyzer(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+        # 0. REST 기반 미완료 주문 체결 상태 자동 재조정 (WebSocket 단선 대비 P0-1 안전 수칙)
+        try:
+            rec_cnt = order_journal.reconcile_exchange_statuses(
+                get_order=bithumb.get_order,
+                get_order_by_client_id=getattr(bithumb, "get_order_by_client_id", None),
+                fill_processor=fill_processor,
+            )
+            if rec_cnt > 0:
+                logger.info(f"🔄 [REST 체결 재조정] 미완료 주문 {rec_cnt}건 체결 상태 최신화 완료")
+        except Exception as rec_err:
+            logger.debug(f"주기적 REST 주문 상태 재조정 예외: {rec_err}")
 
         # 1. 잔고 및 자산 현황 조회
         balances = bithumb.get_balances()
@@ -880,7 +892,7 @@ def run_cycle():
                     slot_budget = min(krw_available, max_slot_budget * (alloc_pct / dyn_max_pos_pct if alloc_pct < dyn_max_pos_pct else 1.0))
 
                     order_price = entry_price if (0 < entry_price <= current_price * 1.002) else current_price
-                    order_price = bithumb.round_price_to_tick(order_price)
+                    order_price = bithumb.adjust_price_to_tick(order_price, side="bid")
 
                     risk_scale = risk_manager.get_risk_scale_factor()
                     risk_based_budget = calculate_risk_position_size(
@@ -1033,9 +1045,9 @@ def main():
         trades_callback=bot_controller.get_trades_summary_message,
     )
 
-    # 2. 로컬 실시간 웹 대시보드 서버 가동
+    # 2. 로컬 실시간 웹 대시보드 서버 가동 (이 PC 로컬 127.0.0.1 바인딩)
     web_server = DashboardWebServer(
-        host="0.0.0.0",
+        host="127.0.0.1",
         port=7979,
         data_provider=bot_controller.get_dashboard_data,
         action_handler=bot_controller.handle_web_action,

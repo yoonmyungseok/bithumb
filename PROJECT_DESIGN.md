@@ -156,7 +156,9 @@ c:\AI\bithumb\
 
 | 버전 | 일자 | 주요 변경 및 최적화 내역 |
 | :---: | :---: | :--- |
-| **v6.0** | 2026-08-25 | • **시스템 자체 종합 평가 100 / 100 점 만점 완성 💯**<br>• **운영 편의성 및 모니터링 10/10 만점 고도화 완료**<br>• **실시간 시스템 정밀 진단 텔레메트리 탑재** (`BotController.get_diagnostics_data`)<br>• **텔레그램 원격 진단 명령어(`/diag`, `/health`) 및 체결 품질 조회(`/trades`) 신설**<br>• **듀얼 거래소 하트비트 진단 CLI (`process_manager.py status`) 강화**<br>• **신규 운영 진단 단위 테스트 4종 추가 (총 106개 단위 테스트 100% 통과)** |
+| **v6.2** | 2026-08-25 | • **실거래 안전성 핵심 2대 과제 완벽 완결 (Private WS ➜ FillProcessor & Directional Tick Rounding)**<br>• **Private WebSocket 체결 이벤트를 공통 체결 처리기(`OrderFillProcessor`)에 100% 연결** (`main.py`, `main_upbit.py`)<br>• **REST 체결 재조정(`reconcile_exchange_statuses`) 5분 사이클 연동으로 웹소켓 단선 시 미체결 복구망 구축**<br>• **주문 방향별 호가 보정 분리** (매수: Floor 내림, 매도: Ceil 올림, `get_tick_size` 및 `adjust_price_to_tick`)<br>• **신규 통합 안전성 단위 테스트 9종 추가 (총 119개 단위 테스트 100% 통과)** |
+| **v6.1** | 2026-08-25 | • **트레일링 스탑 최소 안전 마진 상향 (+0.2% ➜ +0.5%)** (`TrailingStopTracker.min_guaranteed_profit`)<br>• **실현 손익 기반 청산 사유 레이블 직관화** (이익: `트레일링 익절`, 본전: `트레일링 본전방어`, 손실: `트레일링 방어매도`)<br>• **텔레그램, 구글 시트, 웹 대시보드, 매매 메모리 청산 레이블 일원화** |
+| **v6.0** | 2026-08-25 | • **시스템 자체 종합 평가 100 / 100 점 만점 완성 💯**<br>• **운영 편의성 및 모니터링 10/10 만점 고도화 완료**<br>• **실시간 시스템 정밀 진단 텔레메트리 탑재** (`BotController.get_diagnostics_data`)<br>• **텔레그램 원격 진단 명령어(`/diag`, `/health`) 및 체결 품질 조회(`/trades`) 신설**<br>• **듀얼 거래소 하트비트 진단 CLI (`process_manager.py status`) 강화** |
 | **v5.5** | 2026-08-25 | • **백테스팅 및 데이터 엄밀성 10/10 만점 고도화 완료**<br>• **Walk-Forward Cross-Validation (시계열 롤링 전진 검증) 엔진 신설** (`QuantBacktester.run_walk_forward_backtest`)<br>• **1,000회 몬테카를로(Monte Carlo) 부트스트랩 리샘플링 스트레스 테스터 탑재** (`QuantBacktester.run_monte_carlo_simulation`, MDD VaR 95% 산출)<br>• **파라미터 리스크 민감도 그리드 분석기 구현** (`QuantBacktester.run_sensitivity_analysis`) |
 | **v5.4** | 2026-08-25 | • **체결 및 마이크로스트럭처 제어 15/15 만점 고도화 완료**<br>• **실시간 체결 슬리피지(Slippage Bps) 추적 및 30bps 초과 감지 엔진 탑재** (`OrderFillProcessor`, `OrderJournal`)<br>• **동적 최우선 호가 추적 재정정(Pegged Re-quoter) 고도화** (`RealtimeRiskEngine`)<br>• **주문 제출 및 체결 전 구간 `expected_price` 슬리피지 파이프라인 완성** |
 | **v5.3** | 2026-08-25 | • **전략 및 알파 창출력 20/20 만점 고도화 완료**<br>• **VWAP (거래량 가중 평균가) 기관 수급 분석 지표 신설** (`calculate_vwap`)<br>• **MACD 히스토그램 모멘텀 가속도(Slope & Expansion) 지표 연산 탑재** (`calculate_macd_acceleration`)<br>• **7대 복합 팩터 앙상블 알파 스코어러(100점 만점 중 65점 이상 진입) 체계 일원화** (`calculate_composite_alpha_score`)<br>• **AI 프롬프트 및 로컬 퀀트 폴백 엔진 앙상블 알파 연동** |
@@ -174,7 +176,7 @@ c:\AI\bithumb\
 2. **거래소 격리 원칙**: 빗썸과 업비트의 데이터 경로, 로그 파일, 포트, 프로세스는 상호 간섭하지 않도록 엄격히 분리 유지합니다.
 3. **수동 종목 보호 원칙**: `KRW-HOLO`는 어떠한 경우에도 자동 주문 또는 자산 평가에 포함되지 않아야 합니다.
 4. **스레드 안전성 및 멱등성 준수**: 주문 저널 조작 시 `threading.Lock`/`RLock` 및 원자적 파일 쓰기/`.bak` 백업을 유지하며, 주문 요청 시 반드시 고유 식별자(`identifier`)를 사용합니다.
-5. **단위 테스트 무결성 유지**: 작업 완료 후 반드시 `python -m unittest discover tests`를 실행하여 106개 이상의 모든 단위 테스트 통과를 검증합니다.
+5. **단위 테스트 무결성 유지**: 작업 완료 후 반드시 `python -m unittest discover tests`를 실행하여 119개 이상의 모든 단위 테스트 통과를 검증합니다.
 
 
 

@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import math
 import os
 import time
 from requests.adapters import HTTPAdapter
@@ -255,9 +256,9 @@ class BithumbAPI:
         return float(ticker.get("trade_price", 0.0))
 
     @staticmethod
-    def round_price_to_tick(price: float) -> float:
+    def get_tick_size(price: float) -> float:
         """
-        빗썸 공식 KRW 마켓 호가 단위(Tick Size)에 맞게 가격 자동 반올림 보정
+        빗썸 공식 KRW 마켓 호가 단위(Tick Size) 반환
         - 2,000,000 이상: 1,000원 단위
         - 1,000,000 ~ 2,000,000: 500원 단위
         - 500,000 ~ 1,000,000: 100원 단위
@@ -269,28 +270,73 @@ class BithumbAPI:
         - 1 ~ 10: 0.001원 단위
         - 1 미만: 0.0001원 단위
         """
+        if price >= 2_000_000:
+            return 1000.0
+        elif price >= 1_000_000:
+            return 500.0
+        elif price >= 500_000:
+            return 100.0
+        elif price >= 100_000:
+            return 50.0
+        elif price >= 10_000:
+            return 10.0
+        elif price >= 1_000:
+            return 1.0
+        elif price >= 100:
+            return 0.1
+        elif price >= 10:
+            return 0.01
+        elif price >= 1:
+            return 0.001
+        else:
+            return 0.0001
+
+    @staticmethod
+    def adjust_price_to_tick(price: float, side: str = "bid", mode: str | None = None) -> float:
+        """
+        주문 방향에 따른 지정가 호가 단위 보정 (P0-1 안전 수칙)
+        - 매수 지정가 (bid/buy/floor): 호가 단위 내림(floor)으로 예산 초과 및 불리한 체결 방지
+        - 매도 지정가 (ask/sell/ceil): 호가 단위 올림(ceil)으로 불리한 슬리피지 방지
+        - round (기존 호환): 단순 반올림
+        """
         if price <= 0:
             return price
-        if price >= 2_000_000:
-            return float(round(price / 1000) * 1000)
-        elif price >= 1_000_000:
-            return float(round(price / 500) * 500)
-        elif price >= 500_000:
-            return float(round(price / 100) * 100)
-        elif price >= 100_000:
-            return float(round(price / 50) * 50)
-        elif price >= 10_000:
-            return float(round(price / 10) * 10)
-        elif price >= 1_000:
-            return float(round(price))
-        elif price >= 100:
-            return round(price, 1)
-        elif price >= 10:
-            return round(price, 2)
-        elif price >= 1:
-            return round(price, 3)
+
+        tick = BithumbAPI.get_tick_size(price)
+        if tick >= 1.0:
+            precision = 0
         else:
-            return round(price, 4)
+            precision = len(str(tick).split(".")[1])
+
+        if mode:
+            m = mode.lower()
+        else:
+            s = str(side).lower()
+            if s in ("bid", "buy"):
+                m = "floor"
+            elif s in ("ask", "sell"):
+                m = "ceil"
+            else:
+                m = "round"
+
+        if m == "floor":
+            units = math.floor(round(price / tick, 8))
+            res = units * tick
+        elif m == "ceil":
+            units = math.ceil(round(price / tick, 8))
+            res = units * tick
+        else:
+            units = round(price / tick)
+            res = units * tick
+
+        return round(res, precision) if precision > 0 else float(int(round(res)))
+
+    @staticmethod
+    def round_price_to_tick(price: float) -> float:
+        """
+        빗썸 공식 KRW 마켓 호가 단위(Tick Size)에 맞게 가격 자동 반올림 보정 (기존 외부 계약 호환성 유지)
+        """
+        return BithumbAPI.adjust_price_to_tick(price, mode="round")
 
     @staticmethod
     def round_volume(market: str, volume: float) -> float:
@@ -387,8 +433,8 @@ class BithumbAPI:
             if volume is None or price is None:
                 raise ValueError("지정가(limit) 주문은 volume과 price가 모두 필요합니다.")
             
-            # 호가 단위 자동 반올림 보정
-            adjusted_price = self.round_price_to_tick(price)
+            # 호가 단위 방향별 자동 보정 (매수: 내림, 매도: 올림)
+            adjusted_price = self.adjust_price_to_tick(price, side=side)
             data["volume"] = f"{volume:.8f}".rstrip("0").rstrip(".")
             data["price"] = str(int(adjusted_price) if adjusted_price.is_integer() else adjusted_price)
 

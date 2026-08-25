@@ -255,7 +255,7 @@ if UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY:
     private_ws = UpbitPrivateWebSocketClient(
         UPBIT_ACCESS_KEY,
         UPBIT_SECRET_KEY,
-        on_order=lambda event: order_journal.apply_private_order_event(event),
+        on_order=lambda event: order_journal.apply_private_order_event(event, fill_processor=fill_processor),
     )
 
 
@@ -353,6 +353,18 @@ def run_cycle():
     try:
         upbit = create_exchange_client()
         analyzer = GeminiAnalyzer(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+        # 0. REST 기반 미완료 주문 체결 상태 자동 재조정 (WebSocket 단선 대비 P0-1 안전 수칙)
+        try:
+            rec_cnt = order_journal.reconcile_exchange_statuses(
+                get_order=upbit.get_order,
+                get_order_by_client_id=getattr(upbit, "get_order_by_client_id", None),
+                fill_processor=fill_processor,
+            )
+            if rec_cnt > 0:
+                logger.info(f"🔄 [업비트 REST 체결 재조정] 미완료 주문 {rec_cnt}건 체결 상태 최신화 완료")
+        except Exception as rec_err:
+            logger.debug(f"업비트 주기적 REST 주문 상태 재조정 예외: {rec_err}")
 
         # 1. 잔고 및 자산 현황 조회 (HOLO는 계산에서 100% 완전 격리)
         balances = upbit.get_balances()
@@ -732,7 +744,7 @@ def run_cycle():
                     sheets.update_strategy(market, LATEST_STRATEGIES[market], now_str, korean_name=korean_name)
 
                 if action == "BUY":
-                    order_price = upbit.round_price_to_tick(entry_price or current_price)
+                    order_price = upbit.adjust_price_to_tick(entry_price or current_price, side="bid")
                     alloc_pct = alloc_pct or dyn_max_pos_pct
                     max_slot_budget = current_total_equity * alloc_pct
                     risk_scale = risk_manager.get_risk_scale_factor()
@@ -881,9 +893,9 @@ def main():
         trades_callback=bot_controller.get_trades_summary_message,
     )
 
-    # 2. 로컬 실시간 웹 대시보드 서버 가동 (포트 7980)
+    # 2. 로컬 실시간 웹 대시보드 서버 가동 (이 PC 로컬 127.0.0.1 바인딩, 포트 7980)
     web_server = DashboardWebServer(
-        host="0.0.0.0",
+        host="127.0.0.1",
         port=WEB_PORT,
         data_provider=bot_controller.get_dashboard_data,
         action_handler=bot_controller.handle_web_action,
