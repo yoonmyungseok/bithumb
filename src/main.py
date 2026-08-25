@@ -41,7 +41,7 @@ from risk_manager import (
     get_kst_now_str,
 )
 from sheets_manager import SheetsManager
-from strategy_engine import classify_btc_regime, entry_signal
+from strategy_engine import classify_btc_regime, entry_signal, select_completed_candles
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
 from web_server import DashboardWebServer
@@ -654,13 +654,18 @@ def run_cycle():
                 # 🧠 [하이브리드 2단계 게이팅: 1차 퀀트 사전 필터 ➜ 2차 AI 최종 승인]
                 # ※ 확정 완료봉(candles_5m[1:]) 기준으로 지표를 연산하여 백테스트와 100% 동일한 진입 정책 보장 (과제 C)
                 # =========================================================================
-                completed_candles_5m = candles_5m[1:] if len(candles_5m) > 25 else candles_5m
+                completed_candles_5m = select_completed_candles(candles_5m, minimum_count=25)
+                completed_candles_1h = select_completed_candles(candles_1h, minimum_count=20)
+                if not completed_candles_5m or not completed_candles_1h:
+                    logger.warning("[%s] 5분/1시간 확정봉 데이터가 부족하거나 불일치하여 신규 매수 차단", market)
+                    continue
                 local_entry = entry_signal(
                     candles=completed_candles_5m,
-                    candles_1h=candles_1h,
+                    candles_1h=completed_candles_1h,
                     btc_regime=btc_regime,
                     orderbook=orderbook,
                     market=market,
+                    exchange="bithumb",
                 )
                 in_cooldown, cd_remaining = cooldown_manager.is_in_cooldown(market)
                 is_holding = (coin_value >= MIN_ORDER_KRW and avg_buy_price > 0)
@@ -947,6 +952,17 @@ def run_cycle():
 
                     cancel_bot_open_orders(bithumb, market)
 
+                    # 승인 시점 값만 주문 원장에 저장해, 미래 체결 시점 정보와 혼동하지 않는다.
+                    entry_snapshot = dict(local_entry.get("strategy_snapshot", {}))
+                    entry_snapshot.update({
+                        "exchange": "bithumb",
+                        "market": market,
+                        "entry_decision_at": now_str,
+                        "entry_reason": reason,
+                        "target_price": target_price,
+                        "stop_loss": stop_loss,
+                    })
+                    position_id = f"bithumb:{market}:{int(time.time() * 1000)}"
                     order_res = order_executor.submit(
                         bithumb,
                         market=market,
@@ -954,8 +970,10 @@ def run_cycle():
                         price=order_price,
                         volume=formatted_volume,
                         ord_type="limit",
-                        position_id=market,
+                        position_id=position_id,
                         expected_price=order_price,
+                        entry_strategy_snapshot=entry_snapshot,
+                        exchange_name="bithumb",
                     )
                     order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
                     client_order_id = order_res.get("client_order_id", "")

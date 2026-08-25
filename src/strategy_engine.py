@@ -44,6 +44,12 @@ class StrategyPolicy:
     SLIPPAGE_RATE: float = 0.001         # 편도 슬리피지 0.10%
     MIN_ORDER_KRW: float = 5000.0        # 최소 주문금액
     MAX_DAILY_LOSS_PCT: float = 0.05     # 일일 손실 한도 5%
+    # 초기 호가 관측은 단일 스냅샷 왜곡을 막기 위해 중립값으로 감쇠한다.
+    ORDERBOOK_MIN_SAMPLES_CANDIDATE: int = 3
+    # RISK_OFF는 성과 검증 전 현행 축소 비중을 유지하며 자동 차단을 활성화하지 않는다.
+    RISK_OFF_POLICY_MODE: str = "reduced_size"
+    RISK_OFF_BLOCK_ENABLED: bool = False
+    RISK_OFF_MIN_SAMPLE_CANDIDATE: int = 30
 
 
 class OrderbookFlowTracker:
@@ -58,7 +64,7 @@ class OrderbookFlowTracker:
         self._lock = threading.Lock()
 
     def record_snapshot(self, market: str, total_bid: float, total_ask: float) -> float:
-        """호가 잔량비(Bid/Ask Ratio) 기록 및 롤링 평균 반환"""
+        """시장별 호가 잔량비를 기록하고 기존 호출자 호환을 위해 평균만 반환한다."""
         ratio = total_bid / total_ask if total_ask > 0 else 1.0
         with self._lock:
             if market not in self._history:
@@ -69,6 +75,11 @@ class OrderbookFlowTracker:
                 buf.pop(0)
             return sum(buf) / len(buf)
 
+    def get_sample_count(self, market: str) -> int:
+        """특정 시장 호가 버퍼의 관측 수를 안전하게 반환한다."""
+        with self._lock:
+            return len(self._history.get(market, []))
+
     def get_smoothed_ratio(self, market: str, fallback_ratio: float = 1.0) -> float:
         """현재 저장된 롤링 호가 잔량비 반환"""
         with self._lock:
@@ -76,6 +87,30 @@ class OrderbookFlowTracker:
             if not buf:
                 return fallback_ratio
             return sum(buf) / len(buf)
+
+
+def build_orderbook_tracker_key(market: str, exchange: str = "") -> str:
+    """거래소와 마켓을 함께 사용해 서로 다른 주문장 이력을 격리한다."""
+    normalized_market = (market or "UNKNOWN_MARKET").upper()
+    normalized_exchange = (exchange or "").strip().lower()
+    return f"{normalized_exchange}:{normalized_market}" if normalized_exchange else normalized_market
+
+
+def select_completed_candles(candles: list[dict[str, Any]], minimum_count: int) -> list[dict[str, Any]]:
+    """최신순 API 캔들에서 진행 중인 첫 봉을 제외하고 유효한 확정봉만 반환한다."""
+    if len(candles) < minimum_count + 1:
+        return []
+    completed = candles[1:]
+    # 가격 필드가 비어 있으면 지표가 정상처럼 계산되지 않도록 신규 진입을 차단한다.
+    if any(float(candle.get("trade_price", 0.0) or 0.0) <= 0.0 for candle in completed[:minimum_count]):
+        return []
+    timestamp_keys = ("candle_date_time_utc", "candle_date_time_kst", "timestamp")
+    current_value = next((candles[0].get(key) for key in timestamp_keys if candles[0].get(key) is not None), None)
+    completed_value = next((candles[1].get(key) for key in timestamp_keys if candles[1].get(key) is not None), None)
+    # 시각이 제공되는 응답에서 최신 봉과 확정 봉의 시간이 같으면 정렬/데이터 오류로 판단한다.
+    if current_value is not None and completed_value is not None and current_value == completed_value:
+        return []
+    return completed
 
 
 # 글로벌 롤링 호가 추적기 싱글톤
@@ -355,6 +390,8 @@ def calculate_composite_alpha_score(
     candles_1h: list[dict[str, Any]] | None = None,
     orderbook: dict[str, Any] | None = None,
     btc_regime: str = "NORMAL",
+    market: str = "",
+    exchange: str = "",
 ) -> dict[str, Any]:
     """Calculate 7-Factor Composite Quantitative Alpha Score (0 ~ 100 points)."""
     if not candles or len(candles) < 20:
@@ -416,15 +453,27 @@ def calculate_composite_alpha_score(
         score_bb = 0
 
     # 6. 수급 / 체결강도 및 호가창 잔량비 (15점)
-    score_orderflow = 10  # 기본
+    score_orderflow = 10  # 호가 데이터가 없을 때의 중립 점수
+    raw_ratio = 1.0
+    smoothed_ratio = 1.0
+    orderbook_sample_count = 0
     if orderbook:
         total_ask = float(orderbook.get("total_ask_size", 1.0))
         total_bid = float(orderbook.get("total_bid_size", 1.0))
         # 롤링 호가 잔량비 반영 (단일 스냅샷 왜곡 완충, 과제 E)
         raw_ratio = total_bid / total_ask if total_ask > 0 else 1.0
-        smoothed_ratio = global_orderbook_tracker.record_snapshot("KRW", total_bid, total_ask)
+        tracker_key = build_orderbook_tracker_key(market, exchange)
+        smoothed_ratio = global_orderbook_tracker.record_snapshot(tracker_key, total_bid, total_ask)
+        orderbook_sample_count = global_orderbook_tracker.get_sample_count(tracker_key)
         effective_ratio = (raw_ratio * 0.5) + (smoothed_ratio * 0.5)
-        if effective_ratio >= 1.4:
+        # 관측 수가 적을수록 단일 호가창 이상치가 알파를 과대평가하지 않게 중립값으로 감쇠한다.
+        min_samples = max(1, StrategyPolicy.ORDERBOOK_MIN_SAMPLES_CANDIDATE)
+        confidence = min(1.0, orderbook_sample_count / min_samples)
+        effective_ratio = 1.0 + ((effective_ratio - 1.0) * confidence)
+        # 충분한 관측 전에는 매수 가산 또는 매도 감산을 확정하지 않고 중립 점수를 유지한다.
+        if orderbook_sample_count < min_samples:
+            score_orderflow = 10
+        elif effective_ratio >= 1.4:
             score_orderflow = 15
         elif effective_ratio < 0.6:
             score_orderflow = 3
@@ -452,6 +501,9 @@ def calculate_composite_alpha_score(
         "bollinger_score": score_bb,
         "orderflow_score": score_orderflow,
         "volume_score": score_vol,
+        "orderbook_raw_ratio": round(raw_ratio, 6),
+        "orderbook_smoothed_ratio": round(smoothed_ratio, 6),
+        "orderbook_sample_count": orderbook_sample_count,
     }
 
     return {
@@ -472,6 +524,7 @@ def entry_signal(
     btc_regime: str = "NORMAL",
     orderbook: dict[str, Any] | None = None,
     market: str = "",
+    exchange: str = "",
 ) -> dict[str, Any]:
     """
     결정론적 퀀트 진입 신호 생성기 (Deterministic Entry Engine)
@@ -492,6 +545,8 @@ def entry_signal(
         candles_1h=candles_1h,
         orderbook=orderbook,
         btc_regime=btc_regime,
+        market=market,
+        exchange=exchange,
     )
 
     prices = [float(c.get("trade_price", 0.0)) for c in candles]
@@ -580,6 +635,25 @@ def entry_signal(
         "rsi": rsi,
         "pct_b": pct_b,
         "alpha_score": alpha_res["total_score"],
+        # 주문 원장에 그대로 보관할 수 있는 진입 시점의 결정론적 지표 스냅샷이다.
+        "strategy_snapshot": {
+            "entry_btc_regime": btc_regime,
+            "alpha_score": alpha_res["total_score"],
+            "indicators": {
+                "rsi": rsi,
+                "pct_b": pct_b,
+                "atr": volatility,
+                "atr_pct": atr_pct,
+                "mtf_state": mtf_reason,
+                "orderbook_score": alpha_res["factor_breakdown"].get("orderflow_score", 10),
+                "orderbook_raw_ratio": alpha_res["factor_breakdown"].get("orderbook_raw_ratio", 1.0),
+                "orderbook_smoothed_ratio": alpha_res["factor_breakdown"].get("orderbook_smoothed_ratio", 1.0),
+                "orderbook_sample_count": alpha_res["factor_breakdown"].get("orderbook_sample_count", 0),
+            },
+            "entry_reason": ", ".join(reasons),
+            "target_price": round(target_price, 2),
+            "stop_loss": round(stop_loss, 2),
+        },
         "risk_reward_ratio": round(target_offset / stop_offset, 2) if stop_offset > 0 else 1.5,
         "checklist_details": checklist_details,
     }

@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "updated_at": 1787647078.309332,
+  "updated_at": 1787649561.8179393,
   "orders": [
     {
       "client_order_id": "bot-1787628143338-b787bda94e",
@@ -115,6 +115,32 @@
       "updated_at": 1787647078.3093276,
       "exchange_order_id": "d6245351-a97c-4163-b24e-9dfa4f644c91",
       "last_event_at": 1787647078.2873936
+    },
+    {
+      "client_order_id": "bot-1787649561594-cdac9fb6b3",
+      "position_id": "KRW-XRP",
+      "market": "KRW-XRP",
+      "side": "bid",
+      "volume": 8.67243159,
+      "requested_volume": 8.67243159,
+      "price": 2061.0,
+      "expected_price": 2061.0,
+      "slippage_bps": 0.0,
+      "ord_type": "limit",
+      "status": "FILLED",
+      "created_at": 1787649561.5948446,
+      "exchange_uuid": "8f9d74eb-b377-40de-9433-8ccc32f16525",
+      "executed_volume": 8.67243159,
+      "processed_executed_volume": 8.67243159,
+      "remaining_volume": 0.0,
+      "avg_price": 2061.0,
+      "fee": 8.936940753495,
+      "processed_fee": 8.936940753495,
+      "exit_reason": "",
+      "avg_buy_price": 0.0,
+      "updated_at": 1787649561.817935,
+      "exchange_order_id": "8f9d74eb-b377-40de-9433-8ccc32f16525",
+      "last_event_at": 1787649561.8179266
     }
   ]
 }

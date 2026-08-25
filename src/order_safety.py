@@ -143,7 +143,7 @@ class AmbiguousOrderError(RuntimeError):
 class OrderJournal:
     """Small append-only JSON journal, written atomically for crash recovery (Schema v2)."""
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(self, path: str | None = None, data_dir: str | None = None):
         self._lock = threading.RLock()
@@ -184,6 +184,8 @@ class OrderJournal:
         exit_reason: str | None = None,
         avg_buy_price: float | None = None,
         expected_price: float | None = None,
+        entry_strategy_snapshot: dict[str, Any] | None = None,
+        exchange: str = "",
     ) -> str:
         client_order_id = f"bot-{int(time.time() * 1000)}-{uuid.uuid4().hex[:10]}"
         with self._lock:
@@ -209,6 +211,9 @@ class OrderJournal:
                 "processed_fee": 0.0,
                 "exit_reason": exit_reason or "",
                 "avg_buy_price": avg_buy_price or 0.0,
+                # ACK와 무관한 매수 승인 근거로, 실제 성과 기록 시에만 참조한다.
+                "entry_strategy_snapshot": dict(entry_strategy_snapshot or {}),
+                "exchange": exchange or "",
             })
             self._save()
         return client_order_id
@@ -271,6 +276,21 @@ class OrderJournal:
             for order in reversed(self.orders):
                 if order.get("client_order_id") == client_order_id:
                     return dict(order)
+        return None
+
+    def get_entry_order_for_exit(self, order: dict[str, Any]) -> dict[str, Any] | None:
+        """매도 주문에 연결된 최신 실제 매수 주문을 찾아 진입 메타데이터를 복원한다."""
+        market = order.get("market")
+        position_id = order.get("position_id")
+        with self._lock:
+            for candidate in reversed(self.orders):
+                if str(candidate.get("side", "")).lower() not in ("bid", "buy"):
+                    continue
+                if position_id and candidate.get("position_id") == position_id:
+                    return dict(candidate)
+                # 구 스키마의 market 기반 position_id도 재시작 후 읽을 수 있게 최후에만 호환한다.
+                if candidate.get("market") == market and float(candidate.get("executed_volume", 0.0) or 0.0) > 0:
+                    return dict(candidate)
         return None
 
     def has_unresolved_market(self, market: str) -> bool:
@@ -479,6 +499,8 @@ class SafeOrderExecutor:
         exit_reason: str | None = None,
         avg_buy_price: float | None = None,
         expected_price: float | None = None,
+        entry_strategy_snapshot: dict[str, Any] | None = None,
+        exchange_name: str = "",
     ) -> dict[str, Any]:
         # HOLO 및 수동 격리 종목 원천 차단 (P3-1)
         m_upper = market.upper()
@@ -502,6 +524,8 @@ class SafeOrderExecutor:
             exit_reason=exit_reason,
             avg_buy_price=avg_buy_price,
             expected_price=expected_price,
+            entry_strategy_snapshot=entry_strategy_snapshot,
+            exchange=exchange_name,
         )
         try:
             response = exchange.create_order(
@@ -663,6 +687,10 @@ class OrderFillProcessor:
                     if self.risk_manager:
                         self.risk_manager.add_realized_trade(pnl_krw, is_win=is_win)
 
+                    entry_order = self.order_journal.get_entry_order_for_exit(order)
+                    entry_snapshot = dict((entry_order or {}).get("entry_strategy_snapshot") or {})
+                    # 매도 주문이 구 position_id를 쓰더라도 진입 주문의 고유 ID로 포지션 관계를 보존한다.
+                    position_id = (entry_order or {}).get("position_id") or position_id
                     if self.trade_memory:
                         self.trade_memory.record_completed_trade(
                             market=market,
@@ -678,6 +706,16 @@ class OrderFillProcessor:
                             timestamp=now_str,
                             position_id=position_id,
                             order_status=status,
+                            exchange=entry_snapshot.get("exchange") or (entry_order or {}).get("exchange") or "",
+                            btc_regime=entry_snapshot.get("entry_btc_regime", "UNKNOWN"),
+                            alpha_score=entry_snapshot.get("alpha_score"),
+                            indicators=entry_snapshot.get("indicators", {}),
+                            entry_btc_regime=entry_snapshot.get("entry_btc_regime", "UNKNOWN"),
+                            exit_btc_regime=entry_snapshot.get("exit_btc_regime", "UNKNOWN"),
+                            entry_reason=entry_snapshot.get("entry_reason", ""),
+                            entry_decision_at=entry_snapshot.get("entry_decision_at", ""),
+                            target_price=entry_snapshot.get("target_price"),
+                            stop_loss=entry_snapshot.get("stop_loss"),
                         )
                     logger.info(
                         "🎉 [%s] 실제 매도 체결 확인 (%s): 증가분=%.6f, 체결단가=%.2f, 손익=%+.0f원(%.2f%%), 슬리피지=%+.1fbps",

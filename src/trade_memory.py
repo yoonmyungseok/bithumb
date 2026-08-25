@@ -71,7 +71,7 @@ class TradeMemoryManager:
         slippage: float = 0.0,
         order_status: str = "FILLED",
         exchange: str = "bithumb",
-        btc_regime: str = "NORMAL",
+        btc_regime: str = "UNKNOWN",
         alpha_score: int | None = None,
         indicators: dict[str, Any] | None = None,
         bars_held: int | None = None,
@@ -127,14 +127,33 @@ class TradeMemoryManager:
             for rg, t_list in regime_map.items():
                 n = len(t_list)
                 wins = [t for t in t_list if t.get("pnl_krw", 0) > 0]
+                losses = [t for t in t_list if t.get("pnl_krw", 0) <= 0]
                 win_rate = (len(wins) / n * 100.0) if n > 0 else 0.0
                 total_pnl = sum(t.get("pnl_krw", 0) for t in t_list)
                 reliable = n >= min_sample_size
+                avg_win = (sum(float(t.get("pnl_pct", 0.0)) for t in wins) / len(wins)) if wins else 0.0
+                avg_loss = (abs(sum(float(t.get("pnl_pct", 0.0)) for t in losses)) / len(losses)) if losses else 0.0
+                expectancy = ((win_rate / 100.0) * avg_win) - (((100.0 - win_rate) / 100.0) * avg_loss)
+                gross_win = sum(float(t.get("pnl_krw", 0.0)) for t in wins)
+                gross_loss = abs(sum(float(t.get("pnl_krw", 0.0)) for t in losses))
+                profit_factor = (gross_win / gross_loss) if gross_loss > 0 else None
+                # 포지션 단위의 누적 손익으로 레짐 내부 MDD를 계산한다. 자본 기준 MDD는 백테스트 결과를 사용한다.
+                cumulative, peak, max_drawdown = 0.0, 0.0, 0.0
+                for trade in t_list:
+                    cumulative += float(trade.get("pnl_krw", 0.0))
+                    peak = max(peak, cumulative)
+                    max_drawdown = max(max_drawdown, peak - cumulative)
+                avg_bars = sum(float(t.get("bars_held") or 0.0) for t in t_list) / n
                 res[rg] = {
                     "sample_count": n,
                     "win_rate_pct": round(win_rate, 1),
                     "total_pnl_krw": round(total_pnl, 0),
                     "is_statistically_reliable": reliable,
+                    "status": "OBSERVE_ONLY" if reliable else "INSUFFICIENT_SAMPLE",
+                    "expectancy_pct": round(expectancy, 4),
+                    "profit_factor": round(profit_factor, 4) if profit_factor is not None else None,
+                    "max_drawdown_krw": round(max_drawdown, 0),
+                    "avg_bars_held": round(avg_bars, 2),
                 }
             return res
 

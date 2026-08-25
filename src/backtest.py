@@ -29,7 +29,8 @@ def synthesize_1h_candles(sorted_5m_candles: list[dict[str, Any]]) -> list[dict[
     chunk_size = 12  # 12 * 5m = 60m
     for i in range(0, len(sorted_5m_candles), chunk_size):
         chunk = sorted_5m_candles[i : i + chunk_size]
-        if not chunk:
+        # 마지막 미완성 묶음은 진행 중 1시간봉이므로 MTF 입력에서 제외한다.
+        if len(chunk) != chunk_size:
             continue
         h_open = float(chunk[0].get("opening_price", chunk[0].get("trade_price", 0.0)))
         h_close = float(chunk[-1].get("trade_price", 0.0))
@@ -333,7 +334,13 @@ class QuantBacktester:
             # 2. 미보유 상태: 퀀트 진입 신호 검사 (동적 BTC 레짐 및 합성 1시간봉 MTF 결합)
             elif not in_position and capital >= 10_000 and i >= cooldown_until_idx:
                 candles_1h_synth = synthesize_1h_candles(sorted_candles[: i + 1])
-                signal = entry_signal(window_desc, candles_1h=candles_1h_synth, btc_regime=curr_btc_regime)
+                signal = entry_signal(
+                    window_desc,
+                    candles_1h=candles_1h_synth,
+                    btc_regime=curr_btc_regime,
+                    market=market,
+                    exchange="backtest",
+                )
                 if signal["allow_buy"]:
                     # 익봉 시가에 진입하기 위해 예약
                     pending_entry = True
