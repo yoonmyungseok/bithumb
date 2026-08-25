@@ -1,25 +1,85 @@
 import math
 import os
+import threading
 from typing import Any
 
 
 class StrategyPolicy:
-    """실거래 및 백테스트 공통 전략 파라미터 및 단일 실행 정책 (Single Source of Truth, P1)"""
-    TIME_STOP_SECONDS: int = 3600      # 60분 타임스탑 (실거래 초 단위)
-    TIME_STOP_BARS_5M: int = 12       # 5분봉 12개 = 60분 (백테스트 캔들 단위)
-    PARTIAL_TP_PCT: float = 0.025     # +2.5% 1차 50% 분할익절
-    TRAILING_START_PCT: float = 0.020 # +2.0% 트레일링 스탑 활성화
-    TRAILING_DROP_PCT: float = 0.012  # 최고점 대비 1.2% 하락 시 시장가 청산
-    STOP_LOSS_PCT: float = 0.025      # 기본 손절 -2.5%
-    ATR_STOP_MULTIPLIER: float = 1.5  # Chandelier / ATR 손절 배수
-    ATR_TARGET_MULTIPLIER: float = 2.5 # ATR 목표가 배수
-    FEE_RATE: float = 0.0004          # 편도 수수료 0.04%
-    SLIPPAGE_RATE: float = 0.001      # 편도 슬리피지 0.10%
-    MIN_ORDER_KRW: float = 5000.0     # 최소 주문금액
-    MAX_DAILY_LOSS_PCT: float = 0.05  # 일일 손실 한도 5%
+    """
+    실거래 및 백테스트 공통 전략 파라미터 및 단일 실행 정책 (Single Source of Truth, SSOT)
+    - 진입 목표가, 손절가, 부분익절, 트레일링, 타임스탑, 쿨다운, 알파 하드게이트 일원화
+    """
+    # 1. 목표가 / 손절가 / 손익비 (ATR 기반 동적 산출)
+    ATR_TARGET_MULTIPLIER: float = 1.8   # ATR 기반 목표가 배수
+    ATR_STOP_MULTIPLIER: float = 1.2     # ATR 기반 손절가 배수
+    MIN_TARGET_PCT: float = 0.020        # 최소 목표 수익률 +2.0%
+    MIN_STOP_PCT: float = 0.015          # 기본 최소 손절선 -1.5%
+    STOP_LOSS_PCT: float = 0.025         # 기본 손절 -2.5% (-4.5% 비상 하드스탑)
+
+    # 2. 익절 및 트레일링 스탑
+    PARTIAL_TP_PCT: float = 0.025        # +2.5% 1차 50% 분할익절
+    TRAILING_START_PCT: float = 0.020    # +2.0% 트레일링 스탑 활성화
+    TRAILING_DROP_PCT: float = 0.012     # 최고점 대비 1.2% 하락 시 시장가 청산
+    MIN_PROFIT_BUFFER_PCT: float = 0.005 # +0.5% 최소 보장 마진 (v6.1 상향)
+
+    # 3. 시간 기반 청산 (타임스탑) & 쿨다운
+    TIME_STOP_SECONDS: int = 3600        # 60분 타임스탑 (실거래 초 단위)
+    TIME_STOP_BARS_5M: int = 12          # 5분봉 12개 = 60분 (백테스트 캔들 단위)
     COOLDOWN_STOP_LOSS_SEC: float = 2700.0  # 손절 후 쿨다운 45분
-    COOLDOWN_TP_SEC: float = 900.0          # 익절 후 쿨다운 15분
+    COOLDOWN_TP_SEC: float = 900.0       # 익절 후 쿨다운 15분
+
+    # 4. 하드 안전 게이트 (Hard Safety Gates) 임계값
+    ALPHA_BUY_THRESHOLD: int = 65        # 7대 팩터 복합 알파 승인 점수 (100점 만점)
+    RSI_MIN_NORMAL: float = 35.0         # 정상장 RSI 최소치 (모멘텀 실종 방어)
+    RSI_MAX_NORMAL: float = 75.0         # 정상장 RSI 최대치 (극초과열 추격 방어)
+    RSI_MIN_RISK_OFF: float = 40.0       # RISK_OFF RSI 최소치
+    RSI_MAX_RISK_OFF: float = 68.0       # RISK_OFF RSI 최대치
+    PCT_B_MIN: float = 0.15              # 볼린저 밴드 %B 최소치 (하단 밴드 붕괴 방어)
+    PCT_B_MAX: float = 0.95              # 볼린저 밴드 %B 최대치 (상단 밴드 극단 이탈 방어)
+    MA_ALIGNMENT_RATIO: float = 0.995    # MA5 >= MA20 * 0.995 (역배열 폭락세 차단)
+
+    # 5. 거시 시장 리스크 및 거래소 비용
     BTC_CRASH_THRESHOLD_PCT: float = 0.015  # BTC 15분 -1.5% 급락 시 차단
+    FEE_RATE: float = 0.0004             # 편도 수수료 0.04%
+    SLIPPAGE_RATE: float = 0.001         # 편도 슬리피지 0.10%
+    MIN_ORDER_KRW: float = 5000.0        # 최소 주문금액
+    MAX_DAILY_LOSS_PCT: float = 0.05     # 일일 손실 한도 5%
+
+
+class OrderbookFlowTracker:
+    """
+    호가창 단일 스냅샷 왜곡 방지 및 최근 N회 호가 잔량비 롤링 평균 추적기 (과제 E)
+    - 실시간 허매수/허매도(Spoofing) 왜곡 완충
+    - 메모리 롤링 큐(최대 5회) 기반 스레드 안전성 보장
+    """
+    def __init__(self, max_history: int = 5):
+        self.max_history = max_history
+        self._history: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def record_snapshot(self, market: str, total_bid: float, total_ask: float) -> float:
+        """호가 잔량비(Bid/Ask Ratio) 기록 및 롤링 평균 반환"""
+        ratio = total_bid / total_ask if total_ask > 0 else 1.0
+        with self._lock:
+            if market not in self._history:
+                self._history[market] = []
+            buf = self._history[market]
+            buf.append(ratio)
+            if len(buf) > self.max_history:
+                buf.pop(0)
+            return sum(buf) / len(buf)
+
+    def get_smoothed_ratio(self, market: str, fallback_ratio: float = 1.0) -> float:
+        """현재 저장된 롤링 호가 잔량비 반환"""
+        with self._lock:
+            buf = self._history.get(market, [])
+            if not buf:
+                return fallback_ratio
+            return sum(buf) / len(buf)
+
+
+# 글로벌 롤링 호가 추적기 싱글톤
+global_orderbook_tracker = OrderbookFlowTracker(max_history=5)
 
 
 
@@ -360,10 +420,13 @@ def calculate_composite_alpha_score(
     if orderbook:
         total_ask = float(orderbook.get("total_ask_size", 1.0))
         total_bid = float(orderbook.get("total_bid_size", 1.0))
-        ratio = total_bid / total_ask if total_ask > 0 else 1.0
-        if ratio >= 1.4:
+        # 롤링 호가 잔량비 반영 (단일 스냅샷 왜곡 완충, 과제 E)
+        raw_ratio = total_bid / total_ask if total_ask > 0 else 1.0
+        smoothed_ratio = global_orderbook_tracker.record_snapshot("KRW", total_bid, total_ask)
+        effective_ratio = (raw_ratio * 0.5) + (smoothed_ratio * 0.5)
+        if effective_ratio >= 1.4:
             score_orderflow = 15
-        elif ratio < 0.6:
+        elif effective_ratio < 0.6:
             score_orderflow = 3
 
     # 7. 볼륨 스파이크 (10점)
@@ -379,7 +442,7 @@ def calculate_composite_alpha_score(
         score_vol = 4
 
     total_score = score_mtf + score_vwap + score_macd + score_rsi + score_bb + score_orderflow + score_vol
-    allow_buy = (total_score >= 65) and (btc_regime.upper() not in ("CRASH", "BEAR_VOLATILE"))
+    allow_buy = (total_score >= StrategyPolicy.ALPHA_BUY_THRESHOLD) and (btc_regime.upper() not in ("CRASH", "BEAR_VOLATILE"))
 
     breakdown = {
         "mtf_score": score_mtf,
@@ -408,8 +471,15 @@ def entry_signal(
     candles_1h: list[dict[str, Any]] | None = None,
     btc_regime: str = "NORMAL",
     orderbook: dict[str, Any] | None = None,
+    market: str = "",
 ) -> dict[str, Any]:
-    """Deterministic entry rule with MTF trend alignment, 7-factor alpha score, and dynamic ATR risk bounds."""
+    """
+    결정론적 퀀트 진입 신호 생성기 (Deterministic Entry Engine)
+    - StrategyPolicy 단일 진실 공급원(SSOT) 100% 참조
+    - 하드 안전 게이트(Hard Safety Gates): 극초과열, 볼린저 이탈, 역배열 차단 (알파 점수로 우회 불가)
+    - 7대 팩터 복합 알파 소프트 스코어 결합
+    - ATR 기반 동적 목표가/손절가 일원화 산출
+    """
     if len(candles) < 25:
         return {"allow_buy": False, "reason": "캔들 데이터 부족"}
 
@@ -432,13 +502,7 @@ def entry_signal(
     pct_b = bands["pct_b"]
     rsi = calculate_rsi(prices)
 
-    # 1. 5분봉 정량 조건
-    rsi_min, rsi_max = (42.0, 65.0) if regime_upper == "RISK_OFF" else (38.0, 72.0)
-    pct_b_min, pct_b_max = (0.30, 0.75) if regime_upper == "RISK_OFF" else (0.20, 0.88)
-
-    signal_5m = ma5 > ma20 and (rsi_min <= rsi <= rsi_max) and (pct_b_min <= pct_b <= pct_b_max)
-
-    # 2. 1시간봉 MTF 추세 필터
+    # 1. 1시간봉 MTF 추세 필터
     mtf_allowed = True
     mtf_reason = "1H MTF 미제공"
     if candles_1h and len(candles_1h) >= 20:
@@ -448,22 +512,47 @@ def entry_signal(
         mtf_allowed = current_1h >= (ema20_1h * 0.990)
         mtf_reason = f"1H {current_1h:.1f} {'>=' if mtf_allowed else '<'} EMA20 {ema20_1h:.1f}"
 
-    allowed = (signal_5m and mtf_allowed) or (alpha_res["allow_buy"] and mtf_allowed)
+    # 2. [과제 B] 하드 안전 게이트 (Hard Safety Gates - 알파 점수로 우회 불가)
+    hard_gate_btc = regime_upper not in ("CRASH", "BEAR_VOLATILE")
+    hard_gate_mtf = mtf_allowed
+    rsi_hard_min = StrategyPolicy.RSI_MIN_RISK_OFF if regime_upper == "RISK_OFF" else StrategyPolicy.RSI_MIN_NORMAL
+    rsi_hard_max = StrategyPolicy.RSI_MAX_RISK_OFF if regime_upper == "RISK_OFF" else StrategyPolicy.RSI_MAX_NORMAL
+    hard_gate_rsi = (rsi_hard_min <= rsi <= rsi_hard_max)
+    hard_gate_bb = (StrategyPolicy.PCT_B_MIN <= pct_b <= StrategyPolicy.PCT_B_MAX)
+    hard_gate_ma = ma5 >= ma20 * StrategyPolicy.MA_ALIGNMENT_RATIO
 
-    # 3. ATR 기반 동적 손익비 산출
+    hard_gates_passed = hard_gate_btc and hard_gate_mtf and hard_gate_rsi and hard_gate_bb and hard_gate_ma
+
+    # 3. 5분봉 정량 조건 및 소프트 알파 스코어 결합
+    rsi_min, rsi_max = (42.0, 65.0) if regime_upper == "RISK_OFF" else (38.0, 72.0)
+    pct_b_min, pct_b_max = (0.30, 0.75) if regime_upper == "RISK_OFF" else (0.20, 0.88)
+    signal_5m = (ma5 > ma20) and (rsi_min <= rsi <= rsi_max) and (pct_b_min <= pct_b <= pct_b_max)
+
+    alpha_score_passed = alpha_res["allow_buy"]
+    allowed = hard_gates_passed and (signal_5m or alpha_score_passed)
+
+    # 4. [과제 A] StrategyPolicy SSOT 기반 동적 손익비 산출
     atr_data = calculate_atr(candles, period=14)
     volatility = atr_data["atr"]
     atr_pct = atr_data["atr_pct"]
 
-    target_offset = max(current * 0.020, volatility * 1.8)
+    target_offset = max(current * StrategyPolicy.MIN_TARGET_PCT, volatility * StrategyPolicy.ATR_TARGET_MULTIPLIER)
     target_price = current + target_offset
 
-    stop_offset = max(current * 0.015, volatility * 1.2)
+    stop_offset = max(current * StrategyPolicy.MIN_STOP_PCT, volatility * StrategyPolicy.ATR_STOP_MULTIPLIER)
     stop_loss = current - stop_offset
 
     checklist_details = {
         "alpha_score": alpha_res["total_score"],
         "factor_breakdown": alpha_res["factor_breakdown"],
+        "hard_gates": {
+            "all_passed": hard_gates_passed,
+            "btc_regime": {"pass": hard_gate_btc, "regime": btc_regime},
+            "mtf_trend": {"pass": hard_gate_mtf, "detail": mtf_reason},
+            "rsi_guard": {"pass": hard_gate_rsi, "value": rsi, "min": rsi_hard_min, "max": rsi_hard_max},
+            "bb_guard": {"pass": hard_gate_bb, "value": round(pct_b, 3), "min": StrategyPolicy.PCT_B_MIN, "max": StrategyPolicy.PCT_B_MAX},
+            "ma_alignment": {"pass": hard_gate_ma, "ma5": round(ma5, 2), "ma20": round(ma20, 2)},
+        },
         "ma_alignment": {"pass": ma5 > ma20, "ma5": round(ma5, 2), "ma20": round(ma20, 2)},
         "rsi_range": {"pass": (rsi_min <= rsi <= rsi_max), "value": rsi, "min": rsi_min, "max": rsi_max},
         "bollinger_pct_b": {"pass": (pct_b_min <= pct_b <= pct_b_max), "value": round(pct_b, 3), "min": pct_b_min, "max": pct_b_max},
@@ -472,6 +561,7 @@ def entry_signal(
     }
 
     reasons = [
+        f"하드게이트 {'통과' if hard_gates_passed else '차단'}",
         f"알파스코어 {alpha_res['total_score']}점",
         f"MA5 {'>' if ma5 > ma20 else '<='} MA20",
         f"RSI {rsi:.1f}",

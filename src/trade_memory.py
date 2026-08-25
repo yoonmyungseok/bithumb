@@ -14,6 +14,7 @@ class TradeMemoryManager:
     """
     자가 진화형 AI 매매 복기 및 피드백 메모리 (Self-Learning Trade Memory, RLock 스레드 안전성 보장)
     - data/trade_memory.json 파일에 완료된 거래의 진입 근거, 결과(익절/손절), 수익률 영구 저장
+    - 퀀트 속성(BTC 레짐, 알파 점수 구간, 지표 상태, 보유시간) 정량 태깅 및 성과 분석 (과제 F)
     - 최근 성공 및 실패 패턴을 분석하여 Gemini 퀀트 프롬프트에 '피드백 교훈'으로 자동 주입
     - 시간이 지날수록 동일한 실수를 반복하지 않고 승률이 우상향하도록 진화
     """
@@ -70,9 +71,13 @@ class TradeMemoryManager:
         slippage: float = 0.0,
         order_status: str = "FILLED",
         exchange: str = "bithumb",
+        btc_regime: str = "NORMAL",
+        alpha_score: int | None = None,
+        indicators: dict[str, Any] | None = None,
+        bars_held: int | None = None,
         **extra_fields: Any,
     ):
-        """완료된 거래 내역 및 실제 체결 결과 복기 기록 (P0-3 체결 기반)"""
+        """완료된 거래 내역 및 실제 체결 결과 복기 기록 (과제 F 정량 태깅)"""
         is_win = pnl_krw > 0
         lesson = ""
         if not is_win:
@@ -98,12 +103,74 @@ class TradeMemoryManager:
             "is_win": is_win,
             "reason": reason,
             "lesson": lesson,
+            "btc_regime": btc_regime,
+            "alpha_score": alpha_score,
+            "indicators": indicators or {},
+            "bars_held": bars_held,
         }
         trade_item.update(extra_fields)
         with self._lock:
             self.trades.append(trade_item)
             self._save_memory()
         logger.info(f"🧠 [AI 매매 메모리 저장] {market} {side} 결과: {'승리(익절)' if is_win else '패배(손절)'} ({pnl_pct:+.2f}%, 실현: {pnl_krw:+,.0f}원)")
+
+    def get_regime_performance_stats(self, min_sample_size: int = 3) -> dict[str, Any]:
+        """시장 레짐별(NORMAL / RISK_OFF) 매매 성과 및 통계적 신뢰도 분석 (과제 D/F)"""
+        with self._lock:
+            self._load_memory()
+            regime_map: dict[str, list[dict[str, Any]]] = {}
+            for t in self.trades:
+                rg = t.get("btc_regime", "NORMAL")
+                regime_map.setdefault(rg, []).append(t)
+
+            res = {}
+            for rg, t_list in regime_map.items():
+                n = len(t_list)
+                wins = [t for t in t_list if t.get("pnl_krw", 0) > 0]
+                win_rate = (len(wins) / n * 100.0) if n > 0 else 0.0
+                total_pnl = sum(t.get("pnl_krw", 0) for t in t_list)
+                reliable = n >= min_sample_size
+                res[rg] = {
+                    "sample_count": n,
+                    "win_rate_pct": round(win_rate, 1),
+                    "total_pnl_krw": round(total_pnl, 0),
+                    "is_statistically_reliable": reliable,
+                }
+            return res
+
+    def get_alpha_tier_stats(self, min_sample_size: int = 3) -> dict[str, Any]:
+        """알파 점수 구간별(65-69, 70-79, 80+) 매매 성과 분석 (과제 F)"""
+        with self._lock:
+            self._load_memory()
+            tiers = {"65-69": [], "70-79": [], "80+": [], "unspecified": []}
+            for t in self.trades:
+                score = t.get("alpha_score")
+                if score is None:
+                    tiers["unspecified"].append(t)
+                elif score >= 80:
+                    tiers["80+"].append(t)
+                elif score >= 70:
+                    tiers["70-79"].append(t)
+                elif score >= 65:
+                    tiers["65-69"].append(t)
+                else:
+                    tiers["unspecified"].append(t)
+
+            res = {}
+            for tier_name, t_list in tiers.items():
+                if not t_list:
+                    continue
+                n = len(t_list)
+                wins = [t for t in t_list if t.get("pnl_krw", 0) > 0]
+                win_rate = (len(wins) / n * 100.0) if n > 0 else 0.0
+                total_pnl = sum(t.get("pnl_krw", 0) for t in t_list)
+                res[tier_name] = {
+                    "sample_count": n,
+                    "win_rate_pct": round(win_rate, 1),
+                    "total_pnl_krw": round(total_pnl, 0),
+                    "is_statistically_reliable": n >= min_sample_size,
+                }
+            return res
 
     def get_position_level_stats(self) -> dict[str, Any]:
         """분할익절을 하나의 포지션으로 통합하여 포지션 단위 승률 및 손익 통계 집계"""

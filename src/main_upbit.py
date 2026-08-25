@@ -640,11 +640,15 @@ def run_cycle():
 
                 # =========================================================================
                 # 🧠 [하이브리드 2단계 게이팅: 1차 퀀트 사전 필터 ➜ 2차 AI 최종 승인]
+                # ※ 확정 완료봉(candles_5m[1:]) 기준으로 지표를 연산하여 백테스트와 100% 동일한 진입 정책 보장 (과제 C)
                 # =========================================================================
+                completed_candles_5m = candles_5m[1:] if len(candles_5m) > 25 else candles_5m
                 local_entry = entry_signal(
-                    candles=candles_5m,
+                    candles=completed_candles_5m,
                     candles_1h=candles_1h,
                     btc_regime=btc_regime,
+                    orderbook=orderbook,
+                    market=market,
                 )
                 is_holding = (coin_value >= MIN_ORDER_KRW and avg_buy_price > 0)
                 ws_health = ws_client.get_health_status(market=market) if hasattr(ws_client, "get_health_status") else {"is_healthy": True, "status": "OK"}

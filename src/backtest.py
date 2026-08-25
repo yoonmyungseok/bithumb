@@ -172,10 +172,10 @@ class QuantBacktester:
                     if gap_pct <= max_allowable_gap:
                         entry_price = open_price * (1.0 + self.slippage_rate)
 
-                        # 실제 체결가 기준으로 ATR 동적 목표가/손절가 재계산
+                        # 실제 체결가 기준으로 StrategyPolicy ATR 동적 목표가/손절가 재계산
                         current_atr = prior_atr
-                        target_offset = max(entry_price * 0.020, current_atr * 1.8)
-                        stop_offset = max(entry_price * 0.015, current_atr * 1.2)
+                        target_offset = max(entry_price * StrategyPolicy.MIN_TARGET_PCT, current_atr * StrategyPolicy.ATR_TARGET_MULTIPLIER)
+                        stop_offset = max(entry_price * StrategyPolicy.MIN_STOP_PCT, current_atr * StrategyPolicy.ATR_STOP_MULTIPLIER)
                         active_target = entry_price + target_offset
                         active_stop = entry_price - stop_offset
 
@@ -188,10 +188,10 @@ class QuantBacktester:
                             fee_rate=self.fee_rate,
                             slippage_rate=self.slippage_rate,
                             max_position_pct=0.35,
-                            min_order_krw=5000.0,
+                            min_order_krw=StrategyPolicy.MIN_ORDER_KRW,
                         )
 
-                        if trade_budget >= 5000.0:
+                        if trade_budget >= StrategyPolicy.MIN_ORDER_KRW:
                             position_vol = (trade_budget * (1.0 - self.fee_rate)) / entry_price
                             capital -= trade_budget
                             in_position = True
@@ -203,6 +203,7 @@ class QuantBacktester:
                                 "entry_price": entry_price,
                                 "trade_budget": trade_budget,
                                 "pnl_krw": 0.0,
+                                "btc_regime": curr_btc_regime,
                                 "events": ["BUY"],
                             }
                             trade_logs.append({
@@ -211,6 +212,7 @@ class QuantBacktester:
                                 "target": active_target,
                                 "stop": active_stop,
                                 "candle_idx": i,
+                                "btc_regime": curr_btc_regime,
                             })
 
             # 1. 포지션 보유 중인 경우: 보수적(Pessimistic) 청산 검사
@@ -230,10 +232,11 @@ class QuantBacktester:
                     loss_krw = proceeds - (position_vol * entry_price)
                     capital += proceeds
                     in_position = False
-                    cooldown_until_idx = i + 9  # 45분(9개 5분봉) 쿨다운
+                    cooldown_until_idx = i + int(StrategyPolicy.COOLDOWN_STOP_LOSS_SEC / 300.0)  # 45분(9개 5분봉) 쿨다운
                     if current_pos_info:
                         current_pos_info["pnl_krw"] += loss_krw
                         current_pos_info["events"].append("STOP_LOSS")
+                        current_pos_info["bars_held"] = bars_held
                         round_trip_positions.append(dict(current_pos_info))
                         current_pos_info = {}
                     trade_logs.append({
@@ -242,6 +245,8 @@ class QuantBacktester:
                         "pnl_pct": loss_pct,
                         "profit_krw": loss_krw,
                         "candle_idx": i,
+                        "bars_held": bars_held,
+                        "btc_regime": curr_btc_regime,
                     })
                     position_vol = 0.0
                     continue
@@ -265,14 +270,16 @@ class QuantBacktester:
                         "pnl_pct": pnl_pct,
                         "profit_krw": realized_profit,
                         "candle_idx": i,
+                        "bars_held": bars_held,
+                        "btc_regime": curr_btc_regime,
                     })
                     # 본절가 방어선 가동 (수수료 보전)
-                    active_stop = max(active_stop, entry_price * (1.0 + (2.0 * self.fee_rate) + 0.002))
+                    active_stop = max(active_stop, entry_price * (1.0 + (2.0 * self.fee_rate) + StrategyPolicy.MIN_PROFIT_BUFFER_PCT))
 
                 # C. 샹들리에 트레일링 스탑 (직전 확정 봉 window_desc[1:] 기준으로만 산출 -> 인트라바 미래 고가 참조 차단)
-                if partial_tp_done or (cur_price >= entry_price * 1.02):
-                    ch_stop = calculate_chandelier_exit(window_desc[1:], period=14, multiplier=1.5)
-                    trail_stop_price = max(ch_stop, entry_price * 1.002)
+                if partial_tp_done or (cur_price >= entry_price * (1.0 + StrategyPolicy.TRAILING_START_PCT)):
+                    ch_stop = calculate_chandelier_exit(window_desc[1:], period=14, multiplier=StrategyPolicy.ATR_STOP_MULTIPLIER)
+                    trail_stop_price = max(ch_stop, entry_price * (1.0 + StrategyPolicy.MIN_PROFIT_BUFFER_PCT))
                     if low_price <= trail_stop_price:
                         exit_p = trail_stop_price * (1.0 - self.slippage_rate)
                         pnl_pct = ((exit_p - entry_price) / entry_price) * 100.0
@@ -280,10 +287,11 @@ class QuantBacktester:
                         profit_krw = proceeds - (position_vol * entry_price)
                         capital += proceeds
                         in_position = False
-                        cooldown_until_idx = i + 3  # 15분 쿨다운
+                        cooldown_until_idx = i + int(StrategyPolicy.COOLDOWN_TP_SEC / 300.0)  # 15분 쿨다운
                         if current_pos_info:
                             current_pos_info["pnl_krw"] += profit_krw
                             current_pos_info["events"].append("TRAILING_STOP")
+                            current_pos_info["bars_held"] = bars_held
                             round_trip_positions.append(dict(current_pos_info))
                             current_pos_info = {}
                         trade_logs.append({
@@ -292,6 +300,8 @@ class QuantBacktester:
                             "pnl_pct": pnl_pct,
                             "profit_krw": profit_krw,
                             "candle_idx": i,
+                            "bars_held": bars_held,
+                            "btc_regime": curr_btc_regime,
                         })
                         position_vol = 0.0
                         continue
@@ -304,10 +314,10 @@ class QuantBacktester:
                     profit_krw = proceeds - (position_vol * entry_price)
                     capital += proceeds
                     in_position = False
-                    cooldown_until_idx = i + 3
                     if current_pos_info:
                         current_pos_info["pnl_krw"] += profit_krw
                         current_pos_info["events"].append("TIME_STOP")
+                        current_pos_info["bars_held"] = bars_held
                         round_trip_positions.append(dict(current_pos_info))
                         current_pos_info = {}
                     trade_logs.append({
@@ -370,7 +380,31 @@ class QuantBacktester:
             else:
                 current_losses = 0
 
-        # 1회 거래당 기대수익률 (Expectancy)
+        # 레짐별 (NORMAL / RISK_OFF) 성과 분리 집계 (과제 D)
+        regime_breakdown: dict[str, Any] = {}
+        for rg in ("NORMAL", "RISK_OFF", "CRASH"):
+            rg_trades = [t for t in completed_trades if t.get("btc_regime") == rg]
+            if rg_trades:
+                rg_win = [t for t in rg_trades if t.get("profit_krw", 0) > 0]
+                rg_loss = [t for t in rg_trades if t.get("profit_krw", 0) <= 0]
+                rg_win_rate = (len(rg_win) / len(rg_trades) * 100.0)
+                rg_win_krw = sum(t.get("profit_krw", 0) for t in rg_win)
+                rg_loss_krw = abs(sum(t.get("profit_krw", 0) for t in rg_loss))
+                rg_pf = (rg_win_krw / rg_loss_krw) if rg_loss_krw > 0 else (99.9 if rg_win_krw > 0 else 1.0)
+                rg_avg_win = (sum(t.get("pnl_pct", 0) for t in rg_win) / len(rg_win)) if rg_win else 0.0
+                rg_avg_loss = (abs(sum(t.get("pnl_pct", 0) for t in rg_loss)) / len(rg_loss)) if rg_loss else 0.0
+                rg_exp = ((rg_win_rate / 100.0) * rg_avg_win) - (((100.0 - rg_win_rate) / 100.0) * rg_avg_loss)
+                rg_avg_bars = sum(t.get("bars_held", 0) for t in rg_trades) / len(rg_trades)
+                regime_breakdown[rg] = {
+                    "trades_count": len(rg_trades),
+                    "win_rate": round(rg_win_rate, 1),
+                    "profit_factor": round(rg_pf, 2),
+                    "expectancy_pct": round(rg_exp, 2),
+                    "total_pnl_krw": round(rg_win_krw - rg_loss_krw, 0),
+                    "avg_bars_held": round(rg_avg_bars, 1),
+                }
+
+        # 1회 거래당 종합 기대수익률 (Expectancy)
         avg_win_pct = (sum(t.get("pnl_pct", 0) for t in win_trades) / len(win_trades)) if win_trades else 0.0
         avg_loss_pct = (abs(sum(t.get("pnl_pct", 0) for t in loss_trades)) / len(loss_trades)) if loss_trades else 0.0
         expectancy_pct = ((win_rate / 100.0) * avg_win_pct) - (((100.0 - win_rate) / 100.0) * avg_loss_pct)
@@ -394,6 +428,7 @@ class QuantBacktester:
             "fee_rate": self.fee_rate,
             "slippage_rate": self.slippage_rate,
             "timestop_bars": StrategyPolicy.TIME_STOP_BARS_5M,
+            "regime_breakdown": regime_breakdown,
             "completed_trades": completed_trades,
             "equity_curve": equity_curve,
         }
@@ -627,10 +662,20 @@ class QuantBacktester:
         print(f"• 총 거래 횟수: {r.get('total_trades', 0)}회 (승리: {r.get('win_trades', 0)}회 / 패배: {r.get('loss_trades', 0)}회)")
         print(f"• 실시간 승률: {r.get('win_rate', 0.0):.1f}%")
         print(f"• 손익비(Profit Factor): {r.get('profit_factor', 0.0):.2f}")
-        print(f"• 거래당 기대수익률(Expectancy): {r.get('expectancy_pct', 0.0):+.2f}%")
-        print(f"• 최대 연속 손실 횟수: {r.get('max_consecutive_losses', 0)}회")
         print(f"• 비용 가정: 수수료 {r.get('fee_rate', 0.0)*100:.3f}% / 편도 슬리피지 {r.get('slippage_rate', 0.0)*100:.3f}%")
         print(f"• 체결 모델: Next-Bar Open + Gap Filter + 확정봉 Chandelier Stop + 타임스탑 {r.get('timestop_bars', 12)}봉")
+
+        # 레짐별 성과 출력 (과제 D)
+        regime_bd = r.get("regime_breakdown", {})
+        if regime_bd:
+            print("-----------------------------------------------------------------")
+            print(" [레짐별 성과 분리 분석 (Market Regime Breakdown)]")
+            for rg_name, stats in regime_bd.items():
+                print(
+                    f"  • {rg_name:<10}: 거래 {stats['trades_count']}회 | 승률 {stats['win_rate']:.1f}% | "
+                    f"PF {stats['profit_factor']:.2f} | 기대수익 {stats['expectancy_pct']:+.2f}% | "
+                    f"손익 {stats['total_pnl_krw']:+,.0f}원 | 평균보유 {stats['avg_bars_held']}봉"
+                )
         print("=" * 65 + "\n")
 
     @staticmethod

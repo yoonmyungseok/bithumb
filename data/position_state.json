@@ -1,5 +1,7 @@
 {
-  "peaks": {},
+  "peaks": {
+    "KRW-CYS": 914.0
+  },
   "partial_tp_done": {},
   "entry_times": {
     "KRW-CYS": 1787646019.4615283
