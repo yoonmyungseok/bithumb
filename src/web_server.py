@@ -296,8 +296,10 @@ class DashboardWebServer:
                     function formatAction(action) {{
                         if (!action) return '-';
                         const a = String(action).toUpperCase();
+                        // 내부 청산 코드는 보존하고 대시보드에서만 한글 레이블로 표시한다.
                         if (a === 'BUY' || a === 'BID') return '매수';
                         if (a === 'SELL' || a === 'ASK') return '매도';
+                        if (a === 'MANUAL_EXIT') return '수동 청산';
                         if (a === 'HOLD') return '관망';
                         if (a === 'STOP_LOSS') return '손절';
                         if (a === 'PARTIAL_TP') return '1차 분할익절';
@@ -313,6 +315,7 @@ class DashboardWebServer:
                         const s = String(side).toUpperCase();
                         if (s === 'BUY' || s === 'BID') return '매수';
                         if (s === 'SELL' || s === 'ASK') return '매도';
+                        if (s === 'MANUAL_EXIT') return '수동 청산';
                         if (s === 'PARTIAL_TP' || s.includes('TP') || s.includes('WIN')) return '1차 분할익절';
                         if (s === 'TRAILING_STOP') return '트레일링 익절';
                         if (s === 'STOP_LOSS') return '손절';
@@ -340,6 +343,7 @@ class DashboardWebServer:
                     function formatReason(r) {{
                         if (!r) return '-';
                         return String(r)
+                            .replace(/MANUAL_EXIT/g, '수동 청산')
                             .replace(/TRAILING_STOP/g, '트레일링 익절')
                             .replace(/TIME_STOP/g, '타임스탑 청산')
                             .replace(/STOP_LOSS/g, '손절')

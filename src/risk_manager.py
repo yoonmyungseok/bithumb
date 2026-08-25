@@ -171,7 +171,7 @@ class TrailingStopTracker:
         self.trailing_drop_pct = trailing_drop_pct
         self.macro_defensive_mode = False
         self.peaks: dict[str, float] = {}
-        self.partial_tp_done: dict[str, bool] = {}
+        self.partial_tp_done: dict[str, Any] = {}
         self.entry_times: dict[str, float] = {}
         self._exiting_markets: set[str] = set()
         self._last_log_ts: dict[str, float] = {}
@@ -249,19 +249,30 @@ class TrailingStopTracker:
         current_profit_pct = current_profit_rate * 100.0
 
         with self._lock:
-            # 1. [1차 50% 분할 익절 체크 (+2.5% 이상 도달 시)]
-            if current_profit_rate >= 0.025 and not self.partial_tp_done.get(market, False):
-                self.partial_tp_done[market] = True
+            # 1. [3단계 다단계 분할 익절: 1차 +2.5%(30%) / 2차 +5.0%(30%) / 3차 잔여(40%) 가속 트레일링]
+            raw_stage = self.partial_tp_done.get(market, 0)
+            cur_stage = 1 if raw_stage is True else int(raw_stage or 0)
+
+            # 1-A. 1차 30% 분할 익절 (+2.5% 도달 시)
+            if current_profit_rate >= 0.025 and cur_stage < 1:
+                self.partial_tp_done[market] = 1
                 self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
                 self._save_state()
-                return "PARTIAL_TP", current_price, current_price, current_profit_pct, current_profit_pct
+                return "PARTIAL_TP_1", current_price, current_price, current_profit_pct, current_profit_pct
+
+            # 1-B. 2차 30% 추가 분할 익절 (+5.0% 도달 시)
+            if current_profit_rate >= 0.050 and cur_stage < 2:
+                self.partial_tp_done[market] = 2
+                self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
+                self._save_state()
+                return "PARTIAL_TP_2", current_price, current_price, current_profit_pct, current_profit_pct
 
             # 2. [수익률 단계별 가속 트레일링 스탑 (Ratchet Tightening)]
             # 비상 방어 모드 가동 시: +0.8%부터 즉시 0.4% 초밀착 트레일링 가동
             effective_start_pct = 0.008 if self.macro_defensive_mode else self.start_profit_pct
             has_peak_trailing = (market in self.peaks and self.peaks[market] >= avg_buy_price * (1.0 + effective_start_pct))
 
-            if current_profit_rate >= effective_start_pct or self.partial_tp_done.get(market, False) or has_peak_trailing:
+            if current_profit_rate >= effective_start_pct or (cur_stage >= 1) or has_peak_trailing:
                 previous_peak = self.peaks.get(market, avg_buy_price)
                 current_peak = max(previous_peak, current_price)
                 self.peaks[market] = current_peak
@@ -302,6 +313,16 @@ class TrailingStopTracker:
                     return "TRAILING_STOP", current_peak, trailing_stop_price, peak_profit_pct, realized_profit_pct
 
             return "NONE", self.peaks.get(market, current_price), 0.0, 0.0, current_profit_pct
+
+    def get_tp_stage(self, market: str) -> int:
+        """현재 포지션의 분할 익절 단계 반환 (0=미실행, 1=1차 완료, 2=2차 완료)"""
+        with self._lock:
+            raw = self.partial_tp_done.get(market, 0)
+            return 1 if raw is True else int(raw or 0)
+
+    def is_breakeven_active(self, market: str) -> bool:
+        """1차 분할 익절 완료 후 본전 보장(Break-Even) 스탑 가동 여부"""
+        return self.get_tp_stage(market) >= 1
 
     def clear(self, market: str):
         with self._lock:

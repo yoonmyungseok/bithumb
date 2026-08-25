@@ -9,6 +9,7 @@
 import json
 import logging
 import os
+import queue
 import threading
 import time
 import uuid
@@ -43,6 +44,8 @@ class UpbitPrivateWebSocketClient:
         self.is_running = False
         self.ws: websocket.WebSocketApp | None = None
         self._thread: threading.Thread | None = None
+        # Private WebSocket 수신 스레드에서는 영속화·손익 계산을 하지 않는다.
+        self._order_event_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1000)
 
     def _headers(self) -> list[str]:
         """업비트 Private WebSocket용 JWT 토큰 헤더 생성"""
@@ -76,11 +79,30 @@ class UpbitPrivateWebSocketClient:
                     # 업비트 필드 정규화
                     if "identifier" in event and "client_order_id" not in event:
                         event["client_order_id"] = event["identifier"]
-                    self.on_order(event)
+                    try:
+                        self._order_event_queue.put_nowait(event)
+                    except queue.Full:
+                        logger.error("Private WebSocket 주문 이벤트 큐 포화: REST 대사 전까지 신규 진입을 차단해야 합니다.")
                 elif event_type == "myasset" and self.on_asset:
                     self.on_asset(event)
         except Exception as e:
             logger.debug(f"업비트 Private WebSocket 메시지 파싱 예외: {e}")
+
+    def drain_order_events(self, limit: int = 200) -> int:
+        """메인 스레드에서 주문 이벤트를 순차 반영해 파일·손익 갱신 경합을 방지한다."""
+        drained = 0
+        while drained < limit:
+            try:
+                event = self._order_event_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                if self.on_order:
+                    self.on_order(event)
+            except Exception as exc:
+                logger.warning("Private WebSocket 주문 이벤트 후속 처리 실패: %s", exc)
+            drained += 1
+        return drained
 
     def start(self) -> None:
         if self.is_running or not self.access_key or not self.secret_key:

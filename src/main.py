@@ -41,7 +41,7 @@ from risk_manager import (
     get_kst_now_str,
 )
 from sheets_manager import SheetsManager
-from strategy_engine import classify_btc_regime, entry_signal, select_completed_candles
+from strategy_engine import StrategyPolicy, classify_btc_regime, entry_signal, select_completed_candles
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
 from web_server import DashboardWebServer
@@ -123,8 +123,9 @@ def set_is_bot_paused(val: bool) -> None:
 
 # 전역 인스턴스 초기화
 chart_renderer = ChartRenderer()
-trade_memory = TradeMemoryManager()
-order_journal = OrderJournal()
+# data/는 빗썸 전용 저장소이므로 구형 무표기 기록은 빗썸으로 한 번만 승격한다.
+trade_memory = TradeMemoryManager(exchange_scope="bithumb", legacy_exchange="bithumb")
+order_journal = OrderJournal(exchange_scope="bithumb")
 order_executor = SafeOrderExecutor(order_journal)
 cooldown_manager = CooldownManager()
 risk_guard = RiskGuard(
@@ -206,7 +207,10 @@ ws_client = BithumbWebSocketClient(
 private_ws = BithumbPrivateWebSocketClient(
     BITHUMB_ACCESS_KEY,
     BITHUMB_SECRET_KEY,
-    on_order=lambda event: order_journal.apply_private_order_event(event, fill_processor=fill_processor),
+    # Private 이벤트는 빠른 상태 알림만 제공하며 체결 확정은 REST 대사만 사용한다.
+    on_order=lambda event: order_journal.apply_private_order_event(
+        event, fill_processor=fill_processor, require_rest_confirmation=True,
+    ),
 )
 
 
@@ -310,6 +314,7 @@ def run_cycle():
             )
             if rec_cnt > 0:
                 logger.info(f"🔄 [REST 체결 재조정] 미완료 주문 {rec_cnt}건 체결 상태 최신화 완료")
+            order_journal.complete_reconciliation_if_safe()
         except Exception as rec_err:
             logger.debug(f"주기적 REST 주문 상태 재조정 예외: {rec_err}")
 
@@ -446,13 +451,16 @@ def run_cycle():
                         trailing_tracker.check_position(market, current_price, avg_buy_price)
                     )
 
-                    if action_type == "PARTIAL_TP":
-                        sell_vol = coin_available * 0.5
+                    if action_type in ("PARTIAL_TP", "PARTIAL_TP_1", "PARTIAL_TP_2"):
+                        is_stage2 = (action_type == "PARTIAL_TP_2")
+                        sell_ratio = (30.0 / 70.0) if is_stage2 else StrategyPolicy.PARTIAL_TP_1_RATIO
+                        sell_vol = coin_available * sell_ratio
                         sell_val = sell_vol * current_price
+                        stage_name = "2차 30%" if is_stage2 else "1차 30%"
                         if sell_val >= MIN_ORDER_KRW and trailing_tracker.acquire_exit_lock(market):
                             try:
                                 logger.info(
-                                    f"🎉 [{korean_name} / {market} 1차 50% 분할익절 발동] 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 50% 물량 시장가 익절!"
+                                    f"🎉 [{korean_name} / {market} {stage_name} 분할익절 발동] 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). {stage_name} 시장가 익절!"
                                 )
                                 cancel_bot_open_orders(bithumb, market)
 
@@ -463,7 +471,7 @@ def run_cycle():
                                     volume=sell_vol,
                                     ord_type="market",
                                     position_id=market,
-                                    exit_reason="PARTIAL_TP",
+                                    exit_reason=f"PARTIAL_TP_{2 if is_stage2 else 1}",
                                     avg_buy_price=avg_buy_price,
                                 )
                                 order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
@@ -482,7 +490,7 @@ def run_cycle():
                                             fee=float(remote.get("paid_fee", 0.0) or 0.0),
                                             remaining_volume=float(remote.get("remaining_volume", 0.0) or 0.0),
                                             exchange_uuid=order_uuid,
-                                            exit_reason="PARTIAL_TP",
+                                            exit_reason=f"PARTIAL_TP_{2 if is_stage2 else 1}",
                                             avg_buy_price=avg_buy_price,
                                             korean_name=korean_name,
                                             timestamp_str=now_str,
@@ -491,9 +499,9 @@ def run_cycle():
                                     logger.debug("PARTIAL_TP 체결 조회 예외: %s", exc)
 
                                 caption = (
-                                    f"🎉 <b>[{korean_name}({market}) 1차 50% 분할익절 접수]</b>\n"
+                                    f"🎉 <b>[{korean_name}({market}) {stage_name} 분할익절 접수]</b>\n"
                                     f"• 요청단가: {current_price:,.2f} KRW (+{realized_profit_pct:.2f}%)\n"
-                                    f"• 주문수량: {sell_vol:.8f} {currency}\n"
+                                    f"• 매도수량: {sell_vol:.8f} {currency}\n"
                                     f"• 주문 ID: <code>{order_uuid}</code>\n"
                                     f"• 상태: <i>거래소 접수 완료 (실체결 시 정산)</i>\n"
                                     f"• 일시: {now_str}"
@@ -596,14 +604,25 @@ def run_cycle():
                 # =========================================================================
                 if coin_value >= MIN_ORDER_KRW and avg_buy_price > 0 and not order_journal.has_active_exit_order(market):
                     entry_ts = trailing_tracker.get_entry_time(market)
+                    if entry_ts <= 0:
+                        # 진입 시점이 미등록된 포지션은 즉시 타임스탑 오발동을 방지하기 위해 현재 시각으로 보정 등록
+                        entry_ts = time.time()
+                        trailing_tracker.set_entry_time(market, entry_ts)
+                        logger.info(f"⏱️ [{market}] 진입 시점 미등록 포지션 감지 ➜ 현재 시간으로 보정 등록 ({now_str})")
+
                     hold_duration_sec = time.time() - entry_ts
                     pnl_pct_current = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
 
-                    if hold_duration_sec >= 3600 and (-1.0 <= pnl_pct_current <= 1.0):
+                    effective_time_stop = (
+                        StrategyPolicy.TIME_STOP_SECONDS_RISK_OFF
+                        if btc_regime == "RISK_OFF"
+                        else StrategyPolicy.TIME_STOP_SECONDS_NORMAL
+                    )
+                    if hold_duration_sec >= effective_time_stop and (-1.0 <= pnl_pct_current <= 1.0):
                         if trailing_tracker.acquire_exit_lock(market):
                             try:
                                 logger.info(
-                                    f"⏳ [{korean_name} / {market}] 60분 횡보 타임스탑 발동! (손익률: {pnl_pct_current:+.2f}%, 보유시간: {hold_duration_sec/60:.0f}분) ➜ 신규 기회를 위해 시장가 전량 청산"
+                                    f"⏳ [{korean_name} / {market}] {effective_time_stop/60:.0f}분 횡보 타임스탑 발동! (레짐: {btc_regime}, 손익률: {pnl_pct_current:+.2f}%, 보유시간: {hold_duration_sec/60:.0f}분) ➜ 신규 기회를 위해 시장가 전량 청산"
                                 )
                                 cancel_bot_open_orders(bithumb, market)
 
@@ -748,9 +767,17 @@ def run_cycle():
                     target_price = local_entry["target_price"]
                     stop_loss = local_entry["stop_loss"]
 
+                # 알파 스코어 연동 가변 사이징 (A+ 85점 이상 비중 확대)
+                alpha_val = local_entry.get("alpha_score", 70)
+                if alpha_val >= 85 and btc_regime != "RISK_OFF" and action == "BUY":
+                    alloc_pct = min(dyn_max_pos_pct * 1.3, 0.65)
+                    reason = f"[🔥알파 {alpha_val}점 A+ 특급 셋업 비중 확대(65%)] {reason}"
+                elif alpha_val < 75 and btc_regime != "RISK_OFF" and action == "BUY":
+                    alloc_pct = dyn_max_pos_pct * 0.7
+
                 if btc_regime == "RISK_OFF" and action == "BUY":
-                    alloc_pct = alloc_pct * 0.5
-                    reason = f"[BTC 약세 레짐 비중 50% 축소] {reason}"
+                    alloc_pct = alloc_pct * StrategyPolicy.RISK_OFF_ALLOC_RATIO
+                    reason = f"[BTC 약세 레짐 비중 30% 축소 & 알파 80점 이상 엄선] {reason}"
 
                 if fng["is_extreme_fear"] and action == "BUY":
                     alloc_pct = min(alloc_pct, 0.4)
@@ -872,7 +899,9 @@ def run_cycle():
                         )
                         continue
 
-                    if IS_BOT_PAUSED:
+                    if IS_BOT_PAUSED or not order_journal.is_entry_ready():
+                        if not order_journal.is_entry_ready():
+                            logger.warning("[%s] REST 주문 대사 미완료로 신규 매수를 차단합니다.", market)
                         logger.info(f"[{korean_name} / {market}] 봇이 일시정지 상태이므로 신규 매수를 건너뜁니다.")
                         continue
 
@@ -1153,6 +1182,9 @@ def main():
     while True:
         try:
             now_ts = time.time()
+            # 네트워크 수신 콜백은 큐 적재만 하며 주문·파일 작업은 메인 스레드에서 직렬화한다.
+            ws_client.drain_callbacks()
+            private_ws.drain_order_events()
             if now_ts - last_hb_ts >= 15.0:
                 update_heartbeat()
                 last_hb_ts = now_ts

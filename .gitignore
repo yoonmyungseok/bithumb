@@ -50,6 +50,15 @@ ENV/
 # ==========================================
 logs/
 *.log
+*.lock
+*.lock.*
+*.bak
+*.audit.json
+.watchdog*
+.heartbeat*
+data/**/.watchdog*
+data/**/.heartbeat*
+data/test_scratch/
 data/order_journal.json
 data/paper_account.json
 npm-debug.log*

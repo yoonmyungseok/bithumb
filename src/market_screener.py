@@ -6,6 +6,7 @@ from typing import Any
 import requests
 
 from bithumb_api import BithumbAPI
+from strategy_engine import StrategyPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,11 @@ class MarketScreener:
                     held_candidates.append(ticker_info)
                     continue
 
+                # 초저가 코인(10원 미만) 필터: 1틱 갭 및 슬리피지 방어
+                if trade_price < StrategyPolicy.MIN_ASSET_PRICE_KRW:
+                    logger.debug("초저가 코인 스크리닝 제외 (호가 갭 방어): %s (가격: %.4f원 < %.1f원)", market, trade_price, StrategyPolicy.MIN_ASSET_PRICE_KRW)
+                    continue
+
                 # 거래대금 필터 (최소 기준 또는 기본 유동성)
                 if acc_price_24h < self.min_trade_value_krw:
                     continue
@@ -214,7 +220,7 @@ class MarketScreener:
                     and t.get("market", "") not in EXCLUDED_STABLE_MARKETS
                     and t.get("market", "") not in excluded_manual
                     and t.get("market", "").replace("KRW-", "") not in excluded_manual
-                    and _safe_float(t.get("trade_price")) > 0
+                    and _safe_float(t.get("trade_price")) >= StrategyPolicy.MIN_ASSET_PRICE_KRW
                     and _safe_float(t.get("acc_trade_price_24h", t.get("acc_trade_value_24h", 0.0))) >= 1_000_000_000.0
                 ]
                 fallback_tickers.sort(

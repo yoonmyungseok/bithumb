@@ -9,6 +9,7 @@
 import json
 import logging
 import os
+import queue
 import threading
 import time
 import uuid
@@ -52,6 +53,8 @@ class UpbitWebSocketClient:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._whale_trades: list[dict[str, Any]] = []
+        # 네트워크 수신 스레드는 큐 적재만 수행해 ping/pong 처리를 막지 않는다.
+        self._callback_queue: queue.Queue[tuple[str, tuple[Any, ...]]] = queue.Queue(maxsize=2000)
         self.last_tick_time: float = 0.0
         self.last_tick_time_by_market: dict[str, float] = {}
         self.confirmed_markets: set[str] = set()
@@ -160,6 +163,35 @@ class UpbitWebSocketClient:
         logger.info(f"⚡ [업비트 웹소켓 구독 갱신] 총 {len(clean_markets)}개 마켓: {clean_markets}")
         self._send_subscription()
 
+    def drain_callbacks(self, limit: int = 200) -> int:
+        """메인 스레드가 가격·고래 콜백을 직렬 실행하여 주문 처리 경합을 줄인다."""
+        dispatched = 0
+        while dispatched < limit:
+            try:
+                kind, args = self._callback_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                if kind == "price" and self.on_price_callback:
+                    self.on_price_callback(*args)
+                elif kind == "whale" and self.on_whale_callback:
+                    self.on_whale_callback(*args)
+            except Exception as exc:
+                logger.warning("웹소켓 후속 콜백 처리 실패: %s", exc)
+            dispatched += 1
+        return dispatched
+
+    def _enqueue_callback(self, kind: str, args: tuple[Any, ...]) -> None:
+        """큐 포화 시 오래된 실시간 이벤트를 버려 네트워크 연결을 우선 보호한다."""
+        try:
+            self._callback_queue.put_nowait((kind, args))
+        except queue.Full:
+            try:
+                self._callback_queue.get_nowait()
+                self._callback_queue.put_nowait((kind, args))
+            except queue.Empty:
+                pass
+
     def _send_subscription(self):
         if not self.ws or not self.ws.sock or not self.ws.sock.connected:
             return
@@ -203,7 +235,7 @@ class UpbitWebSocketClient:
                         self.is_connected = True
 
                     if self.on_price_callback:
-                        self.on_price_callback(code, price)
+                        self._enqueue_callback("price", (code, price))
 
             # 2. 실시간 체결 (Trade) 수신 ➜ 고래 대량 체결 탐지
             elif msg_type == "trade":
@@ -234,7 +266,7 @@ class UpbitWebSocketClient:
                         })
 
                     if self.on_whale_callback:
-                        self.on_whale_callback(code, price, val_krw, side)
+                        self._enqueue_callback("whale", (code, price, val_krw, side))
 
         except Exception:
             pass

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import queue
 import threading
 import time
 import uuid
@@ -22,6 +23,8 @@ class BithumbPrivateWebSocketClient:
         self.on_order, self.on_asset = on_order, on_asset
         self.is_running = False
         self.ws: websocket.WebSocketApp | None = None
+        # 수신 스레드는 이벤트 큐에만 기록해 체결 파일과 손익 갱신 경합을 막는다.
+        self._order_event_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1000)
 
     def _headers(self) -> list[str]:
         token = jwt.encode({"access_key": self.access_key, "nonce": str(uuid.uuid4()), "timestamp": int(time.time() * 1000)}, self.secret_key, algorithm="HS256")
@@ -45,11 +48,30 @@ class BithumbPrivateWebSocketClient:
                     continue
                 event_type = str(event.get("type", "")).lower()
                 if event_type == "myorder" and self.on_order:
-                    self.on_order(event)
+                    try:
+                        self._order_event_queue.put_nowait(event)
+                    except queue.Full:
+                        logger.error("빗썸 Private WebSocket 주문 이벤트 큐 포화: REST 대사 전까지 신규 진입을 차단해야 합니다.")
                 elif event_type == "myasset" and self.on_asset:
                     self.on_asset(event)
         except (ValueError, TypeError):
             logger.warning("Private WebSocket 메시지 파싱 실패")
+
+    def drain_order_events(self, limit: int = 200) -> int:
+        """메인 스레드에서 주문 이벤트를 순차 처리한다."""
+        drained = 0
+        while drained < limit:
+            try:
+                event = self._order_event_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                if self.on_order:
+                    self.on_order(event)
+            except Exception as exc:
+                logger.warning("빗썸 Private WebSocket 주문 이벤트 후속 처리 실패: %s", exc)
+            drained += 1
+        return drained
 
     def start(self) -> None:
         if self.is_running or not self.access_key or not self.secret_key:

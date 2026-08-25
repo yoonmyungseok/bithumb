@@ -110,6 +110,35 @@ class TestP1Safety(unittest.TestCase):
         self.assertEqual(StrategyPolicy.PARTIAL_TP_PCT, 0.025)
         self.assertEqual(StrategyPolicy.MAX_DAILY_LOSS_PCT, 0.05)
 
+    def test_06_timestop_uninitialized_entry_time_protection(self):
+        """6. 진입 시점 미설정(0.0) 상태에서 타임스탑 오발동 방지 및 정상 60분 후 발동 검증"""
+        from risk_manager import TrailingStopTracker
+        tracker = TrailingStopTracker(data_dir=self.d_dir)
+        market = "KRW-BTC"
+
+        # 1) 진입 시간 미설정 시 0.0 반환
+        entry_ts = tracker.get_entry_time(market)
+        self.assertEqual(entry_ts, 0.0)
+
+        # 2) 진입 시간 <= 0 감지 시 현재 시간으로 자동 보정 등록
+        if entry_ts <= 0:
+            now_ts = time.time()
+            tracker.set_entry_time(market, now_ts)
+            entry_ts = tracker.get_entry_time(market)
+
+        self.assertGreater(entry_ts, 0.0)
+        hold_duration = time.time() - entry_ts
+        # 방금 보정되었으므로 보유 시간은 5초 미만이어야 하며 3600초 미만
+        self.assertLess(hold_duration, 5.0)
+        self.assertFalse(hold_duration >= StrategyPolicy.TIME_STOP_SECONDS)
+
+        # 3) 60분(3600초) 이상 실제로 경과한 경우에만 타임스탑 조건 충족
+        past_ts = time.time() - 3650
+        tracker.set_entry_time(market, past_ts)
+        entry_ts_60m = tracker.get_entry_time(market)
+        hold_duration_60m = time.time() - entry_ts_60m
+        self.assertGreaterEqual(hold_duration_60m, StrategyPolicy.TIME_STOP_SECONDS)
+
 
 if __name__ == "__main__":
     unittest.main()

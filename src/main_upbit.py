@@ -48,7 +48,7 @@ from risk_manager import (
     get_kst_now_str,
 )
 from sheets_manager import SheetsManager
-from strategy_engine import classify_btc_regime, entry_signal, select_completed_candles
+from strategy_engine import StrategyPolicy, classify_btc_regime, entry_signal, select_completed_candles
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
 from upbit_api import UpbitAPI, get_upbit_excluded_markets
@@ -157,8 +157,8 @@ def set_is_bot_paused(val: bool) -> None:
 
 # 전역 인스턴스 초기화 (업비트 독립 데이터 디렉토리 적용)
 chart_renderer = ChartRenderer()
-trade_memory = TradeMemoryManager(data_dir=DATA_DIR)
-order_journal = OrderJournal(data_dir=DATA_DIR)
+trade_memory = TradeMemoryManager(data_dir=DATA_DIR, exchange_scope="upbit")
+order_journal = OrderJournal(data_dir=DATA_DIR, exchange_scope="upbit")
 order_executor = SafeOrderExecutor(order_journal)
 cooldown_manager = CooldownManager(data_dir=DATA_DIR)
 risk_guard = RiskGuard(
@@ -258,7 +258,10 @@ if UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY:
     private_ws = UpbitPrivateWebSocketClient(
         UPBIT_ACCESS_KEY,
         UPBIT_SECRET_KEY,
-        on_order=lambda event: order_journal.apply_private_order_event(event, fill_processor=fill_processor),
+        # Private 이벤트는 알림만 반영하고 손익 확정은 REST 대사에서만 수행한다.
+        on_order=lambda event: order_journal.apply_private_order_event(
+            event, fill_processor=fill_processor, require_rest_confirmation=True,
+        ),
     )
 
 
@@ -366,6 +369,7 @@ def run_cycle():
             )
             if rec_cnt > 0:
                 logger.info(f"🔄 [업비트 REST 체결 재조정] 미완료 주문 {rec_cnt}건 체결 상태 최신화 완료")
+            order_journal.complete_reconciliation_if_safe()
         except Exception as rec_err:
             logger.debug(f"업비트 주기적 REST 주문 상태 재조정 예외: {rec_err}")
 
@@ -512,13 +516,16 @@ def run_cycle():
                         trailing_tracker.check_position(market, current_price, avg_buy_price)
                     )
 
-                    if action_type == "PARTIAL_TP":
-                        sell_vol = coin_available * 0.5
+                    if action_type in ("PARTIAL_TP", "PARTIAL_TP_1", "PARTIAL_TP_2"):
+                        is_stage2 = (action_type == "PARTIAL_TP_2")
+                        sell_ratio = (30.0 / 70.0) if is_stage2 else StrategyPolicy.PARTIAL_TP_1_RATIO
+                        sell_vol = coin_available * sell_ratio
                         sell_val = sell_vol * current_price
+                        stage_name = "2차 30%" if is_stage2 else "1차 30%"
                         if sell_val >= MIN_ORDER_KRW and trailing_tracker.acquire_exit_lock(market):
                             try:
                                 logger.info(
-                                    f"🎉 [{korean_name} / {market} 1차 50% 분할익절 발동] 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 50% 물량 시장가 익절!"
+                                    f"🎉 [{korean_name} / {market} 업비트 {stage_name} 분할익절 발동] 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). {stage_name} 시장가 익절!"
                                 )
                                 cancel_bot_open_orders(upbit, market)
 
@@ -529,7 +536,7 @@ def run_cycle():
                                     volume=sell_vol,
                                     ord_type="market",
                                     position_id=market,
-                                    exit_reason="PARTIAL_TP",
+                                    exit_reason=f"PARTIAL_TP_{2 if is_stage2 else 1}",
                                     avg_buy_price=avg_buy_price,
                                 )
                                 order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
@@ -548,7 +555,7 @@ def run_cycle():
                                             fee=float(remote.get("paid_fee", 0.0) or 0.0),
                                             remaining_volume=float(remote.get("remaining_volume", 0.0) or 0.0),
                                             exchange_uuid=order_uuid,
-                                            exit_reason="PARTIAL_TP",
+                                            exit_reason=f"PARTIAL_TP_{2 if is_stage2 else 1}",
                                             avg_buy_price=avg_buy_price,
                                             korean_name=korean_name,
                                             timestamp_str=now_str,
@@ -557,7 +564,7 @@ def run_cycle():
                                     logger.debug("업비트 PARTIAL_TP 체결 조회 예외: %s", exc)
 
                                 caption = (
-                                    f"🎉 <b>[업비트 {korean_name}({market}) 1차 50% 분할익절 접수]</b>\n"
+                                    f"🎉 <b>[업비트 {korean_name}({market}) {stage_name} 분할익절 접수]</b>\n"
                                     f"• 요청단가: {current_price:,.2f} KRW (+{realized_profit_pct:.2f}%)\n"
                                     f"• 매도수량: {sell_vol:.8f} {currency}\n"
                                     f"• 주문 ID: <code>{order_uuid}</code>\n"
@@ -621,6 +628,75 @@ def run_cycle():
                                 telegram.send_message(caption)
                             finally:
                                 trailing_tracker.release_exit_lock(market)
+
+                    # ⏳ [타임스탑: 횡보 자금 묶임 방지 (정상 60분 / 약세 30분)]
+                    entry_ts = trailing_tracker.get_entry_time(market)
+                    if entry_ts <= 0:
+                        entry_ts = time.time()
+                        trailing_tracker.set_entry_time(market, entry_ts)
+                        logger.info(f"⏱️ [{market}] 업비트 진입 시점 미등록 포지션 ➜ 현재 시간 보정 등록 ({now_str})")
+
+                    hold_duration_sec = time.time() - entry_ts
+                    pnl_pct_current = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
+                    effective_time_stop = (
+                        StrategyPolicy.TIME_STOP_SECONDS_RISK_OFF
+                        if btc_regime == "RISK_OFF"
+                        else StrategyPolicy.TIME_STOP_SECONDS_NORMAL
+                    )
+
+                    if hold_duration_sec >= effective_time_stop and (-1.0 <= pnl_pct_current <= 1.0) and not order_journal.has_active_exit_order(market):
+                        if trailing_tracker.acquire_exit_lock(market):
+                            try:
+                                logger.info(
+                                    f"⏳ [{korean_name} / {market}] 업비트 {effective_time_stop/60:.0f}분 횡보 타임스탑 발동! (레짐: {btc_regime}, 손익률: {pnl_pct_current:+.2f}%, 보유시간: {hold_duration_sec/60:.0f}분) ➜ 시장가 전량 청산"
+                                )
+                                cancel_bot_open_orders(upbit, market)
+
+                                order_res = order_executor.submit(
+                                    upbit,
+                                    market=market,
+                                    side="ask",
+                                    volume=coin_available,
+                                    ord_type="market",
+                                    position_id=market,
+                                    exit_reason="TIME_STOP",
+                                    avg_buy_price=avg_buy_price,
+                                )
+                                order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
+                                client_order_id = order_res.get("client_order_id", "")
+                                cooldown_manager.record_exit(market, "TIME_STOP")
+
+                                time.sleep(0.05)
+                                try:
+                                    remote = upbit.get_order(order_uuid) if order_uuid != "UNKNOWN" else None
+                                    if isinstance(remote, dict) and float(remote.get("executed_volume", 0.0) or 0.0) > 0:
+                                        fill_processor.process_order_fill(
+                                            order_identifier=client_order_id or order_uuid,
+                                            status=OrderStatus.FILLED if float(remote.get("remaining_volume", 0.0) or 0.0) == 0 else OrderStatus.PARTIALLY_FILLED,
+                                            executed_volume=float(remote.get("executed_volume", 0.0)),
+                                            avg_price=float(remote.get("price", 0.0) or current_price),
+                                            fee=float(remote.get("paid_fee", 0.0) or 0.0),
+                                            remaining_volume=float(remote.get("remaining_volume", 0.0) or 0.0),
+                                            exchange_uuid=order_uuid,
+                                            exit_reason="TIME_STOP",
+                                            avg_buy_price=avg_buy_price,
+                                            korean_name=korean_name,
+                                            timestamp_str=now_str,
+                                        )
+                                except Exception as exc:
+                                    logger.debug("업비트 TIME_STOP 체결 조회 예외: %s", exc)
+
+                                caption = (
+                                    f"⏳ <b>[업비트 {korean_name}({market}) 횡보 타임스탑 청산 접수]</b>\n"
+                                    f"• 요청단가: {current_price:,.2f} KRW (손익률 {pnl_pct_current:+.2f}%)\n"
+                                    f"• 보유시간: {hold_duration_sec/60:.0f}분 (레짐: {btc_regime})\n"
+                                    f"• 매도수량: {coin_available:.8f} {currency}\n"
+                                    f"• 주문 ID: <code>{order_uuid}</code>\n"
+                                    f"• 일시: {now_str}"
+                                )
+                                telegram.send_message(caption)
+                                continue
+                            finally:
                                 trailing_tracker.release_exit_lock(market)
 
                     continue
@@ -628,7 +704,10 @@ def run_cycle():
                 # =========================================================================
                 # 🛡️ [신규 매수 게이트 검증]
                 # =========================================================================
-                if IS_BOT_PAUSED or is_kill_switch:
+                if IS_BOT_PAUSED or is_kill_switch or not order_journal.is_entry_ready():
+                    # 상태 대사가 끝나기 전에는 청산·보호 주문만 허용한다.
+                    if not order_journal.is_entry_ready():
+                        logger.warning("[%s] REST 주문 대사 미완료로 신규 매수를 차단합니다.", market)
                     logger.info(f"[{market}] 봇 일시정지 또는 킬스위치 상태로 신규 매수 생략")
                     continue
 
@@ -735,9 +814,17 @@ def run_cycle():
                     target_price = local_entry.get("target_price", target_price)
                     stop_loss = local_entry.get("stop_loss", stop_loss)
 
+                # 알파 스코어 연동 가변 사이징 (A+ 85점 이상 비중 확대)
+                alpha_val = local_entry.get("alpha_score", 70)
+                if alpha_val >= 85 and btc_regime != "RISK_OFF" and action == "BUY":
+                    alloc_pct = min(dyn_max_pos_pct * 1.3, 0.65)
+                    reason = f"[🔥알파 {alpha_val}점 A+ 특급 셋업 비중 확대(65%)] {reason}"
+                elif alpha_val < 75 and btc_regime != "RISK_OFF" and action == "BUY":
+                    alloc_pct = dyn_max_pos_pct * 0.7
+
                 if btc_regime == "RISK_OFF" and action == "BUY":
-                    alloc_pct = alloc_pct * 0.5
-                    reason = f"[BTC 약세 레짐 비중 50% 축소] {reason}"
+                    alloc_pct = alloc_pct * StrategyPolicy.RISK_OFF_ALLOC_RATIO
+                    reason = f"[BTC 약세 레짐 비중 30% 축소 & 알파 80점 이상 엄선] {reason}"
 
                 if fng.get("is_extreme_fear", False) and action == "BUY":
                     alloc_pct = min(alloc_pct, 0.4)
@@ -1003,6 +1090,10 @@ def main():
     while True:
         try:
             now_ts = time.time()
+            # WebSocket 수신 스레드는 큐만 적재하므로, 주문/파일 작업은 메인 스레드에서 직렬 처리한다.
+            ws_client.drain_callbacks()
+            if private_ws:
+                private_ws.drain_order_events()
             if now_ts - last_hb_ts >= 15.0:
                 update_heartbeat()
                 last_hb_ts = now_ts

@@ -1,5 +1,6 @@
 import json
 import logging
+import queue
 import threading
 import time
 import uuid
@@ -48,6 +49,8 @@ class BithumbWebSocketClient:
         self._lock = threading.Lock()
         self._last_whale_time: dict[str, float] = {}
         self._whale_trades: list[dict[str, Any]] = []
+        # 수신 스레드와 주문 처리 스레드를 분리해 ping/pong 지연을 방지한다.
+        self._callback_queue: queue.Queue[tuple[str, tuple[Any, ...]]] = queue.Queue(maxsize=2000)
         self.last_tick_time: float = 0.0
         self.last_tick_time_by_market: dict[str, float] = {}
         self.confirmed_markets: set[str] = set()
@@ -148,6 +151,35 @@ class BithumbWebSocketClient:
         logger.info(f"⚡ [웹소켓 구독 갱신] 총 {len(clean_markets)}개 마켓: {clean_markets}")
         self._send_subscription()
 
+    def drain_callbacks(self, limit: int = 200) -> int:
+        """메인 스레드에서 실시간 후속 작업을 직렬 실행한다."""
+        drained = 0
+        while drained < limit:
+            try:
+                kind, args = self._callback_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                if kind == "price" and self.on_price_callback:
+                    self.on_price_callback(*args)
+                elif kind == "whale" and self.on_whale_callback:
+                    self.on_whale_callback(*args)
+            except Exception as exc:
+                logger.warning("빗썸 WebSocket 후속 콜백 처리 실패: %s", exc)
+            drained += 1
+        return drained
+
+    def _enqueue_callback(self, kind: str, args: tuple[Any, ...]) -> None:
+        """큐 포화 시 오래된 이벤트를 버려 연결 유지와 최신 가격 처리를 우선한다."""
+        try:
+            self._callback_queue.put_nowait((kind, args))
+        except queue.Full:
+            try:
+                self._callback_queue.get_nowait()
+                self._callback_queue.put_nowait((kind, args))
+            except queue.Empty:
+                pass
+
     def _send_subscription(self):
         if not self.ws or not self.ws.sock or not self.ws.sock.connected:
             return
@@ -191,7 +223,7 @@ class BithumbWebSocketClient:
                         self.is_connected = True
 
                     if self.on_price_callback:
-                        self.on_price_callback(code, price)
+                        self._enqueue_callback("price", (code, price))
 
             # 2. 실시간 체결 (Trade) 수신 ➜ 고래 체결 탐지
             elif msg_type == "trade":
@@ -228,7 +260,7 @@ class BithumbWebSocketClient:
                             f"🐋 [고래 대량 체결 감지] {code} {side} 체결: {val_krw:,.0f}원 ({qty:,.4f}개 @ {price:,.2f}원)"
                         )
                         if self.on_whale_callback:
-                            self.on_whale_callback(code, price, val_krw, side)
+                            self._enqueue_callback("whale", (code, price, val_krw, side))
 
         except (json.JSONDecodeError, ValueError, KeyError):
             pass

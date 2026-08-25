@@ -114,14 +114,53 @@ def status_action(exchange: str = "bithumb"):
     print()
 
 
+def _kill_matching_script_processes(patterns: list[str]) -> list[int]:
+    """PowerShell을 통해 해당 스크립트명을 포함하는 모든 고아 프로세스를 찾아 강제 종료한다."""
+    if sys.platform != "win32":
+        return []
+    killed_pids: list[int] = []
+    my_pid = os.getpid()
+    for pat in patterns:
+        ps_cmd = (
+            f"Get-CimInstance Win32_Process | "
+            f"Where-Object {{ $_.CommandLine -like '*{pat}*' }} | "
+            f"Select-Object -ExpandProperty ProcessId"
+        )
+        try:
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=5,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                for line in res.stdout.strip().splitlines():
+                    pid_str = line.strip()
+                    if pid_str.isdigit():
+                        pid_val = int(pid_str)
+                        if pid_val != my_pid:
+                            subprocess.run(
+                                ["taskkill", "/F", "/T", "/PID", str(pid_val)],
+                                check=False,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+                            killed_pids.append(pid_val)
+        except Exception:
+            pass
+    return killed_pids
+
+
 def stop_action(exchange: str = "bithumb"):
     ex_name = "업비트 (Upbit)" if exchange.lower() == "upbit" else "빗썸 (Bithumb)"
     print("======================================================")
     print(f" [{ex_name} AI Pro Quant Trading Bot 종료] ")
     print("======================================================\n")
 
-    pid_file, _ = _runtime_paths(exchange)
+    pid_file, hb_file = _runtime_paths(exchange)
     pids = find_bot_processes(exchange)
+    stopped_count = 0
     if pids:
         for pid in pids:
             try:
@@ -133,6 +172,7 @@ def stop_action(exchange: str = "bithumb"):
                     stderr=subprocess.DEVNULL,
                 )
                 print(f"🛑 [종료 완료] {ex_name} 봇 PID: {pid}")
+                stopped_count += 1
             except Exception as e:
                 print(f"⚠️ PID {pid} 종료 실패: {e}")
         try:
@@ -141,7 +181,24 @@ def stop_action(exchange: str = "bithumb"):
             pass
         except OSError as exc:
             print(f"⚠️ PID 파일 정리 실패: {exc}")
-        print(f"\n✅ {ex_name} 워치독 및 자식 봇 종료 요청을 완료했습니다.")
+
+    # 고아 워치독 및 봇 잔여 프로세스 전수 소탕
+    script_patterns = ["watchdog_upbit.py", "main_upbit.py"] if exchange.lower() == "upbit" else ["watchdog.py", "main.py"]
+    orphaned_pids = _kill_matching_script_processes(script_patterns)
+    for opid in orphaned_pids:
+        if str(opid) not in pids:
+            print(f"🛑 [백그라운드 잔여 프로세스 강제 정리] {ex_name} PID: {opid}")
+            stopped_count += 1
+
+    # 하트비트 파일 정리
+    if os.path.exists(hb_file):
+        try:
+            os.remove(hb_file)
+        except OSError:
+            pass
+
+    if stopped_count > 0:
+        print(f"\n✅ {ex_name} 워치독 및 봇 프로세스(총 {stopped_count}개)를 완전히 종료했습니다.")
     else:
         print(f"ℹ️ 현재 실행 중인 {ex_name} 봇 프로세스가 없습니다.")
     time.sleep(1)

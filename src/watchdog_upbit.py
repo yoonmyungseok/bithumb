@@ -4,11 +4,13 @@
 """
 
 import logging
+import json
 import os
 import signal
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 
@@ -78,6 +80,33 @@ def send_telegram_alert(msg: str):
         logger.warning(f"텔레그램 알림 전송 실패: {e}")
 
 
+def acquire_single_owner_lock(lock_file_path: str):
+    """운영체제 파일 잠금으로 워치독 단일 소유자를 보장하고 감사용 토큰을 남긴다."""
+    lock_file = open(lock_file_path, "a+", encoding="utf-8")
+    lock_file.seek(0)
+    if not lock_file.read(1):
+        lock_file.seek(0)
+        lock_file.write("0")
+        lock_file.flush()
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock_file.close()
+        return None
+
+    # PID와 시작 토큰은 운영 로그·장애 분석용이며 잠금의 진실 원천은 OS 파일 잠금이다.
+    owner_path = f"{lock_file_path}.owner.json"
+    with open(owner_path, "w", encoding="utf-8") as owner_file:
+        json.dump({"pid": os.getpid(), "started_at": time.time(), "start_token": uuid.uuid4().hex}, owner_file)
+    return lock_file
+
+
 def main():
     logger.info("======================================================")
     logger.info("  Upbit Bot Smart Watchdog Engine 가동 시작")
@@ -90,6 +119,13 @@ def main():
 
     main_script = os.path.join(project_root, "src", "main_upbit.py")
     hb_file = os.path.join(project_root, "data", "upbit", ".heartbeat")
+
+    lock_file_path = os.path.join(project_root, "data", "upbit", ".watchdog.lock")
+    os.makedirs(os.path.dirname(lock_file_path), exist_ok=True)
+    lock_file = acquire_single_owner_lock(lock_file_path)
+    if lock_file is None:
+        logger.warning("⚠️ 이미 실행 중인 업비트 워치독 인스턴스가 존재합니다. 중복 실행을 방지하고 종료합니다.")
+        sys.exit(0)
 
     recent_crashes: list[float] = []
     is_terminating = False

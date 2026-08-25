@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 from bithumb_api import BithumbAPI
+from strategy_engine import StrategyPolicy
 from order_safety import CooldownManager, OrderFillProcessor, OrderJournal, OrderStatus, SafeOrderExecutor
 from risk_manager import DailyRiskManager, TrailingStopTracker, get_kst_now_str
 from telegram_alert import TelegramAlert
@@ -337,6 +338,11 @@ class RealtimeRiskEngine:
             # 진입 직후 1틱(-0.3%) 털림 방지: 손절선은 평단가 대비 최소 -1.5% 이하로 안전 마진 보장
             min_sl_threshold = avg_buy_price * 0.985
             effective_stop_loss = min(raw_stop_loss, min_sl_threshold) if raw_stop_loss > 0 else (avg_buy_price * 0.970)
+
+            # 🛡️ [수익 보존 브레이크이븐]: 1차 분할 익절(+2.5%) 완료 시 손절선을 '평단가 + 0.3%'로 자동 락인
+            if self.trailing_tracker.is_breakeven_active(market):
+                breakeven_sl = avg_buy_price * (1.0 + StrategyPolicy.BREAKEVEN_STOP_PCT)
+                effective_stop_loss = max(effective_stop_loss, breakeven_sl)
             now_str = get_kst_now_str()
 
             # 0. 단일 종목 절대 손실 하드 스탑 (Hard-Stop Guard: -4.5% 도달 시 틱 카운트 지연 없이 즉각 청산)
@@ -412,13 +418,16 @@ class RealtimeRiskEngine:
                     if market in self._sl_hit_count:
                         self._sl_hit_count[market] = 0
 
-            # 2. 실시간 50% 분할 익절 & 가속 트레일링 스탑 검사
+            # 2. 실시간 3단계 분할 익절 & 가속 트레일링 스탑 검사
             action_type, peak_p, _trigger_p, peak_profit_pct, realized_profit_pct = (
                 self.trailing_tracker.check_position(market, current_price, avg_buy_price)
             )
 
-            if action_type == "PARTIAL_TP":
-                sell_vol = coin_available * 0.5
+            if action_type in ("PARTIAL_TP", "PARTIAL_TP_1", "PARTIAL_TP_2"):
+                is_stage2 = (action_type == "PARTIAL_TP_2")
+                # 1차: 보유의 30% 매도 | 2차: 잔여의 42.85% (원금 대비 30%) 매도 ➔ 최종 40% 잔여 러너 유지
+                sell_ratio = (30.0 / 70.0) if is_stage2 else StrategyPolicy.PARTIAL_TP_1_RATIO
+                sell_vol = coin_available * sell_ratio
                 sell_val = sell_vol * current_price
                 if sell_val >= self.min_order_krw:
                     with self._lock:
@@ -430,8 +439,9 @@ class RealtimeRiskEngine:
                         return
 
                     try:
+                        stage_label = "2차 +5.0%(30%)" if is_stage2 else "1차 +2.5%(30%)"
                         logger.info(
-                            f"⚡ [실시간 1차 50% 분할익절] {korean_name}({market}) 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 즉시 50% 시장가 익절!"
+                            f"⚡ [실시간 {stage_label} 분할익절] {korean_name}({market}) 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 시장가 분할 익절!"
                         )
                         self.cancel_bot_open_orders(market)
 
@@ -449,23 +459,24 @@ class RealtimeRiskEngine:
                             exchange=bithumb,
                             market=market,
                             korean_name=korean_name,
-                            side_label="PARTIAL_TP",
+                            side_label=f"PARTIAL_TP_{2 if is_stage2 else 1}",
                             order_res=order_res,
                             avg_buy_price=avg_buy_price,
                             fallback_price=current_price,
                             fallback_vol=sell_vol,
-                            exit_reason="0.1초 실시간 1차 +2.5% 도달 50% 분할 익절",
-                            sheet_order_uuid="REALTIME-TP50",
-                            sheet_status_reason=f"0.1초 실시간 1차 50% 분할익절 (+{realized_profit_pct:.2f}%)",
+                            exit_reason=f"0.1초 실시간 {stage_label} 도달 분할 익절",
+                            sheet_order_uuid=f"REALTIME-TP{2 if is_stage2 else 1}",
+                            sheet_status_reason=f"0.1초 실시간 {stage_label} 분할익절 (+{realized_profit_pct:.2f}%)",
                             now_str=now_str,
                         )
 
+                        be_note = "🛡️ 본전 보장(Break-Even +0.3%) 스탑 활성화" if not is_stage2 else "🚀 잔여 40% 대세 트레일링 러너 추종"
                         self.telegram.send_message(
-                            f"🎉 <b>[실시간 1차 50% 분할익절 체결]</b>\n"
+                            f"🎉 <b>[실시간 {stage_label} 분할익절 체결]</b>\n"
                             f"• 종목: {korean_name}({market})\n"
                             f"• 체결가: {res_data['exec_price']:,.2f} KRW (+{res_data['pnl_pct']:.2f}%)\n"
                             f"• 실현수익: +{res_data['pnl_krw']:,.0f} KRW 💰\n"
-                            f"• 남은 50%: 무한 트레일링 러너 자동 전환\n"
+                            f"• {be_note}\n"
                             f"• 일시: {now_str}"
                         )
                     finally:

@@ -16,20 +16,31 @@ class StrategyPolicy:
     MIN_STOP_PCT: float = 0.015          # 기본 최소 손절선 -1.5%
     STOP_LOSS_PCT: float = 0.025         # 기본 손절 -2.5% (-4.5% 비상 하드스탑)
 
-    # 2. 익절 및 트레일링 스탑
-    PARTIAL_TP_PCT: float = 0.025        # +2.5% 1차 50% 분할익절
+    # 2. 익절 및 트레일링 스탑 (3단계 다단계 분할 익절 & 본전 락인)
+    PARTIAL_TP_PCT: float = 0.025        # 기본 1차 익절 기준 +2.5%
+    PARTIAL_TP_1_PCT: float = 0.025      # 1차 +2.5% 도달 시 30% 분할 익절
+    PARTIAL_TP_1_RATIO: float = 0.30     # 1차 익절 비중 (30%)
+    PARTIAL_TP_2_PCT: float = 0.050      # 2차 +5.0% 도달 시 30% 추가 익절
+    PARTIAL_TP_2_RATIO: float = 0.30     # 2차 익절 비중 (원금 기준 30% -> 잔여 70% 중 42.85%)
+    BREAKEVEN_STOP_PCT: float = 0.003    # 1차 익절 완료 후 본전 보장 스탑 (+0.3% 수수료 보장)
     TRAILING_START_PCT: float = 0.020    # +2.0% 트레일링 스탑 활성화
     TRAILING_DROP_PCT: float = 0.012     # 최고점 대비 1.2% 하락 시 시장가 청산
     MIN_PROFIT_BUFFER_PCT: float = 0.005 # +0.5% 최소 보장 마진 (v6.1 상향)
 
     # 3. 시간 기반 청산 (타임스탑) & 쿨다운
-    TIME_STOP_SECONDS: int = 3600        # 60분 타임스탑 (실거래 초 단위)
+    TIME_STOP_SECONDS: int = 3600        # 60분 타임스탑 (기본 정상장, 실거래 초 단위)
+    TIME_STOP_SECONDS_NORMAL: int = 3600 # 정상장 60분 타임스탑
+    TIME_STOP_SECONDS_RISK_OFF: int = 1800 # RISK_OFF 약세장 30분 단축 타임스탑
     TIME_STOP_BARS_5M: int = 12          # 5분봉 12개 = 60분 (백테스트 캔들 단위)
+    TIME_STOP_BARS_5M_RISK_OFF: int = 6  # 5분봉 6개 = 30분 (RISK_OFF 백테스트 캔들 단위)
     COOLDOWN_STOP_LOSS_SEC: float = 2700.0  # 손절 후 쿨다운 45분
     COOLDOWN_TP_SEC: float = 900.0       # 익절 후 쿨다운 15분
 
     # 4. 하드 안전 게이트 (Hard Safety Gates) 임계값
-    ALPHA_BUY_THRESHOLD: int = 65        # 7대 팩터 복합 알파 승인 점수 (100점 만점)
+    ALPHA_BUY_THRESHOLD: int = 65        # 7대 팩터 복합 알파 승인 점수 (100점 만점, 기본/호환용)
+    ALPHA_BUY_THRESHOLD_NORMAL: int = 65 # 정상장 7대 팩터 복합 알파 승인 점수
+    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 80 # RISK_OFF 약세장 초고알파 엄선 승인 점수
+    MIN_ASSET_PRICE_KRW: float = 10.0    # 10원 미만 극초저가 코인 차단 (호가 갭/슬리피지 방어)
     RSI_MIN_NORMAL: float = 35.0         # 정상장 RSI 최소치 (모멘텀 실종 방어)
     RSI_MAX_NORMAL: float = 75.0         # 정상장 RSI 최대치 (극초과열 추격 방어)
     RSI_MIN_RISK_OFF: float = 40.0       # RISK_OFF RSI 최소치
@@ -37,6 +48,7 @@ class StrategyPolicy:
     PCT_B_MIN: float = 0.15              # 볼린저 밴드 %B 최소치 (하단 밴드 붕괴 방어)
     PCT_B_MAX: float = 0.95              # 볼린저 밴드 %B 최대치 (상단 밴드 극단 이탈 방어)
     MA_ALIGNMENT_RATIO: float = 0.995    # MA5 >= MA20 * 0.995 (역배열 폭락세 차단)
+    RISK_OFF_ALLOC_RATIO: float = 0.3    # RISK_OFF 진입 비중 축소 비율 (30%)
 
     # 5. 거시 시장 리스크 및 거래소 비용
     BTC_CRASH_THRESHOLD_PCT: float = 0.015  # BTC 15분 -1.5% 급락 시 차단
@@ -490,8 +502,14 @@ def calculate_composite_alpha_score(
     else:
         score_vol = 4
 
+    regime_upper = btc_regime.upper()
+    buy_threshold = (
+        StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF
+        if regime_upper == "RISK_OFF"
+        else StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL
+    )
     total_score = score_mtf + score_vwap + score_macd + score_rsi + score_bb + score_orderflow + score_vol
-    allow_buy = (total_score >= StrategyPolicy.ALPHA_BUY_THRESHOLD) and (btc_regime.upper() not in ("CRASH", "BEAR_VOLATILE"))
+    allow_buy = (total_score >= buy_threshold) and (regime_upper not in ("CRASH", "BEAR_VOLATILE"))
 
     breakdown = {
         "mtf_score": score_mtf,
@@ -536,6 +554,14 @@ def entry_signal(
     if len(candles) < 25:
         return {"allow_buy": False, "reason": "캔들 데이터 부족"}
 
+    prices_check = [float(c.get("trade_price", 0.0)) for c in candles]
+    cur_check = prices_check[0] if prices_check else 0.0
+    if cur_check < StrategyPolicy.MIN_ASSET_PRICE_KRW:
+        return {
+            "allow_buy": False,
+            "reason": f"초저가 종목 호가 갭 위험 차단 (현재가 {cur_check:,.2f}원 < {StrategyPolicy.MIN_ASSET_PRICE_KRW:,.1f}원)",
+        }
+
     regime_upper = btc_regime.upper()
     if regime_upper in ("CRASH", "BEAR_VOLATILE"):
         return {"allow_buy": False, "reason": f"BTC 시장 레짐 경보 ({btc_regime})"}
@@ -564,8 +590,9 @@ def entry_signal(
         prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
         ema20_1h = calculate_ema(prices_1h, 20)
         current_1h = prices_1h[0]
-        mtf_allowed = current_1h >= (ema20_1h * 0.990)
-        mtf_reason = f"1H {current_1h:.1f} {'>=' if mtf_allowed else '<'} EMA20 {ema20_1h:.1f}"
+        mtf_ratio = 1.002 if regime_upper == "RISK_OFF" else 0.990
+        mtf_allowed = current_1h >= (ema20_1h * mtf_ratio)
+        mtf_reason = f"1H {current_1h:.1f} {'>=' if mtf_allowed else '<'} EMA20 {ema20_1h:.1f} (기준 {mtf_ratio:.3f})"
 
     # 2. [과제 B] 하드 안전 게이트 (Hard Safety Gates - 알파 점수로 우회 불가)
     hard_gate_btc = regime_upper not in ("CRASH", "BEAR_VOLATILE")
@@ -584,7 +611,11 @@ def entry_signal(
     signal_5m = (ma5 > ma20) and (rsi_min <= rsi <= rsi_max) and (pct_b_min <= pct_b <= pct_b_max)
 
     alpha_score_passed = alpha_res["allow_buy"]
-    allowed = hard_gates_passed and (signal_5m or alpha_score_passed)
+    # RISK_OFF 약세장에서는 단순 5분봉 지표만으로 우회 불가하며, 반드시 알파 80점 이상 엄선 조건(alpha_score_passed)을 충족해야 함
+    if regime_upper == "RISK_OFF":
+        allowed = hard_gates_passed and alpha_score_passed
+    else:
+        allowed = hard_gates_passed and (signal_5m or alpha_score_passed)
 
     # 4. [과제 A] StrategyPolicy SSOT 기반 동적 손익비 산출
     atr_data = calculate_atr(candles, period=14)

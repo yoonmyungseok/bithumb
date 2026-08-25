@@ -19,21 +19,81 @@ class TradeMemoryManager:
     - 시간이 지날수록 동일한 실수를 반복하지 않고 승률이 우상향하도록 진화
     """
 
-    def __init__(self, memory_file: str | None = None, data_dir: str | None = None):
+    def __init__(
+        self,
+        memory_file: str | None = None,
+        data_dir: str | None = None,
+        exchange_scope: str = "",
+        legacy_exchange: str = "",
+    ):
         self._lock = threading.RLock()
         self.data_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(self.data_dir, exist_ok=True)
         self.memory_file = memory_file or os.path.join(self.data_dir, "trade_memory.json")
+        # 거래소별 성과 표본을 분리해 다른 거래소 결과가 AI 피드백에 섞이지 않게 한다.
+        self.exchange_scope = exchange_scope.strip().lower()
+        # 전용 저장소에서만 허용하는 구형 무표기 기록의 안전한 귀속 대상이다.
+        self.legacy_exchange = legacy_exchange.strip().lower()
         self.trades: list[dict[str, Any]] = []
         self._load_memory()
 
     def _load_memory(self):
         with self._lock:
             data = load_json_with_backup_recovery(self.memory_file, default=[])
+            stored_scope = ""
             if isinstance(data, list):
-                self.trades = data
+                loaded_trades = data
             elif isinstance(data, dict):
-                self.trades = data.get("completed_trades", [])
+                loaded_trades = data.get("completed_trades", [])
+                stored_scope = str(data.get("exchange_scope", "")).lower()
+            else:
+                loaded_trades = []
+            if self.exchange_scope:
+                normalized_trades: list[dict[str, Any]] = []
+                foreign: list[dict[str, Any]] = []
+                legacy_normalized = False
+                for trade in loaded_trades:
+                    record_scope = str(trade.get("exchange", "")).lower()
+                    if record_scope == self.exchange_scope:
+                        normalized_trades.append(trade)
+                    elif not record_scope and self.legacy_exchange == self.exchange_scope:
+                        # 빗썸 전용 data/의 구형 기록만 명시적으로 빗썸 소유로 승격한다.
+                        normalized_trade = dict(trade)
+                        normalized_trade["exchange"] = self.exchange_scope
+                        normalized_trades.append(normalized_trade)
+                        legacy_normalized = True
+                    else:
+                        foreign.append(trade)
+
+                self.trades = normalized_trades
+                # 신규 빈 파일은 마이그레이션 대상이 아니며 불필요한 운영 경고를 남기지 않는다.
+                needs_migration = bool(loaded_trades) and bool(
+                    foreign or legacy_normalized or stored_scope != self.exchange_scope
+                )
+                if needs_migration:
+                    # 원본 전체와 격리 대상 모두 보존하므로 운영 데이터는 손실되지 않는다.
+                    archive_path = f"{self.memory_file}.{self.exchange_scope}.pre-migration.audit.json"
+                    write_json_atomically(
+                        archive_path,
+                        {"schema_version": 2, "exchange_scope": self.exchange_scope, "source_records": loaded_trades},
+                    )
+                    # 타 거래소·판별 불가 구형 기록은 삭제하지 않고 감사 파일에 따로 남긴다.
+                    write_json_atomically(
+                        f"{self.memory_file}.{self.exchange_scope}.foreign-trades.audit.json",
+                        {"schema_version": 2, "completed_trades": foreign},
+                    )
+                    # 이후 재조회에서는 전용 래퍼만 읽게 되어 동일 경고가 반복되지 않는다.
+                    write_json_atomically(self.memory_file, {
+                        "schema_version": 2,
+                        "exchange_scope": self.exchange_scope,
+                        "completed_trades": self.trades[-50:],
+                    })
+                    logger.warning(
+                        "거래 메모리 마이그레이션 완료: %d건 격리, %d건을 %s 범위로 유지했습니다.",
+                        len(foreign), len(self.trades), self.exchange_scope,
+                    )
+            else:
+                self.trades = loaded_trades
 
     def load_memory(self) -> dict[str, Any]:
         """Load memory and return dict for compatibility."""
@@ -50,7 +110,11 @@ class TradeMemoryManager:
     def _save_memory(self):
         with self._lock:
             try:
-                write_json_atomically(self.memory_file, self.trades[-50:])
+                write_json_atomically(self.memory_file, {
+                    "schema_version": 2,
+                    "exchange_scope": self.exchange_scope,
+                    "completed_trades": self.trades[-50:],
+                })
             except OSError as e:
                 logger.warning(f"매매 메모리 저장 실패: {e}")
 
@@ -78,6 +142,10 @@ class TradeMemoryManager:
         **extra_fields: Any,
     ):
         """완료된 거래 내역 및 실제 체결 결과 복기 기록 (과제 F 정량 태깅)"""
+        if self.exchange_scope and exchange.lower() != self.exchange_scope:
+            # 호출 실수로 타 거래소 결과가 현재 학습 파일에 섞이는 것을 원천 차단한다.
+            logger.error("거래소 범위 불일치 거래 메모리 기록 차단: %s != %s", exchange, self.exchange_scope)
+            return
         is_win = pnl_krw > 0
         lesson = ""
         if not is_win:

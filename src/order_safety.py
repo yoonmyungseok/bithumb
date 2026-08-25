@@ -134,6 +134,8 @@ class OrderStatus:
     CANCELED = "CANCELED"
     FAILED = "FAILED"
     REJECTED = "REJECTED"
+    # Private WebSocket 이벤트만으로는 실제 평균 체결가를 확정하지 않는다.
+    RECONCILIATION_PENDING = "RECONCILIATION_PENDING"
 
 
 class AmbiguousOrderError(RuntimeError):
@@ -143,30 +145,63 @@ class AmbiguousOrderError(RuntimeError):
 class OrderJournal:
     """Small append-only JSON journal, written atomically for crash recovery (Schema v2)."""
 
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
 
-    def __init__(self, path: str | None = None, data_dir: str | None = None):
+    def __init__(self, path: str | None = None, data_dir: str | None = None, exchange_scope: str = ""):
         self._lock = threading.RLock()
         d_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(d_dir, exist_ok=True)
         self.path = path or os.path.join(d_dir, "order_journal.json")
+        # 저장소 간 주문/학습 데이터 혼입을 막기 위한 명시적 거래소 범위다.
+        self.exchange_scope = exchange_scope.strip().lower()
+        self.reconciliation_state = "PENDING"
+        self._last_reconcile_failed_count = 0
         self.orders: list[dict[str, Any]] = self._load()
 
     def _load(self) -> list[dict[str, Any]]:
         data = load_json_with_backup_recovery(self.path, default=[])
+        stored_scope = ""
         if isinstance(data, dict):
             # Schema v2 object wrapper 호환
-            return data.get("orders", [])
+            stored_scope = str(data.get("exchange_scope", "")).lower()
+            self.reconciliation_state = str(data.get("reconciliation_state", "PENDING"))
+            orders = data.get("orders", [])
         elif isinstance(data, list):
             # Schema v1 raw list 호환
-            return data
-        return []
+            orders = data
+        else:
+            return []
+
+        if not isinstance(orders, list):
+            return []
+        if self.exchange_scope and stored_scope and stored_scope != self.exchange_scope:
+            logger.warning("주문 저널 거래소 범위 불일치(%s != %s): 신규 매수를 차단합니다.", stored_scope, self.exchange_scope)
+            self.reconciliation_state = "PENDING"
+        if not self.exchange_scope:
+            return orders
+
+        active, quarantined = [], []
+        for order in orders:
+            order_exchange = str(order.get("exchange", "")).lower()
+            if order_exchange and order_exchange != self.exchange_scope:
+                quarantined.append(order)
+            else:
+                active.append(order)
+        if quarantined:
+            # 다른 거래소 기록은 삭제하지 않고 별도 감사 파일에 보존한다.
+            audit_path = f"{self.path}.{self.exchange_scope}.foreign-orders.audit.json"
+            write_json_atomically(audit_path, {"schema_version": self.SCHEMA_VERSION, "orders": quarantined})
+            logger.warning("다른 거래소 주문 %d건을 감사 파일로 격리했습니다.", len(quarantined))
+            self.reconciliation_state = "PENDING"
+        return active
 
     def _save(self) -> None:
         try:
             payload = {
                 "schema_version": self.SCHEMA_VERSION,
                 "updated_at": time.time(),
+                "exchange_scope": self.exchange_scope,
+                "reconciliation_state": self.reconciliation_state,
                 "orders": self.orders[-500:],
             }
             write_json_atomically(self.path, payload)
@@ -303,6 +338,7 @@ class OrderJournal:
                     OrderStatus.ACKNOWLEDGED,
                     OrderStatus.OPEN,
                     OrderStatus.PARTIALLY_FILLED,
+                    OrderStatus.RECONCILIATION_PENDING,
                 }
                 for order in self.orders
             )
@@ -327,6 +363,7 @@ class OrderJournal:
                     OrderStatus.ACKNOWLEDGED,
                     OrderStatus.OPEN,
                     OrderStatus.PARTIALLY_FILLED,
+                    OrderStatus.RECONCILIATION_PENDING,
                 }
                 for order in self.orders
             )
@@ -339,6 +376,8 @@ class OrderJournal:
     ) -> int:
         """Update acknowledged orders from the exchange's canonical order endpoint with execution reconciler (P0-1)."""
         updated = 0
+        # 이번 전체 대사 회차의 실패만으로 진입 재개 여부를 판단한다.
+        self._last_reconcile_failed_count = 0
         state_map = {
             "wait": OrderStatus.OPEN,
             "watch": OrderStatus.OPEN,
@@ -357,6 +396,7 @@ class OrderJournal:
                 OrderStatus.ACKNOWLEDGED,
                 OrderStatus.OPEN,
                 OrderStatus.PARTIALLY_FILLED,
+                OrderStatus.RECONCILIATION_PENDING,
             }:
                 continue
             try:
@@ -366,7 +406,10 @@ class OrderJournal:
                     remote = get_order_by_client_id(local["client_order_id"])
                 else:
                     continue
-            except Exception:
+            except Exception as exc:
+                # 대사 실패 시 신규 진입을 열지 않도록 실패 횟수를 보존한다.
+                self._last_reconcile_failed_count += 1
+                logger.warning("주문 REST 대사 실패(%s): %s", local.get("client_order_id"), exc)
                 continue
 
             if not isinstance(remote, dict):
@@ -387,6 +430,27 @@ class OrderJournal:
                 avg_p = float(remote.get("price", 0.0))
             elif float(local.get("price", 0.0) or 0.0) > 0:
                 avg_p = float(local.get("price", 0.0))
+
+            # 거래소 응답의 수량·가격이 모순되면 손익을 산출하지 않고 재대사를 요구한다.
+            requested = float(local.get("requested_volume", 0.0) or 0.0)
+            tolerance = max(1e-8, requested * 1e-6)
+            invalid_fill = (
+                exec_vol < 0 or rem_vol < 0
+                or (requested > 0 and exec_vol > requested + tolerance)
+                or (requested > 0 and exec_vol + rem_vol > requested + tolerance)
+                or (exec_vol > 0 and avg_p <= 0)
+                or (raw_state == "done" and rem_vol > tolerance)
+            )
+            if invalid_fill:
+                self._last_reconcile_failed_count += 1
+                self.mark(
+                    local["client_order_id"], OrderStatus.RECONCILIATION_PENDING,
+                    reconciliation_reason="REST 체결 수량 또는 평균 체결가 검증 실패",
+                    exchange_state=raw_state,
+                    last_event_at=time.time(),
+                )
+                logger.error("🛑 [%s] REST 체결 데이터가 모순되어 신규 진입을 차단합니다.", local.get("market"))
+                continue
 
             if fill_processor:
                 fill_processor.process_order_fill(
@@ -436,8 +500,32 @@ class OrderJournal:
                     break
         return matched
 
-    def apply_private_order_event(self, event: dict[str, Any], fill_processor: Any | None = None) -> bool:
-        """Apply a v2 MyOrder event keyed by the exchange client_order_id."""
+    def is_entry_ready(self) -> bool:
+        """초기 REST 대사 전에는 신규 매수만 차단하고 기존 포지션 보호는 계속 허용한다."""
+        return self.reconciliation_state == "READY"
+
+    def complete_reconciliation_if_safe(self) -> bool:
+        """모든 미완료 주문의 REST 대사가 성공한 경우에만 신규 진입을 재개한다."""
+        with self._lock:
+            unresolved = any(order.get("status") in {
+                OrderStatus.PENDING_SUBMISSION, OrderStatus.UNKNOWN, OrderStatus.ACKNOWLEDGED,
+                OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED, OrderStatus.RECONCILIATION_PENDING,
+            } for order in self.orders)
+            if self._last_reconcile_failed_count or unresolved:
+                return False
+            if self.reconciliation_state != "READY":
+                self.reconciliation_state = "READY"
+                self._save()
+                logger.warning("✅ REST 주문 대사가 완료되어 신규 매수 안전 모드를 해제했습니다.")
+            return True
+
+    def apply_private_order_event(
+        self,
+        event: dict[str, Any],
+        fill_processor: Any | None = None,
+        require_rest_confirmation: bool = False,
+    ) -> bool:
+        """Private WebSocket 이벤트를 반영하되, 필요 시 REST 대사 전 손익 확정을 금지한다."""
         client_id = event.get("client_order_id") or event.get("coid") or event.get("identifier")
         state = str(event.get("state") or event.get("s") or event.get("status") or "").lower()
         mapped = {
@@ -449,11 +537,33 @@ class OrderJournal:
         if not client_id or not mapped:
             return False
 
-        exec_vol = float(event.get("executed_volume") or event.get("ev") or event.get("volume") or 0.0)
+        # volume은 업비트에서 주문 원수량일 수 있어 체결 누적수량으로 사용하지 않는다.
+        exec_vol = float(event.get("executed_volume") or event.get("ev") or 0.0)
         rem_vol = float(event.get("remaining_volume") or event.get("rv") or 0.0)
         price_val = float(event.get("price") or event.get("p") or 0.0)
         fee_val = float(event.get("paid_fee") or event.get("fee") or 0.0)
         oid = event.get("order_id") or event.get("oid") or event.get("uuid")
+
+        local = self.get_order_by_client_id(str(client_id))
+        if not local:
+            return False
+        requested = float(local.get("requested_volume", 0.0) or 0.0)
+        tolerance = max(1e-8, requested * 1e-6)
+        invalid = (
+            exec_vol < 0 or rem_vol < 0
+            or (requested > 0 and exec_vol > requested + tolerance)
+            or (requested > 0 and exec_vol + rem_vol > requested + tolerance)
+        )
+        if require_rest_confirmation or invalid:
+            # WebSocket은 빠른 알림용이며, 평균 체결가·수수료는 REST가 기준이다.
+            self.mark(
+                str(client_id), OrderStatus.RECONCILIATION_PENDING,
+                exchange_order_id=oid,
+                exchange_state=state,
+                reconciliation_reason="Private WebSocket 수신 후 REST 체결 대기",
+                last_event_at=time.time(),
+            )
+            return True
 
         if fill_processor:
             fill_processor.process_order_fill(
@@ -669,6 +779,16 @@ class OrderFillProcessor:
                 else:
                     # 매도 체결: 실제 체결 증가분만 실현 손익 계산 (P0-1, P0-3)
                     effective_avg_buy_price = avg_buy_price or float(order.get("avg_buy_price", 0.0) or 0.0)
+                    if effective_price <= 0 or effective_avg_buy_price <= 0:
+                        # 0원 체결/진입가는 손익·쿨다운·학습 데이터에 절대 기록하지 않는다.
+                        self.order_journal.mark(
+                            client_order_id,
+                            OrderStatus.RECONCILIATION_PENDING,
+                            reconciliation_reason="매도 체결가 또는 진입가가 0 이하",
+                            last_event_at=time.time(),
+                        )
+                        logger.error("🛑 [%s] 0원 체결 데이터로 매도 손익 반영을 차단했습니다.", market)
+                        return {"processed": False, "fill_delta": 0.0, "pnl_krw": 0.0, "status": OrderStatus.RECONCILIATION_PENDING}
                     proceeds = (effective_price * fill_delta) - fee_delta
                     cost_basis = effective_avg_buy_price * fill_delta
                     pnl_krw = proceeds - cost_basis
