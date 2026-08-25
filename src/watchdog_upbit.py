@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime
+from logging.handlers import TimedRotatingFileHandler
 
 from dotenv import load_dotenv
 import requests
@@ -22,11 +23,30 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-# 1. 로깅 설정
+# 1. 로깅 설정 (콘솔 + logs/watchdog_upbit.log 파일 기록)
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+log_dir = os.path.join(project_root, "logs")
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "watchdog_upbit.log")
+
+file_handler = TimedRotatingFileHandler(
+    filename=log_file, when="midnight", interval=1, backupCount=14, encoding="utf-8"
+)
+file_handler.setFormatter(
+    logging.Formatter("[%(asctime)s] [UPBIT-WATCHDOG] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+)
+
+handlers = [file_handler]
+if sys.stderr is not None:
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(
+        logging.Formatter("[%(asctime)s] [UPBIT-WATCHDOG] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    )
+    handlers.append(stream_handler)
+
 logging.basicConfig(
     level=logging.INFO,
-    format="[%(asctime)s] [UPBIT-WATCHDOG] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=handlers,
 )
 logger = logging.getLogger("UpbitWatchdog")
 
@@ -64,14 +84,9 @@ def main():
     logger.info("  (24시간 무중단 감시 및 자동 복구 시스템)")
     logger.info("======================================================")
 
-    if "pythonw" in os.path.basename(sys.executable).lower():
-        python_exe = os.path.join(project_root, "venv", "Scripts", "pythonw.exe")
-        if not os.path.exists(python_exe):
-            python_exe = sys.executable
-    else:
-        python_exe = os.path.join(project_root, "venv", "Scripts", "python.exe")
-        if not os.path.exists(python_exe):
-            python_exe = sys.executable
+    python_exe = os.path.join(project_root, "venv", "Scripts", "python.exe")
+    if not os.path.exists(python_exe):
+        python_exe = sys.executable
 
     main_script = os.path.join(project_root, "src", "main_upbit.py")
     hb_file = os.path.join(project_root, "data", "upbit", ".heartbeat")

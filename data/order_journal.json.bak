@@ -1,6 +1,6 @@
 {
-  "schema_version": 2,
-  "updated_at": 1787650171.0669215,
+  "schema_version": 3,
+  "updated_at": 1787650257.3825886,
   "orders": [
     {
       "client_order_id": "bot-1787540429453-cef1176cae",
@@ -1273,6 +1273,34 @@
       "updated_at": 1787650171.0669184,
       "exchange_order_id": "C1397000000001328219",
       "last_event_at": 1787650171.0669062
+    },
+    {
+      "client_order_id": "bot-1787650257174-2a2025f0bb",
+      "position_id": "KRW-PROM",
+      "market": "KRW-PROM",
+      "side": "ask",
+      "volume": 7.7758,
+      "requested_volume": 7.7758,
+      "price": null,
+      "expected_price": 0.0,
+      "slippage_bps": 0.0,
+      "ord_type": "market",
+      "status": "FILLED",
+      "created_at": 1787650257.174871,
+      "exchange_uuid": "C1397000000001329300",
+      "executed_volume": 7.7758,
+      "processed_executed_volume": 7.7758,
+      "remaining_volume": 0.0,
+      "avg_price": 5665.0,
+      "fee": 0.0,
+      "processed_fee": 0.0,
+      "exit_reason": "TIME_STOP",
+      "avg_buy_price": 5680.0,
+      "entry_strategy_snapshot": {},
+      "exchange": "",
+      "updated_at": 1787650257.3825865,
+      "exchange_order_id": "C1397000000001329300",
+      "last_event_at": 1787650257.3825743
     }
   ]
 }

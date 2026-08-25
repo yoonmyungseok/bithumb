@@ -67,14 +67,17 @@ file_handler.setFormatter(
     logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 )
 
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(
-    logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-)
+handlers = [file_handler]
+if sys.stderr is not None:
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    )
+    handlers.append(stream_handler)
 
 logging.basicConfig(
     level=logging.INFO,
-    handlers=[file_handler, stream_handler],
+    handlers=handlers,
 )
 logger = logging.getLogger(__name__)
 

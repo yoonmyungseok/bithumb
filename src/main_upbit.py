@@ -77,10 +77,13 @@ file_handler.suffix = "%Y-%m-%d"
 formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s")
 file_handler.setFormatter(formatter)
 
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setFormatter(formatter)
+handlers = [file_handler]
+if sys.stdout is not None:
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    handlers.append(console_handler)
 
-logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler])
+logging.basicConfig(level=logging.INFO, handlers=handlers)
 logger = logging.getLogger(__name__)
 
 # 2. 업비트 환경변수 우선 로드 (.env.upbit -> .env)
