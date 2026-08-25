@@ -170,8 +170,118 @@ class RealtimeRiskEngine:
 
         return requoted_count
 
+    def _confirm_and_record_exit(
+        self,
+        exchange: Any,
+        market: str,
+        korean_name: str,
+        side_label: str,
+        order_res: dict[str, Any],
+        avg_buy_price: float,
+        fallback_price: float,
+        fallback_vol: float,
+        exit_reason: str,
+        sheet_order_uuid: str,
+        sheet_status_reason: str,
+        now_str: str,
+    ) -> dict[str, Any]:
+        """주문 접수 후 거래소 체결 조회를 통해 실제 체결가/수수료 기반으로 손익 및 거래 기록 확정 (P0-1, P0-3)"""
+        exec_price = fallback_price
+        exec_vol = fallback_vol
+        paid_fee = 0.0
+        order_uuid = order_res.get("uuid") or order_res.get("order_id") if isinstance(order_res, dict) else None
+        client_order_id = order_res.get("client_order_id") if isinstance(order_res, dict) else None
+
+        # 1. 즉시 체결 내역 조회 시도 (최대 1~2회)
+        if order_uuid:
+            try:
+                time.sleep(0.1)  # 시장가 체결 틱 반영 대기
+                remote = exchange.get_order(order_uuid)
+                if isinstance(remote, dict):
+                    trades = remote.get("trades", [])
+                    remote_exec_vol = float(remote.get("executed_volume", 0.0) or 0.0)
+                    remote_fee = float(remote.get("paid_fee", 0.0) or 0.0)
+                    if trades:
+                        total_funds = sum(float(t.get("price", 0.0)) * float(t.get("volume", 0.0)) for t in trades)
+                        total_v = sum(float(t.get("volume", 0.0)) for t in trades)
+                        if total_v > 0:
+                            exec_price = total_funds / total_v
+                            exec_vol = total_v
+                    elif remote_exec_vol > 0 and float(remote.get("price", 0.0) or 0.0) > 0:
+                        exec_price = float(remote.get("price", 0.0))
+                        exec_vol = remote_exec_vol
+                    if remote_fee > 0:
+                        paid_fee = remote_fee
+            except Exception as e:
+                logger.debug(f"[{market}] 청산 주문 즉시 조회 예외 (fallback 가격 사용): {e}")
+
+        # 2. 실제 체결가 기준 손익 계산
+        proceeds = (exec_price * exec_vol) - paid_fee
+        cost_basis = avg_buy_price * exec_vol
+        pnl_krw = proceeds - cost_basis
+        pnl_pct = ((exec_price - avg_buy_price) / avg_buy_price * 100.0) if avg_buy_price > 0 else 0.0
+        is_win = pnl_krw > 0
+
+        # 3. 리스크 매니저 및 거래 메모리 기록 (P0-3 체결 기반)
+        self.risk_manager.add_realized_trade(pnl_krw, is_win=is_win)
+        self.trade_memory.record_completed_trade(
+            market=market,
+            side=side_label,
+            entry_price=avg_buy_price,
+            exit_price=exec_price,
+            filled_volume=exec_vol,
+            fee=paid_fee,
+            slippage=abs(exec_price - fallback_price),
+            pnl_pct=pnl_pct,
+            pnl_krw=pnl_krw,
+            reason=exit_reason,
+            timestamp=now_str,
+            position_id=market,
+            order_status="FILLED",
+        )
+
+        # 4. 저널 상태 업데이트
+        if client_order_id:
+            self.order_journal.mark(
+                client_order_id,
+                "FILLED",
+                executed_volume=exec_vol,
+                avg_price=exec_price,
+                fee=paid_fee,
+            )
+
+        # 5. 구글 시트 기록
+        if self.sheets:
+            try:
+                self.sheets.append_trade_log({
+                    "Timestamp": now_str,
+                    "Korean_Name": korean_name,
+                    "Market": market,
+                    "Order_UUID": sheet_order_uuid,
+                    "Side": "SELL",
+                    "Order_Type": "MARKET",
+                    "Price": exec_price,
+                    "Volume": f"{exec_vol:.6f}",
+                    "Total_KRW": int(exec_vol * exec_price),
+                    "Realized_PnL_Pct": f"{pnl_pct:+.2f}%",
+                    "Stop_Loss": "-",
+                    "Target_Price": "-",
+                    "Current_Balance_KRW": "-",
+                    "Status_Reason": sheet_status_reason,
+                })
+            except Exception as sheet_err:
+                logger.debug(f"청산 시트 기록 오류: {sheet_err}")
+
+        return {
+            "exec_price": exec_price,
+            "exec_vol": exec_vol,
+            "pnl_krw": pnl_krw,
+            "pnl_pct": pnl_pct,
+            "paid_fee": paid_fee,
+        }
+
     def on_price_tick(self, market: str, current_price: float) -> None:
-        """0.1초 실시간 웹소켓 체결가 수신 시 즉시 트레일링 스탑 / 손절 감시 및 자동 청산"""
+        """0.1초 실시간 웹소켓 체결가 수신 시 즉시 트레일링 스탑 / 손절 감시 및 자동 청산 (P0-2 동시성 락 적용)"""
         if current_price <= 0 or not market.startswith("KRW-"):
             return
 
@@ -179,6 +289,10 @@ class RealtimeRiskEngine:
         with self._lock:
             if now_ts - self._last_trigger.get(market, 0.0) < 5.0:
                 return
+
+        # P0-2: 이미 진행 중인 청산 주문이 있거나 다른 스레드에서 청산 중인 경우 중복 청산 차단
+        if self.order_journal.has_active_exit_order(market) or self.trailing_tracker.is_exiting(market):
+            return
 
         try:
             bithumb = self.get_exchange()
@@ -214,63 +328,53 @@ class RealtimeRiskEngine:
                     self._last_trigger[market] = now_ts
                     self._sl_hit_count[market] = 0
 
-                logger.warning(
-                    f"⚡ [실시간 웹소켓 손절 발동] {korean_name}({market}) 현재가({current_price:,.2f}원) <= 손절가({effective_stop_loss:,.2f}원). 즉시 시장가 매도!"
-                )
-                self.trailing_tracker.clear(market)
-                self.cancel_bot_open_orders(market)
+                # P0-2: 원자적 청산 락 획득
+                if not self.trailing_tracker.acquire_exit_lock(market):
+                    return
 
-                self.order_executor.submit(
-                    bithumb,
-                    market=market,
-                    side="ask",
-                    volume=coin_available,
-                    ord_type="market",
-                )
-                self._invalidate_balance_cache()
-                pnl_krw = (current_price - avg_buy_price) * coin_available
-                loss_pct = ((current_price - avg_buy_price) / avg_buy_price * 100)
-                self.risk_manager.add_realized_trade(pnl_krw, is_win=False)
-                self.cooldown_manager.record_exit(market, "STOP_LOSS")
-                self.trade_memory.record_completed_trade(
-                    market=market,
-                    side="STOP_LOSS",
-                    entry_price=avg_buy_price,
-                    exit_price=current_price,
-                    pnl_pct=loss_pct,
-                    pnl_krw=pnl_krw,
-                    reason=f"0.1초 실시간 웹소켓 손절 실행 (손절선 {effective_stop_loss:,.2f}원 터치)",
-                    timestamp=now_str,
-                )
-                if self.sheets:
-                    try:
-                        self.sheets.append_trade_log({
-                            "Timestamp": now_str,
-                            "Korean_Name": korean_name,
-                            "Market": market,
-                            "Order_UUID": "REALTIME-SL",
-                            "Side": "SELL",
-                            "Order_Type": "MARKET",
-                            "Price": current_price,
-                            "Volume": f"{coin_available:.6f}",
-                            "Total_KRW": int(coin_available * current_price),
-                            "Realized_PnL_Pct": f"{loss_pct:+.2f}%",
-                            "Stop_Loss": effective_stop_loss,
-                            "Target_Price": "-",
-                            "Current_Balance_KRW": "-",
-                            "Status_Reason": f"0.1초 실시간 웹소켓 급락 칼손절 ({loss_pct:+.2f}%)",
-                        })
-                    except Exception as sheet_err:
-                        logger.debug(f"실시간 손절 시트 기록 오류: {sheet_err}")
+                try:
+                    logger.warning(
+                        f"⚡ [실시간 웹소켓 손절 발동] {korean_name}({market}) 현재가({current_price:,.2f}원) <= 손절가({effective_stop_loss:,.2f}원). 즉시 시장가 매도!"
+                    )
+                    self.trailing_tracker.clear(market)
+                    self.cancel_bot_open_orders(market)
 
-                self.telegram.send_message(
-                    f"🚨 <b>[실시간 초저지연 손절 매도 실행]</b>\n"
-                    f"• 종목: {korean_name}({market})\n"
-                    f"• 체결가: {current_price:,.2f} KRW (손절가: {effective_stop_loss:,.2f} KRW)\n"
-                    f"• 손실: {pnl_krw:,.0f} KRW ({loss_pct:.2f}%)\n"
-                    f"• 사유: 0.1초 실시간 급락 방어선 청산\n"
-                    f"• 일시: {now_str}"
-                )
+                    order_res = self.order_executor.submit(
+                        bithumb,
+                        market=market,
+                        side="ask",
+                        volume=coin_available,
+                        ord_type="market",
+                        position_id=market,
+                    )
+                    self._invalidate_balance_cache()
+                    self.cooldown_manager.record_exit(market, "STOP_LOSS")
+
+                    res_data = self._confirm_and_record_exit(
+                        exchange=bithumb,
+                        market=market,
+                        korean_name=korean_name,
+                        side_label="STOP_LOSS",
+                        order_res=order_res,
+                        avg_buy_price=avg_buy_price,
+                        fallback_price=current_price,
+                        fallback_vol=coin_available,
+                        exit_reason=f"0.1초 실시간 웹소켓 손절 실행 (손절선 {effective_stop_loss:,.2f}원 터치)",
+                        sheet_order_uuid="REALTIME-SL",
+                        sheet_status_reason=f"0.1초 실시간 웹소켓 급락 칼손절",
+                        now_str=now_str,
+                    )
+
+                    self.telegram.send_message(
+                        f"🚨 <b>[실시간 초저지연 손절 매도 실행]</b>\n"
+                        f"• 종목: {korean_name}({market})\n"
+                        f"• 체결가: {res_data['exec_price']:,.2f} KRW (손절가: {effective_stop_loss:,.2f} KRW)\n"
+                        f"• 손실: {res_data['pnl_krw']:,.0f} KRW ({res_data['pnl_pct']:.2f}%)\n"
+                        f"• 사유: 0.1초 실시간 급락 방어선 청산\n"
+                        f"• 일시: {now_str}"
+                    )
+                finally:
+                    self.trailing_tracker.release_exit_lock(market)
                 return
             else:
                 # 손절선 위로 복귀 시 틱 카운터 리셋
@@ -292,60 +396,50 @@ class RealtimeRiskEngine:
                             return
                         self._last_trigger[market] = now_ts
 
-                    logger.info(
-                        f"⚡ [실시간 1차 50% 분할익절] {korean_name}({market}) 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 즉시 50% 시장가 익절!"
-                    )
-                    self.cancel_bot_open_orders(market)
+                    if not self.trailing_tracker.acquire_exit_lock(market):
+                        return
 
-                    self.order_executor.submit(
-                        bithumb,
-                        market=market,
-                        side="ask",
-                        volume=sell_vol,
-                        ord_type="market",
-                    )
-                    self._invalidate_balance_cache()
-                    pnl_krw = (current_price - avg_buy_price) * sell_vol
-                    self.risk_manager.add_realized_trade(pnl_krw, is_win=True)
-                    self.trade_memory.record_completed_trade(
-                        market=market,
-                        side="PARTIAL_TP",
-                        entry_price=avg_buy_price,
-                        exit_price=current_price,
-                        pnl_pct=realized_profit_pct,
-                        pnl_krw=pnl_krw,
-                        reason="0.1초 실시간 1차 +2.5% 도달 50% 분할 익절",
-                        timestamp=now_str,
-                    )
-                    if self.sheets:
-                        try:
-                            self.sheets.append_trade_log({
-                                "Timestamp": now_str,
-                                "Korean_Name": korean_name,
-                                "Market": market,
-                                "Order_UUID": "REALTIME-TP50",
-                                "Side": "SELL",
-                                "Order_Type": "MARKET",
-                                "Price": current_price,
-                                "Volume": f"{sell_vol:.6f}",
-                                "Total_KRW": int(sell_val),
-                                "Realized_PnL_Pct": f"{realized_profit_pct:+.2f}%",
-                                "Stop_Loss": "-",
-                                "Target_Price": "-",
-                                "Current_Balance_KRW": "-",
-                                "Status_Reason": f"0.1초 실시간 1차 50% 분할익절 ({realized_profit_pct:+.2f}%)",
-                            })
-                        except Exception as sheet_err:
-                            logger.debug(f"실시간 분할익절 시트 기록 오류: {sheet_err}")
+                    try:
+                        logger.info(
+                            f"⚡ [실시간 1차 50% 분할익절] {korean_name}({market}) 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 즉시 50% 시장가 익절!"
+                        )
+                        self.cancel_bot_open_orders(market)
 
-                    self.telegram.send_message(
-                        f"🎉 <b>[실시간 1차 50% 분할익절 체결]</b>\n"
-                        f"• 종목: {korean_name}({market})\n"
-                        f"• 체결가: {current_price:,.2f} KRW (+{realized_profit_pct:.2f}%)\n"
-                        f"• 실현수익: +{pnl_krw:,.0f} KRW 💰\n"
-                        f"• 남은 50%: 무한 트레일링 러너 자동 전환\n"
-                        f"• 일시: {now_str}"
-                    )
+                        order_res = self.order_executor.submit(
+                            bithumb,
+                            market=market,
+                            side="ask",
+                            volume=sell_vol,
+                            ord_type="market",
+                            position_id=market,
+                        )
+                        self._invalidate_balance_cache()
+
+                        res_data = self._confirm_and_record_exit(
+                            exchange=bithumb,
+                            market=market,
+                            korean_name=korean_name,
+                            side_label="PARTIAL_TP",
+                            order_res=order_res,
+                            avg_buy_price=avg_buy_price,
+                            fallback_price=current_price,
+                            fallback_vol=sell_vol,
+                            exit_reason="0.1초 실시간 1차 +2.5% 도달 50% 분할 익절",
+                            sheet_order_uuid="REALTIME-TP50",
+                            sheet_status_reason=f"0.1초 실시간 1차 50% 분할익절 (+{realized_profit_pct:.2f}%)",
+                            now_str=now_str,
+                        )
+
+                        self.telegram.send_message(
+                            f"🎉 <b>[실시간 1차 50% 분할익절 체결]</b>\n"
+                            f"• 종목: {korean_name}({market})\n"
+                            f"• 체결가: {res_data['exec_price']:,.2f} KRW (+{res_data['pnl_pct']:.2f}%)\n"
+                            f"• 실현수익: +{res_data['pnl_krw']:,.0f} KRW 💰\n"
+                            f"• 남은 50%: 무한 트레일링 러너 자동 전환\n"
+                            f"• 일시: {now_str}"
+                        )
+                    finally:
+                        self.trailing_tracker.release_exit_lock(market)
 
             elif action_type == "TRAILING_STOP":
                 with self._lock:
@@ -353,61 +447,50 @@ class RealtimeRiskEngine:
                         return
                     self._last_trigger[market] = now_ts
 
-                logger.info(
-                    f"⚡ [실시간 트레일링 스탑 최고점 익절] {korean_name}({market}) 최고 {peak_p:,.2f}원(+{peak_profit_pct:.2f}%) ➜ 현재 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 즉시 전량 시장가 익절!"
-                )
-                self.cancel_bot_open_orders(market)
+                if not self.trailing_tracker.acquire_exit_lock(market):
+                    return
 
-                self.order_executor.submit(
-                    bithumb,
-                    market=market,
-                    side="ask",
-                    volume=coin_available,
-                    ord_type="market",
-                )
-                self._invalidate_balance_cache()
-                pnl_krw = (current_price - avg_buy_price) * coin_available
-                self.risk_manager.add_realized_trade(pnl_krw, is_win=True)
-                self.cooldown_manager.record_exit(market, "TRAILING_STOP")
-                self.trade_memory.record_completed_trade(
-                    market=market,
-                    side="TRAILING_STOP",
-                    entry_price=avg_buy_price,
-                    exit_price=current_price,
-                    pnl_pct=realized_profit_pct,
-                    pnl_krw=pnl_krw,
-                    reason="0.1초 실시간 가속 트레일링 스탑 최고점 익절",
-                    timestamp=now_str,
-                )
-                self.trailing_tracker.clear(market)
-                if self.sheets:
-                    try:
-                        self.sheets.append_trade_log({
-                            "Timestamp": now_str,
-                            "Korean_Name": korean_name,
-                            "Market": market,
-                            "Order_UUID": "REALTIME-TS",
-                            "Side": "SELL",
-                            "Order_Type": "MARKET",
-                            "Price": current_price,
-                            "Volume": f"{coin_available:.6f}",
-                            "Total_KRW": int(coin_available * current_price),
-                            "Realized_PnL_Pct": f"{realized_profit_pct:+.2f}%",
-                            "Stop_Loss": "-",
-                            "Target_Price": "-",
-                            "Current_Balance_KRW": "-",
-                            "Status_Reason": f"0.1초 실시간 최고점 트레일링스탑 익절 ({realized_profit_pct:+.2f}%)",
-                        })
-                    except Exception as sheet_err:
-                        logger.debug(f"실시간 트레일링스탑 시트 기록 오류: {sheet_err}")
+                try:
+                    logger.info(
+                        f"⚡ [실시간 트레일링 스탑 최고점 익절] {korean_name}({market}) 최고 {peak_p:,.2f}원(+{peak_profit_pct:.2f}%) ➜ 현재 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 즉시 전량 시장가 익절!"
+                    )
+                    self.cancel_bot_open_orders(market)
 
-                self.telegram.send_message(
-                    f"🎯 <b>[실시간 트레일링 스탑 최고점 익절 완료]</b>\n"
-                    f"• 종목: {korean_name}({market})\n"
-                    f"• 최고가: {peak_p:,.2f} KRW (+{peak_profit_pct:.2f}%)\n"
-                    f"• 익절 체결가: {current_price:,.2f} KRW (+{realized_profit_pct:.2f}%)\n"
-                    f"• 확정 실현수익: +{pnl_krw:,.0f} KRW 🚀\n"
-                    f"• 일시: {now_str}"
-                )
+                    order_res = self.order_executor.submit(
+                        bithumb,
+                        market=market,
+                        side="ask",
+                        volume=coin_available,
+                        ord_type="market",
+                        position_id=market,
+                    )
+                    self._invalidate_balance_cache()
+                    self.cooldown_manager.record_exit(market, "TRAILING_STOP")
+
+                    res_data = self._confirm_and_record_exit(
+                        exchange=bithumb,
+                        market=market,
+                        korean_name=korean_name,
+                        side_label="TRAILING_STOP",
+                        order_res=order_res,
+                        avg_buy_price=avg_buy_price,
+                        fallback_price=current_price,
+                        fallback_vol=coin_available,
+                        exit_reason="0.1초 실시간 최고점 대비 트레일링 스탑 익절",
+                        sheet_order_uuid="REALTIME-TRAIL",
+                        sheet_status_reason=f"0.1초 실시간 트레일링 익절 (+{realized_profit_pct:.2f}%)",
+                        now_str=now_str,
+                    )
+
+                    self.telegram.send_message(
+                        f"🏆 <b>[실시간 트레일링 스탑 전량 익절 완료]</b>\n"
+                        f"• 종목: {korean_name}({market})\n"
+                        f"• 최고가: {peak_p:,.2f} KRW (+{peak_profit_pct:.2f}%)\n"
+                        f"• 최종 체결가: {res_data['exec_price']:,.2f} KRW (+{res_data['pnl_pct']:.2f}%)\n"
+                        f"• 확정 수익: +{res_data['pnl_krw']:,.0f} KRW 💰\n"
+                        f"• 일시: {now_str}"
+                    )
+                finally:
+                    self.trailing_tracker.release_exit_lock(market)
         except Exception as e:
             logger.debug(f"실시간 시세 콜백 처리 예외 ({market}): {e}")

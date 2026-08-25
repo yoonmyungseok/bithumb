@@ -65,12 +65,43 @@ def write_json_atomically(path: str, payload: Any) -> None:
                     pass
 
 
+
+def get_excluded_markets_set() -> set[str]:
+    """수동 매매 보호 종목 집합 반환 (P3-1 단일 진실의 원천)"""
+    raw = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO") + "," + os.getenv("UPBIT_EXCLUDED_MARKETS", "KRW-HOLO,HOLO")
+    items = {"KRW-HOLO", "HOLO"}
+    for item in raw.split(","):
+        s = item.strip().upper()
+        if s:
+            items.add(s)
+            if s.startswith("KRW-"):
+                items.add(s.replace("KRW-", ""))
+            else:
+                items.add(f"KRW-{s}")
+    return items
+
+
+class OrderStatus:
+    """주문 생애주기 명시적 상태 정의"""
+    PENDING_SUBMISSION = "PENDING_SUBMISSION"
+    UNKNOWN = "UNKNOWN"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    OPEN = "OPEN"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    CANCELED = "CANCELED"
+    FAILED = "FAILED"
+    REJECTED = "REJECTED"
+
+
 class AmbiguousOrderError(RuntimeError):
     """The exchange may have accepted an order, but its response was not received."""
 
 
 class OrderJournal:
-    """Small append-only JSON journal, written atomically for crash recovery."""
+    """Small append-only JSON journal, written atomically for crash recovery (Schema v2)."""
+
+    SCHEMA_VERSION = 2
 
     def __init__(self, path: str | None = None, data_dir: str | None = None):
         self._lock = threading.Lock()
@@ -83,7 +114,13 @@ class OrderJournal:
         try:
             with open(self.path, "r", encoding="utf-8") as file:
                 data = json.load(file)
-                return data if isinstance(data, list) else []
+                if isinstance(data, dict):
+                    # Schema v2 object wrapper 호환
+                    return data.get("orders", [])
+                elif isinstance(data, list):
+                    # Schema v1 raw list 호환
+                    return data
+                return []
         except FileNotFoundError:
             return []
         except (OSError, json.JSONDecodeError) as exc:
@@ -92,23 +129,41 @@ class OrderJournal:
 
     def _save(self) -> None:
         try:
-            write_json_atomically(self.path, self.orders[-500:])
+            payload = {
+                "schema_version": self.SCHEMA_VERSION,
+                "updated_at": time.time(),
+                "orders": self.orders[-500:],
+            }
+            write_json_atomically(self.path, payload)
         except Exception as exc:
             logger.warning("주문 저널 저장 경고: %s", exc)
 
-    def record_intent(self, market: str, side: str, volume: float | None, price: float | None, ord_type: str) -> str:
+    def record_intent(
+        self,
+        market: str,
+        side: str,
+        volume: float | None,
+        price: float | None,
+        ord_type: str,
+        position_id: str | None = None,
+    ) -> str:
         client_order_id = f"bot-{int(time.time() * 1000)}-{uuid.uuid4().hex[:10]}"
         with self._lock:
             self.orders.append({
                 "client_order_id": client_order_id,
+                "position_id": position_id or client_order_id,
                 "market": market,
                 "side": side,
                 "volume": volume,
                 "price": price,
                 "ord_type": ord_type,
-                "status": "PENDING_SUBMISSION",
+                "status": OrderStatus.PENDING_SUBMISSION,
                 "created_at": time.time(),
                 "exchange_uuid": None,
+                "executed_volume": 0.0,
+                "remaining_volume": volume or 0.0,
+                "avg_price": 0.0,
+                "fee": 0.0,
             })
             self._save()
         return client_order_id
@@ -159,11 +214,49 @@ class OrderJournal:
                     return dict(order)
         return None
 
+    def get_order_by_client_id(self, client_order_id: str) -> dict[str, Any] | None:
+        """Lookup order by client_order_id."""
+        with self._lock:
+            for order in reversed(self.orders):
+                if order.get("client_order_id") == client_order_id:
+                    return dict(order)
+        return None
+
     def has_unresolved_market(self, market: str) -> bool:
         with self._lock:
             return any(
                 order.get("market") == market
-                and order.get("status") in {"PENDING_SUBMISSION", "UNKNOWN", "ACKNOWLEDGED", "OPEN", "PARTIALLY_FILLED"}
+                and order.get("status") in {
+                    OrderStatus.PENDING_SUBMISSION,
+                    OrderStatus.UNKNOWN,
+                    OrderStatus.ACKNOWLEDGED,
+                    OrderStatus.OPEN,
+                    OrderStatus.PARTIALLY_FILLED,
+                }
+                for order in self.orders
+            )
+
+    def has_unknown_market(self, market: str) -> bool:
+        """네트워크 타임아웃 등으로 상태가 UNKNOWN인 미해결 주문이 있는지 확인"""
+        with self._lock:
+            return any(
+                order.get("market") == market and order.get("status") == OrderStatus.UNKNOWN
+                for order in self.orders
+            )
+
+    def has_active_exit_order(self, market: str) -> bool:
+        """해당 종목에 이미 진행 중인 매도/청산 주문이 있는지 확인 (중복 청산 방지)"""
+        with self._lock:
+            return any(
+                order.get("market") == market
+                and str(order.get("side", "")).lower() in ("ask", "sell")
+                and order.get("status") in {
+                    OrderStatus.PENDING_SUBMISSION,
+                    OrderStatus.UNKNOWN,
+                    OrderStatus.ACKNOWLEDGED,
+                    OrderStatus.OPEN,
+                    OrderStatus.PARTIALLY_FILLED,
+                }
                 for order in self.orders
             )
 
@@ -171,18 +264,24 @@ class OrderJournal:
         """Update acknowledged orders from the exchange's canonical order endpoint."""
         updated = 0
         state_map = {
-            "wait": "OPEN",
-            "watch": "OPEN",
-            "trade": "PARTIALLY_FILLED",
-            "done": "FILLED",
-            "cancel": "CANCELED",
+            "wait": OrderStatus.OPEN,
+            "watch": OrderStatus.OPEN,
+            "trade": OrderStatus.PARTIALLY_FILLED,
+            "done": OrderStatus.FILLED,
+            "cancel": OrderStatus.CANCELED,
         }
         with self._lock:
             orders_snapshot = list(self.orders)
 
         for local in orders_snapshot:
             exchange_uuid = local.get("exchange_uuid") or local.get("exchange_order_id")
-            if local.get("status") not in {"PENDING_SUBMISSION", "UNKNOWN", "ACKNOWLEDGED", "OPEN", "PARTIALLY_FILLED"}:
+            if local.get("status") not in {
+                OrderStatus.PENDING_SUBMISSION,
+                OrderStatus.UNKNOWN,
+                OrderStatus.ACKNOWLEDGED,
+                OrderStatus.OPEN,
+                OrderStatus.PARTIALLY_FILLED,
+            }:
                 continue
             try:
                 if exchange_uuid:
@@ -196,30 +295,40 @@ class OrderJournal:
             raw_state = str(remote.get("state") or remote.get("status") or "").lower()
             state = state_map.get(raw_state)
             if state and state != local.get("status"):
+                exec_vol = float(remote.get("executed_volume", 0.0) or 0.0)
+                rem_vol = float(remote.get("remaining_volume", 0.0) or 0.0)
+                paid_fee = float(remote.get("paid_fee", 0.0) or 0.0)
+                trades = remote.get("trades", [])
+                avg_p = 0.0
+                if trades:
+                    total_funds = sum(float(t.get("price", 0.0)) * float(t.get("volume", 0.0)) for t in trades)
+                    total_v = sum(float(t.get("volume", 0.0)) for t in trades)
+                    avg_p = (total_funds / total_v) if total_v > 0 else 0.0
+                elif exec_vol > 0 and float(remote.get("price", 0.0) or 0.0) > 0:
+                    avg_p = float(remote.get("price", 0.0))
+
                 self.mark(
                     local["client_order_id"],
                     state,
                     exchange_state=raw_state,
                     exchange_uuid=remote.get("uuid") or remote.get("order_id", exchange_uuid),
-                    executed_volume=remote.get("executed_volume"),
-                    remaining_volume=remote.get("remaining_volume"),
-                    trades=remote.get("trades", []),
+                    executed_volume=exec_vol,
+                    remaining_volume=rem_vol,
+                    avg_price=avg_p,
+                    fee=paid_fee,
+                    trades=trades,
                 )
                 updated += 1
         return updated
 
     def reconcile_open_orders(self, open_orders: list[dict[str, Any]]) -> int:
-        """Attach exchange UUIDs where an intent can be unambiguously matched.
-
-        An unknown intent that cannot be matched remains blocked for manual review;
-        this conservative behavior prevents accidental duplicate orders.
-        """
+        """Attach exchange UUIDs where an intent can be unambiguously matched."""
         matched = 0
         with self._lock:
             orders_snapshot = list(self.orders)
 
         for local in orders_snapshot:
-            if local.get("status") not in {"PENDING_SUBMISSION", "UNKNOWN"}:
+            if local.get("status") not in {OrderStatus.PENDING_SUBMISSION, OrderStatus.UNKNOWN}:
                 continue
             for remote in open_orders:
                 if remote.get("market") != local.get("market") or remote.get("side") != local.get("side"):
@@ -228,24 +337,41 @@ class OrderJournal:
                     continue
                 remote_uuid = remote.get("uuid") or remote.get("order_id")
                 if remote_uuid:
-                    self.mark(local["client_order_id"], "OPEN", exchange_uuid=remote_uuid)
+                    self.mark(local["client_order_id"], OrderStatus.OPEN, exchange_uuid=remote_uuid)
                     matched += 1
                     break
         return matched
 
     def apply_private_order_event(self, event: dict[str, Any]) -> bool:
         """Apply a v2 MyOrder event keyed by the exchange client_order_id."""
-        client_id = event.get("client_order_id") or event.get("coid")
+        client_id = event.get("client_order_id") or event.get("coid") or event.get("identifier")
         state = str(event.get("state") or event.get("s") or event.get("status") or "").lower()
-        mapped = {"wait": "OPEN", "trade": "PARTIALLY_FILLED", "done": "FILLED", "cancel": "CANCELED"}.get(state)
+        mapped = {
+            "wait": OrderStatus.OPEN,
+            "trade": OrderStatus.PARTIALLY_FILLED,
+            "done": OrderStatus.FILLED,
+            "cancel": OrderStatus.CANCELED,
+        }.get(state)
         if not client_id or not mapped:
             return False
-        self.mark(str(client_id), mapped,
-            exchange_order_id=event.get("order_id") or event.get("oid"),
-            executed_volume=event.get("executed_volume") or event.get("ev"),
-            remaining_volume=event.get("remaining_volume") or event.get("rv"),
-            last_event_at=time.time(),
-        )
+
+        exec_vol = float(event.get("executed_volume") or event.get("ev") or event.get("volume") or 0.0)
+        rem_vol = float(event.get("remaining_volume") or event.get("rv") or 0.0)
+        price_val = float(event.get("price") or event.get("p") or 0.0)
+        fee_val = float(event.get("paid_fee") or event.get("fee") or 0.0)
+
+        update_kwargs: dict[str, Any] = {
+            "exchange_order_id": event.get("order_id") or event.get("oid") or event.get("uuid"),
+            "executed_volume": exec_vol,
+            "remaining_volume": rem_vol,
+            "last_event_at": time.time(),
+        }
+        if price_val > 0:
+            update_kwargs["avg_price"] = price_val
+        if fee_val > 0:
+            update_kwargs["fee"] = fee_val
+
+        self.mark(str(client_id), mapped, **update_kwargs)
         return True
 
 
@@ -253,39 +379,53 @@ class SafeOrderExecutor:
     def __init__(self, journal: OrderJournal):
         self.journal = journal
 
-    def submit(self, exchange: Any, market: str, side: str, volume: float | None = None, price: float | None = None, ord_type: str = "limit") -> dict[str, Any]:
-        # HOLO 및 수동 격리 종목 원천 차단
+    def submit(
+        self,
+        exchange: Any,
+        market: str,
+        side: str,
+        volume: float | None = None,
+        price: float | None = None,
+        ord_type: str = "limit",
+        position_id: str | None = None,
+    ) -> dict[str, Any]:
+        # HOLO 및 수동 격리 종목 원천 차단 (P3-1)
         m_upper = market.upper()
-        raw_excluded = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO") + "," + os.getenv("UPBIT_EXCLUDED_MARKETS", "KRW-HOLO,HOLO")
-        excluded_set = {x.strip().upper() for x in raw_excluded.split(",") if x.strip()}
-        excluded_set.update({"KRW-HOLO", "HOLO"})
+        excluded_set = get_excluded_markets_set()
         if m_upper in excluded_set or m_upper.replace("KRW-", "") in excluded_set:
             logger.critical(f"🛑 [SafeOrderExecutor] 수동 관리 격리 종목 ({market}) 주문 시도 원천 차단")
             raise ValueError(f"수동 관리 격리 종목 ({market})은 주문할 수 없습니다.")
 
-        client_order_id = self.journal.record_intent(market, side, volume, price, ord_type)
+        # UNKNOWN 미해결 주문 존재 시 동일 종목 중복 주문 차단 (P0-1)
+        if self.journal.has_unknown_market(market):
+            logger.error(f"🛑 [{market}] 미해결 UNKNOWN 주문이 존재하여 신규 주문 제출 차단")
+            raise RuntimeError(f"{market}에 확인되지 않은 이전 주문(UNKNOWN)이 존재합니다. REST 재조정 전까지 주문이 차단됩니다.")
+
+        client_order_id = self.journal.record_intent(market, side, volume, price, ord_type, position_id=position_id)
         try:
             response = exchange.create_order(
                 market, side, volume, price, ord_type, client_order_id=client_order_id
             )
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
-            self.journal.mark(client_order_id, "UNKNOWN", error=str(exc))
+            self.journal.mark(client_order_id, OrderStatus.UNKNOWN, error=str(exc))
             raise AmbiguousOrderError(
                 f"{market} 주문 응답이 유실되었습니다. 자동 재주문을 차단했으며 order_journal.json에서 확인하세요."
             ) from exc
         except Exception as exc:
-            self.journal.mark(client_order_id, "FAILED", error=str(exc))
+            self.journal.mark(client_order_id, OrderStatus.FAILED, error=str(exc))
             raise
 
         exchange_uuid = response.get("uuid") if isinstance(response, dict) else None
         exchange_order_id = response.get("order_id") if isinstance(response, dict) else None
         self.journal.mark(
             client_order_id,
-            "ACKNOWLEDGED",
+            OrderStatus.ACKNOWLEDGED,
             exchange_uuid=exchange_uuid,
             exchange_order_id=exchange_order_id,
         )
-        logger.info("주문 접수 확인: client_order_id=%s exchange_id=%s", client_order_id, exchange_uuid or exchange_order_id)
+        logger.info("주문 접수 확인 (ACKNOWLEDGED): client_order_id=%s exchange_id=%s", client_order_id, exchange_uuid or exchange_order_id)
+        if isinstance(response, dict):
+            response["client_order_id"] = client_order_id
         return response
 
     def execute_twap(self, bithumb: Any, market: str, side: str, volume: float, price: float, splits: int = 3, interval_seconds: float = 2.0) -> list[dict[str, Any]]:
@@ -428,8 +568,10 @@ def calculate_risk_position_size(
     slippage_rate: float = 0.001,
     max_position_pct: float = 0.35,
     min_order_krw: float = 5000.0,
+    available_krw: float | None = None,
+    open_slots: int = 3,
 ) -> float:
-    """Calculate position size in KRW such that maximum loss is fixed at risk_fraction (e.g. 1% of equity)."""
+    """Calculate position size in KRW such that maximum loss is fixed at risk_fraction with dynamic slot budget (P2-2)."""
     if total_equity <= 0 or entry_price <= 0:
         return 0.0
 
@@ -439,8 +581,12 @@ def calculate_risk_position_size(
     effective_loss_pct = max(0.008, stop_dist_pct + friction)
 
     raw_position_krw = risk_capital / effective_loss_pct
-    max_allowed_krw = total_equity * max_position_pct
-    final_krw = min(raw_position_krw, max_allowed_krw)
+    slot_budget = total_equity / max(1, open_slots)
+    max_allowed_krw = min(total_equity * max_position_pct, slot_budget)
 
+    if available_krw is not None and available_krw > 0:
+        max_allowed_krw = min(max_allowed_krw, available_krw)
+
+    final_krw = min(raw_position_krw, max_allowed_krw)
     return round(final_krw, 2) if final_krw >= min_order_krw else 0.0
 

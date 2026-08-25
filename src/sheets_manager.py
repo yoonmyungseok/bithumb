@@ -1,5 +1,8 @@
 import logging
 import os
+import queue
+import threading
+import time
 from typing import Any, ClassVar
 
 import gspread
@@ -11,11 +14,12 @@ logger = logging.getLogger(__name__)
 
 class SheetsManager:
     """
-    Google 스프레드시트 연동 모듈 (gspread) v3.0
+    Google 스프레드시트 연동 모듈 (gspread) v3.0 (P2-1 비동기 큐 지원)
     - Dashboard 탭: 종합 자산, 당일 손익률, 공포탐욕지수, 킬스위치/BTC방어선 실시간 대시보드
     - Strategy 탭: [종목명(한글), 마켓코드] 분리 및 한글 표준 헤더 실시간 동기화
     - Trade_Log 탭: [종목명(한글), 마켓코드] 분리, 실현 손익률(%) 및 '원' 단위 자동 기록
     - Performance 탭: 누적 승률, 손익비(Profit Factor), 일별 수익 결산 통계표
+    - 백그라운드 큐 워커를 통한 비차단(Non-blocking) 시트 업데이트
     """
 
     SCOPES: ClassVar[list[str]] = [
@@ -23,7 +27,7 @@ class SheetsManager:
         "https://www.googleapis.com/auth/drive",
     ]
 
-    def __init__(self, json_key_path: str = "", sheet_name: str = "", exchange_name: str = "BITHUMB", **kwargs):
+    def __init__(self, json_key_path: str = "", sheet_name: str = "", exchange_name: str = "BITHUMB", enable_async: bool = True, **kwargs):
         key_path = json_key_path or kwargs.get("service_account_json_path", "")
         target_sheet = sheet_name or kwargs.get("spreadsheet_name", "")
         self.exchange_name = exchange_name.upper()
@@ -58,6 +62,48 @@ class SheetsManager:
                 f"   👉 {service_email}\n"
             )
             raise
+
+        self.enable_async = enable_async
+        self._queue: queue.Queue = queue.Queue(maxsize=1000)
+        self._is_running = True
+        if self.enable_async:
+            self._worker_thread = threading.Thread(target=self._queue_worker, daemon=True, name="SheetsQueueWorker")
+            self._worker_thread.start()
+
+    def _queue_worker(self):
+        while self._is_running:
+            try:
+                task = self._queue.get(timeout=1.0)
+                if task is None:
+                    break
+                func, args, kwargs = task
+                for attempt in range(3):
+                    try:
+                        func(*args, **kwargs)
+                        break
+                    except Exception as e:
+                        if attempt == 2:
+                            logger.error(f"구글 시트 비동기 작업 최종 실패: {e}")
+                        time.sleep(1.0 * (attempt + 1))
+                self._queue.task_done()
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.debug(f"구글 시트 워커 예외: {e}")
+
+    def _enqueue(self, func, *args, **kwargs):
+        if self.enable_async:
+            try:
+                self._queue.put_nowait((func, args, kwargs))
+                return
+            except queue.Full:
+                logger.warning("구글 시트 큐 가득 참, 동기 실행으로 폴백")
+        func(*args, **kwargs)
+
+    def flush(self, timeout: float = 5.0) -> None:
+        """대기 중인 시트 업데이트 큐 작업 완료 대기"""
+        if self.enable_async:
+            self._queue.join()
 
     def update_dashboard(self, summary_data: dict[str, Any]) -> None:
         """
@@ -352,10 +398,16 @@ class SheetsManager:
         except (gspread.exceptions.GSpreadException, requests.exceptions.RequestException, KeyError, ValueError) as e:
             logger.warning(f"Strategy 탭 과거 행 정리 실패: {e}")
 
-    def append_trade_log(self, data: dict[str, Any]) -> None:
+    def append_trade_log(self, data: dict[str, Any], sync: bool = False) -> None:
         """
-        'Trade_Log' 탭에 실시간 거래 내역 추가 (HOLO는 절대 미기록)
+        'Trade_Log' 탭에 실시간 거래 내역 추가 (비동기 비차단 큐 발송, HOLO는 절대 미기록)
         """
+        if self.enable_async and not sync:
+            self._enqueue(self._sync_append_trade_log, data)
+            return
+        self._sync_append_trade_log(data)
+
+    def _sync_append_trade_log(self, data: dict[str, Any]) -> None:
         m = str(data.get("market") or data.get("Market") or "").upper()
         raw_excluded = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO") + "," + os.getenv("UPBIT_EXCLUDED_MARKETS", "KRW-HOLO,HOLO")
         excluded_set = {x.strip().upper() for x in raw_excluded.split(",") if x.strip()}

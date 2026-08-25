@@ -275,6 +275,10 @@ class BotController:
             except Exception as e:
                 logger.debug(f"대시보드 주문 저널 로드 예외: {e}")
 
+            # 4. 포지션 단위 통합 통계 및 UNKNOWN 주문 수
+            pos_stats = self.trade_memory.get_position_level_stats() if hasattr(self.trade_memory, "get_position_level_stats") else {}
+            unknown_count = sum(1 for o in self.order_journal.orders if o.get("status") == "UNKNOWN")
+
             self.latest_dashboard_data = {
                 "total_equity": int(total_equity),
                 "krw_available": int(krw_avail),
@@ -285,6 +289,11 @@ class BotController:
                 "total_trades": total_t,
                 "win_trades": win_t,
                 "win_rate": round(win_rate, 1),
+                "position_win_rate": pos_stats.get("position_win_rate_pct", round(win_rate, 1)),
+                "total_positions": pos_stats.get("total_positions", total_t),
+                "kill_switch_active": self.risk_manager.kill_switch_active,
+                "kill_switch_latched_date": getattr(self.risk_manager, "kill_switch_latched_date", ""),
+                "unknown_orders_count": unknown_count,
                 "fear_and_greed": fng["desc"],
                 "bot_state": state_badge,
                 "positions": positions_data,

@@ -1,10 +1,19 @@
-"""Deterministic entry gate and standardized technical indicators shared by live trading, AI analyzer, and backtesting.
-
-All candle inputs are expected newest-first (descending chronological order).
-"""
-
 import math
 from typing import Any
+
+
+class StrategyPolicy:
+    """실거래 및 백테스트 공통 전략 파라미터 및 실행 정책 (P1-3)"""
+    TIME_STOP_SECONDS: int = 3600  # 60분 타임스탑 (실거래)
+    TIME_STOP_BARS_5M: int = 12   # 5분봉 12개 = 60분 (백테스트)
+    PARTIAL_TP_PCT: float = 0.025 # +2.5% 1차 50% 분할익절
+    TRAILING_DROP_PCT: float = 0.012 # 최고점 대비 1.2% 하락 시 트레일링 스탑
+    STOP_LOSS_PCT: float = 0.025  # 기본 손절 -2.5%
+    FEE_RATE: float = 0.0004      # 편도 수수료 0.04%
+    SLIPPAGE_RATE: float = 0.001  # 보수적 슬리피지 0.1%
+    MIN_ORDER_KRW: float = 5000.0 # 최소 주문금액
+    MAX_DAILY_LOSS_PCT: float = 0.05 # 일일 손실 한도 5%
+
 
 
 def calculate_rsi(prices: list[float], period: int = 14) -> float:

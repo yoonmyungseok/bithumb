@@ -2,6 +2,7 @@ import datetime
 import json
 import logging
 import os
+import threading
 import time
 from typing import Any
 
@@ -165,17 +166,39 @@ class TrailingStopTracker:
     """
 
     def __init__(self, start_profit_pct: float = 0.02, trailing_drop_pct: float = 0.012, data_dir: str | None = None):
+        self._lock = threading.Lock()
         self.start_profit_pct = start_profit_pct
         self.trailing_drop_pct = trailing_drop_pct
         self.peaks: dict[str, float] = {}
         self.partial_tp_done: dict[str, bool] = {}
         self.entry_times: dict[str, float] = {}
+        self._exiting_markets: set[str] = set()
         self._last_log_ts: dict[str, float] = {}
         self._last_logged_peak: dict[str, float] = {}
         self.data_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(self.data_dir, exist_ok=True)
         self.state_file = os.path.join(self.data_dir, "position_state.json")
         self._load_state()
+
+    def acquire_exit_lock(self, market: str) -> bool:
+        """동일 종목의 동시 다발적 청산 주문 제출을 방지하기 위한 원자적 락 (P0-2)"""
+        m_upper = market.upper()
+        with self._lock:
+            if m_upper in self._exiting_markets:
+                return False
+            self._exiting_markets.add(m_upper)
+            return True
+
+    def release_exit_lock(self, market: str) -> None:
+        """청산 락 해제"""
+        m_upper = market.upper()
+        with self._lock:
+            self._exiting_markets.discard(m_upper)
+
+    def is_exiting(self, market: str) -> bool:
+        """현재 청산 진행 중 여부 확인"""
+        with self._lock:
+            return market.upper() in self._exiting_markets
 
     def _load_state(self):
         if os.path.exists(self.state_file):
@@ -286,7 +309,7 @@ class TrailingStopTracker:
 
 class DailyRiskManager:
     """
-    일일 손익 추적, 킬 스위치(Kill-Switch), 장중 입출금 보정 및 연속 손절 30분 쿨다운 관리자 (영구 저장 연동)
+    일일 손익 추적, 킬 스위치(Kill-Switch Latch) 및 연속 손절 30분 쿨다운 관리자 (영구 저장 연동, P1-1)
     """
 
     def __init__(self, max_loss_pct: float = 0.05, data_dir: str | None = None):
@@ -300,6 +323,7 @@ class DailyRiskManager:
         self.last_known_equity = 0.0
         self.realized_pnl_krw = 0.0
         self.kill_switch_active = False
+        self.kill_switch_latched_date = ""
         self.total_trades_today = 0
         self.win_trades_today = 0
         self.consecutive_losses = 0
@@ -320,7 +344,14 @@ class DailyRiskManager:
                     self.win_trades_today = int(data.get("win_trades", 0))
                     self.consecutive_losses = int(data.get("consecutive_losses", 0))
                     self.cooldown_until_ts = float(data.get("cooldown_until_ts", 0.0))
+                    self.kill_switch_latched_date = data.get("kill_switch_latched_date", "")
                     self.daily_history = data.get("history", [])
+
+                    # 오늘 날짜와 일치하는 킬스위치 Latch 복원
+                    now_kst_date = get_kst_now().strftime("%Y-%m-%d")
+                    if self.kill_switch_latched_date == now_kst_date:
+                        self.kill_switch_active = True
+                        logger.warning(f"🛑 [일일 킬 스위치 복원] {now_kst_date} 킬스위치 Latch가 활성 상태입니다.")
             except (OSError, json.JSONDecodeError, ValueError) as e:
                 logger.warning(f"일일 통계 로드 실패: {e}")
 
@@ -334,6 +365,8 @@ class DailyRiskManager:
                 "win_trades": self.win_trades_today,
                 "consecutive_losses": self.consecutive_losses,
                 "cooldown_until_ts": self.cooldown_until_ts,
+                "kill_switch_latched_date": self.kill_switch_latched_date,
+                "kill_switch_active": self.kill_switch_active,
                 "history": self.daily_history,
             })
         except OSError as e:
@@ -360,8 +393,24 @@ class DailyRiskManager:
             return True, remain_minutes
         return False, 0
 
+    def register_cashflow(self, amount_krw: float, reason: str = "명시적 입출금") -> None:
+        """명시적으로 확인된 외부 자금 입출금 시 시작 기준자산 수동/원장 보정 (P1-1)"""
+        old_start = self.daily_start_equity
+        self.daily_start_equity += amount_krw
+        self._save_state()
+        logger.info(
+            f"💵 [명시적 자금 입출금 반영: {reason}] 변동액: {amount_krw:+,.0f}원 ➜ 당일 시작 기준자산 보정: {old_start:,.0f}원 -> {self.daily_start_equity:,.0f}원"
+        )
+
+    def manual_reset_kill_switch(self) -> None:
+        """관리자 명시적 승인에 의한 당일 킬스위치 수동 해제"""
+        self.kill_switch_active = False
+        self.kill_switch_latched_date = ""
+        self._save_state()
+        logger.info("🔓 [관리자 수동 명령] 일일 킬 스위치가 수동 해제되었습니다.")
+
     def adjust_for_current_equity(self, current_total_equity: float) -> None:
-        """웹 대시보드 및 실시간 조회 시 입출금 및 빈 계좌 초기 입금을 즉시 감지하여 기준자산 자동 보정"""
+        """초기 빈 계좌 입금 감지 (평가손익을 입출금으로 오인하지 않음)"""
         if current_total_equity <= 0:
             return
         if self.daily_start_equity < 5000.0 and current_total_equity >= 5000.0:
@@ -372,20 +421,11 @@ class DailyRiskManager:
             logger.info(
                 f"💵 [초기 입금 감지 및 기준자산 리셋] 기존 잔고 {old_start:,.0f}원 ➜ 실투자 기준자산으로 재설정: {self.daily_start_equity:,.0f}원"
             )
-        elif self.last_known_equity > 0:
-            equity_jump = current_total_equity - self.last_known_equity
-            if abs(equity_jump) >= 10000.0:
-                old_start = self.daily_start_equity
-                self.daily_start_equity += equity_jump
-                self.last_known_equity = current_total_equity
-                self._save_state()
-                logger.info(
-                    f"💵 [장중 외부 자금 입출금 감지] 변동액: {equity_jump:+,.0f}원 ➜ 당일 시작 기준자산 보정: {old_start:,.0f}원 -> {self.daily_start_equity:,.0f}원"
-                )
 
     def update_daily_equity(self, current_total_equity: float, now_kst: datetime.datetime) -> tuple[bool, float]:
         date_key = now_kst.strftime("%Y-%m-%d")
 
+        # KST 자정 날짜 변경 시 일일 통계 및 킬스위치 초기화
         if date_key != self.current_date_str or self.daily_start_equity <= 0:
             if date_key != self.current_date_str and self.current_date_str:
                 self.daily_history.append({
@@ -402,10 +442,9 @@ class DailyRiskManager:
             self.daily_start_equity = current_total_equity
             self.last_known_equity = current_total_equity
             self.kill_switch_active = False
+            self.kill_switch_latched_date = ""
             self._save_state()
             logger.info(f"📅 [일일 손익 기준일 갱신: {date_key}] 시작 총 자산: {self.daily_start_equity:,.0f}원")
-
-        # 💵 당일 장중 외부 자금 입출금 자동 감지 및 기준자산 자동 보정 (Cashflow Adjustment)
         else:
             self.adjust_for_current_equity(current_total_equity)
 
@@ -417,12 +456,18 @@ class DailyRiskManager:
             else 0.0
         )
 
+        # 킬스위치 발동 및 당일 Latch 고정 (P1-1)
         if daily_pnl_pct <= -self.max_loss_pct:
             if not self.kill_switch_active:
                 self.kill_switch_active = True
+                self.kill_switch_latched_date = date_key
+                self._save_state()
                 logger.warning(
-                    f"🛑 [일일 킬 스위치 발동!] 당일 손실률({daily_pnl_pct*100:.2f}%)이 한도(-{self.max_loss_pct*100:.1f}%)를 초과했습니다."
+                    f"🛑 [일일 킬 스위치 발동 (Latch)] 당일 손실률({daily_pnl_pct*100:.2f}%)이 한도(-{self.max_loss_pct*100:.1f}%)를 초과했습니다. 오늘 자정까지 신규 매수가 전면 차단됩니다."
                 )
+        elif self.kill_switch_latched_date == date_key:
+            # 이미 당일 킬스위치가 발동된 경우, 가격이 일시 반등해도 Latch 유지
+            self.kill_switch_active = True
         else:
             self.kill_switch_active = False
 

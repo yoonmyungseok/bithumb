@@ -385,8 +385,6 @@ def run_cycle():
                 target_markets = [item["market"] for item in screened_items]
         else:
             fixed_list = [m.strip().upper() for m in raw_markets.split(",") if m.strip()]
-            target_markets = list(dict.fromkeys(held_markets + fixed_list))
-
         logger.info(f"이번 사이클 최종 분석 대상 마켓 ({len(target_markets)}개): {target_markets}")
 
         # 🧹 구글 시트 Strategy 탭의 과거 비감시 종목 정리
@@ -416,191 +414,211 @@ def run_cycle():
                 orderbook = bithumb.get_orderbook(market)
 
                 # =========================================================================
-                # 🎯 [최우선 1: 50% 분할 익절 및 가속 트레일링 스탑]
+                # 🎯 [최우선 1: 50% 분할 익절 & 가속 트레일링 스탑 즉시 청산]
                 # =========================================================================
-                if coin_value >= MIN_ORDER_KRW and avg_buy_price > 0:
-                    action_type, peak_p, trigger_p, peak_profit_pct, realized_profit_pct = (
+                if coin_value >= MIN_ORDER_KRW and avg_buy_price > 0 and not order_journal.has_active_exit_order(market):
+                    action_type, peak_p, _trigger_p, peak_profit_pct, realized_profit_pct = (
                         trailing_tracker.check_position(market, current_price, avg_buy_price)
                     )
 
                     if action_type == "PARTIAL_TP":
                         sell_vol = coin_available * 0.5
                         sell_val = sell_vol * current_price
-                        if sell_val >= MIN_ORDER_KRW:
-                            logger.info(
-                                f"🎉 [{korean_name} / {market} 1차 50% 분할익절 발동] 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 50% 물량 시장가 익절!"
-                            )
-                            cancel_bot_open_orders(bithumb, market)
+                        if sell_val >= MIN_ORDER_KRW and trailing_tracker.acquire_exit_lock(market):
+                            try:
+                                logger.info(
+                                    f"🎉 [{korean_name} / {market} 1차 50% 분할익절 발동] 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 50% 물량 시장가 익절!"
+                                )
+                                cancel_bot_open_orders(bithumb, market)
 
-                            order_res = order_executor.submit(
-                                bithumb,
-                                market=market,
-                                side="ask",
-                                volume=sell_vol,
-                                ord_type="market",
-                            )
-                            order_uuid = order_res.get("uuid", "UNKNOWN")
-                            pnl_krw = (current_price - avg_buy_price) * sell_vol
-                            risk_manager.add_realized_trade(pnl_krw, is_win=True)
-                            trade_memory.record_completed_trade(
-                                market=market,
-                                side="PARTIAL_TP",
-                                entry_price=avg_buy_price,
-                                exit_price=current_price,
-                                pnl_pct=realized_profit_pct,
-                                pnl_krw=pnl_krw,
-                                reason="1차 +2.5% 도달 50% 분할 익절 완료",
-                                timestamp=now_str,
-                            )
+                                order_res = order_executor.submit(
+                                    bithumb,
+                                    market=market,
+                                    side="ask",
+                                    volume=sell_vol,
+                                    ord_type="market",
+                                    position_id=market,
+                                )
+                                order_uuid = order_res.get("uuid", "UNKNOWN")
+                                pnl_krw = (current_price - avg_buy_price) * sell_vol
+                                risk_manager.add_realized_trade(pnl_krw, is_win=True)
+                                trade_memory.record_completed_trade(
+                                    market=market,
+                                    side="PARTIAL_TP",
+                                    entry_price=avg_buy_price,
+                                    exit_price=current_price,
+                                    filled_volume=sell_vol,
+                                    pnl_pct=realized_profit_pct,
+                                    pnl_krw=pnl_krw,
+                                    reason="1차 +2.5% 도달 50% 분할 익절 완료",
+                                    timestamp=now_str,
+                                    position_id=market,
+                                )
 
-                            caption = (
-                                f"🎉 <b>[{korean_name}({market}) 1차 50% 분할익절 체결]</b>\n"
-                                f"• 체결가: {current_price:,.2f} KRW (+{realized_profit_pct:.2f}%)\n"
-                                f"• 실현수익: +{pnl_krw:,.0f} KRW 💰\n"
-                                f"• 매도수량: {sell_vol:.8f} {currency}\n"
-                                f"• 남은 50%: 무한 트레일링 러너 자동 전환\n"
-                                f"• 일시: {now_str}"
-                            )
-                            telegram.send_message(caption)
+                                caption = (
+                                    f"🎉 <b>[{korean_name}({market}) 1차 50% 분할익절 체결]</b>\n"
+                                    f"• 체결가: {current_price:,.2f} KRW (+{realized_profit_pct:.2f}%)\n"
+                                    f"• 실현수익: +{pnl_krw:,.0f} KRW 💰\n"
+                                    f"• 매도수량: {sell_vol:.8f} {currency}\n"
+                                    f"• 남은 50%: 무한 트레일링 러너 자동 전환\n"
+                                    f"• 일시: {now_str}"
+                                )
+                                telegram.send_message(caption)
 
-                            sheets.append_trade_log(
-                                {
-                                    "Timestamp": now_str,
-                                    "Korean_Name": korean_name,
-                                    "Market": market,
-                                    "Order_UUID": order_uuid,
-                                    "Side": "PARTIAL_TP",
-                                    "Order_Type": "MARKET",
-                                    "Price": current_price,
-                                    "Volume": f"{sell_vol:.8f}",
-                                    "Total_KRW": int(sell_val),
-                                    "Realized_PnL_Pct": f"+{realized_profit_pct:.2f}%",
-                                    "Stop_Loss": avg_buy_price,
-                                    "Target_Price": current_price,
-                                    "Current_Balance_KRW": int(krw_available + sell_val),
-                                    "Status_Reason": f"1차 50% 분할 익절 (+{realized_profit_pct:.2f}%)",
-                                }
-                            )
+                                sheets.append_trade_log(
+                                    {
+                                        "Timestamp": now_str,
+                                        "Korean_Name": korean_name,
+                                        "Market": market,
+                                        "Order_UUID": order_uuid,
+                                        "Side": "PARTIAL_TP",
+                                        "Order_Type": "MARKET",
+                                        "Price": current_price,
+                                        "Volume": f"{sell_vol:.8f}",
+                                        "Total_KRW": int(sell_val),
+                                        "Realized_PnL_Pct": f"+{realized_profit_pct:.2f}%",
+                                        "Stop_Loss": avg_buy_price,
+                                        "Target_Price": current_price,
+                                        "Current_Balance_KRW": int(krw_available + sell_val),
+                                        "Status_Reason": f"1차 50% 분할 익절 (+{realized_profit_pct:.2f}%)",
+                                    }
+                                )
+                            finally:
+                                trailing_tracker.release_exit_lock(market)
 
                     elif action_type == "TRAILING_STOP":
-                        logger.info(
-                            f"🎯 [{korean_name} / {market} 트레일링 스탑 익절 발동] 최고점 {peak_p:,.2f}원(+{peak_profit_pct:.2f}%) ➜ 현재 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 잔여 전량 시장가 익절!"
-                        )
-                        cancel_bot_open_orders(bithumb, market)
+                        if trailing_tracker.acquire_exit_lock(market):
+                            try:
+                                logger.info(
+                                    f"🎯 [{korean_name} / {market} 트레일링 스탑 익절 발동] 최고점 {peak_p:,.2f}원(+{peak_profit_pct:.2f}%) ➜ 현재 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 잔여 전량 시장가 익절!"
+                                )
+                                cancel_bot_open_orders(bithumb, market)
 
-                        order_res = order_executor.submit(
-                            bithumb,
-                            market=market,
-                            side="ask",
-                            volume=coin_available,
-                            ord_type="market",
-                        )
-                        order_uuid = order_res.get("uuid", "UNKNOWN")
+                                order_res = order_executor.submit(
+                                    bithumb,
+                                    market=market,
+                                    side="ask",
+                                    volume=coin_available,
+                                    ord_type="market",
+                                    position_id=market,
+                                )
+                                order_uuid = order_res.get("uuid", "UNKNOWN")
 
-                        pnl_krw = (current_price - avg_buy_price) * coin_available
-                        risk_manager.add_realized_trade(pnl_krw, is_win=True)
-                        trade_memory.record_completed_trade(
-                            market=market,
-                            side="TRAILING_STOP",
-                            entry_price=avg_buy_price,
-                            exit_price=current_price,
-                            pnl_pct=realized_profit_pct,
-                            pnl_krw=pnl_krw,
-                            reason="가속 트레일링 스탑 최고점 익절 완료",
-                            timestamp=now_str,
-                        )
-                        trailing_tracker.clear(market)
+                                pnl_krw = (current_price - avg_buy_price) * coin_available
+                                risk_manager.add_realized_trade(pnl_krw, is_win=True)
+                                trade_memory.record_completed_trade(
+                                    market=market,
+                                    side="TRAILING_STOP",
+                                    entry_price=avg_buy_price,
+                                    exit_price=current_price,
+                                    filled_volume=coin_available,
+                                    pnl_pct=realized_profit_pct,
+                                    pnl_krw=pnl_krw,
+                                    reason="가속 트레일링 스탑 최고점 익절 완료",
+                                    timestamp=now_str,
+                                    position_id=market,
+                                )
+                                trailing_tracker.clear(market)
 
-                        chart_img = chart_renderer.render_trade_chart(
-                            market=market,
-                            korean_name=korean_name,
-                            candles=candles_5m,
-                            entry_price=avg_buy_price,
-                            target_price=peak_p,
-                            stop_loss=avg_buy_price,
-                            action="SELL",
-                        )
+                                chart_img = chart_renderer.render_trade_chart(
+                                    market=market,
+                                    korean_name=korean_name,
+                                    candles=candles_5m,
+                                    entry_price=avg_buy_price,
+                                    target_price=peak_p,
+                                    stop_loss=avg_buy_price,
+                                    action="SELL",
+                                )
 
-                        caption = (
-                            f"🎯 <b>[{korean_name}({market}) 트레일링 스탑 최고점 익절 완료!]</b>\n"
-                            f"• 진입 평단가: {avg_buy_price:,.2f} KRW\n"
-                            f"• 도달 최고가: {peak_p:,.2f} KRW (+{peak_profit_pct:.2f}%)\n"
-                            f"• 익절 체결가: {current_price:,.2f} KRW\n"
-                            f"• <b>실현 수익: +{pnl_krw:,.0f} KRW (+{realized_profit_pct:.2f}%) 🚀</b>\n"
-                            f"• 매도 수량: {coin_available:.8f} {currency}\n"
-                            f"• 주문 ID: <code>{order_uuid}</code>\n"
-                            f"• 일시: {now_str}"
-                        )
-                        if chart_img:
-                            telegram.send_photo(chart_img, caption=caption)
-                        else:
-                            telegram.send_message(caption)
+                                caption = (
+                                    f"🎯 <b>[{korean_name}({market}) 트레일링 스탑 최고점 익절 완료!]</b>\n"
+                                    f"• 진입 평단가: {avg_buy_price:,.2f} KRW\n"
+                                    f"• 도달 최고가: {peak_p:,.2f} KRW (+{peak_profit_pct:.2f}%)\n"
+                                    f"• 익절 체결가: {current_price:,.2f} KRW\n"
+                                    f"• <b>실현 수익: +{pnl_krw:,.0f} KRW (+{realized_profit_pct:.2f}%) 🚀</b>\n"
+                                    f"• 매도 수량: {coin_available:.8f} {currency}\n"
+                                    f"• 주문 ID: <code>{order_uuid}</code>\n"
+                                    f"• 일시: {now_str}"
+                                )
+                                if chart_img:
+                                    telegram.send_photo(chart_img, caption=caption)
+                                else:
+                                    telegram.send_message(caption)
 
-                        sheets.append_trade_log(
-                            {
-                                "Timestamp": now_str,
-                                "Korean_Name": korean_name,
-                                "Market": market,
-                                "Order_UUID": order_uuid,
-                                "Side": "TRAILING_STOP",
-                                "Order_Type": "MARKET",
-                                "Price": current_price,
-                                "Volume": f"{coin_available:.8f}",
-                                "Total_KRW": int(coin_available * current_price),
-                                "Realized_PnL_Pct": f"+{realized_profit_pct:.2f}%",
-                                "Stop_Loss": avg_buy_price,
-                                "Target_Price": peak_p,
-                                "Current_Balance_KRW": int(krw_available + (coin_available * current_price)),
-                                "Status_Reason": f"트레일링 스탑 최고점 익절 (+{realized_profit_pct:.2f}%)",
-                            }
-                        )
-                        continue
+                                sheets.append_trade_log(
+                                    {
+                                        "Timestamp": now_str,
+                                        "Korean_Name": korean_name,
+                                        "Market": market,
+                                        "Order_UUID": order_uuid,
+                                        "Side": "TRAILING_STOP",
+                                        "Order_Type": "MARKET",
+                                        "Price": current_price,
+                                        "Volume": f"{coin_available:.8f}",
+                                        "Total_KRW": int(coin_available * current_price),
+                                        "Realized_PnL_Pct": f"+{realized_profit_pct:.2f}%",
+                                        "Stop_Loss": avg_buy_price,
+                                        "Target_Price": peak_p,
+                                        "Current_Balance_KRW": int(krw_available + (coin_available * current_price)),
+                                        "Status_Reason": f"트레일링 스탑 최고점 익절 (+{realized_profit_pct:.2f}%)",
+                                    }
+                                )
+                            finally:
+                                trailing_tracker.release_exit_lock(market)
+                            continue
 
                 # =========================================================================
                 # ⏳ [최우선 2: 60분 횡보 자금 묶임 방지 타임스탑(Time-Stop)]
                 # =========================================================================
-                if coin_value >= MIN_ORDER_KRW and avg_buy_price > 0:
+                if coin_value >= MIN_ORDER_KRW and avg_buy_price > 0 and not order_journal.has_active_exit_order(market):
                     entry_ts = trailing_tracker.get_entry_time(market)
                     hold_duration_sec = time.time() - entry_ts
                     pnl_pct_current = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
 
                     if hold_duration_sec >= 3600 and (-1.0 <= pnl_pct_current <= 1.0):
-                        logger.info(
-                            f"⏳ [{korean_name} / {market}] 60분 횡보 타임스탑 발동! (손익률: {pnl_pct_current:+.2f}%, 보유시간: {hold_duration_sec/60:.0f}분) ➜ 신규 기회를 위해 시장가 전량 청산"
-                        )
-                        cancel_bot_open_orders(bithumb, market)
+                        if trailing_tracker.acquire_exit_lock(market):
+                            try:
+                                logger.info(
+                                    f"⏳ [{korean_name} / {market}] 60분 횡보 타임스탑 발동! (손익률: {pnl_pct_current:+.2f}%, 보유시간: {hold_duration_sec/60:.0f}분) ➜ 신규 기회를 위해 시장가 전량 청산"
+                                )
+                                cancel_bot_open_orders(bithumb, market)
 
-                        order_res = order_executor.submit(
-                            bithumb,
-                            market=market,
-                            side="ask",
-                            volume=coin_available,
-                            ord_type="market",
-                        )
-                        order_uuid = order_res.get("uuid", "UNKNOWN")
-                        pnl_krw = (current_price - avg_buy_price) * coin_available
-                        risk_manager.add_realized_trade(pnl_krw, is_win=(pnl_krw >= 0))
-                        trade_memory.record_completed_trade(
-                            market=market,
-                            side="TIME_STOP",
-                            entry_price=avg_buy_price,
-                            exit_price=current_price,
-                            pnl_pct=pnl_pct_current,
-                            pnl_krw=pnl_krw,
-                            reason="60분 이상 박스권 횡보로 인한 자금 회전 타임스탑 청산",
-                            timestamp=now_str,
-                        )
-                        trailing_tracker.clear(market)
+                                order_res = order_executor.submit(
+                                    bithumb,
+                                    market=market,
+                                    side="ask",
+                                    volume=coin_available,
+                                    ord_type="market",
+                                    position_id=market,
+                                )
+                                order_uuid = order_res.get("uuid", "UNKNOWN")
+                                pnl_krw = (current_price - avg_buy_price) * coin_available
+                                risk_manager.add_realized_trade(pnl_krw, is_win=(pnl_krw >= 0))
+                                trade_memory.record_completed_trade(
+                                    market=market,
+                                    side="TIME_STOP",
+                                    entry_price=avg_buy_price,
+                                    exit_price=current_price,
+                                    filled_volume=coin_available,
+                                    pnl_pct=pnl_pct_current,
+                                    pnl_krw=pnl_krw,
+                                    reason="60분 이상 박스권 횡보로 인한 자금 회전 타임스탑 청산",
+                                    timestamp=now_str,
+                                    position_id=market,
+                                )
+                                trailing_tracker.clear(market)
 
-                        caption = (
-                            f"⏳ <b>[{korean_name}({market}) 60분 횡보 타임스탑 청산]</b>\n"
-                            f"• 청산가: {current_price:,.2f} KRW | 평단가: {avg_buy_price:,.2f} KRW\n"
-                            f"• 실현 손익: {pnl_krw:+,.0f} KRW ({pnl_pct_current:+.2f}%)\n"
-                            f"• 사유: <i>장기 횡보에 따른 자금 잠김 방지 및 다음 급등 유망주 순환매 확보</i>\n"
-                            f"• 일시: {now_str}"
-                        )
-                        telegram.send_message(caption)
-                        continue
+                                caption = (
+                                    f"⏳ <b>[{korean_name}({market}) 60분 횡보 타임스탑 청산]</b>\n"
+                                    f"• 청산가: {current_price:,.2f} KRW | 평단가: {avg_buy_price:,.2f} KRW\n"
+                                    f"• 실현 손익: {pnl_krw:+,.0f} KRW ({pnl_pct_current:+.2f}%)\n"
+                                    f"• 사유: <i>장기 횡보에 따른 자금 잠김 방지 및 다음 급등 유망주 순환매 확보</i>\n"
+                                    f"• 일시: {now_str}"
+                                )
+                                telegram.send_message(caption)
+                            finally:
+                                trailing_tracker.release_exit_lock(market)
+                            continue
 
                 # =========================================================================
                 # 🧠 [하이브리드 2단계 게이팅: 1차 퀀트 사전 필터 ➜ 2차 AI 최종 승인]
@@ -613,6 +631,8 @@ def run_cycle():
                 )
                 in_cooldown, cd_remaining = cooldown_manager.is_in_cooldown(market)
                 is_holding = (coin_value >= MIN_ORDER_KRW and avg_buy_price > 0)
+                ws_health = ws_client.get_health_status() if hasattr(ws_client, "get_health_status") else {"is_healthy": True, "status": "OK"}
+                ws_healthy = ws_health.get("is_healthy", True)
 
                 should_call_ai = (
                     analyzer is not None
@@ -620,6 +640,7 @@ def run_cycle():
                     and not in_cooldown
                     and local_entry["allow_buy"]
                     and not is_btc_crashing
+                    and ws_healthy
                 )
 
                 if should_call_ai and analyzer is not None:
@@ -649,7 +670,11 @@ def run_cycle():
                             else (
                                 f"BTC 레짐 경보 ({btc_status_msg})"
                                 if is_btc_crashing
-                                else f"1차 퀀트 관망 대기: {local_entry['reason']}"
+                                else (
+                                    f"웹소켓 데이터 불안정 ({ws_health.get('status', 'UNHEALTHY')}) 진입 차단"
+                                    if not ws_healthy
+                                    else f"1차 퀀트 관망 대기: {local_entry['reason']}"
+                                )
                             )
                         )
                     )
@@ -719,36 +744,48 @@ def run_cycle():
                     continue
 
                 # 5. [손절 검사]
-                if coin_value >= MIN_ORDER_KRW and stop_loss > 0 and current_price <= stop_loss:
-                    logger.warning(
-                        f"🚨 [{market} 손절 발생] 현재가({current_price:,.2f}원) <= 손절가({stop_loss:,.2f}원). 전량 시장가 매도!"
-                    )
-                    trailing_tracker.clear(market)
-                    cancel_bot_open_orders(bithumb, market)
+                if (
+                    coin_value >= MIN_ORDER_KRW
+                    and stop_loss > 0
+                    and current_price <= stop_loss
+                    and not order_journal.has_active_exit_order(market)
+                ):
+                    if trailing_tracker.acquire_exit_lock(market):
+                        try:
+                            logger.warning(
+                                f"🚨 [{market} 손절 발생] 현재가({current_price:,.2f}원) <= 손절가({stop_loss:,.2f}원). 전량 시장가 매도!"
+                            )
+                            trailing_tracker.clear(market)
+                            cancel_bot_open_orders(bithumb, market)
 
-                    order_res = order_executor.submit(
-                        bithumb,
-                        market=market,
-                        side="ask",
-                        volume=coin_available,
-                        ord_type="market",
-                    )
-                    order_uuid = order_res.get("uuid", "UNKNOWN")
+                            order_res = order_executor.submit(
+                                bithumb,
+                                market=market,
+                                side="ask",
+                                volume=coin_available,
+                                ord_type="market",
+                                position_id=market,
+                            )
+                            order_uuid = order_res.get("uuid", "UNKNOWN")
 
-                    pnl_krw = (current_price - avg_buy_price) * coin_available if avg_buy_price > 0 else 0.0
-                    loss_pct = ((current_price - avg_buy_price) / avg_buy_price * 100) if avg_buy_price > 0 else 0.0
-                    risk_manager.add_realized_trade(pnl_krw, is_win=False)
-                    cooldown_manager.record_exit(market, "STOP_LOSS")
-                    trade_memory.record_completed_trade(
-                        market=market,
-                        side="STOP_LOSS",
-                        entry_price=avg_buy_price,
-                        exit_price=current_price,
-                        pnl_pct=loss_pct,
-                        pnl_krw=pnl_krw,
-                        reason=reason,
-                        timestamp=now_str,
-                    )
+                            pnl_krw = (current_price - avg_buy_price) * coin_available if avg_buy_price > 0 else 0.0
+                            loss_pct = ((current_price - avg_buy_price) / avg_buy_price * 100) if avg_buy_price > 0 else 0.0
+                            risk_manager.add_realized_trade(pnl_krw, is_win=False)
+                            cooldown_manager.record_exit(market, "STOP_LOSS")
+                            trade_memory.record_completed_trade(
+                                market=market,
+                                side="STOP_LOSS",
+                                entry_price=avg_buy_price,
+                                exit_price=current_price,
+                                filled_volume=coin_available,
+                                pnl_pct=loss_pct,
+                                pnl_krw=pnl_krw,
+                                reason=reason,
+                                timestamp=now_str,
+                                position_id=market,
+                            )
+                        finally:
+                            trailing_tracker.release_exit_lock(market)
 
                     chart_img = chart_renderer.render_trade_chart(
                         market=market,

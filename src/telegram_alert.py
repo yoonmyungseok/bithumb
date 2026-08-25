@@ -1,5 +1,6 @@
 import json
 import logging
+import queue
 import threading
 import time
 from collections.abc import Callable
@@ -12,13 +13,14 @@ logger = logging.getLogger(__name__)
 
 class TelegramAlert:
     """
-    텔레그램 알림 및 실시간 터치형 인라인 버튼 양방향 원격 제어
+    텔레그램 알림 및 실시간 터치형 인라인 버튼 양방향 원격 제어 (P2-1 비동기 큐 지원)
     - sendMessage & sendPhoto (HTML 서식 및 인라인 키보드 지원)
     - callback_query 실시간 리스너를 통한 스마트폰 원클릭 즉시 제어
     - /status, /balance, /panic, /pause, /resume, /help 및 터치 버튼 인터랙션
+    - 백그라운드 큐 워커를 통한 비차단(Non-blocking) 알림 전송
     """
 
-    def __init__(self, bot_token: str, chat_id: str):
+    def __init__(self, bot_token: str, chat_id: str, enable_async: bool = True):
         self.bot_token = bot_token.strip() if bot_token else ""
         self.chat_id = str(chat_id).strip() if chat_id else ""
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
@@ -30,13 +32,40 @@ class TelegramAlert:
         self._buy_approval_callback: Callable[[str], str] | None = None
         self._last_debounced_ts: dict[str, float] = {}
 
-    def send_message(
+        self.enable_async = enable_async
+        self._queue: queue.Queue = queue.Queue(maxsize=500)
+        self._is_running = True
+        if self.enable_async and self.bot_token and self.chat_id:
+            self._worker_thread = threading.Thread(target=self._queue_worker, daemon=True, name="TelegramQueueWorker")
+            self._worker_thread.start()
+
+    def _queue_worker(self):
+        while self._is_running:
+            try:
+                task = self._queue.get(timeout=1.0)
+                if task is None:
+                    break
+                func, args, kwargs = task
+                for attempt in range(3):
+                    try:
+                        func(*args, **kwargs)
+                        break
+                    except Exception as e:
+                        if attempt == 2:
+                            logger.error(f"텔레그램 비동기 발송 최종 실패: {e}")
+                        time.sleep(0.5 * (attempt + 1))
+                self._queue.task_done()
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.debug(f"텔레그램 워커 예외: {e}")
+
+    def _sync_send_message(
         self,
         text: str,
         parse_mode: str = "HTML",
         reply_markup: dict[str, Any] | None = None,
     ) -> bool:
-        """텔레그램 방으로 텍스트 메시지 및 선택적 인라인 버튼 발송"""
         if not self.bot_token or not self.chat_id:
             logger.info(f"[Telegram 미설정] 메시지 미전송: {text}")
             return False
@@ -62,6 +91,22 @@ class TelegramAlert:
             logger.error(f"텔레그램 메시지 전송 중 예외 발생: {e}")
             return False
 
+    def send_message(
+        self,
+        text: str,
+        parse_mode: str = "HTML",
+        reply_markup: dict[str, Any] | None = None,
+        sync: bool = False,
+    ) -> bool:
+        """텔레그램 방으로 텍스트 메시지 발송 (기본 비동기 큐 발송, P2-1)"""
+        if self.enable_async and not sync and self.bot_token and self.chat_id:
+            try:
+                self._queue.put_nowait((self._sync_send_message, (text,), {"parse_mode": parse_mode, "reply_markup": reply_markup}))
+                return True
+            except queue.Full:
+                logger.warning("텔레그램 전송 큐 가득 참, 동기 전송으로 폴백")
+        return self._sync_send_message(text, parse_mode=parse_mode, reply_markup=reply_markup)
+
     def send_debounced_message(
         self,
         category_key: str,
@@ -82,14 +127,13 @@ class TelegramAlert:
             self._last_debounced_ts[category_key] = now
         return success
 
-    def send_photo(
+    def _sync_send_photo(
         self,
         photo_bytes: bytes,
         caption: str = "",
         parse_mode: str = "HTML",
         reply_markup: dict[str, Any] | None = None,
     ) -> bool:
-        """텔레그램 방으로 캔들 차트 이미지(PNG) 및 설명 캡션 발송"""
         if not self.bot_token or not self.chat_id or not photo_bytes:
             return False
 
@@ -102,21 +146,36 @@ class TelegramAlert:
         if reply_markup:
             data["reply_markup"] = json.dumps(reply_markup)
 
-        files = {
-            "photo": ("chart.png", photo_bytes, "image/png"),
-        }
+        files = {"photo": ("chart.png", photo_bytes, "image/png")}
 
         try:
-            response = requests.post(url, data=data, files=files, timeout=20)
+            response = requests.post(url, data=data, files=files, timeout=15)
             if response.status_code == 200:
-                logger.info("텔레그램 차트 사진 발송 성공")
+                logger.info("텔레그램 차트 이미지 전송 성공")
                 return True
             else:
-                logger.warning(f"텔레그램 사진 발송 실패 [{response.status_code}]: {response.text}")
+                logger.error(f"텔레그램 사진 전송 실패 [{response.status_code}]: {response.text}")
                 return False
         except requests.exceptions.RequestException as e:
-            logger.warning(f"텔레그램 사진 발송 예외: {e}")
+            logger.error(f"텔레그램 사진 전송 중 예외 발생: {e}")
             return False
+
+    def send_photo(
+        self,
+        photo_bytes: bytes,
+        caption: str = "",
+        parse_mode: str = "HTML",
+        reply_markup: dict[str, Any] | None = None,
+        sync: bool = False,
+    ) -> bool:
+        """텔레그램 방으로 캔들 차트 이미지(PNG) 발송 (기본 비동기 큐, P2-1)"""
+        if self.enable_async and not sync and self.bot_token and self.chat_id:
+            try:
+                self._queue.put_nowait((self._sync_send_photo, (photo_bytes,), {"caption": caption, "parse_mode": parse_mode, "reply_markup": reply_markup}))
+                return True
+            except queue.Full:
+                logger.warning("텔레그램 사진 큐 가득 참, 동기 전송으로 폴백")
+        return self._sync_send_photo(photo_bytes, caption=caption, parse_mode=parse_mode, reply_markup=reply_markup)
 
     def answer_callback_query(self, callback_query_id: str, text: str = ""):
         """인라인 버튼 터치 시 텔레그램 상단 토스트 알림 확인 응답"""

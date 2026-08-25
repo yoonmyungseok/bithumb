@@ -11,6 +11,15 @@ import websocket
 logger = logging.getLogger(__name__)
 
 
+class WebSocketHealthState:
+    """웹소켓 데이터 상태 머신 정의 (P1-2)"""
+    DATA_AVAILABLE = "DATA_AVAILABLE"
+    STALE = "STALE"
+    DISCONNECTED = "DISCONNECTED"
+    SUBSCRIPTION_FAILED = "SUBSCRIPTION_FAILED"
+    DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
+
+
 class BithumbWebSocketClient:
     """
     빗썸 2.0 공식 실시간 웹소켓(WebSocket) 스트리밍 클라이언트
@@ -39,6 +48,42 @@ class BithumbWebSocketClient:
         self._lock = threading.Lock()
         self._last_whale_time: dict[str, float] = {}
         self._whale_trades: list[dict[str, Any]] = []
+        self.last_tick_time: float = 0.0
+        self.reconnect_count: int = 0
+        self.is_connected: bool = False
+
+    def get_health_status(self, max_stale_seconds: float = 15.0) -> dict[str, Any]:
+        """웹소켓 데이터 건강상태 검사 (Fail-Closed 판정용, P1-2)"""
+        now = time.time()
+        with self._lock:
+            last_tick = self.last_tick_time
+            connected = self.is_connected
+            reconnects = self.reconnect_count
+            sub_count = len(self.subscribed_markets)
+
+        latency = (now - last_tick) if last_tick > 0 else 9999.0
+
+        if not connected:
+            state = WebSocketHealthState.DISCONNECTED
+            is_healthy = False
+        elif last_tick <= 0:
+            state = WebSocketHealthState.DATA_UNAVAILABLE
+            is_healthy = False
+        elif latency > max_stale_seconds:
+            state = WebSocketHealthState.STALE
+            is_healthy = False
+        else:
+            state = WebSocketHealthState.DATA_AVAILABLE
+            is_healthy = True
+
+        return {
+            "status": state,
+            "is_healthy": is_healthy,
+            "latency_seconds": round(latency, 2),
+            "last_tick_time": last_tick,
+            "reconnect_count": reconnects,
+            "subscribed_count": sub_count,
+        }
 
     def get_latest_price(self, market: str) -> float:
         """실시간 캐시된 최신 체결가 반환 (없으면 0.0)"""
@@ -125,6 +170,8 @@ class BithumbWebSocketClient:
                 if code and price > 0:
                     with self._lock:
                         self.latest_prices[code] = price
+                        self.last_tick_time = time.time()
+                        self.is_connected = True
 
                     if self.on_price_callback:
                         self.on_price_callback(code, price)
@@ -136,6 +183,10 @@ class BithumbWebSocketClient:
                 val_krw = price * qty
                 ask_bid = data.get("ask_bid", "BID")
                 side = "매수" if str(ask_bid).upper() in ("BID", "BUY", "1") else "매도"
+
+                with self._lock:
+                    self.last_tick_time = time.time()
+                    self.is_connected = True
 
                 # 3,000만 원 이상 대량 체결 포착 및 이력 누적
                 if val_krw >= 30_000_000 and price > 0:
@@ -163,10 +214,14 @@ class BithumbWebSocketClient:
             pass
 
     def _on_open(self, ws: Any):
+        with self._lock:
+            self.is_connected = True
         logger.info("⚡ [빗썸 웹소켓 연결 성공] 0.1초 실시간 시세 & 고래 체결 스트리밍 활성화")
         self._send_subscription()
 
     def _on_error(self, ws: Any, error: Any):
+        with self._lock:
+            self.is_connected = False
         err_str = str(error)
         if "10054" in err_str or "ConnectionReset" in err_str:
             logger.debug(f"빗썸 웹소켓 세션 만료 감지 (자동 재연결 대기): {error}")
@@ -174,6 +229,8 @@ class BithumbWebSocketClient:
             logger.warning(f"웹소켓 에러 발생: {error}")
 
     def _on_close(self, ws: Any, close_status_code: Any, close_msg: Any):
+        with self._lock:
+            self.is_connected = False
         logger.info("웹소켓 연결 종료, 재연결을 대기합니다.")
 
     def start(self):
@@ -186,6 +243,8 @@ class BithumbWebSocketClient:
         def _run_loop():
             while self.is_running:
                 try:
+                    with self._lock:
+                        self.reconnect_count += 1
                     self.ws = websocket.WebSocketApp(
                         self.WS_URL,
                         on_open=self._on_open,
@@ -204,5 +263,7 @@ class BithumbWebSocketClient:
 
     def stop(self):
         self.is_running = False
+        with self._lock:
+            self.is_connected = False
         if self.ws:
             self.ws.close()

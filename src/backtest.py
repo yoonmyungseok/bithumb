@@ -6,7 +6,7 @@ from typing import Any
 
 from bithumb_api import BithumbAPI
 from order_safety import calculate_risk_position_size
-from strategy_engine import calculate_chandelier_exit, entry_signal
+from strategy_engine import StrategyPolicy, calculate_chandelier_exit, entry_signal
 
 # 윈도우 cp949 인코딩 표준화
 if sys.platform == "win32":
@@ -257,8 +257,8 @@ class QuantBacktester:
                         position_vol = 0.0
                         continue
 
-                # D. 동적 타임스탑 (16개 봉 = 80분 경과 시 청산)
-                if bars_held >= 16:
+                # D. 동적 타임스탑 (StrategyPolicy.TIME_STOP_BARS_5M = 12개 봉 / 60분 경과 시 청산, P1-3)
+                if bars_held >= StrategyPolicy.TIME_STOP_BARS_5M:
                     exit_p = cur_price * (1.0 - self.slippage_rate)
                     pnl_pct = ((exit_p - entry_price) / entry_price) * 100.0
                     proceeds = position_vol * exit_p * (1.0 - self.fee_rate)
@@ -327,17 +327,18 @@ class QuantBacktester:
             "candles_tested": len(sorted_candles),
             "initial_capital": self.initial_capital,
             "final_capital": capital,
-            "total_return_pct": total_return_pct,
-            "max_drawdown_pct": max_drawdown,
+            "total_return_pct": round(total_return_pct, 2),
+            "max_drawdown_pct": round(max_drawdown, 2),
             "total_trades": len(completed_trades),
             "win_trades": len(win_trades),
             "loss_trades": len(loss_trades),
-            "win_rate": win_rate,
-            "profit_factor": profit_factor,
+            "win_rate": round(win_rate, 1),
+            "profit_factor": round(profit_factor, 2),
             "max_consecutive_losses": max_consecutive_losses,
-            "expectancy_pct": expectancy_pct,
+            "expectancy_pct": round(expectancy_pct, 2),
             "fee_rate": self.fee_rate,
             "slippage_rate": self.slippage_rate,
+            "timestop_bars": StrategyPolicy.TIME_STOP_BARS_5M,
         }
 
         self._print_report(result)
@@ -350,7 +351,7 @@ class QuantBacktester:
         print(f"• 테스트 캔들 수: {r.get('candles_tested', 0)}개 캔들")
         print(f"• 초기 투자 자본: {r.get('initial_capital', 0):,.0f} KRW")
         print(f"• 최종 평가 자본: {r.get('final_capital', 0):,.0f} KRW")
-        print(f"• <b>총 누적 수익률: {r.get('total_return_pct', 0.0):+.2f}%</b>")
+        print(f"• 총 누적 수익률: {r.get('total_return_pct', 0.0):+.2f}%")
         print(f"• 최대 낙폭(MDD): {r.get('max_drawdown_pct', 0.0):.2f}%")
         print(f"• 총 거래 횟수: {r.get('total_trades', 0)}회 (승리: {r.get('win_trades', 0)}회 / 패배: {r.get('loss_trades', 0)}회)")
         print(f"• 실시간 승률: {r.get('win_rate', 0.0):.1f}%")
@@ -358,8 +359,37 @@ class QuantBacktester:
         print(f"• 거래당 기대수익률(Expectancy): {r.get('expectancy_pct', 0.0):+.2f}%")
         print(f"• 최대 연속 손실 횟수: {r.get('max_consecutive_losses', 0)}회")
         print(f"• 비용 가정: 수수료 {r.get('fee_rate', 0.0)*100:.3f}% / 편도 슬리피지 {r.get('slippage_rate', 0.0)*100:.3f}%")
-        print(f"• 체결 모델: Next-Bar Open + Gap Filter + 확정봉 Chandelier Stop + 45분 쿨다운")
+        print(f"• 체결 모델: Next-Bar Open + Gap Filter + 확정봉 Chandelier Stop + 타임스탑 {r.get('timestop_bars', 12)}봉")
         print("=" * 65 + "\n")
+
+    @staticmethod
+    def save_report_json(result: dict[str, Any], filepath: str) -> None:
+        """백테스팅 결과를 JSON 파일로 저장 (P3-2)"""
+        import json
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def save_report_markdown(result: dict[str, Any], filepath: str) -> None:
+        """백테스팅 결과를 Markdown 문서로 저장 (P3-2)"""
+        md_content = f"""# 📊 퀀트 백테스팅 결과 리포트: {result.get('market', '')}
+
+| 지표 항목 | 백테스트 결과 | 비고 |
+| :--- | :--- | :--- |
+| **테스트 마켓** | `{result.get('market', '')}` | 5분봉 기준 |
+| **테스트 캔들 수** | {result.get('candles_tested', 0):,} 개 | |
+| **초기 투자 자본** | {result.get('initial_capital', 0):,.0f} KRW | |
+| **최종 평가 자본** | {result.get('final_capital', 0):,.0f} KRW | |
+| **총 누적 수익률** | **{result.get('total_return_pct', 0.0):+.2f}%** | Next-Bar Open 체결 |
+| **최대 낙폭 (MDD)** | {result.get('max_drawdown_pct', 0.0):.2f}% | |
+| **총 매매 횟수** | {result.get('total_trades', 0)} 회 | 승리 {result.get('win_trades', 0)} / 패배 {result.get('loss_trades', 0)} |
+| **승률 (Win Rate)** | {result.get('win_rate', 0.0):.1f}% | |
+| **손익비 (Profit Factor)** | {result.get('profit_factor', 0.0):.2f} | |
+| **기대수익률 (Expectancy)** | {result.get('expectancy_pct', 0.0):+.2f}% / 회 | |
+| **수수료 및 슬리피지** | 편도 {result.get('fee_rate', 0.0)*100:.2f}% / 슬리피지 {result.get('slippage_rate', 0.0)*100:.2f}% | 보수적 마찰비용 반영 |
+"""
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(md_content)
 
 
 def main():
@@ -370,10 +400,18 @@ def main():
     parser.add_argument("--capital", type=float, default=1_000_000.0, help="초기 자본금")
     parser.add_argument("--fee-rate", type=float, default=0.0004, help="편도 수수료율 (기본: 0.04%%)")
     parser.add_argument("--slippage-rate", type=float, default=0.001, help="편도 슬리피지율 (기본: 0.10%%)")
+    parser.add_argument("--export-json", type=str, default="", help="JSON 리포트 저장 경로")
+    parser.add_argument("--export-md", type=str, default="", help="Markdown 리포트 저장 경로")
     args = parser.parse_args()
 
     backtester = QuantBacktester(args.capital, args.fee_rate, args.slippage_rate)
-    backtester.run_backtest(market=args.market, unit=args.unit, count=args.count)
+    res = backtester.run_backtest(market=args.market, unit=args.unit, count=args.count)
+
+    if res:
+        if args.export_json:
+            QuantBacktester.save_report_json(res, args.export_json)
+        if args.export_md:
+            QuantBacktester.save_report_markdown(res, args.export_md)
 
 
 if __name__ == "__main__":

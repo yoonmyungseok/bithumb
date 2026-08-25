@@ -165,8 +165,8 @@ class RealtimeRiskAndIndicatorTests(unittest.TestCase):
             rm.update_daily_equity(100000.0, kst_now)
             self.assertEqual(rm.daily_start_equity, 100000.0)
 
-            # Cashflow deposit +200,000 -> jump >= 10,000
-            rm.update_daily_equity(300000.0, kst_now)
+            # Explicit cashflow deposit +200,000 (P1-1)
+            rm.register_cashflow(200000.0, reason="입금")
             self.assertEqual(rm.daily_start_equity, 300000.0)
 
             # Trailing stop tracker

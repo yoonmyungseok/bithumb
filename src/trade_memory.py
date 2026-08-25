@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import time
 from typing import Any
 
 from order_safety import write_json_atomically
@@ -57,8 +58,16 @@ class TradeMemoryManager:
         pnl_krw: float,
         reason: str,
         timestamp: str,
+        position_id: str | None = None,
+        trade_id: str | None = None,
+        filled_volume: float = 0.0,
+        fee: float = 0.0,
+        slippage: float = 0.0,
+        order_status: str = "FILLED",
+        exchange: str = "bithumb",
+        **extra_fields: Any,
     ):
-        """완료된 거래 내역 및 결과 복기 기록"""
+        """완료된 거래 내역 및 실제 체결 결과 복기 기록 (P0-3 체결 기반)"""
         is_win = pnl_krw > 0
         lesson = ""
         if not is_win:
@@ -68,19 +77,57 @@ class TradeMemoryManager:
 
         trade_item = {
             "timestamp": timestamp,
+            "trade_id": trade_id or f"tr-{int(time.time() * 1000)}",
+            "position_id": position_id or market,
+            "exchange": exchange,
             "market": market,
             "side": side,
+            "order_status": order_status,
             "entry_price": entry_price,
             "exit_price": exit_price,
+            "filled_volume": filled_volume,
+            "fee": fee,
+            "slippage": slippage,
             "pnl_pct": pnl_pct,
             "pnl_krw": pnl_krw,
             "is_win": is_win,
             "reason": reason,
             "lesson": lesson,
         }
+        trade_item.update(extra_fields)
         self.trades.append(trade_item)
         self._save_memory()
-        logger.info(f"🧠 [AI 매매 메모리 저장] {market} {side} 결과: {'승리(익절)' if is_win else '패배(손절)'} ({pnl_pct:+.2f}%)")
+        logger.info(f"🧠 [AI 매매 메모리 저장] {market} {side} 결과: {'승리(익절)' if is_win else '패배(손절)'} ({pnl_pct:+.2f}%, 실현: {pnl_krw:+,.0f}원)")
+
+    def get_position_level_stats(self) -> dict[str, Any]:
+        """분할익절을 하나의 포지션으로 통합하여 포지션 단위 승률 및 손익 통계 집계"""
+        positions: dict[str, dict[str, Any]] = {}
+        for t in self.trades:
+            pos_id = t.get("position_id") or t.get("market") or "unknown"
+            if pos_id not in positions:
+                positions[pos_id] = {
+                    "market": t.get("market"),
+                    "total_pnl_krw": 0.0,
+                    "total_fee": 0.0,
+                    "trades_count": 0,
+                    "last_timestamp": t.get("timestamp"),
+                }
+            positions[pos_id]["total_pnl_krw"] += float(t.get("pnl_krw", 0.0))
+            positions[pos_id]["total_fee"] += float(t.get("fee", 0.0))
+            positions[pos_id]["trades_count"] += 1
+
+        total_positions = len(positions)
+        win_positions = sum(1 for p in positions.values() if p["total_pnl_krw"] > 0)
+        win_rate = (win_positions / total_positions * 100.0) if total_positions > 0 else 0.0
+        total_pnl = sum(p["total_pnl_krw"] for p in positions.values())
+
+        return {
+            "total_positions": total_positions,
+            "win_positions": win_positions,
+            "loss_positions": total_positions - win_positions,
+            "position_win_rate_pct": round(win_rate, 2),
+            "total_realized_pnl_krw": round(total_pnl, 2),
+        }
 
     def get_feedback_context(self) -> str:
         """Gemini 퀀트 분석 엔진에 주입할 자가 학습 피드백 텍스트 생성"""

@@ -20,6 +20,15 @@ import websocket
 logger = logging.getLogger(__name__)
 
 
+class WebSocketHealthState:
+    """웹소켓 데이터 상태 머신 정의 (P1-2)"""
+    DATA_AVAILABLE = "DATA_AVAILABLE"
+    STALE = "STALE"
+    DISCONNECTED = "DISCONNECTED"
+    SUBSCRIPTION_FAILED = "SUBSCRIPTION_FAILED"
+    DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
+
+
 class UpbitWebSocketClient:
     """
     업비트 실시간 Public WebSocket 클라이언트
@@ -43,6 +52,42 @@ class UpbitWebSocketClient:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._whale_trades: list[dict[str, Any]] = []
+        self.last_tick_time: float = 0.0
+        self.reconnect_count: int = 0
+        self.is_connected: bool = False
+
+    def get_health_status(self, max_stale_seconds: float = 15.0) -> dict[str, Any]:
+        """업비트 웹소켓 데이터 건강상태 검사 (Fail-Closed 판정용, P1-2)"""
+        now = time.time()
+        with self._lock:
+            last_tick = self.last_tick_time
+            connected = self.is_connected
+            reconnects = self.reconnect_count
+            sub_count = len(self.subscribed_markets)
+
+        latency = (now - last_tick) if last_tick > 0 else 9999.0
+
+        if not connected:
+            state = WebSocketHealthState.DISCONNECTED
+            is_healthy = False
+        elif last_tick <= 0:
+            state = WebSocketHealthState.DATA_UNAVAILABLE
+            is_healthy = False
+        elif latency > max_stale_seconds:
+            state = WebSocketHealthState.STALE
+            is_healthy = False
+        else:
+            state = WebSocketHealthState.DATA_AVAILABLE
+            is_healthy = True
+
+        return {
+            "status": state,
+            "is_healthy": is_healthy,
+            "latency_seconds": round(latency, 2),
+            "last_tick_time": last_tick,
+            "reconnect_count": reconnects,
+            "subscribed_count": sub_count,
+        }
 
     def get_latest_price(self, market: str) -> float:
         """실시간 캐시된 최신 체결가 반환 (없으면 0.0)"""
@@ -137,6 +182,8 @@ class UpbitWebSocketClient:
                 if code and price > 0:
                     with self._lock:
                         self.latest_prices[code] = price
+                        self.last_tick_time = time.time()
+                        self.is_connected = True
 
                     if self.on_price_callback:
                         self.on_price_callback(code, price)
@@ -148,6 +195,10 @@ class UpbitWebSocketClient:
                 val_krw = price * qty
                 ask_bid = str(data.get("ask_bid", "BID")).upper()
                 side = "매수" if ask_bid in ("BID", "BUY", "1") else "매도"
+
+                with self._lock:
+                    self.last_tick_time = time.time()
+                    self.is_connected = True
 
                 # 3,000만 원 이상 대량 체결 포착
                 if val_krw >= 30_000_000 and price > 0:
@@ -169,19 +220,27 @@ class UpbitWebSocketClient:
             pass
 
     def _on_open(self, ws: Any):
+        with self._lock:
+            self.is_connected = True
         logger.info("⚡ [업비트 실시간 Public WebSocket 연결 완료]")
         self._send_subscription()
 
     def _on_error(self, ws: Any, error: Any):
+        with self._lock:
+            self.is_connected = False
         logger.warning(f"업비트 웹소켓 오류: {error}")
 
     def _on_close(self, ws: Any, close_status_code: Any, close_msg: Any):
+        with self._lock:
+            self.is_connected = False
         logger.info(f"업비트 웹소켓 연결 종료 (코드: {close_status_code})")
 
     def _run_loop(self):
         retry_delay = 2
         while self.is_running:
             try:
+                with self._lock:
+                    self.reconnect_count += 1
                 self.ws = websocket.WebSocketApp(
                     self.ws_url,
                     on_open=self._on_open,
@@ -215,6 +274,8 @@ class UpbitWebSocketClient:
     def stop(self):
         """웹소켓 안전 종료"""
         self.is_running = False
+        with self._lock:
+            self.is_connected = False
         if self.ws:
             self.ws.close()
         logger.info("업비트 Public WebSocket 클라이언트 종료 완료")
