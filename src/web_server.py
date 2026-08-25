@@ -36,12 +36,14 @@ class DashboardWebServer:
         action_handler_func: Callable[[str], str] | None = None,
         data_provider: Callable[[], dict[str, Any]] | None = None,
         action_handler: Callable[[str], str] | None = None,
+        title: str = "Bithumb AI 퀀트 트레이딩 Pro",
         **kwargs,
     ):
         self.port = port
         self.host = host
         self.get_status_data = get_status_data_func or data_provider or kwargs.get("data_provider")
         self.action_handler = action_handler_func or action_handler or kwargs.get("action_handler")
+        self.title = title or kwargs.get("title", "Bithumb AI 퀀트 트레이딩 Pro")
         self.server: QuietThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -51,7 +53,7 @@ class DashboardWebServer:
             self.server = QuietThreadingHTTPServer((self.host, self.port), handler_cls)
             self._thread = threading.Thread(target=self.server.serve_forever, daemon=True, name="WebDashboard")
             self._thread.start()
-            logger.info(f"🌐 [로컬 웹 대시보드 가동] 접속 주소: http://localhost:{self.port}")
+            logger.info(f"🌐 [{self.title} 웹 대시보드 가동] 접속 주소: http://localhost:{self.port}")
         except OSError as e:
             logger.warning(f"웹 대시보드 포트 {self.port} 바인딩 실패: {e}")
 
@@ -134,12 +136,12 @@ class DashboardWebServer:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>빗썸 AI 퀀트 트레이딩 Pro 대시보드</title>
+    <title>{self.title} 대시보드</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body {{ background-color: #0b0e14; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
         .card {{ background-color: #151923; border: 1px solid #232a3b; border-radius: 12px; }}
-        .badge {{ padding: 3px 8px; border-radius: 6px; font-weight: bold; font-size: 0.75rem; }}
+        .badge {{ padding: 3px 8px; border-radius: 6px; font-weight: bold; font-size: 0.75rem; white-space: nowrap; display: inline-block; }}
     </style>
 </head>
 <body class="p-6">
@@ -150,7 +152,7 @@ class DashboardWebServer:
                 <span class="text-3xl">🚀</span>
                 <div>
                     <h1 class="text-2xl font-black bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">
-                        Bithumb AI 퀀트 트레이딩 Pro
+                        {self.title}
                     </h1>
                     <p class="text-xs text-slate-400">포트: {self.port} | 0.1초 실시간 웹소켓 리스크 방어 & 50% 분할익절 가속 트레일링</p>
                 </div>
@@ -196,12 +198,12 @@ class DashboardWebServer:
                 <table class="w-full text-left text-sm text-slate-300">
                     <thead class="bg-slate-800/60 text-slate-400 uppercase text-xs">
                         <tr>
-                            <th class="p-3">종목명 (Market)</th>
-                            <th class="p-3">현재가 (KRW)</th>
-                            <th class="p-3">보유 수량 / 평가액</th>
-                            <th class="p-3">수익률</th>
-                            <th class="p-3">AI 행동 (Action)</th>
-                            <th class="p-3">목표가 / 손절가</th>
+                            <th class="p-3 whitespace-nowrap">종목명 (마켓)</th>
+                            <th class="p-3 whitespace-nowrap">현재가 (원)</th>
+                            <th class="p-3 whitespace-nowrap">보유 수량 / 평가액</th>
+                            <th class="p-3 whitespace-nowrap">수익률</th>
+                            <th class="p-3 whitespace-nowrap min-w-[90px]">AI 행동</th>
+                            <th class="p-3 whitespace-nowrap">목표가 / 손절가</th>
                             <th class="p-3">AI 분석 근거</th>
                         </tr>
                     </thead>
@@ -217,17 +219,17 @@ class DashboardWebServer:
             <!-- Recent Completed Trades -->
             <div class="card p-6">
                 <h2 class="text-lg font-bold text-white mb-4 flex items-center">
-                    <span class="mr-2">💰</span> 최근 완료 거래 내역 (Trade Memory)
+                    <span class="mr-2">💰</span> 최근 완료 거래 내역
                 </h2>
                 <div class="overflow-x-auto">
                     <table class="w-full text-left text-xs text-slate-300">
                         <thead class="bg-slate-800/60 text-slate-400 uppercase">
                             <tr>
-                                <th class="p-2.5">일시</th>
-                                <th class="p-2.5">종목</th>
-                                <th class="p-2.5">구분</th>
-                                <th class="p-2.5">실현 손익</th>
-                                <th class="p-2.5">사유</th>
+                                <th class="p-2.5 whitespace-nowrap">일시</th>
+                                <th class="p-2.5 whitespace-nowrap">종목명 (마켓)</th>
+                                <th class="p-2.5 whitespace-nowrap min-w-[100px]">구분</th>
+                                <th class="p-2.5 whitespace-nowrap">실현 손익</th>
+                                <th class="p-2.5">체결 사유</th>
                             </tr>
                         </thead>
                         <tbody id="trades_tbody" class="divide-y divide-slate-800">
@@ -240,17 +242,17 @@ class DashboardWebServer:
             <!-- Order Journal -->
             <div class="card p-6">
                 <h2 class="text-lg font-bold text-white mb-4 flex items-center">
-                    <span class="mr-2">🛡️</span> 실시간 주문 저널 (Order Journal)
+                    <span class="mr-2">🛡️</span> 실시간 주문 저널
                 </h2>
                 <div class="overflow-x-auto">
                     <table class="w-full text-left text-xs text-slate-300">
                         <thead class="bg-slate-800/60 text-slate-400 uppercase">
                             <tr>
-                                <th class="p-2.5">클라이언트 ID</th>
-                                <th class="p-2.5">종목</th>
-                                <th class="p-2.5">방향</th>
-                                <th class="p-2.5">주문 상태</th>
-                                <th class="p-2.5">거래소 UUID</th>
+                                <th class="p-2.5 whitespace-nowrap">주문 번호 (ID)</th>
+                                <th class="p-2.5 whitespace-nowrap">종목명 (마켓)</th>
+                                <th class="p-2.5 whitespace-nowrap min-w-[60px]">방향</th>
+                                <th class="p-2.5 whitespace-nowrap min-w-[90px]">주문 상태</th>
+                                <th class="p-2.5 whitespace-nowrap">거래소 주문번호</th>
                             </tr>
                         </thead>
                         <tbody id="orders_tbody" class="divide-y divide-slate-800">
@@ -262,7 +264,7 @@ class DashboardWebServer:
         </div>
 
         <div class="text-center text-xs text-slate-500 py-2">
-            빗썸 API 2.0 AI 퀀트 시스템 | 5초마다 자동 실시간 동기화 중 | 포트: {self.port}
+            {self.title} | 5초마다 실시간 동기화 중 | 포트: {self.port}
         </div>
     </div>
 
@@ -291,20 +293,79 @@ class DashboardWebServer:
                     document.getElementById('fear_greed').innerText = data.fear_and_greed || '-';
                     document.getElementById('bot_state').innerText = data.bot_state || '🟢 정상 가동 중';
 
+                    function formatAction(action) {{
+                        if (!action) return '-';
+                        const a = String(action).toUpperCase();
+                        if (a === 'BUY' || a === 'BID') return '매수';
+                        if (a === 'SELL' || a === 'ASK') return '매도';
+                        if (a === 'HOLD') return '관망';
+                        if (a === 'STOP_LOSS') return '손절';
+                        if (a === 'PARTIAL_TP') return '1차 분할익절';
+                        if (a === 'TRAILING_STOP') return '트레일링 익절';
+                        if (a === 'TIME_STOP') return '타임스탑 청산';
+                        if (a === 'PANIC_SELL') return '긴급 전량매도';
+                        if (a === 'PROFIT_TAKE' || a === 'TAKE_PROFIT') return '전량 익절';
+                        return action;
+                    }}
+
+                    function formatTradeSide(side) {{
+                        if (!side) return '-';
+                        const s = String(side).toUpperCase();
+                        if (s === 'BUY' || s === 'BID') return '매수';
+                        if (s === 'SELL' || s === 'ASK') return '매도';
+                        if (s === 'PARTIAL_TP' || s.includes('TP') || s.includes('WIN')) return '1차 분할익절';
+                        if (s === 'TRAILING_STOP') return '트레일링 익절';
+                        if (s === 'STOP_LOSS') return '손절';
+                        if (s === 'TIME_STOP') return '타임스탑 청산';
+                        if (s === 'PANIC_SELL') return '긴급 전량매도';
+                        if (s === 'PROFIT_TAKE' || s === 'TAKE_PROFIT') return '전량 익절';
+                        return side;
+                    }}
+
+                    function formatOrderStatus(status) {{
+                        if (!status) return '-';
+                        const s = String(status).toUpperCase();
+                        if (s === 'FILLED' || s === 'DONE') return '체결 완료';
+                        if (s === 'PARTIALLY_FILLED') return '부분 체결';
+                        if (s === 'OPEN' || s === 'WAIT') return '미체결 대기';
+                        if (s === 'PENDING') return '전송 중';
+                        if (s === 'CANCELED' || s === 'CANCEL') return '취소 완료';
+                        if (s === 'FAILED' || s === 'FAIL' || s === 'ERROR') return '주문 실패';
+                        if (s === 'EXPIRED') return '기간 만료';
+                        if (s === 'UNKNOWN') return '확인 필요';
+                        if (s === 'REJECTED') return '주문 거절';
+                        return status;
+                    }}
+
+                    function formatReason(r) {{
+                        if (!r) return '-';
+                        return String(r)
+                            .replace(/TRAILING_STOP/g, '트레일링 익절')
+                            .replace(/TIME_STOP/g, '타임스탑 청산')
+                            .replace(/STOP_LOSS/g, '손절')
+                            .replace(/PARTIAL_TP/g, '1차 분할익절')
+                            .replace(/PANIC_SELL/g, '긴급 전량매도');
+                    }}
+
                     // Positions
                     const tbody = document.getElementById('positions_tbody');
                     if (data.positions && data.positions.length > 0) {{
-                        tbody.innerHTML = data.positions.map(p => `
-                            <tr class="hover:bg-slate-800/60 transition">
-                                <td class="p-3 font-bold text-white">${{p.korean_name}} <span class="text-xs text-slate-400 font-normal">(${{p.market}})</span></td>
-                                <td class="p-3">${{p.current_price.toLocaleString()}} 원</td>
-                                <td class="p-3">${{p.balance}}개 <span class="text-xs text-slate-400">(${{p.value.toLocaleString()}}원)</span></td>
-                                <td class="p-3 font-bold ${{p.pnl_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}}">${{p.pnl_pct >= 0 ? '+' : ''}}${{p.pnl_pct.toFixed(2)}}%</td>
-                                <td class="p-3"><span class="badge ${{p.action === 'BUY' ? 'bg-emerald-500/20 text-emerald-300' : (p.action === 'SELL' ? 'bg-rose-500/20 text-rose-300' : 'bg-slate-700 text-slate-300')}}">${{p.action}}</span></td>
-                                <td class="p-3 text-xs text-slate-300">목표: ${{p.target_price > 0 ? p.target_price.toLocaleString() + '원' : '-'}}<br>손절: ${{p.stop_loss > 0 ? p.stop_loss.toLocaleString() + '원' : '-'}}</td>
-                                <td class="p-3 text-xs text-slate-400 max-w-xs truncate">${{p.reason || '-'}}</td>
-                            </tr>
-                        `).join('');
+                        tbody.innerHTML = data.positions.map(p => {{
+                            const actKr = formatAction(p.action);
+                            const actBadge = (p.action === 'BUY' || p.action === 'BID') ? 'bg-emerald-500/20 text-emerald-300' : ((p.action === 'SELL' || p.action === 'ASK' || p.action === 'STOP_LOSS') ? 'bg-rose-500/20 text-rose-300' : 'bg-slate-700 text-slate-300');
+                            const reasonKr = formatReason(p.reason);
+                            return `
+                                <tr class="hover:bg-slate-800/60 transition">
+                                    <td class="p-3 font-bold text-white whitespace-nowrap">${{p.korean_name}} <span class="text-xs text-slate-400 font-normal">(${{p.market}})</span></td>
+                                    <td class="p-3 whitespace-nowrap">${{p.current_price.toLocaleString()}} 원</td>
+                                    <td class="p-3 whitespace-nowrap">${{p.balance}}개 <span class="text-xs text-slate-400">(${{p.value.toLocaleString()}}원)</span></td>
+                                    <td class="p-3 font-bold whitespace-nowrap ${{p.pnl_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}}">${{p.pnl_pct >= 0 ? '+' : ''}}${{p.pnl_pct.toFixed(2)}}%</td>
+                                    <td class="p-3 whitespace-nowrap"><span class="badge ${{actBadge}}">${{actKr}}</span></td>
+                                    <td class="p-3 text-xs text-slate-300 whitespace-nowrap">목표: ${{p.target_price > 0 ? p.target_price.toLocaleString() + '원' : '-'}}<br>손절: ${{p.stop_loss > 0 ? p.stop_loss.toLocaleString() + '원' : '-'}}</td>
+                                    <td class="p-3 text-xs text-slate-400 max-w-xs truncate">${{reasonKr}}</td>
+                                </tr>
+                            `;
+                        }}).join('');
                     }} else {{
                         tbody.innerHTML = '<tr><td colspan="7" class="p-6 text-center text-slate-500">현재 보유 중인 코인이 없습니다 (100% 현금 보유 관망 중).</td></tr>';
                     }}
@@ -316,13 +377,17 @@ class DashboardWebServer:
                             const pnlKrw = t.pnl_krw || 0;
                             const pnlPct = t.pnl_pct || 0;
                             const isWin = pnlKrw >= 0;
+                            const sideKr = formatTradeSide(t.side);
+                            const sideBadge = (t.side && (t.side.includes('TP') || t.side.includes('WIN') || t.side.includes('BUY') || t.side.includes('BID'))) ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300';
+                            const reasonKr = formatReason(t.reason);
+                            const coinDisp = t.korean_name ? (t.korean_name + ' <span class="text-xs text-slate-400 font-normal">(' + t.market + ')</span>') : t.market;
                             return `
                                 <tr class="hover:bg-slate-800/40">
-                                    <td class="p-2.5 text-slate-400">${{(t.timestamp || '').slice(-8)}}</td>
-                                    <td class="p-2.5 font-semibold text-white">${{t.market}}</td>
-                                    <td class="p-2.5"><span class="badge ${{t.side.includes('TP') || t.side.includes('WIN') ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}}">${{t.side}}</span></td>
-                                    <td class="p-2.5 font-bold ${{isWin ? 'text-emerald-400' : 'text-rose-400'}}">${{isWin ? '+' : ''}}${{pnlKrw.toLocaleString()}}원 (${{isWin ? '+' : ''}}${{pnlPct.toFixed(2)}}%)</td>
-                                    <td class="p-2.5 text-slate-400 max-w-xs truncate">${{t.reason || '-'}}</td>
+                                    <td class="p-2.5 text-slate-400 whitespace-nowrap">${{(t.timestamp || '').slice(-8)}}</td>
+                                    <td class="p-2.5 font-semibold text-white whitespace-nowrap">${{coinDisp}}</td>
+                                    <td class="p-2.5 whitespace-nowrap"><span class="badge ${{sideBadge}}">${{sideKr}}</span></td>
+                                    <td class="p-2.5 font-bold whitespace-nowrap ${{isWin ? 'text-emerald-400' : 'text-rose-400'}}">${{isWin ? '+' : ''}}${{pnlKrw.toLocaleString()}}원 (${{isWin ? '+' : ''}}${{pnlPct.toFixed(2)}}%)</td>
+                                    <td class="p-2.5 text-slate-400 max-w-xs truncate">${{reasonKr}}</td>
                                 </tr>
                             `;
                         }}).join('');
@@ -334,14 +399,19 @@ class DashboardWebServer:
                     const ordersTbody = document.getElementById('orders_tbody');
                     if (data.recent_orders && data.recent_orders.length > 0) {{
                         ordersTbody.innerHTML = data.recent_orders.map(o => {{
-                            const statusColor = o.status === 'FILLED' ? 'bg-emerald-500/20 text-emerald-300' : (o.status === 'PARTIALLY_FILLED' ? 'bg-amber-500/20 text-amber-300' : (o.status === 'UNKNOWN' ? 'bg-rose-500/20 text-rose-300' : 'bg-slate-700 text-slate-300'));
+                            const rawStatus = (o.status || '').toUpperCase();
+                            const isFailed = (rawStatus === 'FAILED' || rawStatus === 'FAIL' || rawStatus === 'ERROR' || rawStatus === 'REJECTED' || rawStatus === 'UNKNOWN');
+                            const statusColor = (rawStatus === 'FILLED' || rawStatus === 'DONE') ? 'bg-emerald-500/20 text-emerald-300' : ((rawStatus === 'PARTIALLY_FILLED') ? 'bg-amber-500/20 text-amber-300' : (isFailed ? 'bg-rose-500/20 text-rose-300' : 'bg-slate-700 text-slate-300'));
+                            const statusKr = formatOrderStatus(o.status);
+                            const sideKr = (o.side === 'bid' || o.side === 'BUY' || o.side === 'buy') ? '매수' : '매도';
+                            const coinDisp = o.korean_name ? (o.korean_name + ' <span class="text-xs text-slate-400 font-normal">(' + o.market + ')</span>') : o.market;
                             return `
                                 <tr class="hover:bg-slate-800/40 font-mono text-xs">
-                                    <td class="p-2.5 text-slate-400 truncate max-w-[120px]">${{o.client_order_id}}</td>
-                                    <td class="p-2.5 font-semibold text-white">${{o.market}}</td>
-                                    <td class="p-2.5 ${{o.side === 'bid' ? 'text-emerald-400' : 'text-rose-400'}}">${{o.side === 'bid' ? '매수' : '매도'}}</td>
-                                    <td class="p-2.5"><span class="badge ${{statusColor}}">${{o.status}}</span></td>
-                                    <td class="p-2.5 text-slate-400 truncate max-w-[120px]">${{o.exchange_uuid || o.exchange_order_id || '-'}}</td>
+                                    <td class="p-2.5 text-slate-400 truncate max-w-[120px] whitespace-nowrap">${{o.client_order_id}}</td>
+                                    <td class="p-2.5 font-semibold text-white whitespace-nowrap">${{coinDisp}}</td>
+                                    <td class="p-2.5 whitespace-nowrap ${{(o.side === 'bid' || o.side === 'BUY' || o.side === 'buy') ? 'text-emerald-400' : 'text-rose-400'}}">${{sideKr}}</td>
+                                    <td class="p-2.5 whitespace-nowrap"><span class="badge ${{statusColor}}">${{statusKr}}</span></td>
+                                    <td class="p-2.5 text-slate-400 truncate max-w-[120px] whitespace-nowrap">${{o.exchange_uuid || o.exchange_order_id || '-'}}</td>
                                 </tr>
                             `;
                         }}).join('');

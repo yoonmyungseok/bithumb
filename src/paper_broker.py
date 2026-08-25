@@ -14,11 +14,12 @@ from order_safety import write_json_atomically
 
 
 class PaperBroker:
-    def __init__(self, public_api: Any, initial_krw: float, fee_rate: float = 0.0):
+    def __init__(self, public_api: Any, initial_krw: float, fee_rate: float = 0.0, state_path: str | None = None, data_dir: str | None = None):
         self.public_api = public_api
         self.fee_rate = max(0.0, fee_rate)
-        data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-        self.state_path = os.path.join(data_dir, "paper_account.json")
+        d_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+        os.makedirs(d_dir, exist_ok=True)
+        self.state_path = state_path or os.path.join(d_dir, "paper_account.json")
         self.balances = self._load(initial_krw)
 
     def _load(self, initial_krw: float) -> dict[str, dict[str, float]]:

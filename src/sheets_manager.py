@@ -23,9 +23,10 @@ class SheetsManager:
         "https://www.googleapis.com/auth/drive",
     ]
 
-    def __init__(self, json_key_path: str = "", sheet_name: str = "", **kwargs):
+    def __init__(self, json_key_path: str = "", sheet_name: str = "", exchange_name: str = "BITHUMB", **kwargs):
         key_path = json_key_path or kwargs.get("service_account_json_path", "")
         target_sheet = sheet_name or kwargs.get("spreadsheet_name", "")
+        self.exchange_name = exchange_name.upper()
         if not key_path or not os.path.exists(key_path):
             raise FileNotFoundError(
                 f"구글 서비스 계정 키 파일을 찾을 수 없습니다: {key_path}"
@@ -49,7 +50,7 @@ class SheetsManager:
                     self.spreadsheet = self.client.open(sheet_name)
             else:
                 self.spreadsheet = self.client.open(sheet_name)
-            logger.info(f"구글 스프레드시트 '{self.spreadsheet.title}' 연결 성공")
+            logger.info(f"구글 스프레드시트 '{self.spreadsheet.title}' 연결 성공 ({self.exchange_name})")
         except gspread.exceptions.SpreadsheetNotFound:
             logger.error(
                 f"\n[구글 시트 연동 실패] '{sheet_name}' 시트를 찾을 수 없습니다.\n"
@@ -83,8 +84,9 @@ class SheetsManager:
             fng_str = summary_data.get("fear_and_greed", "50점 (중립)")
             bot_state_str = summary_data.get("bot_state", "🟢 24시간 실시간 자동매매 가동 중")
 
+            title_label = "빗썸" if self.exchange_name == "BITHUMB" else ("업비트" if self.exchange_name == "UPBIT" else self.exchange_name)
             dashboard_rows = [
-                ["📊 [빗썸 AI 퀀트 자동매매 실시간 종합 대시보드]", "", "", ""],
+                [f"📊 [{title_label} AI 퀀트 자동매매 실시간 종합 대시보드]", "", "", ""],
                 ["최종 갱신 일시 (KST)", now_str, "봇 가동 상태", bot_state_str],
                 ["", "", "", ""],
                 ["📌 [핵심 계좌 자산 현황]", "", "🛡️ [리스크 관리 안전장치 상태]", ""],
@@ -121,8 +123,9 @@ class SheetsManager:
             win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0.0
             loss_trades = max(0, total_trades - win_trades)
 
+            title_label = "빗썸" if self.exchange_name == "BITHUMB" else ("업비트" if self.exchange_name == "UPBIT" else self.exchange_name)
             perf_rows = [
-                ["📈 [빗썸 AI 퀀트 트레이딩 누적 성과 분석 통계]", "", "", ""],
+                [f"📈 [{title_label} AI 퀀트 트레이딩 누적 성과 분석 통계]", "", "", ""],
                 ["", "", "", ""],
                 ["📊 [핵심 트레이딩 지표]", "", "💰 [실현 손익 요약]", ""],
                 ["총 누적 거래 횟수", f"{total_trades} 회", "총 확정 실현 손익", f"{int(realized_pnl_krw):+,} 원"],
@@ -215,8 +218,16 @@ class SheetsManager:
         self, market: str, strategy: dict[str, Any], timestamp: str, korean_name: str = ""
     ) -> None:
         """
-        'Strategy' 탭에 종목별 전략 업데이트
+        'Strategy' 탭에 종목별 전략 업데이트 (HOLO는 절대 미기록)
         """
+        raw_excluded = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO") + "," + os.getenv("UPBIT_EXCLUDED_MARKETS", "KRW-HOLO,HOLO")
+        excluded_set = {x.strip().upper() for x in raw_excluded.split(",") if x.strip()}
+        excluded_set.update({"KRW-HOLO", "HOLO"})
+        m_upper = market.upper()
+        if m_upper in excluded_set or m_upper.replace("KRW-", "") in excluded_set:
+            logger.debug(f"HOLO 등 격리 종목 Strategy 시트 기록 제외: {market}")
+            return
+
         try:
             try:
                 worksheet = self.spreadsheet.worksheet("Strategy")
@@ -246,7 +257,30 @@ class SheetsManager:
             target_p = strategy.get("target_price", 0.0)
             stop_l = strategy.get("stop_loss", 0.0)
             alloc_p = strategy.get("alloc_pct", 0.3)
-            action = strategy.get("action", "HOLD")
+            raw_action = str(strategy.get("action", "HOLD")).strip().upper()
+            raw_status = str(strategy.get("status", "ACTIVE")).strip().upper()
+
+            # 한글 매핑
+            action_map = {
+                "BUY": "매수",
+                "BID": "매수",
+                "SELL": "매도",
+                "ASK": "매도",
+                "HOLD": "관망 (대기)",
+                "STOP_LOSS": "손절",
+                "PARTIAL_TP": "1차 분할익절",
+                "TRAILING_STOP": "트레일링 익절",
+                "PANIC_SELL": "긴급 전량매도",
+            }
+            status_map = {
+                "ACTIVE": "정상 감시",
+                "PAUSED": "일시정지",
+                "PAUSE": "일시정지",
+                "COOLDOWN": "쿨다운 대기",
+                "STOP": "중지됨",
+            }
+            action_kr = action_map.get(raw_action, raw_action)
+            status_kr = status_map.get(raw_status, raw_status)
 
             alloc_str = f"{int(alloc_p * 100)}%" if alloc_p > 0 else "0%"
 
@@ -256,8 +290,8 @@ class SheetsManager:
                 display_name,
                 market,
                 timestamp,
-                strategy.get("status", "ACTIVE"),
-                action,
+                status_kr,
+                action_kr,
                 f"{entry_p:,.2f} 원" if entry_p > 0 else "-",
                 f"{target_p:,.2f} 원" if target_p > 0 else "-",
                 f"{stop_l:,.2f} 원" if stop_l > 0 else "-",
@@ -320,8 +354,16 @@ class SheetsManager:
 
     def append_trade_log(self, data: dict[str, Any]) -> None:
         """
-        'Trade_Log' 탭에 실시간 거래 내역 추가
+        'Trade_Log' 탭에 실시간 거래 내역 추가 (HOLO는 절대 미기록)
         """
+        m = str(data.get("market") or data.get("Market") or "").upper()
+        raw_excluded = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO") + "," + os.getenv("UPBIT_EXCLUDED_MARKETS", "KRW-HOLO,HOLO")
+        excluded_set = {x.strip().upper() for x in raw_excluded.split(",") if x.strip()}
+        excluded_set.update({"KRW-HOLO", "HOLO"})
+        if m and (m in excluded_set or m.replace("KRW-", "") in excluded_set):
+            logger.debug(f"HOLO 등 격리 종목 Trade_Log 시트 기록 제외: {m}")
+            return
+
         try:
             try:
                 worksheet = self.spreadsheet.worksheet("Trade_Log")
@@ -366,12 +408,35 @@ class SheetsManager:
                 else:
                     formatted_data[k.lower()] = v
 
+            # 구분(Side) 한글 변환
+            raw_side = str(formatted_data.get("side", "-")).strip().upper()
+            side_map = {
+                "BUY": "매수",
+                "BID": "매수",
+                "SELL": "매도",
+                "ASK": "매도",
+                "PARTIAL_TP": "1차 분할익절",
+                "TRAILING_STOP": "트레일링 익절",
+                "STOP_LOSS": "손절",
+                "PANIC_SELL": "긴급 전량매도",
+            }
+            side_kr = side_map.get(raw_side, formatted_data.get("side", "-"))
+
+            # 유형(Type) 한글 변환
+            raw_type = str(formatted_data.get("order_type", "-")).strip().upper()
+            type_map = {
+                "LIMIT": "지정가",
+                "MARKET": "시장가",
+                "PRICE": "시장가매수",
+            }
+            type_kr = type_map.get(raw_type, formatted_data.get("order_type", "-"))
+
             row_map = {
                 "일시 (KST)": formatted_data.get("timestamp", "-"),
                 "종목명": formatted_data.get("korean_name", data.get("Market", "").split("-")[-1]),
                 "마켓코드": formatted_data.get("market", "-"),
-                "구분 (Side)": formatted_data.get("side", "-"),
-                "유형 (Type)": formatted_data.get("order_type", "-"),
+                "구분 (Side)": side_kr,
+                "유형 (Type)": type_kr,
                 "체결/주문단가": formatted_data.get("price", "-"),
                 "체결수량": formatted_data.get("volume", "-"),
                 "거래총액 (KRW)": formatted_data.get("total_krw", "-"),

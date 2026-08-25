@@ -62,12 +62,10 @@ def get_fear_and_greed_index() -> dict[str, Any]:
 def get_excluded_manual_holdings() -> set[str]:
     """
     수동 매매 전용으로 봇의 자동 매매 및 자산 평가에서 완전히 격리할 종목/화폐 집합 반환
-    예: EXCLUDED_MANUAL_HOLDINGS="KRW-HOLO,HOLO" -> {"KRW-HOLO", "HOLO"}
+    - KRW-HOLO, HOLO는 어떠한 경우에도 자동매매/자산평가 대상에서 엄격히 제외
     """
-    raw = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO").strip()
-    if not raw:
-        return set()
-    items = set()
+    raw = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO") + "," + os.getenv("UPBIT_EXCLUDED_MARKETS", "KRW-HOLO,HOLO")
+    items = {"KRW-HOLO", "HOLO"}
     for item in raw.split(","):
         s = item.strip().upper()
         if s:
@@ -111,7 +109,7 @@ def get_held_markets(balances: dict[str, dict[str, float]], bithumb: Any, min_va
             market = f"KRW-{cur}"
             try:
                 price = bithumb.get_current_price(market)
-                if total_vol * price >= min_val_krw:
+                if price > 0 and (total_vol * price) >= min_val_krw:
                     held.append(market)
             except (requests.exceptions.RequestException, KeyError, ValueError):
                 logger.debug(f"{market} 보유 여부 확인 예외 무시")
@@ -172,6 +170,8 @@ class TrailingStopTracker:
         self.peaks: dict[str, float] = {}
         self.partial_tp_done: dict[str, bool] = {}
         self.entry_times: dict[str, float] = {}
+        self._last_log_ts: dict[str, float] = {}
+        self._last_logged_peak: dict[str, float] = {}
         self.data_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(self.data_dir, exist_ok=True)
         self.state_file = os.path.join(self.data_dir, "position_state.json")
@@ -246,9 +246,16 @@ class TrailingStopTracker:
             min_guaranteed_profit = avg_buy_price * 1.002
             trailing_stop_price = max(trailing_stop_price, min_guaranteed_profit)
 
-            logger.info(
-                f"🎯 [{market}] 가속 트레일링 추적 중: 최고점 {current_peak:,.2f}원 (+{peak_profit_pct:.2f}% | 드롭폭 {active_drop_pct*100:.1f}%) ➜ 익절기준선 {trailing_stop_price:,.2f}원"
-            )
+            now_ts = time.time()
+            is_new_peak = current_peak > (self._last_logged_peak.get(market, 0.0) + 1e-6)
+            is_time_to_log = (now_ts - self._last_log_ts.get(market, 0.0)) >= 15.0
+
+            if is_new_peak or is_time_to_log:
+                logger.info(
+                    f"🎯 [{market}] 가속 트레일링 추적 중: 최고점 {current_peak:,.2f}원 (+{peak_profit_pct:.2f}% | 드롭폭 {active_drop_pct*100:.1f}%) ➜ 익절기준선 {trailing_stop_price:,.2f}원"
+                )
+                self._last_log_ts[market] = now_ts
+                self._last_logged_peak[market] = current_peak
 
             if current_price <= trailing_stop_price:
                 realized_profit_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
@@ -261,6 +268,8 @@ class TrailingStopTracker:
         self.peaks.pop(market, None)
         self.partial_tp_done.pop(market, None)
         self.entry_times.pop(market, None)
+        self._last_log_ts.pop(market, None)
+        self._last_logged_peak.pop(market, None)
         self._save_state()
 
     def reconcile_markets(self, held_markets: list[str]) -> int:
@@ -351,6 +360,29 @@ class DailyRiskManager:
             return True, remain_minutes
         return False, 0
 
+    def adjust_for_current_equity(self, current_total_equity: float) -> None:
+        """웹 대시보드 및 실시간 조회 시 입출금 및 빈 계좌 초기 입금을 즉시 감지하여 기준자산 자동 보정"""
+        if current_total_equity <= 0:
+            return
+        if self.daily_start_equity < 5000.0 and current_total_equity >= 5000.0:
+            old_start = self.daily_start_equity
+            self.daily_start_equity = current_total_equity
+            self.last_known_equity = current_total_equity
+            self._save_state()
+            logger.info(
+                f"💵 [초기 입금 감지 및 기준자산 리셋] 기존 잔고 {old_start:,.0f}원 ➜ 실투자 기준자산으로 재설정: {self.daily_start_equity:,.0f}원"
+            )
+        elif self.last_known_equity > 0:
+            equity_jump = current_total_equity - self.last_known_equity
+            if abs(equity_jump) >= 10000.0:
+                old_start = self.daily_start_equity
+                self.daily_start_equity += equity_jump
+                self.last_known_equity = current_total_equity
+                self._save_state()
+                logger.info(
+                    f"💵 [장중 외부 자금 입출금 감지] 변동액: {equity_jump:+,.0f}원 ➜ 당일 시작 기준자산 보정: {old_start:,.0f}원 -> {self.daily_start_equity:,.0f}원"
+                )
+
     def update_daily_equity(self, current_total_equity: float, now_kst: datetime.datetime) -> tuple[bool, float]:
         date_key = now_kst.strftime("%Y-%m-%d")
 
@@ -374,15 +406,8 @@ class DailyRiskManager:
             logger.info(f"📅 [일일 손익 기준일 갱신: {date_key}] 시작 총 자산: {self.daily_start_equity:,.0f}원")
 
         # 💵 당일 장중 외부 자금 입출금 자동 감지 및 기준자산 자동 보정 (Cashflow Adjustment)
-        elif self.last_known_equity > 0:
-            equity_jump = current_total_equity - self.last_known_equity
-            if abs(equity_jump) >= 10000.0:
-                old_start = self.daily_start_equity
-                self.daily_start_equity += equity_jump
-                self._save_state()
-                logger.info(
-                    f"💵 [장중 외부 자금 입출금 감지] 변동액: {equity_jump:+,.0f}원 ➜ 당일 시작 기준자산 보정: {old_start:,.0f}원 -> {self.daily_start_equity:,.0f}원"
-                )
+        else:
+            self.adjust_for_current_equity(current_total_equity)
 
         self.last_known_equity = current_total_equity
 

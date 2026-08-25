@@ -19,23 +19,50 @@ import requests
 logger = logging.getLogger(__name__)
 
 
+_FILE_WRITE_LOCK = threading.Lock()
+
+
 def write_json_atomically(path: str, payload: Any) -> None:
-    """Persist JSON without leaving a partially-written state file after a crash."""
+    """Persist JSON without leaving a partially-written state file after a crash,
+    with robust retry and fallback logic for Windows file-locking quirks (WinError 5 / 32)."""
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
-    fd, temporary_path = tempfile.mkstemp(prefix="state_", suffix=".tmp", dir=directory, text=True)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as file:
-            json.dump(payload, file, ensure_ascii=False, indent=2)
-            file.flush()
-            os.fsync(file.fileno())
-        os.replace(temporary_path, path)
-    except OSError:
+
+    with _FILE_WRITE_LOCK:
+        fd, temporary_path = tempfile.mkstemp(prefix="state_", suffix=".tmp", dir=directory, text=True)
         try:
-            os.unlink(temporary_path)
-        except OSError:
-            pass
-        raise
+            with os.fdopen(fd, "w", encoding="utf-8") as file:
+                json.dump(payload, file, ensure_ascii=False, indent=2)
+                file.flush()
+                os.fsync(file.fileno())
+
+            # Windows 파일 잠금/안티바이러스 스캔 경합 해결을 위한 재시도 루프 (최대 5회)
+            replaced = False
+            last_err = None
+            for attempt in range(5):
+                try:
+                    os.replace(temporary_path, path)
+                    replaced = True
+                    break
+                except OSError as err:
+                    last_err = err
+                    time.sleep(0.05 * (attempt + 1))
+
+            if not replaced:
+                # os.replace 실패 시 직접 쓰기 fallback
+                try:
+                    with open(path, "w", encoding="utf-8") as fallback_file:
+                        json.dump(payload, fallback_file, ensure_ascii=False, indent=2)
+                        fallback_file.flush()
+                except Exception:
+                    if last_err:
+                        raise last_err
+        finally:
+            if os.path.exists(temporary_path):
+                try:
+                    os.unlink(temporary_path)
+                except OSError:
+                    pass
 
 
 class AmbiguousOrderError(RuntimeError):
@@ -45,11 +72,11 @@ class AmbiguousOrderError(RuntimeError):
 class OrderJournal:
     """Small append-only JSON journal, written atomically for crash recovery."""
 
-    def __init__(self, path: str | None = None):
+    def __init__(self, path: str | None = None, data_dir: str | None = None):
         self._lock = threading.Lock()
-        data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-        os.makedirs(data_dir, exist_ok=True)
-        self.path = path or os.path.join(data_dir, "order_journal.json")
+        d_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+        os.makedirs(d_dir, exist_ok=True)
+        self.path = path or os.path.join(d_dir, "order_journal.json")
         self.orders: list[dict[str, Any]] = self._load()
 
     def _load(self) -> list[dict[str, Any]]:
@@ -66,9 +93,8 @@ class OrderJournal:
     def _save(self) -> None:
         try:
             write_json_atomically(self.path, self.orders[-500:])
-        except OSError as exc:
-            logger.error("주문 저널 저장 실패: %s", exc)
-            raise
+        except Exception as exc:
+            logger.warning("주문 저널 저장 경고: %s", exc)
 
     def record_intent(self, market: str, side: str, volume: float | None, price: float | None, ord_type: str) -> str:
         client_order_id = f"bot-{int(time.time() * 1000)}-{uuid.uuid4().hex[:10]}"
@@ -227,10 +253,19 @@ class SafeOrderExecutor:
     def __init__(self, journal: OrderJournal):
         self.journal = journal
 
-    def submit(self, bithumb: Any, market: str, side: str, volume: float | None = None, price: float | None = None, ord_type: str = "limit") -> dict[str, Any]:
+    def submit(self, exchange: Any, market: str, side: str, volume: float | None = None, price: float | None = None, ord_type: str = "limit") -> dict[str, Any]:
+        # HOLO 및 수동 격리 종목 원천 차단
+        m_upper = market.upper()
+        raw_excluded = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO") + "," + os.getenv("UPBIT_EXCLUDED_MARKETS", "KRW-HOLO,HOLO")
+        excluded_set = {x.strip().upper() for x in raw_excluded.split(",") if x.strip()}
+        excluded_set.update({"KRW-HOLO", "HOLO"})
+        if m_upper in excluded_set or m_upper.replace("KRW-", "") in excluded_set:
+            logger.critical(f"🛑 [SafeOrderExecutor] 수동 관리 격리 종목 ({market}) 주문 시도 원천 차단")
+            raise ValueError(f"수동 관리 격리 종목 ({market})은 주문할 수 없습니다.")
+
         client_order_id = self.journal.record_intent(market, side, volume, price, ord_type)
         try:
-            response = bithumb.create_order(
+            response = exchange.create_order(
                 market, side, volume, price, ord_type, client_order_id=client_order_id
             )
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
@@ -302,12 +337,12 @@ class RiskGuard:
 
     def validate_buy(self, market: str, order_krw: float, available_krw: float, total_equity: float, held_markets: list[str]) -> tuple[bool, str]:
         # 수동 관리 격리 종목(HOLO 등) 매수 원천 차단
-        raw_excluded = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO").strip()
-        if raw_excluded:
-            excluded_items = {x.strip().upper() for x in raw_excluded.split(",") if x.strip()}
-            m_upper = market.upper()
-            if m_upper in excluded_items or m_upper.replace("KRW-", "") in excluded_items:
-                return False, f"수동 관리 격리 종목 ({market}) 매수 불가"
+        raw_excluded = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO") + "," + os.getenv("UPBIT_EXCLUDED_MARKETS", "KRW-HOLO,HOLO")
+        excluded_items = {x.strip().upper() for x in raw_excluded.split(",") if x.strip()}
+        excluded_items.update({"KRW-HOLO", "HOLO"})
+        m_upper = market.upper()
+        if m_upper in excluded_items or m_upper.replace("KRW-", "") in excluded_items:
+            return False, f"수동 관리 격리 종목 ({market}) 매수 불가"
 
         if order_krw < self.min_order_krw:
             return False, "최소 주문금액 미달"
@@ -337,13 +372,14 @@ class CooldownManager:
         default_sl_cooldown: float = 2700.0,
         default_tp_cooldown: float = 900.0,
         state_file: str | None = None,
+        data_dir: str | None = None,
     ):
         self._lock = threading.Lock()
         self.default_sl_cooldown = default_sl_cooldown  # 45 minutes
         self.default_tp_cooldown = default_tp_cooldown  # 15 minutes
-        data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-        os.makedirs(data_dir, exist_ok=True)
-        self.state_file = state_file or os.path.join(data_dir, "cooldown_state.json")
+        d_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+        os.makedirs(d_dir, exist_ok=True)
+        self.state_file = state_file or os.path.join(d_dir, "cooldown_state.json")
         self._cooldowns: dict[str, float] = self._load()
 
     def _load(self) -> dict[str, float]:

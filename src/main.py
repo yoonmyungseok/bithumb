@@ -169,6 +169,7 @@ realtime_engine = RealtimeRiskEngine(
     telegram=telegram,
     min_order_krw=MIN_ORDER_KRW,
     latest_strategies=LATEST_STRATEGIES,
+    sheets=sheets,
 )
 
 bot_controller = BotController(
@@ -312,8 +313,10 @@ def run_cycle():
         # 3-2. 총 자산 규모에 따른 동적 포트폴리오 슬롯 및 한도 자동 산출 (Auto-Scaling)
         dyn_max_positions, dyn_max_pos_pct, dyn_top_count = get_dynamic_portfolio_tiers(current_total_equity)
         risk_guard.update_limits(max_open_positions=dyn_max_positions, max_position_pct=dyn_max_pos_pct)
+        tot_disp = f"{current_total_equity:,.2f}원" if (0 < current_total_equity < 100 or current_total_equity % 1 != 0 and current_total_equity < 1000) else f"{current_total_equity:,.0f}원"
+        krw_disp = f"{krw_available:,.2f}원" if (0 < krw_available < 100 or krw_available % 1 != 0 and krw_available < 1000) else f"{krw_available:,.0f}원"
         logger.info(
-            f"📊 [스마트 자산 티어] 총 자산 {current_total_equity:,.0f}원 ➜ 최대 {dyn_max_positions}종목 분할 (종목당 {dyn_max_pos_pct*100:.0f}% 한도, 스크리닝 상위 {dyn_top_count}개)"
+            f"📊 [스마트 자산 티어] 총 자산 {tot_disp} ➜ 최대 {dyn_max_positions}종목 분할 (종목당 {dyn_max_pos_pct*100:.0f}% 한도, 스크리닝 상위 {dyn_top_count}개)"
         )
 
         # 3-3. 비트코인 급락 및 시장 레짐 감시
@@ -322,12 +325,38 @@ def run_cycle():
             logger.warning(f"⚠️ [비트코인 급락 위험 감지] 레짐: {btc_regime} ({btc_status_msg})")
 
         fng = get_fear_and_greed_index()
-        logger.info(f"📊 [자산 요약] 총 자산: {current_total_equity:,.0f}원 | 원화: {krw_available:,.0f}원 | 당일 손익: {daily_pnl*100:+.2f}% | 공포탐욕: {fng['desc']}")
+        tot_disp = f"{current_total_equity:,.2f}원" if (0 < current_total_equity < 100 or current_total_equity % 1 != 0 and current_total_equity < 1000) else f"{current_total_equity:,.0f}원"
+        krw_disp = f"{krw_available:,.2f}원" if (0 < krw_available < 100 or krw_available % 1 != 0 and krw_available < 1000) else f"{krw_available:,.0f}원"
+        logger.info(f"📊 [자산 요약] 총 자산: {tot_disp} | 원화: {krw_disp} | 당일 손익: {daily_pnl*100:+.2f}% | 공포탐욕: {fng['desc']}")
 
         bot_state_badge = "⏸️ 일시정지 중" if IS_BOT_PAUSED else ("🛑 킬스위치 발동" if is_kill_switch else ("❄️ 쿨다운 대기" if is_cooldown else "🟢 정상 가동 중"))
 
         # 대시보드 및 구글 시트 동기화
         bot_controller.get_dashboard_data()
+
+        # 구글 스프레드시트 Dashboard 탭 실시간 갱신
+        try:
+            held_names = [f"{bithumb.get_korean_name(m)}({m.split('-')[-1]})" for m in held_markets]
+            held_str = ", ".join(held_names) if held_names else "없음 (100% 현금)"
+            summary_data = {
+                "updated_at": now_str,
+                "total_equity": current_total_equity,
+                "krw_available": krw_available,
+                "daily_pnl_pct": daily_pnl * 100,
+                "daily_pnl_krw": current_total_equity - risk_manager.daily_start_equity,
+                "realized_pnl_krw": risk_manager.realized_pnl_krw,
+                "trades_count": risk_manager.total_trades_today,
+                "win_count": risk_manager.win_trades_today,
+                "held_coins": held_str,
+                "kill_switch_status": "🛑 발동" if is_kill_switch else "🟢 정상",
+                "btc_health": "⚠️ 위험 (급락)" if is_btc_crashing else "🟢 정상",
+                "fear_and_greed": fng.get("desc", "50점 (중립)"),
+                "bot_state": bot_state_badge,
+            }
+            sheets.update_dashboard(summary_data)
+        except Exception as dash_err:
+            logger.debug(f"구글 시트 Dashboard 갱신 예외: {dash_err}")
+
         sheets.update_performance_tab(
             total_trades=risk_manager.total_trades_today,
             win_trades=risk_manager.win_trades_today,

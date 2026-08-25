@@ -30,6 +30,7 @@ class RealtimeRiskEngine:
         telegram: TelegramAlert,
         min_order_krw: float = 5000.0,
         latest_strategies: dict[str, dict[str, Any]] | None = None,
+        sheets=None,
     ):
         self.get_exchange = exchange_factory
         self.order_executor = order_executor
@@ -41,9 +42,35 @@ class RealtimeRiskEngine:
         self.telegram = telegram
         self.min_order_krw = min_order_krw
         self.latest_strategies = latest_strategies if latest_strategies is not None else {}
+        self.sheets = sheets
         self._lock = threading.Lock()
         self._last_trigger: dict[str, float] = {}
         self._sl_hit_count: dict[str, int] = {}
+        self._cached_balances: dict[str, Any] = {}
+        self._last_balance_ts: float = 0.0
+        self._balance_lock = threading.Lock()
+
+    def _get_cached_balances(self, ttl: float = 1.5) -> dict[str, Any]:
+        """REST API Rate Limit 방어를 위해 1.5초간 계좌 잔고를 캐싱"""
+        now_ts = time.time()
+        with self._balance_lock:
+            if self._cached_balances and (now_ts - self._last_balance_ts < ttl):
+                return self._cached_balances
+            try:
+                bithumb = self.get_exchange()
+                fresh = bithumb.get_balances()
+                if fresh:
+                    self._cached_balances = fresh
+                    self._last_balance_ts = now_ts
+                return self._cached_balances
+            except Exception as e:
+                logger.debug(f"실시간 잔고 조회 예외: {e}")
+                return self._cached_balances
+
+    def _invalidate_balance_cache(self) -> None:
+        """주문 체결 직후 잔고 캐시 즉시 무효화"""
+        with self._balance_lock:
+            self._last_balance_ts = 0.0
 
     def cancel_bot_open_orders(self, market: str | None = None) -> int:
         """봇이 발행한 미체결 주문만 선별 취소하여 외부/수동 주문 보호"""
@@ -156,7 +183,7 @@ class RealtimeRiskEngine:
         try:
             bithumb = self.get_exchange()
             currency = market.split("-")[-1]
-            balances = bithumb.get_balances()
+            balances = self._get_cached_balances(ttl=1.5)
             coin_info = balances.get(currency, {"balance": 0.0, "locked": 0.0, "avg_buy_price": 0.0})
             coin_available = float(coin_info.get("balance", 0.0))
             avg_buy_price = float(coin_info.get("avg_buy_price", 0.0))
@@ -200,6 +227,7 @@ class RealtimeRiskEngine:
                     volume=coin_available,
                     ord_type="market",
                 )
+                self._invalidate_balance_cache()
                 pnl_krw = (current_price - avg_buy_price) * coin_available
                 loss_pct = ((current_price - avg_buy_price) / avg_buy_price * 100)
                 self.risk_manager.add_realized_trade(pnl_krw, is_win=False)
@@ -214,6 +242,27 @@ class RealtimeRiskEngine:
                     reason=f"0.1초 실시간 웹소켓 손절 실행 (손절선 {effective_stop_loss:,.2f}원 터치)",
                     timestamp=now_str,
                 )
+                if self.sheets:
+                    try:
+                        self.sheets.append_trade_log({
+                            "Timestamp": now_str,
+                            "Korean_Name": korean_name,
+                            "Market": market,
+                            "Order_UUID": "REALTIME-SL",
+                            "Side": "SELL",
+                            "Order_Type": "MARKET",
+                            "Price": current_price,
+                            "Volume": f"{coin_available:.6f}",
+                            "Total_KRW": int(coin_available * current_price),
+                            "Realized_PnL_Pct": f"{loss_pct:+.2f}%",
+                            "Stop_Loss": effective_stop_loss,
+                            "Target_Price": "-",
+                            "Current_Balance_KRW": "-",
+                            "Status_Reason": f"0.1초 실시간 웹소켓 급락 칼손절 ({loss_pct:+.2f}%)",
+                        })
+                    except Exception as sheet_err:
+                        logger.debug(f"실시간 손절 시트 기록 오류: {sheet_err}")
+
                 self.telegram.send_message(
                     f"🚨 <b>[실시간 초저지연 손절 매도 실행]</b>\n"
                     f"• 종목: {korean_name}({market})\n"
@@ -255,6 +304,7 @@ class RealtimeRiskEngine:
                         volume=sell_vol,
                         ord_type="market",
                     )
+                    self._invalidate_balance_cache()
                     pnl_krw = (current_price - avg_buy_price) * sell_vol
                     self.risk_manager.add_realized_trade(pnl_krw, is_win=True)
                     self.trade_memory.record_completed_trade(
@@ -267,6 +317,27 @@ class RealtimeRiskEngine:
                         reason="0.1초 실시간 1차 +2.5% 도달 50% 분할 익절",
                         timestamp=now_str,
                     )
+                    if self.sheets:
+                        try:
+                            self.sheets.append_trade_log({
+                                "Timestamp": now_str,
+                                "Korean_Name": korean_name,
+                                "Market": market,
+                                "Order_UUID": "REALTIME-TP50",
+                                "Side": "SELL",
+                                "Order_Type": "MARKET",
+                                "Price": current_price,
+                                "Volume": f"{sell_vol:.6f}",
+                                "Total_KRW": int(sell_val),
+                                "Realized_PnL_Pct": f"{realized_profit_pct:+.2f}%",
+                                "Stop_Loss": "-",
+                                "Target_Price": "-",
+                                "Current_Balance_KRW": "-",
+                                "Status_Reason": f"0.1초 실시간 1차 50% 분할익절 ({realized_profit_pct:+.2f}%)",
+                            })
+                        except Exception as sheet_err:
+                            logger.debug(f"실시간 분할익절 시트 기록 오류: {sheet_err}")
+
                     self.telegram.send_message(
                         f"🎉 <b>[실시간 1차 50% 분할익절 체결]</b>\n"
                         f"• 종목: {korean_name}({market})\n"
@@ -294,6 +365,7 @@ class RealtimeRiskEngine:
                     volume=coin_available,
                     ord_type="market",
                 )
+                self._invalidate_balance_cache()
                 pnl_krw = (current_price - avg_buy_price) * coin_available
                 self.risk_manager.add_realized_trade(pnl_krw, is_win=True)
                 self.cooldown_manager.record_exit(market, "TRAILING_STOP")
@@ -308,6 +380,27 @@ class RealtimeRiskEngine:
                     timestamp=now_str,
                 )
                 self.trailing_tracker.clear(market)
+                if self.sheets:
+                    try:
+                        self.sheets.append_trade_log({
+                            "Timestamp": now_str,
+                            "Korean_Name": korean_name,
+                            "Market": market,
+                            "Order_UUID": "REALTIME-TS",
+                            "Side": "SELL",
+                            "Order_Type": "MARKET",
+                            "Price": current_price,
+                            "Volume": f"{coin_available:.6f}",
+                            "Total_KRW": int(coin_available * current_price),
+                            "Realized_PnL_Pct": f"{realized_profit_pct:+.2f}%",
+                            "Stop_Loss": "-",
+                            "Target_Price": "-",
+                            "Current_Balance_KRW": "-",
+                            "Status_Reason": f"0.1초 실시간 최고점 트레일링스탑 익절 ({realized_profit_pct:+.2f}%)",
+                        })
+                    except Exception as sheet_err:
+                        logger.debug(f"실시간 트레일링스탑 시트 기록 오류: {sheet_err}")
+
                 self.telegram.send_message(
                     f"🎯 <b>[실시간 트레일링 스탑 최고점 익절 완료]</b>\n"
                     f"• 종목: {korean_name}({market})\n"

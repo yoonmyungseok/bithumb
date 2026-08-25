@@ -1,5 +1,14 @@
+"""
+업비트(Upbit) 실시간 Public 웹소켓(WebSocket) 스트리밍 클라이언트
+- wss://api.upbit.com/websocket/v1 엔드포인트 상시 연결
+- 0.1초 단위 실시간 시세(ticker) 및 대량 체결(trade / whale transactions) 스트리밍
+- 네트워크 단절 시 지연 백오프 자동 재연결(Auto-Reconnect) 및 동적 구독 복구
+- 3,000만 원 이상 고래 대량 시장가 매수/매도 실시간 포착
+"""
+
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -11,17 +20,12 @@ import websocket
 logger = logging.getLogger(__name__)
 
 
-class BithumbWebSocketClient:
+class UpbitWebSocketClient:
     """
-    빗썸 2.0 공식 실시간 웹소켓(WebSocket) 스트리밍 클라이언트
-    - wss://ws-api.bithumb.com/websocket/v1 상시 연결
-    - 0.1초 단위 실시간 체결가(ticker) 및 대량 체결(whale transaction) 스트리밍
-    - 네트워크 단절 시 자동 재연결(Auto-Reconnect) 및 재구독 지원
-    - 보유 코인의 실시간 트레일링 스탑 / 긴급 손절 즉시 감시
-    - 3,000만 원 이상 고래 대량 시장가 매수 실시간 포착
+    업비트 실시간 Public WebSocket 클라이언트
     """
 
-    WS_URL = "wss://ws-api.bithumb.com/websocket/v1"
+    WS_URL = "wss://api.upbit.com/websocket/v1"
 
     def __init__(
         self,
@@ -29,6 +33,7 @@ class BithumbWebSocketClient:
         on_price_callback: Callable[[str, float], None] | None = None,
         on_whale_callback: Callable[[str, float, float, str], None] | None = None,
     ):
+        self.ws_url = os.getenv("UPBIT_WEBSOCKET_URL", self.WS_URL).strip()
         self.subscribed_markets: list[str] = initial_markets or ["KRW-BTC"]
         self.on_price_callback = on_price_callback
         self.on_whale_callback = on_whale_callback
@@ -37,7 +42,6 @@ class BithumbWebSocketClient:
         self.ws: websocket.WebSocketApp | None = None
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
-        self._last_whale_time: dict[str, float] = {}
         self._whale_trades: list[dict[str, Any]] = []
 
     def get_latest_price(self, market: str) -> float:
@@ -51,9 +55,8 @@ class BithumbWebSocketClient:
         """
         now_ts = time.time()
         cutoff_ts = now_ts - window_seconds
-        
+
         with self._lock:
-            # 10분 이전 과거 데이터 정리
             self._whale_trades = [t for t in self._whale_trades if t["ts"] >= (now_ts - 600)]
             recent_trades = [t for t in self._whale_trades if t["market"] == market and t["ts"] >= cutoff_ts]
 
@@ -76,8 +79,17 @@ class BithumbWebSocketClient:
             return f"⚪ 최근 5분 고래 매수/매도 균형 (총 {buy_100m + sell_100m:.2f}억 원)"
 
     def update_subscriptions(self, markets: list[str]):
-        """감시 대상 마켓 목록 동적 갱신 및 재구독"""
-        clean_markets = list(dict.fromkeys([m.strip() for m in markets if m.strip()]))
+        """감시 대상 마켓 목록 동적 갱신 및 재구독 (HOLO는 자동 배제)"""
+        raw_excluded = os.getenv("UPBIT_EXCLUDED_MARKETS", "KRW-HOLO,HOLO")
+        excluded_set = {x.strip().upper() for x in raw_excluded.split(",") if x.strip()}
+        excluded_set.update({"KRW-HOLO", "HOLO"})
+
+        clean_markets = [
+            m.strip().upper()
+            for m in markets
+            if m.strip() and m.strip().upper() not in excluded_set and m.strip().upper().replace("KRW-", "") not in excluded_set
+        ]
+        clean_markets = list(dict.fromkeys(clean_markets))
         if not clean_markets:
             return
 
@@ -86,7 +98,7 @@ class BithumbWebSocketClient:
                 return
             self.subscribed_markets = clean_markets
 
-        logger.info(f"⚡ [웹소켓 구독 갱신] 총 {len(clean_markets)}개 마켓: {clean_markets}")
+        logger.info(f"⚡ [업비트 웹소켓 구독 갱신] 총 {len(clean_markets)}개 마켓: {clean_markets}")
         self._send_subscription()
 
     def _send_subscription(self):
@@ -97,7 +109,7 @@ class BithumbWebSocketClient:
             codes = list(self.subscribed_markets)
 
         sub_payload = [
-            {"ticket": f"bithumb_quant_{uuid.uuid4().hex[:8]}"},
+            {"ticket": f"upbit_quant_{uuid.uuid4().hex[:8]}"},
             {"type": "ticker", "codes": codes},
             {"type": "trade", "codes": codes},
             {"format": "DEFAULT"},
@@ -105,9 +117,9 @@ class BithumbWebSocketClient:
 
         try:
             self.ws.send(json.dumps(sub_payload))
-            logger.debug(f"웹소켓 구독 요청 전송 완료: {codes}")
-        except (websocket.WebSocketException, OSError) as e:
-            logger.warning(f"웹소켓 구독 전송 실패: {e}")
+            logger.debug(f"업비트 웹소켓 구독 요청 전송 완료: {codes}")
+        except Exception as e:
+            logger.warning(f"업비트 웹소켓 구독 전송 실패: {e}")
 
     def _on_message(self, ws: Any, message: Any):
         try:
@@ -129,15 +141,15 @@ class BithumbWebSocketClient:
                     if self.on_price_callback:
                         self.on_price_callback(code, price)
 
-            # 2. 실시간 체결 (Trade) 수신 ➜ 고래 체결 탐지
+            # 2. 실시간 체결 (Trade) 수신 ➜ 고래 대량 체결 탐지
             elif msg_type == "trade":
                 price = float(data.get("trade_price", 0.0))
                 qty = float(data.get("trade_volume", 0.0))
                 val_krw = price * qty
-                ask_bid = data.get("ask_bid", "BID")
-                side = "매수" if str(ask_bid).upper() in ("BID", "BUY", "1") else "매도"
+                ask_bid = str(data.get("ask_bid", "BID")).upper()
+                side = "매수" if ask_bid in ("BID", "BUY", "1") else "매도"
 
-                # 3,000만 원 이상 대량 체결 포착 및 이력 누적
+                # 3,000만 원 이상 대량 체결 포착
                 if val_krw >= 30_000_000 and price > 0:
                     now_ts = time.time()
                     with self._lock:
@@ -150,59 +162,59 @@ class BithumbWebSocketClient:
                             "qty": qty,
                         })
 
-                    last_t = self._last_whale_time.get(code, 0.0)
-                    if now_ts - last_t >= 30:  # 30초 쿨다운
-                        self._last_whale_time[code] = now_ts
-                        logger.info(
-                            f"🐋 [고래 대량 체결 감지] {code} {side} 체결: {val_krw:,.0f}원 ({qty:,.4f}개 @ {price:,.2f}원)"
-                        )
-                        if self.on_whale_callback:
-                            self.on_whale_callback(code, price, val_krw, side)
+                    if self.on_whale_callback:
+                        self.on_whale_callback(code, price, val_krw, side)
 
-        except (json.JSONDecodeError, ValueError, KeyError):
+        except Exception:
             pass
 
     def _on_open(self, ws: Any):
-        logger.info("⚡ [빗썸 웹소켓 연결 성공] 0.1초 실시간 시세 & 고래 체결 스트리밍 활성화")
+        logger.info("⚡ [업비트 실시간 Public WebSocket 연결 완료]")
         self._send_subscription()
 
     def _on_error(self, ws: Any, error: Any):
-        err_str = str(error)
-        if "10054" in err_str or "ConnectionReset" in err_str:
-            logger.debug(f"빗썸 웹소켓 세션 만료 감지 (자동 재연결 대기): {error}")
-        else:
-            logger.warning(f"웹소켓 에러 발생: {error}")
+        logger.warning(f"업비트 웹소켓 오류: {error}")
 
     def _on_close(self, ws: Any, close_status_code: Any, close_msg: Any):
-        logger.info("웹소켓 연결 종료, 재연결을 대기합니다.")
+        logger.info(f"업비트 웹소켓 연결 종료 (코드: {close_status_code})")
+
+    def _run_loop(self):
+        retry_delay = 2
+        while self.is_running:
+            try:
+                self.ws = websocket.WebSocketApp(
+                    self.ws_url,
+                    on_open=self._on_open,
+                    on_message=self._on_message,
+                    on_error=self._on_error,
+                    on_close=self._on_close,
+                )
+                self.ws.run_forever(
+                    ping_interval=30,
+                    ping_timeout=20,
+                )
+            except Exception as e:
+                logger.warning(f"업비트 웹소켓 루프 예외: {e}")
+
+            if self.is_running:
+                logger.info(f"업비트 웹소켓 {retry_delay}초 후 재연결 시도...")
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 60)
+            else:
+                break
 
     def start(self):
-        """백그라운드 스레드에서 웹소켓 클라이언트 가동"""
+        """웹소켓 백그라운드 스레드 가동"""
         if self.is_running:
             return
-
         self.is_running = True
-
-        def _run_loop():
-            while self.is_running:
-                try:
-                    self.ws = websocket.WebSocketApp(
-                        self.WS_URL,
-                        on_open=self._on_open,
-                        on_message=self._on_message,
-                        on_error=self._on_error,
-                        on_close=self._on_close,
-                    )
-                    self.ws.run_forever(ping_interval=30, ping_timeout=None)
-                except (websocket.WebSocketException, OSError) as e:
-                    logger.warning(f"웹소켓 루프 예외: {e}")
-                time.sleep(3)
-
-        self._thread = threading.Thread(target=_run_loop, daemon=True, name="BithumbWebSocket")
+        self._thread = threading.Thread(target=self._run_loop, daemon=True, name="UpbitWebSocket")
         self._thread.start()
-        logger.info("👀 빗썸 실시간 웹소켓(WebSocket) 감시 엔진 시작 완료")
+        logger.info("업비트 Public WebSocket 클라이언트 스레드 가동")
 
     def stop(self):
+        """웹소켓 안전 종료"""
         self.is_running = False
         if self.ws:
             self.ws.close()
+        logger.info("업비트 Public WebSocket 클라이언트 종료 완료")

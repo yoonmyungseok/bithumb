@@ -136,6 +136,73 @@ class StartupAndIntegrationAuditTests(unittest.TestCase):
         rt_engine.on_price_tick("KRW-XRP", 1050.0)
         self.assertFalse(paused[0])
 
+    def test_full_system_wiring_upbit(self):
+        from upbit_api import UpbitAPI
+        journal = OrderJournal(data_dir=self.data_dir)
+        executor = SafeOrderExecutor(journal)
+        cooldown = CooldownManager(data_dir=self.data_dir)
+        rm = DailyRiskManager(data_dir=self.data_dir)
+        tst = TrailingStopTracker(data_dir=self.data_dir)
+        tm = TradeMemoryManager(data_dir=self.data_dir)
+        tg = TelegramAlert("test-token", "123456")
+
+        mock_upbit = types.SimpleNamespace(
+            get_balances=lambda: {
+                "KRW": {"balance": 200000.0, "locked": 0.0},
+                "ETH": {"balance": 0.05, "locked": 0.0, "avg_buy_price": 3800000.0},
+            },
+            get_korean_name=lambda m: "이더리움",
+            get_current_price=lambda m: 3900000.0,
+            get_open_orders=lambda market=None: [],
+            cancel_order=lambda uuid_str="", client_order_id="": {"status": "ok"},
+            round_volume=UpbitAPI.round_volume,
+            round_price_to_tick=UpbitAPI.round_price_to_tick,
+            create_order=lambda market, side, volume=None, price=None, ord_type="limit", client_order_id="": {"uuid": "upbit-ord-999"},
+        )
+
+        paused = [False]
+
+        rt_engine = RealtimeRiskEngine(
+            exchange_factory=lambda: mock_upbit,
+            order_executor=executor,
+            order_journal=journal,
+            risk_manager=rm,
+            cooldown_manager=cooldown,
+            trade_memory=tm,
+            trailing_tracker=tst,
+            telegram=tg,
+            min_order_krw=5000.0,
+        )
+
+        controller = BotController(
+            exchange_factory=lambda: mock_upbit,
+            order_executor=executor,
+            order_journal=journal,
+            risk_manager=rm,
+            trailing_tracker=tst,
+            trade_memory=tm,
+            telegram=tg,
+            get_is_paused=lambda: paused[0],
+            set_is_paused=lambda v: paused.__setitem__(0, v),
+            exchange_name="업비트",
+            web_port=7980,
+        )
+
+        status_msg = controller.get_status_message()
+        self.assertIn("업비트 AI 퀀트 봇", status_msg)
+        self.assertIn("7980", status_msg)
+
+        bal_msg = controller.get_balance_message()
+        self.assertIn("업비트", bal_msg)
+        self.assertIn("이더리움", bal_msg)
+
+        dash_data = controller.get_dashboard_data()
+        self.assertIn("total_equity", dash_data)
+        self.assertEqual(dash_data["total_equity"], 395000)
+
+        rt_engine.on_price_tick("KRW-ETH", 3900000.0)
+        self.assertFalse(paused[0])
+
 
 if __name__ == "__main__":
     unittest.main()

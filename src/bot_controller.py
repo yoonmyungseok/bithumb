@@ -8,6 +8,7 @@ from risk_manager import (
     TrailingStopTracker,
     build_positions_data,
     calculate_total_equity,
+    get_excluded_manual_holdings,
     get_fear_and_greed_index,
     get_held_markets,
     get_kst_now_str,
@@ -26,7 +27,7 @@ class BotController:
 
     def __init__(
         self,
-        exchange_factory: Callable[[], BithumbAPI],
+        exchange_factory: Callable[[], Any],
         order_executor: SafeOrderExecutor,
         order_journal: OrderJournal,
         risk_manager: DailyRiskManager,
@@ -36,6 +37,8 @@ class BotController:
         get_is_paused: Callable[[], bool],
         set_is_paused: Callable[[bool], None],
         latest_strategies: dict[str, dict[str, Any]] | None = None,
+        exchange_name: str = "빗썸",
+        web_port: int = 7979,
     ):
         self.get_exchange = exchange_factory
         self.order_executor = order_executor
@@ -47,6 +50,8 @@ class BotController:
         self.get_is_paused = get_is_paused
         self.set_is_paused = set_is_paused
         self.latest_strategies = latest_strategies if latest_strategies is not None else {}
+        self.exchange_name = exchange_name
+        self.web_port = web_port
         self.latest_dashboard_data: dict[str, Any] = {
             "total_equity": 0,
             "krw_available": 0,
@@ -82,10 +87,10 @@ class BotController:
     def get_status_message(self) -> str:
         now_str = get_kst_now_str()
         try:
-            bithumb = self.get_exchange()
+            exchange = self.get_exchange()
             fng = get_fear_and_greed_index()
-            balances = bithumb.get_balances()
-            total_equity = calculate_total_equity(balances, bithumb)
+            balances = exchange.get_balances()
+            total_equity = calculate_total_equity(balances, exchange)
             krw_avail = balances.get("KRW", {}).get("balance", 0.0)
             daily_pnl_krw = total_equity - self.risk_manager.daily_start_equity
             daily_pnl_pct = (
@@ -93,13 +98,13 @@ class BotController:
                 if self.risk_manager.daily_start_equity > 0
                 else 0.0
             )
-            held = get_held_markets(balances, bithumb)
+            held = get_held_markets(balances, exchange)
             held_str = ", ".join(held) if held else "없음 (100% 현금)"
 
             state_badge = "⏸️ 일시정지 중 (관망)" if self.get_is_paused() else "🟢 정상 가동 중"
 
             return (
-                f"📊 <b>[빗썸 AI 퀀트 봇 실시간 종합 대시보드]</b>\n\n"
+                f"📊 <b>[{self.exchange_name} AI 퀀트 봇 실시간 종합 대시보드]</b>\n\n"
                 f"• <b>봇 상태:</b> {state_badge}\n"
                 f"• <b>총 평가 자산:</b> {total_equity:,.0f} KRW\n"
                 f"• <b>가용 원화 잔고:</b> {krw_avail:,.0f} KRW\n"
@@ -108,7 +113,7 @@ class BotController:
                 f"• <b>현재 보유 종목:</b> {held_str}\n"
                 f"• <b>크립토 공포/탐욕 지수:</b> {fng['desc']}\n"
                 f"• <b>웹소켓 스트리밍:</b> ⚡ 0.1초 실시간 체결 감시 가동 중\n"
-                f"• <b>웹 대시보드:</b> <code>http://localhost:7979</code>\n"
+                f"• <b>웹 대시보드:</b> <code>http://localhost:{self.web_port}</code>\n"
                 f"• <b>조회 일시:</b> {now_str}"
             )
         except Exception as e:
@@ -117,23 +122,24 @@ class BotController:
     def get_balance_message(self) -> str:
         now_str = get_kst_now_str()
         try:
-            bithumb = self.get_exchange()
-            balances = bithumb.get_balances()
-            lines = ["💰 <b>[실시간 계좌 잔고 상세 내역]</b>\n"]
+            exchange = self.get_exchange()
+            balances = exchange.get_balances()
+            lines = [f"💰 <b>[{self.exchange_name} 실시간 계좌 잔고 상세 내역]</b>\n"]
             krw = balances.get("KRW", {})
             lines.append(f"• <b>KRW (원화):</b> {krw.get('balance', 0.0):,.0f}원 (주문중: {krw.get('locked', 0.0):,.0f}원)")
 
+            excluded = get_excluded_manual_holdings()
             for cur, info in balances.items():
-                if cur in ("KRW", "P"):
+                if cur in ("KRW", "P") or cur in excluded or f"KRW-{cur}" in excluded:
                     continue
                 bal = info.get("balance", 0.0) + info.get("locked", 0.0)
                 if bal > 0:
                     avg_p = info.get("avg_buy_price", 0.0)
                     try:
-                        cur_p = bithumb.get_current_price(f"KRW-{cur}")
+                        cur_p = exchange.get_current_price(f"KRW-{cur}")
                         val = bal * cur_p
                         pnl = ((cur_p - avg_p) / avg_p * 100) if avg_p > 0 else 0.0
-                        k_name = bithumb.get_korean_name(f"KRW-{cur}")
+                        k_name = exchange.get_korean_name(f"KRW-{cur}")
                         lines.append(f"• <b>{k_name}({cur}):</b> {bal:.6f}개 (평가: {val:,.0f}원 / 수익률: {pnl:+.2f}%)")
                     except Exception:
                         lines.append(f"• <b>{cur}:</b> {bal:.6f}개")
@@ -144,33 +150,34 @@ class BotController:
 
     def execute_panic_sell(self) -> str:
         now_str = get_kst_now_str()
-        logger.warning("🚨 [긴급 매도 명령 수신!] 전 보유 종목 전량 시장가 매도 진행")
+        logger.warning(f"🚨 [{self.exchange_name} 긴급 매도 명령 수신!] 전 보유 종목 전량 시장가 매도 진행 (수동 격리 종목 제외)")
         self.set_is_paused(True)
 
         try:
-            bithumb = self.get_exchange()
-            balances = bithumb.get_balances()
+            exchange = self.get_exchange()
+            balances = exchange.get_balances()
             sold_list = []
+            excluded = get_excluded_manual_holdings()
 
             for cur, info in balances.items():
-                if cur in ("KRW", "P"):
+                if cur in ("KRW", "P") or cur in excluded or f"KRW-{cur}" in excluded:
                     continue
                 vol = info.get("balance", 0.0)
                 if vol <= 0:
                     continue
                 market = f"KRW-{cur}"
                 try:
-                    price = bithumb.get_current_price(market)
+                    price = exchange.get_current_price(market)
                     if vol * price >= 4000.0:
                         self.cancel_bot_open_orders(market)
                         self.order_executor.submit(
-                            bithumb,
+                            exchange,
                             market=market,
                             side="ask",
                             volume=vol,
                             ord_type="market",
                         )
-                        k_name = bithumb.get_korean_name(market)
+                        k_name = exchange.get_korean_name(market)
                         sold_list.append(f"{k_name}({cur}) {vol:.4f}개")
                         self.trailing_tracker.clear(market)
                 except Exception as e:
@@ -178,7 +185,7 @@ class BotController:
 
             sold_str = ", ".join(sold_list) if sold_list else "매도 대상 없음 (이미 현금 100%)"
             return (
-                f"🚨 <b>[긴급 전량 매도 및 100% 현금화 완료]</b>\n\n"
+                f"🚨 <b>[{self.exchange_name} 긴급 전량 매도 및 100% 현금화 완료]</b>\n\n"
                 f"• <b>매도 내역:</b> {sold_str}\n"
                 f"• <b>봇 상태:</b> ⏸️ 자동매매 일시정지됨\n"
                 f"• <b>일시:</b> {now_str}\n\n"
@@ -217,6 +224,9 @@ class BotController:
             total_equity = calculate_total_equity(balances, bithumb)
             krw_avail = balances.get("KRW", {}).get("balance", 0.0)
 
+            # 장중 입출금 및 초기 입금 기준자산 실시간 보정
+            self.risk_manager.adjust_for_current_equity(total_equity)
+
             daily_pnl_krw = total_equity - self.risk_manager.daily_start_equity
             daily_pnl_pct = (
                 (daily_pnl_krw / self.risk_manager.daily_start_equity * 100)
@@ -236,7 +246,12 @@ class BotController:
             # 2. 최근 완료 거래 내역
             recent_trades_data = []
             try:
-                recent_trades_data = self.trade_memory.get_recent_trades(limit=10)
+                raw_trades = self.trade_memory.get_recent_trades(limit=10)
+                for t in raw_trades:
+                    t_copy = dict(t)
+                    m = t.get("market", "")
+                    t_copy["korean_name"] = bithumb.get_korean_name(m) if m else ""
+                    recent_trades_data.append(t_copy)
             except Exception as e:
                 logger.debug(f"대시보드 최근 거래 로드 예외: {e}")
 
@@ -245,9 +260,11 @@ class BotController:
             try:
                 raw_orders = self.order_journal.get_recent_orders(limit=10)
                 for o in raw_orders:
+                    m = o.get("market", "")
                     recent_orders_data.append({
                         "client_order_id": o.get("client_order_id", ""),
-                        "market": o.get("market", ""),
+                        "market": m,
+                        "korean_name": bithumb.get_korean_name(m) if m else "",
                         "side": o.get("side", ""),
                         "status": o.get("status", ""),
                         "price": float(o.get("price", 0.0) or 0.0),

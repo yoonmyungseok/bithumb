@@ -30,10 +30,8 @@ EXCLUDED_STABLE_MARKETS: set[str] = {
 
 
 def get_excluded_manual_holdings() -> set[str]:
-    raw = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO").strip()
-    if not raw:
-        return set()
-    items = set()
+    raw = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO") + "," + os.getenv("UPBIT_EXCLUDED_MARKETS", "KRW-HOLO,HOLO")
+    items = {"KRW-HOLO", "HOLO"}
     for item in raw.split(","):
         s = item.strip().upper()
         if s:
@@ -79,13 +77,27 @@ class MarketScreener:
         held_set: set[str] = {m.upper() for m in (held_markets or [])}
 
         try:
-            # 1. 전체 마켓 목록 조회 (KRW 페어만 필터링)
-            all_markets_data = self.api.get_all_markets()
-            krw_markets = [
-                m["market"]
-                for m in all_markets_data
-                if m.get("market", "").startswith("KRW-")
-            ]
+            # 1. 전체 마켓 목록 조회 (KRW 페어 및 정상 거래 종목만 필터링)
+            try:
+                all_markets_data = self.api.get_all_markets(is_details=True)
+            except TypeError:
+                all_markets_data = self.api.get_all_markets()
+
+            krw_markets = []
+            for m in all_markets_data:
+                m_code = m.get("market", "")
+                if not m_code.startswith("KRW-"):
+                    continue
+                # 업비트 투자 유의 종목(warning) 배제
+                m_event = m.get("market_event") or {}
+                if isinstance(m_event, dict) and m_event.get("warning") is True:
+                    logger.debug(f"투자 유의 지정 종목 스크리닝 제외: {m_code}")
+                    continue
+                # 빗썸 투자 유의 지정 배제
+                if m.get("market_warning") in ("CAUTION", "WARNING"):
+                    logger.debug(f"투자 유의 지정 종목 스크리닝 제외: {m_code}")
+                    continue
+                krw_markets.append(m_code)
 
             if not krw_markets:
                 logger.warning("KRW 마켓 목록을 가져오지 못했습니다. 기본값 반환")
@@ -99,7 +111,8 @@ class MarketScreener:
                 tickers_chunk = self.api.get_tickers(chunk)
                 all_tickers.extend(tickers_chunk)
 
-            logger.info(f"빗썸 KRW 마켓 {len(all_tickers)}개 종목 시세 스캔 완료")
+            ex_name = "업비트" if "upbit" in str(type(self.api)).lower() else "빗썸"
+            logger.info(f"{ex_name} KRW 마켓 {len(all_tickers)}개 종목 시세 스캔 완료")
 
             # 3. 퀀트 필터링 및 상승 초기 가중치 모멘텀 스코어링
             qualified_candidates: list[dict[str, Any]] = []

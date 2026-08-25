@@ -5,6 +5,7 @@
 .env.local
 .env.*.local
 *.env
+.env.*
 
 # 구글 서비스 계정 키 파일 (JSON)
 config/*.json
