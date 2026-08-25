@@ -274,6 +274,9 @@ class BotController:
                         "side": o.get("side", ""),
                         "status": o.get("status", ""),
                         "price": float(o.get("price", 0.0) or 0.0),
+                        # 체결 수량이 있는 경우에만 대시보드에서 평균 체결가를 표시한다.
+                        "avg_price": float(o.get("avg_price", 0.0) or 0.0),
+                        "executed_volume": float(o.get("executed_volume", 0.0) or 0.0),
                         "volume": float(o.get("volume", 0.0) or 0.0),
                         "ord_type": o.get("ord_type", "market"),
                         "timestamp": o.get("updated_at") or o.get("created_at", ""),

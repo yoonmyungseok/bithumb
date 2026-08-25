@@ -105,14 +105,64 @@ class OrderSafetyTests(unittest.TestCase):
         self.assertEqual(guard.validate_buy("KRW-BTC", 100_000, 900_000, 1_000_000, []), (True, "OK"))
 
     def test_cooldown_manager(self):
-        cd = CooldownManager(default_sl_cooldown=100.0, default_tp_cooldown=50.0)
-        cd.record_exit("KRW-BTC", "STOP_LOSS")
+        cd = CooldownManager(
+            default_sl_cooldown=100.0,
+            default_tp_cooldown=50.0,
+            default_time_stop_cooldown=100.0,
+            data_dir=self.temp_dir.name,
+        )
+        cd.record_exit("KRW-BTC", "STOP_LOSS", exit_price=100.0)
         is_cd, rem = cd.is_in_cooldown("KRW-BTC")
         self.assertTrue(is_cd)
         self.assertGreater(rem, 0.0)
 
+        # 쿨다운 중에는 check_reentry_allowed가 False
+        allowed, reason = cd.check_reentry_allowed("KRW-BTC", 100.5)
+        self.assertFalse(allowed)
+        self.assertIn("쿨다운 대기 중", reason)
+
         is_cd_eth, _ = cd.is_in_cooldown("KRW-ETH")
         self.assertFalse(is_cd_eth)
+
+    def test_whipsaw_reentry_prevention_scenario(self):
+        """316원 타임스탑 매도 후 317원 재매수 시도와 같은 휩쏘 횡보 재진입 차단 검증"""
+        cd = CooldownManager(
+            default_sl_cooldown=0.0,  # 즉시 만료로 설정하여 갭 필터만 독립 검증
+            default_tp_cooldown=0.0,
+            default_time_stop_cooldown=0.0,
+            data_dir=self.temp_dir.name,
+        )
+
+        # 1. 타임스탑 316원 청산 기록
+        cd.record_exit("KRW-CSIX", "TIME_STOP", exit_price=316.0)
+
+        # 317원 (+0.32% 박스권 횡보) 시도 -> 차단되어야 함
+        allowed, reason = cd.check_reentry_allowed("KRW-CSIX", 317.0, min_gap_pct=0.015)
+        self.assertFalse(allowed)
+        self.assertIn("박스권 횡보 구간", reason)
+        self.assertIn("휩쏘 재진입 방지", reason)
+
+        # 315원 (-0.32% 박스권 횡보) 시도 -> 차단되어야 함
+        allowed_down, reason_down = cd.check_reentry_allowed("KRW-CSIX", 315.0, min_gap_pct=0.015)
+        self.assertFalse(allowed_down)
+        self.assertIn("박스권 횡보 구간", reason_down)
+
+        # 322원 (+1.9% 상방 돌파) 시도 -> 승인되어야 함
+        allowed_up, reason_up = cd.check_reentry_allowed("KRW-CSIX", 322.0, min_gap_pct=0.015)
+        self.assertTrue(allowed_up)
+        self.assertEqual(reason_up, "OK")
+
+        # 2. 손절 316원 청산 기록
+        cd.record_exit("KRW-DOGE", "STOP_LOSS", exit_price=316.0)
+
+        # 317원 (+0.32% 미미한 반등) 시도 -> 차단되어야 함
+        allowed_sl, reason_sl = cd.check_reentry_allowed("KRW-DOGE", 317.0, min_gap_pct=0.015)
+        self.assertFalse(allowed_sl)
+        self.assertIn("상방 돌파", reason_sl)
+
+        # 322원 (+1.9% 돌파) 시도 -> 승인
+        allowed_sl_ok, _ = cd.check_reentry_allowed("KRW-DOGE", 322.0, min_gap_pct=0.015)
+        self.assertTrue(allowed_sl_ok)
 
     def test_calculate_risk_position_size(self):
         # 1,000,000 total equity, entry=100,000, SL=98,000 (2% stop), risk 1% = 10,000 max loss

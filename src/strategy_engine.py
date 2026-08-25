@@ -27,14 +27,17 @@ class StrategyPolicy:
     TRAILING_DROP_PCT: float = 0.012     # 최고점 대비 1.2% 하락 시 시장가 청산
     MIN_PROFIT_BUFFER_PCT: float = 0.005 # +0.5% 최소 보장 마진 (v6.1 상향)
 
-    # 3. 시간 기반 청산 (타임스탑) & 쿨다운
+    # 3. 시간 기반 청산 (타임스탑) & 쿨다운 / 재진입 갭 필터
     TIME_STOP_SECONDS: int = 3600        # 60분 타임스탑 (기본 정상장, 실거래 초 단위)
     TIME_STOP_SECONDS_NORMAL: int = 3600 # 정상장 60분 타임스탑
     TIME_STOP_SECONDS_RISK_OFF: int = 1800 # RISK_OFF 약세장 30분 단축 타임스탑
     TIME_STOP_BARS_5M: int = 12          # 5분봉 12개 = 60분 (백테스트 캔들 단위)
     TIME_STOP_BARS_5M_RISK_OFF: int = 6  # 5분봉 6개 = 30분 (RISK_OFF 백테스트 캔들 단위)
     COOLDOWN_STOP_LOSS_SEC: float = 2700.0  # 손절 후 쿨다운 45분
-    COOLDOWN_TP_SEC: float = 900.0       # 익절 후 쿨다운 15분
+    COOLDOWN_TIME_STOP_SEC: float = 2700.0  # 타임스탑 횡보 청산 후 쿨다운 45분
+    COOLDOWN_TP_SEC: float = 1800.0         # 트레일링 익절 후 쿨다운 30분
+    REENTRY_BUFFER_PCT: float = 0.015       # 직전 청산가 대비 최소 돌파/눌림목 갭 버퍼 (+1.5%)
+    REENTRY_FILTER_EXPIRY_SEC: float = 7200.0  # 직전 청산가 갭 필터 유지 시간 (2시간)
 
     # 4. 하드 안전 게이트 (Hard Safety Gates) 임계값
     ALPHA_BUY_THRESHOLD: int = 65        # 7대 팩터 복합 알파 승인 점수 (100점 만점, 기본/호환용)

@@ -595,6 +595,7 @@ def run_cycle():
                                         "Status_Reason": f"트레일링 스탑 최고점 익절 (+{realized_profit_pct:.2f}%)",
                                     }
                                 )
+                                cooldown_manager.record_exit(market, "TRAILING_STOP", exit_price=current_price)
                             finally:
                                 trailing_tracker.release_exit_lock(market)
                             continue
@@ -668,6 +669,7 @@ def run_cycle():
                                     f"• 일시: {now_str}"
                                 )
                                 telegram.send_message(caption)
+                                cooldown_manager.record_exit(market, "TIME_STOP", exit_price=current_price)
                             finally:
                                 trailing_tracker.release_exit_lock(market)
                             continue
@@ -689,7 +691,7 @@ def run_cycle():
                     market=market,
                     exchange="bithumb",
                 )
-                in_cooldown, cd_remaining = cooldown_manager.is_in_cooldown(market)
+                reentry_allowed, reentry_reason = cooldown_manager.check_reentry_allowed(market, current_price)
                 is_holding = (coin_value >= MIN_ORDER_KRW and avg_buy_price > 0)
                 ws_health = ws_client.get_health_status(market=market) if hasattr(ws_client, "get_health_status") else {"is_healthy": True, "status": "OK"}
                 ws_healthy = ws_health.get("is_healthy", True)
@@ -697,7 +699,7 @@ def run_cycle():
                 should_call_ai = (
                     analyzer is not None
                     and not is_holding
-                    and not in_cooldown
+                    and reentry_allowed
                     and local_entry["allow_buy"]
                     and not is_btc_crashing
                     and ws_healthy
@@ -725,8 +727,8 @@ def run_cycle():
                         f"기보유 포지션 퀀트 감시 ({local_entry['reason']})"
                         if is_holding
                         else (
-                            f"재진입 쿨다운 대기중 ({cd_remaining/60:.0f}분 남음)"
-                            if in_cooldown
+                            f"{reentry_reason}"
+                            if not reentry_allowed
                             else (
                                 f"BTC 레짐 경보 ({btc_status_msg})"
                                 if is_btc_crashing
@@ -756,9 +758,9 @@ def run_cycle():
                 alloc_pct = strategy.get("alloc_pct", 0.3)
                 reason = strategy.get("reason", "자동 분석")
 
-                if in_cooldown and action == "BUY":
+                if not reentry_allowed and action == "BUY":
                     action = "HOLD"
-                    reason = f"재진입 쿨다운 대기중 ({cd_remaining/60:.0f}분 남음) | {reason}"
+                    reason = f"{reentry_reason} | {reason}"
 
                 if action == "BUY" and not local_entry["allow_buy"]:
                     action = "HOLD"
@@ -839,7 +841,7 @@ def run_cycle():
                             )
                             order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
                             client_order_id = order_res.get("client_order_id", "")
-                            cooldown_manager.record_exit(market, "STOP_LOSS")
+                            cooldown_manager.record_exit(market, "STOP_LOSS", exit_price=current_price)
 
                             # 실제 체결 내역 조회 (가상 손익 미생성, P0-1, P0-3)
                             time.sleep(0.05)

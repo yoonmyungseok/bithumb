@@ -252,7 +252,7 @@ class DashboardWebServer:
                                 <th class="p-2.5 whitespace-nowrap">종목명 (마켓)</th>
                                 <th class="p-2.5 whitespace-nowrap min-w-[60px]">방향</th>
                                 <th class="p-2.5 whitespace-nowrap min-w-[90px]">주문 상태</th>
-                                <th class="p-2.5 whitespace-nowrap">거래소 주문번호</th>
+                                <th class="p-2.5 whitespace-nowrap">체결가 / 주문가</th>
                             </tr>
                         </thead>
                         <tbody id="orders_tbody" class="divide-y divide-slate-800">
@@ -409,13 +409,20 @@ class DashboardWebServer:
                             const statusKr = formatOrderStatus(o.status);
                             const sideKr = (o.side === 'bid' || o.side === 'BUY' || o.side === 'buy') ? '매수' : '매도';
                             const coinDisp = o.korean_name ? (o.korean_name + ' <span class="text-xs text-slate-400 font-normal">(' + o.market + ')</span>') : o.market;
+                            // 실제 체결 수량과 평균 체결가가 함께 확인된 경우만 체결가로 표시한다.
+                            const avgFillPrice = Number(o.avg_price || 0);
+                            const executedVolume = Number(o.executed_volume || 0);
+                            const requestedPrice = Number(o.price || 0);
+                            const priceDisplay = (executedVolume > 0 && avgFillPrice > 0)
+                                ? `체결 ${{avgFillPrice.toLocaleString()}}원`
+                                : (requestedPrice > 0 ? `주문 ${{requestedPrice.toLocaleString()}}원` : '확인 필요');
                             return `
                                 <tr class="hover:bg-slate-800/40 font-mono text-xs">
                                     <td class="p-2.5 text-slate-400 truncate max-w-[120px] whitespace-nowrap">${{o.client_order_id}}</td>
                                     <td class="p-2.5 font-semibold text-white whitespace-nowrap">${{coinDisp}}</td>
                                     <td class="p-2.5 whitespace-nowrap ${{(o.side === 'bid' || o.side === 'BUY' || o.side === 'buy') ? 'text-emerald-400' : 'text-rose-400'}}">${{sideKr}}</td>
                                     <td class="p-2.5 whitespace-nowrap"><span class="badge ${{statusColor}}">${{statusKr}}</span></td>
-                                    <td class="p-2.5 text-slate-400 truncate max-w-[120px] whitespace-nowrap">${{o.exchange_uuid || o.exchange_order_id || '-'}}</td>
+                                    <td class="p-2.5 text-slate-400 truncate max-w-[120px] whitespace-nowrap">${{priceDisplay}}</td>
                                 </tr>
                             `;
                         }}).join('');

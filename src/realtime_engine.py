@@ -384,7 +384,7 @@ class RealtimeRiskEngine:
                         position_id=market,
                     )
                     self._invalidate_balance_cache()
-                    self.cooldown_manager.record_exit(market, "STOP_LOSS")
+                    self.cooldown_manager.record_exit(market, "STOP_LOSS", exit_price=current_price)
 
                     res_data = self._confirm_and_record_exit(
                         exchange=bithumb,
@@ -506,7 +506,7 @@ class RealtimeRiskEngine:
                         position_id=market,
                     )
                     self._invalidate_balance_cache()
-                    self.cooldown_manager.record_exit(market, "TRAILING_STOP")
+                    self.cooldown_manager.record_exit(market, "TRAILING_STOP", exit_price=current_price)
 
                     res_data = self._confirm_and_record_exit(
                         exchange=bithumb,

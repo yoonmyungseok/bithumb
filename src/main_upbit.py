@@ -595,7 +595,7 @@ def run_cycle():
                                 )
                                 order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
                                 client_order_id = order_res.get("client_order_id", "")
-                                cooldown_manager.record_exit(market, "TRAILING_STOP")
+                                cooldown_manager.record_exit(market, "TRAILING_STOP", exit_price=current_price)
 
                                 # 실제 체결 내역 조회 (가상 손익 미생성, P0-1, P0-3)
                                 time.sleep(0.05)
@@ -664,7 +664,7 @@ def run_cycle():
                                 )
                                 order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
                                 client_order_id = order_res.get("client_order_id", "")
-                                cooldown_manager.record_exit(market, "TIME_STOP")
+                                cooldown_manager.record_exit(market, "TIME_STOP", exit_price=current_price)
 
                                 time.sleep(0.05)
                                 try:
@@ -711,9 +711,9 @@ def run_cycle():
                     logger.info(f"[{market}] 봇 일시정지 또는 킬스위치 상태로 신규 매수 생략")
                     continue
 
-                is_in_cd, cd_remaining = cooldown_manager.is_in_cooldown(market)
-                if is_in_cd:
-                    logger.info(f"[{market}] 쿨다운 진행 중 ({cd_remaining/60:.1f}분 남음)으로 신규 매수 생략")
+                reentry_allowed, reentry_reason = cooldown_manager.check_reentry_allowed(market, current_price)
+                if not reentry_allowed:
+                    logger.info(f"[{market}] {reentry_reason}으로 신규 매수 생략")
                     continue
 
                 if not candles_5m or len(candles_5m) < 20:
@@ -744,7 +744,7 @@ def run_cycle():
                 should_call_ai = (
                     analyzer is not None
                     and not is_holding
-                    and not is_in_cd
+                    and reentry_allowed
                     and local_entry.get("allow_buy", False)
                     and not is_btc_crashing
                     and ws_healthy
@@ -767,13 +767,13 @@ def run_cycle():
                         whale_context=whale_flow_context,
                     )
                 else:
-                    # 1차 퀀트 관망 또는 기보유 포지션 기준선 산출
+                    # 1차 퀀트 관망 또는 기보유 포지션 기준선 산출 (Zero API Quota)
                     quant_reason = (
-                        f"기보유 포지션 퀀트 감시 ({local_entry.get('reason', '정상')})"
+                        f"기보유 포지션 퀀트 감시 ({local_entry.get('reason', '')})"
                         if is_holding
                         else (
-                            f"재진입 쿨다운 대기중 ({cd_remaining/60:.0f}분 남음)"
-                            if is_in_cd
+                            f"{reentry_reason}"
+                            if not reentry_allowed
                             else (
                                 f"BTC 레짐 경보 ({btc_status_msg})"
                                 if is_btc_crashing
@@ -803,9 +803,9 @@ def run_cycle():
                 alloc_pct = strategy.get("alloc_pct", dyn_max_pos_pct)
                 reason = strategy.get("reason", "자동 분석")
 
-                if is_in_cd and action == "BUY":
+                if not reentry_allowed and action == "BUY":
                     action = "HOLD"
-                    reason = f"재진입 쿨다운 대기중 ({cd_remaining/60:.0f}분 남음) | {reason}"
+                    reason = f"{reentry_reason} | {reason}"
 
                 if action == "BUY" and not local_entry.get("allow_buy", False):
                     action = "HOLD"
