@@ -204,7 +204,7 @@ class UnifiedDashboardServer:
                 item["exchange_label"] = "업비트"
                 combined_candidates.append(item)
 
-        # 통합 최근 완료 거래 내역
+        # 통합 최근 완료 거래 내역 (최신순 정렬)
         combined_recent_trades = []
         for t in bithumb_data.get("recent_trades", []):
             if isinstance(t, dict):
@@ -217,6 +217,9 @@ class UnifiedDashboardServer:
                 item = dict(t)
                 item["exchange"] = "upbit"
                 combined_recent_trades.append(item)
+
+        combined_recent_trades.sort(key=lambda x: str(x.get("timestamp", "")), reverse=True)
+        combined_recent_trades = combined_recent_trades[:20]
 
         # 통합 최근 주문 저널 (최신순 정렬)
         combined_orders = []
@@ -231,6 +234,9 @@ class UnifiedDashboardServer:
                 item = dict(o)
                 item["exchange"] = "upbit"
                 combined_orders.append(item)
+
+        combined_orders.sort(key=lambda x: str(x.get("timestamp", "")), reverse=True)
+        combined_orders = combined_orders[:20]
 
         # 공포탐욕지수 (둘 중 정상인 것 우선)
         fng = bithumb_data.get("fear_and_greed") or upbit_data.get("fear_and_greed") or "50점 (중립)"

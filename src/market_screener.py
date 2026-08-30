@@ -49,7 +49,7 @@ class MarketScreener:
         bithumb_api: BithumbAPI,
         min_trade_value_krw: float = 1_000_000_000.0,
         min_change_rate: float = 0.005,
-        max_change_rate: float = 0.25,
+        max_change_rate: float = 0.12,
         max_spread_pct: float = 0.0035,
     ):
         self.api = bithumb_api
@@ -149,15 +149,20 @@ class MarketScreener:
                 if is_risk_off and relative_strength < StrategyPolicy.RS_MIN_RISK_OFF:
                     continue
 
-                if 0.02 <= change_rate <= 0.08:
-                    momentum_multiplier = 1.5
-                elif change_rate < 0.02:
-                    momentum_multiplier = 1.0
+                # 상승 초입(+1.5% ~ +6.0%) 종목에 최고 가중치를 부여하고, 이미 많이 오른(+8% 초과) 종목은 감점
+                if 0.015 <= change_rate <= 0.060:
+                    momentum_multiplier = 2.0   # 상승 초입 골든존 최고 가중치
+                elif 0.005 <= change_rate < 0.015:
+                    momentum_multiplier = 1.3   # 바닥 탈출 초기 구간
+                elif 0.060 < change_rate <= 0.090:
+                    momentum_multiplier = 1.0   # 진행 중인 상승세
                 else:
-                    momentum_multiplier = 1.1
+                    momentum_multiplier = 0.5   # +9% 이상 급등 과열 종목 (고점 피로도 감점)
 
-                rs_bonus = max(0.0, relative_strength * 50.0)
-                score = ((change_rate * 100.0) * momentum_multiplier * math.log10(max(1.0, acc_price_24h))) + rs_bonus
+                rs_bonus = max(0.0, relative_strength * 60.0)
+                # 거래대금의 로그 스케일과 초입 모멘텀 가중치를 결합
+                effective_rate = min(change_rate, 0.08)  # 지나치게 높은 상승률이 점수를 과도하게 왜곡하지 않도록 상한 8% 캡 적용
+                score = ((effective_rate * 100.0) * momentum_multiplier * math.log10(max(1.0, acc_price_24h))) + rs_bonus
                 ticker_info["score"] = score
                 ticker_info["is_held"] = False
                 qualified_candidates.append(ticker_info)

@@ -13,6 +13,7 @@ class StrategyPolicy:
     ATR_TARGET_MULTIPLIER: float = 1.8   # ATR 기반 목표가 배수
     ATR_STOP_MULTIPLIER: float = 1.2     # ATR 기반 손절가 배수
     MIN_TARGET_PCT: float = 0.020        # 최소 목표 수익률 +2.0%
+    PROFIT_TARGET_PCT: float = 0.025     # 기본 목표 수익률 호환 별칭 (+2.5%)
     MIN_STOP_PCT: float = 0.012          # 기본 최소 손절선 -1.2% (손익비 1.5:1 이상 확보)
     STOP_LOSS_PCT: float = 0.015         # 기본 손절 -1.5% (슬리피지 감안 -2.5% 비상 하드스탑)
 
@@ -61,12 +62,14 @@ class StrategyPolicy:
     RS_MIN_RISK_OFF: float = 0.015       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+1.5% 초과 상승)
     MIN_TRADE_VALUE_RISK_OFF: float = 3_000_000_000.0  # 약세장 최소 24시간 거래대금 30억 원
     MIN_ASSET_PRICE_KRW: float = 10.0    # 10원 미만 극초저가 코인 차단 (호가 갭/슬리피지 방어)
-    RSI_MIN_NORMAL: float = 35.0         # 정상장 RSI 최소치 (모멘텀 실종 방어)
-    RSI_MAX_NORMAL: float = 75.0         # 정상장 RSI 최대치 (극초과열 추격 방어)
+    RSI_MIN_NORMAL: float = 38.0         # 정상장 RSI 최소치 (바닥 모멘텀 확인)
+    RSI_MAX_NORMAL: float = 65.0         # 정상장 RSI 최대치 (단기 과매수/고점 추격 원천 차단)
     RSI_MIN_RISK_OFF: float = 40.0       # RISK_OFF RSI 최소치
-    RSI_MAX_RISK_OFF: float = 68.0       # RISK_OFF RSI 최대치
-    PCT_B_MIN: float = 0.15              # 볼린저 밴드 %B 최소치 (하단 밴드 붕괴 방어)
-    PCT_B_MAX: float = 0.95              # 볼린저 밴드 %B 최대치 (상단 밴드 극단 이탈 방어)
+    RSI_MAX_RISK_OFF: float = 62.0       # RISK_OFF RSI 최대치 (약세장 보수적 상한)
+    PCT_B_MIN: float = 0.20              # 볼린저 밴드 %B 최소치 (하단 밴드 붕괴 방어)
+    PCT_B_MAX: float = 0.78              # 볼린저 밴드 %B 최대치 (밴드 상단 꼭대기 추격 차단)
+    MAX_MA20_DISPARITY: float = 1.025    # MA20 대비 최대 이격도 +2.5% (단기 이격 과열 차단)
+    MAX_UPPER_SHADOW_RATIO: float = 0.50 # 캔들 윗꼬리(피뢰침 매도 피로) 최대 허용 비율 (50%)
     MA_ALIGNMENT_RATIO: float = 0.995    # MA5 >= MA20 * 0.995 (역배열 폭락세 차단)
     RISK_OFF_ALLOC_RATIO: float = 0.3    # RISK_OFF 진입 비중 축소 비율 (30%)
 
@@ -507,9 +510,14 @@ def calculate_composite_alpha_score(
     else:
         score_mtf = 10
 
-    # 2. VWAP 지지/돌파 (15점)
+    # 2. VWAP 지지/돌파 및 단기 이격 점수 (15점)
     vwap_data = calculate_vwap(candles)
-    score_vwap = 15 if vwap_data["is_above"] and vwap_data["disparity_pct"] <= 3.5 else (8 if vwap_data["is_above"] else 0)
+    if vwap_data["is_above"] and vwap_data["disparity_pct"] <= 2.5:
+        score_vwap = 15  # VWAP 상단 안정적 지지 안착권
+    elif vwap_data["is_above"] and vwap_data["disparity_pct"] <= 3.5:
+        score_vwap = 10  # 완만한 이격
+    else:
+        score_vwap = 0   # 과도한 이격 과열 또는 VWAP 하회
 
     # 3. MACD 히스토그램 가속도 (15점)
     macd_acc = calculate_macd_acceleration(prices)
@@ -522,24 +530,24 @@ def calculate_composite_alpha_score(
     else:
         score_macd = 0
 
-    # 4. RSI 골든존 (15점)
+    # 4. RSI 골든존 (15점) - 상승 초입(40~62) 집중 가산, 과매수(66 초과) 0점
     rsi_val = calculate_rsi(prices, 14)
-    if 45.0 <= rsi_val <= 65.0:
-        score_rsi = 15
-    elif 38.0 <= rsi_val <= 72.0:
-        score_rsi = 10
+    if 40.0 <= rsi_val <= 62.0:
+        score_rsi = 15  # 최적의 상승 초입/눌림목 반등 구간
+    elif (36.0 <= rsi_val < 40.0) or (62.0 < rsi_val <= 66.0):
+        score_rsi = 10  # 경계 구간
     else:
-        score_rsi = 0
+        score_rsi = 0   # 과매수(>66) 또는 과매도 침체(<36)
 
-    # 5. 볼린저 밴드 중심선 돌파 및 밴드 확장 (15점)
+    # 5. 볼린저 밴드 중심선 지지 및 안정적 밴드 내 상승 (15점)
     bb = calculate_bollinger_bands(prices, 20, 2.0)
     ma5 = sum(prices[:5]) / 5.0
-    if ma5 > bb["middle"] and (0.30 <= bb["pct_b"] <= 0.85):
-        score_bb = 15
-    elif ma5 >= bb["middle"] * 0.995:
-        score_bb = 10
+    if ma5 >= (bb["middle"] * 0.998) and (0.30 <= bb["pct_b"] <= 0.72):
+        score_bb = 15   # 밴드 중심선 상단 안착 및 여유 공간 확보 (초입)
+    elif (0.20 <= bb["pct_b"] < 0.30) or (0.72 < bb["pct_b"] <= 0.78):
+        score_bb = 10   # 밴드 하단 근접 또는 상단 근접
     else:
-        score_bb = 0
+        score_bb = 0    # 밴드 상단 꼭대기(>0.78) 또는 하단 이탈(<0.20)
 
     # 6. 수급 / 체결강도 및 호가창 잔량비 (15점)
     score_orderflow = 10  # 호가 데이터가 없을 때의 중립 점수
@@ -680,15 +688,30 @@ def entry_signal(
     hard_gate_bb = (StrategyPolicy.PCT_B_MIN <= pct_b <= StrategyPolicy.PCT_B_MAX)
     hard_gate_ma = ma5 >= ma20 * StrategyPolicy.MA_ALIGNMENT_RATIO
 
-    hard_gates_passed = hard_gate_btc and hard_gate_mtf and hard_gate_rsi and hard_gate_bb and hard_gate_ma
+    # 2-1. MA20 단기 이격 과열 차단 (이격도 +2.5% 이하)
+    hard_gate_disparity = current <= (ma20 * StrategyPolicy.MAX_MA20_DISPARITY)
+
+    # 2-2. 캔들 윗꼬리(피뢰침/매도 폭탄) 차단
+    high_0 = float(candles[0].get("high_price", current) or current)
+    low_0 = float(candles[0].get("low_price", current) or current)
+    open_0 = float(candles[0].get("opening_price", current) or current)
+    candle_range = high_0 - low_0
+    upper_shadow = high_0 - max(open_0, current)
+    upper_shadow_ratio = (upper_shadow / candle_range) if candle_range > 0 else 0.0
+    hard_gate_shadow = (upper_shadow_ratio <= StrategyPolicy.MAX_UPPER_SHADOW_RATIO)
+
+    hard_gates_passed = (
+        hard_gate_btc and hard_gate_mtf and hard_gate_rsi and hard_gate_bb
+        and hard_gate_ma and hard_gate_disparity and hard_gate_shadow
+    )
 
     # 3. 5분봉 정량 조건 및 소프트 알파 스코어 결합
-    rsi_min, rsi_max = (42.0, 65.0) if regime_upper == "RISK_OFF" else (38.0, 72.0)
-    pct_b_min, pct_b_max = (0.30, 0.75) if regime_upper == "RISK_OFF" else (0.20, 0.88)
+    rsi_min, rsi_max = (40.0, 62.0) if regime_upper == "RISK_OFF" else (38.0, 64.0)
+    pct_b_min, pct_b_max = (0.28, 0.70) if regime_upper == "RISK_OFF" else (0.25, 0.75)
     signal_5m = (ma5 > ma20) and (rsi_min <= rsi <= rsi_max) and (pct_b_min <= pct_b <= pct_b_max)
 
     alpha_score_passed = alpha_res["allow_buy"]
-    # RISK_OFF 약세장에서는 단순 5분봉 지표만으로 우회 불가하며, 반드시 알파 80점 이상 엄선 조건(alpha_score_passed)을 충족해야 함
+    # RISK_OFF 약세장에서는 단순 5분봉 지표만으로 우회 불가하며, 반드시 알파 75점 이상 엄선 조건(alpha_score_passed)을 충족해야 함
     if regime_upper == "RISK_OFF":
         allowed = hard_gates_passed and alpha_score_passed
     else:
@@ -719,6 +742,8 @@ def entry_signal(
             "rsi_guard": {"pass": hard_gate_rsi, "value": rsi, "min": rsi_hard_min, "max": rsi_hard_max},
             "bb_guard": {"pass": hard_gate_bb, "value": round(pct_b, 3), "min": StrategyPolicy.PCT_B_MIN, "max": StrategyPolicy.PCT_B_MAX},
             "ma_alignment": {"pass": hard_gate_ma, "ma5": round(ma5, 2), "ma20": round(ma20, 2)},
+            "disparity_guard": {"pass": hard_gate_disparity, "current": round(current, 2), "limit": round(ma20 * StrategyPolicy.MAX_MA20_DISPARITY, 2)},
+            "shadow_guard": {"pass": hard_gate_shadow, "ratio": round(upper_shadow_ratio, 3), "max": StrategyPolicy.MAX_UPPER_SHADOW_RATIO},
         },
         "ma_alignment": {"pass": ma5 > ma20, "ma5": round(ma5, 2), "ma20": round(ma20, 2)},
         "rsi_range": {"pass": (rsi_min <= rsi <= rsi_max), "value": rsi, "min": rsi_min, "max": rsi_max},
@@ -733,6 +758,7 @@ def entry_signal(
         f"MA5 {'>' if ma5 > ma20 else '<='} MA20",
         f"RSI {rsi:.1f}",
         f"%B {pct_b:.2f}",
+        f"이격 {'안정' if hard_gate_disparity else '과열차단'}",
         mtf_reason,
     ]
 

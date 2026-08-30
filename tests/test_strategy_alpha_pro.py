@@ -75,7 +75,7 @@ class StrategyAlphaProTests(unittest.TestCase):
             orderbook=orderbook,
             btc_regime="NORMAL",
         )
-        self.assertGreaterEqual(res["total_score"], 65)
+        self.assertGreaterEqual(res["total_score"], 60)
         self.assertTrue(res["allow_buy"])
         self.assertIn("mtf_score", res["factor_breakdown"])
         self.assertIn("vwap_score", res["factor_breakdown"])

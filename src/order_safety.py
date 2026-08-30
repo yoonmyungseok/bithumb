@@ -900,7 +900,13 @@ class OrderFillProcessor:
                             timestamp=now_str,
                             position_id=position_id,
                             order_status=status,
-                            exchange=entry_snapshot.get("exchange") or (entry_order or {}).get("exchange") or "",
+                            exchange=(
+                                entry_snapshot.get("exchange")
+                                or (entry_order or {}).get("exchange")
+                                or getattr(self.trade_memory, "exchange_scope", "")
+                                or getattr(self.order_journal, "exchange_scope", "")
+                                or "bithumb"
+                            ),
                             btc_regime=entry_snapshot.get("entry_btc_regime", "UNKNOWN"),
                             alpha_score=entry_snapshot.get("alpha_score"),
                             indicators=entry_snapshot.get("indicators", {}),
