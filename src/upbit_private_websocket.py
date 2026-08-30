@@ -53,6 +53,7 @@ class UpbitPrivateWebSocketClient:
         self._thread: threading.Thread | None = None
         # Private WebSocket 수신 스레드에서는 영속화·손익 계산을 하지 않는다.
         self._order_event_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1000)
+        self._reconnect_delay = 2
 
     def _headers(self) -> list[str]:
         """업비트 Private WebSocket용 JWT 토큰 헤더 생성"""
@@ -65,6 +66,7 @@ class UpbitPrivateWebSocketClient:
         return [f"Authorization: Bearer {jwt_str}"]
 
     def _on_open(self, ws: Any) -> None:
+        self._reconnect_delay = 2
         sub_payload = [
             {"ticket": f"upbit-private-{uuid.uuid4().hex[:8]}"},
             {"type": "myOrder"},
@@ -117,7 +119,7 @@ class UpbitPrivateWebSocketClient:
         self.is_running = True
 
         def run() -> None:
-            delay = 2
+            self._reconnect_delay = 2
             while self.is_running:
                 try:
                     self.ws = websocket.WebSocketApp(
@@ -132,8 +134,8 @@ class UpbitPrivateWebSocketClient:
                     logger.warning(f"업비트 Private WebSocket 예외: {e}")
 
                 if self.is_running:
-                    time.sleep(delay)
-                    delay = min(delay * 2, 30)
+                    time.sleep(self._reconnect_delay)
+                    self._reconnect_delay = min(self._reconnect_delay * 2, 30)
 
         self._thread = threading.Thread(target=run, daemon=True, name="UpbitPrivateWebSocket")
         self._thread.start()

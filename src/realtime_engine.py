@@ -337,9 +337,10 @@ class RealtimeRiskEngine:
             korean_name = bithumb.get_korean_name(market)
             strat = self.latest_strategies.get(market, {})
             raw_stop_loss = float(strat.get("STOP_LOSS", 0.0))
-            # 진입 직후 1틱(-0.3%) 털림 방지: 손절선은 평단가 대비 최소 -1.5% 이하로 안전 마진 보장
-            min_sl_threshold = avg_buy_price * 0.985
-            effective_stop_loss = min(raw_stop_loss, min_sl_threshold) if raw_stop_loss > 0 else (avg_buy_price * 0.970)
+            # 진입 직후 1틱(-0.3%) 털림 방지: 손절선은 평단가 대비 기본 -1.5% 이하로 안전 마진 보장
+            base_stop_loss = avg_buy_price * (1.0 - StrategyPolicy.STOP_LOSS_PCT)
+            effective_stop_loss = raw_stop_loss if raw_stop_loss > 0 else base_stop_loss
+            effective_stop_loss = min(effective_stop_loss, base_stop_loss)
 
             # 🛡️ [수익 보존 브레이크이븐]: 1차 분할 익절(+2.5%) 완료 시 손절선을 '평단가 + 0.3%'로 자동 락인
             if self.trailing_tracker.is_breakeven_active(market):
@@ -403,14 +404,8 @@ class RealtimeRiskEngine:
                         now_str=now_str,
                     )
 
-                    self.telegram.send_message(
-                        f"🚨 <b>[실시간 초저지연 손절 매도 실행]</b>\n"
-                        f"• 종목: {korean_name}({market})\n"
-                        f"• 체결가: {res_data['exec_price']:,.2f} KRW (손절가: {effective_stop_loss:,.2f} KRW)\n"
-                        f"• 손실: {res_data['pnl_krw']:,.0f} KRW ({res_data['pnl_pct']:.2f}%)\n"
-                        f"• 사유: 0.1초 실시간 급락 방어선 청산\n"
-                        f"• 일시: {now_str}"
-                    )
+                    # [알림 최적화] 거래소 앱 자체 알림 활용을 위해 텔레그램 실시간 손절 알림 비활성화
+                    pass
                 finally:
                     self.trailing_tracker.release_exit_lock(market)
                 return
@@ -473,14 +468,8 @@ class RealtimeRiskEngine:
                         )
 
                         be_note = "🛡️ 본전 보장(Break-Even +0.3%) 스탑 활성화" if not is_stage2 else "🚀 잔여 40% 대세 트레일링 러너 추종"
-                        self.telegram.send_message(
-                            f"🎉 <b>[실시간 {stage_label} 분할익절 체결]</b>\n"
-                            f"• 종목: {korean_name}({market})\n"
-                            f"• 체결가: {res_data['exec_price']:,.2f} KRW (+{res_data['pnl_pct']:.2f}%)\n"
-                            f"• 실현수익: +{res_data['pnl_krw']:,.0f} KRW 💰\n"
-                            f"• {be_note}\n"
-                            f"• 일시: {now_str}"
-                        )
+                        # [알림 최적화] 거래소 앱 자체 알림 활용을 위해 텔레그램 실시간 분할익절 알림 비활성화
+                        pass
                     finally:
                         self.trailing_tracker.release_exit_lock(market)
 
@@ -538,14 +527,8 @@ class RealtimeRiskEngine:
                         header = "🛑 <b>[실시간 트레일링 스탑 방어 매도 완료]</b>"
                         pnl_line = f"• 실현 손익: {pnl_krw:+,.0f} KRW (고점 꺾임 후 비상 탈출)"
 
-                    self.telegram.send_message(
-                        f"{header}\n"
-                        f"• 종목: {korean_name}({market})\n"
-                        f"• 최고가: {peak_p:,.2f} KRW (+{peak_profit_pct:.2f}%)\n"
-                        f"• 최종 체결가: {res_data['exec_price']:,.2f} KRW ({pnl_pct:+.2f}%)\n"
-                        f"{pnl_line}\n"
-                        f"• 일시: {now_str}"
-                    )
+                    # [알림 최적화] 거래소 앱 자체 알림 활용을 위해 텔레그램 실시간 트레일링 익절 알림 비활성화
+                    pass
                 finally:
                     self.trailing_tracker.release_exit_lock(market)
         except Exception as e:

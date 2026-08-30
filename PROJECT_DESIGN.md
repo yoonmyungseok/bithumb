@@ -1,4 +1,4 @@
-# Bithumb & Upbit AI Pro Quant Trading Bot (v5.0)
+# Bithumb & Upbit AI Pro Quant Trading Bot (v7.0)
 
 본 문서는 `c:\AI\bithumb` 디렉토리에 위치한 빗썸(Bithumb) 및 업비트(Upbit) 듀얼 거래소 지원 AI 퀀트 트레이딩 봇의 프로젝트 설명 및 아키텍처 설계서입니다. 이 문서는 다른 AI 에이전트 또는 개발자가 프로젝트의 전반적인 구조와 핵심 로직을 빠르고 명확하게 파악할 수 있도록 작성되었습니다.
 
@@ -11,7 +11,7 @@
 
 이 프로젝트는 빗썸(Bithumb)과 업비트(Upbit) 거래소의 실시간 데이터와 Google Gemini AI를 결합하여, 유망한 단타/스윙 종목을 자동으로 탐색하고 매매를 수행하는 **듀얼 거래소 독립형 AI 퀀트 트레이딩 시스템**입니다. 
 
-- **언어 및 환경**: Python 3, Windows 환경 (`.bat` 및 `.ps1` 스크립트 기반 구동)
+- **언어 및 환경**: Python 3, Windows 환경 (`.bat` 및 `process_manager.py` 기반 구동)
 - **핵심 기술**: 
   - 빗썸 REST API & WebSocket (v1/v2)
   - 업비트 REST API & WebSocket (Public: 시세/체결, Private: myOrder/myAsset, HS512 JWT + unencoded query string SHA-512 hash, `identifier` 멱등성)
@@ -21,7 +21,8 @@
   - **거래대금 및 모멘텀 기반 동적 시장 스크리닝**: 24시간 거래대금 $\ge 10$억 원, 당일 상승률 +1.0%~+25.0%
   - **2중 호가 안전망 (Fail-Closed)**: 매수/매도 스프레드 $\le 0.35\%$, 상위 5호가 누적 매수 잔량 $\ge 2,000$만 원 검증
   - **결정론적 기술지표 엔진**: 볼린저 밴드(%B), RSI, ATR, MACD, EMA 기반 진입 게이트 (LLM 환각 차단)
-  - **0.1초 초저지연 실시간 리스크 엔진**: WebSocket 틱 기반 0.1초 즉각 손절, 1차 50% 분할익절, 무한 트레일링 스탑
+  - **0.1초 초저지연 실시간 리스크 엔진**: WebSocket 틱 기반 0.1초 즉각 손절, 1차 30~50% 분할익절, 무한 트레일링 스탑
+  - **본전 보장(Break-Even) 및 타임스탑 지지선 보호**: 최대 보유시간 도달 시 무차별 투매 방지 및 지지선/본전 스탑 연계
   - **자산 연동형 3단계 스마트 Auto-Scaling**: 계좌 총 자산 규모에 따른 보유 슬롯(2~4개) 및 비중(25~50%) 자동 전환
   - **장중 자금 입출금 자동 보정 (Cashflow Adjustment)**: 입출금 시 시작 기준자산을 자동 보정하여 순수 매매 수익률 보존
   - **완전한 거래소 물리적/논리적 격리**: 빗썸과 업비트의 환경변수, 데이터 디렉터리(`data/upbit/*`), 로그(`logs/trading_upbit.log`), 대시보드 포트(`7979` vs `7980`), 구글 시트, 실행 스크립트 분리
@@ -65,8 +66,8 @@ c:\AI\bithumb\
 │   ├── risk_manager.py             # 일일 손익/입출금보정/킬스위치(`DailyRiskManager`), 포지션추적(`TrailingStopTracker`), 자산평가
 │   ├── realtime_engine.py          # 0.1초 실시간 웹소켓 체결 틱 손절/익절 청산 엔진 (`RealtimeRiskEngine`), 미체결 정정/취소
 │   ├── bot_controller.py           # 텔레그램 양방향 제어, 웹 대시보드 API 공급자 (거래소별 독립 인스턴스)
-│   ├── order_safety.py             # 주문 저널(`OrderJournal`), 멱등성 집행(`SafeOrderExecutor`), 리스크 검증(`RiskGuard`)
-│   ├── strategy_engine.py          # 표준 기술지표(RSI, BB, ATR, MACD, EMA) 계산, 결정론적 진입 게이트
+│   ├── order_safety.py             # 주문 저널(`OrderJournal`), 멱등성 집행(`SafeOrderExecutor`), 리스크 검증(`RiskGuard`), 체결 처리(`OrderFillProcessor`)
+│   ├── strategy_engine.py          # 표준 기술지표(RSI, BB, ATR, MACD, EMA) 계산, 결정론적 진입 게이트, StrategyPolicy SSOT
 │   ├── gemini_analyzer.py          # Gemini AI 퀀트 분석 및 시그널 생성 엔진
 │   ├── market_screener.py          # 조건(거래대금, 상승률, 스프레드, 호가깊이) 시장 동적 탐색 (Fail-Closed, HOLO 제외)
 │   ├── paper_broker.py             # 모의투자 어댑터 (거래소별 원장 격리 지원)
@@ -75,7 +76,7 @@ c:\AI\bithumb\
 │   ├── sheets_manager.py           # Google Sheets 기반 매매 일지, 대시보드 및 Strategy 탭 동기화 (거래소 태깅)
 │   ├── chart_renderer.py           # matplotlib 기반 매매 시점 캔들 차트 이미지 렌더링 (다크 테마)
 │   ├── web_server.py               # 로컬 경량 웹 API 서버 모듈 (is_api_only 지원)
-│   ├── process_manager.py          # 빗썸/업비트/대시보드/전체 독립 프로세스 탐색, 종료, 상태, 로그 관리
+│   ├── process_manager.py          # 빗썸/업비트/대시보드/전체 독립 프로세스 탐색, 종료, 상태, 로그 관리 CLI
 │   ├── watchdog.py                 # 빗썸 워치독 프로세스
 │   └── watchdog_upbit.py           # 업비트 워치독 프로세스
 ├── tests/                # 단위 테스트 디렉토리 (총 50개 테스트 스위트, 178개 테스트)
@@ -83,22 +84,22 @@ c:\AI\bithumb\
 │   ├── test_upbit_api.py           # 업비트 API JWT 인증, SHA-512 query_hash, 호가단위, identifier 검증
 │   ├── test_upbit_holo_guard.py    # KRW-HOLO 7중 방어선 (자산평가, 주문, 청산, 긴급매도, 시트 배제) 검증
 │   ├── test_exchange_isolation.py  # 빗썸/업비트 데이터 및 프로세스 완전 분리 검증
+│   ├── test_upbit_reconciliation_safety.py # 업비트 REST 대사 및 불완전 체결 안전망 검증
+│   ├── test_p0_p1_readiness.py     # 확정봉, 호가 플로우, 데이터 무결성 검증
+│   ├── test_strategy_ssot.py       # StrategyPolicy 단일 기준 일원화 검증
 │   ├── test_market_screener.py
 │   ├── test_order_safety.py
 │   ├── test_paper_broker.py
 │   ├── test_strategy_engine.py
 │   ├── test_realtime_risk.py
 │   └── test_startup_integration.py
-└── *.bat                 # 실행, 중지, 재시작, 상태, 로그 조회 배치 스크립트
-    ├── start_all.bat / start_all_background.bat (빗썸 + 업비트 + 통합 대시보드 3대 프로세스 일괄 가동)
-    ├── stop_all.bat / status_all.bat (전체 일괄 종료 및 상태 진단)
-    ├── start_dashboard.bat / stop_dashboard.bat / status_dashboard.bat (통합 대시보드 독립 제어)
-    ├── start_bot.bat / start_upbit_bot.bat
-    ├── start_bot_background.bat / start_upbit_bot_background.bat
-    ├── stop_bot.bat / stop_upbit_bot.bat
-    ├── restart_bot.bat / restart_upbit_bot.bat
-    ├── status_bot.bat / status_upbit_bot.bat
-    └── view_logs.bat / view_upbit_logs.bat
+└── *.bat                 # 프로세스 제어 배치 스크립트
+    ├── start_all.bat               # 빗썸 + 업비트 + 통합 대시보드 3대 프로세스 일괄 가동
+    ├── stop_all.bat                # 전체 일괄 종료
+    ├── status_all.bat              # 전체 프로세스 및 하트비트 상태 점검
+    ├── restart_bot.bat             # 빗썸 봇 재시작 스크립트
+    ├── restart_upbit_bot.bat       # 업비트 봇 재시작 스크립트
+    └── restart_dashboard.bat       # 통합 대시보드 재시작 스크립트
 ```
 
 ---
@@ -113,7 +114,7 @@ c:\AI\bithumb\
 
 ### 3.2. 업비트 실시간 WebSocket (`src/upbit_websocket.py` & `src/upbit_private_websocket.py`)
 - **Public WebSocket (`UpbitWebSocketClient`)**: `wss://api.upbit.com/websocket/v1`에 상시 연결되어 0.1초 틱 시세 및 3,000만 원 이상 고래 대량 체결을 실시간 스트리밍합니다.
-- **Private WebSocket (`UpbitPrivateWebSocketClient`)**: `wss://api.upbit.com/websocket/v1/private`에 JWT Authorization 헤더로 연결되어 `myOrder`(체결 이벤트) 및 `myAsset`(자산 변동)을 실시간 수신하고 `OrderJournal`에 즉각 반영합니다.
+- **Private WebSocket (`UpbitPrivateWebSocketClient`)**: `wss://api.upbit.com/websocket/v1/private`에 JWT Authorization 헤더로 연결되어 `myOrder`(체결 이벤트) 및 `myAsset`(자산 변동)을 실시간 수신하고 `OrderJournal` 및 `OrderFillProcessor`에 즉각 반영합니다.
 
 ### 3.3. 7중 KRW-HOLO (홀로월드에이아이) 수동 종목 절대 보호망
 사용자가 수동 매매하는 `KRW-HOLO`는 어떤 상황에서도 자동매매 시스템이 개입하지 못하도록 7중 방어선으로 완벽히 격리됩니다.
@@ -125,35 +126,47 @@ c:\AI\bithumb\
 6. **실시간 청산 및 긴급 전량매도 (Panic Sell)**: `RealtimeRiskEngine`의 틱 청산 및 `BotController.execute_panic_sell` 실행 시 HOLO는 매도 대상에서 영구 제외되어 사용자 수동 물량을 완벽히 보존.
 7. **구글 시트 및 웹 대시보드**: Dashboard, Performance, Strategy, Trade_Log 및 웹 UI 어디에도 HOLO가 노출되거나 기록되지 않음.
 
-### 3.5. 시스템 안정성 & 자가 복구 메커니즘 (Self-Healing & Lifecycle)
+### 3.4. 시스템 안정성 & 자가 복구 메커니즘 (Self-Healing & Lifecycle)
 - **원자적 파일 쓰기 및 .bak 자동 백업 (`write_json_atomically`)**: 주문 저널, 일일 통계, 포지션 상태 등 모든 중요 데이터 저장 시 임시 파일(`mkstemp`) -> `os.replace` 원자적 교체 및 `.bak` 백업본을 상시 동기화합니다.
 - **자가 치유 JSON 로더 (`load_json_with_backup_recovery`)**: 비정상 프로세스 강제 종료나 정전으로 파일이 손상(`JSONDecodeError`)되어도 `.bak` 백업 파일에서 자동으로 감지 복구하고 원본 파일을 자가 치유합니다.
 - **완전한 Graceful Shutdown 라이프사이클**: SIGINT, SIGTERM, SIGBREAK(Windows) 수신 시 텔레그램 리스너, 웹 대시보드 서버, Public/Private 웹소켓, APScheduler 스케줄러를 순차적으로 안전 종료합니다.
 - **워치독 하트비트(Heartbeat) 기반 무응답(Hang) 감지**: 봇이 매 사이클 및 웹소켓 틱마다 `.heartbeat` 파일을 갱신하며, 워치독(`watchdog.py`/`watchdog_upbit.py`)은 프로세스가 살아있더라도 10분 이상 타임스탬프가 갱신되지 않는 데드락/무응답 상태를 감지하여 프로세스를 안전하게 강제 재시작합니다.
-### 3.6. 거시 시장 리스크 및 동적 자본 보호 엔진 (Macro & Capital Guard)
+
+### 3.5. 거시 시장 리스크 및 동적 자본 보호 엔진 (Macro & Capital Guard)
 - **거시 BTC 급락 시 포지션 비상 방어 모드 (`set_macro_defensive_mode`)**: 비트코인 급락 감지 시 전 알트코인 포지션의 트레일링 익절 시작선을 `+0.8%`로 낮추고 `0.4%` 초밀착 드롭폭으로 전환하여 알트코인 동반 폭락 충격을 선제적으로 방어합니다.
 - **단일 종목 절대 손실 하드 스탑 (`Hard-Stop Guard`)**: 급격한 악재/상폐 등 폭락 시 틱 카운트 지연 없이 `-4.5%` 도달 즉시 0.1초 내 최우선 시장가 청산을 단행합니다.
-### 3.7. 7대 복합 팩터 앙상블 알파 엔진 (Composite Alpha Engine)
+- **연속 손실 기반 동적 자본 디스케일링**: 연속 손실 횟수에 따라 100% ➜ 80% ➜ 50% 순으로 배팅 규모를 자동 축소하여 드로다운을 방어합니다.
+
+### 3.6. 7대 복합 팩터 앙상블 알파 엔진 (Composite Alpha Engine)
 - **VWAP(거래량 가중 평균가) 기관 수급 팩터 (`calculate_vwap`)**: 스마트 머니의 실질 평균 매집 단가를 추적하여 주가가 VWAP 상단에 안착 및 상향 돌파 시 강력한 모멘텀 가점을 부여합니다.
 - **MACD 히스토그램 모멘텀 가속도 (`calculate_macd_acceleration`)**: 단순 지행성 골든크로스를 넘어 히스토그램의 기울기(Slope)가 양의 방향으로 가속 확장되는 초입 변곡점을 포착합니다.
 - **7대 팩터 앙상블 스코어러 (`calculate_composite_alpha_score`)**: MTF 1H(15점) + VWAP(15점) + MACD 가속도(15점) + RSI 골든존(15점) + 볼린저 밴드(15점) + 수급/호가잔량비(15점) + 볼륨 스파이크(10점)의 100점 만점 중 **65점 이상** 시에만 매수를 승인하며, AI 모델 및 로컬 퀀트 엔진에 100% 일원화되어 무중단 고승률 타점을 생성합니다.
 
-### 3.8. 체결 및 마이크로스트럭처 제어 엔진 (Execution & Microstructure Engine)
+### 3.7. 체결 및 마이크로스트럭처 제어 엔진 (Execution & Microstructure Engine)
 - **실시간 슬리피지(Slippage Bps) 정밀 추적기 (`OrderFillProcessor`)**: 주문 시점의 목표 가격(`expected_price`)과 실제 거래소 체결 단가(`effective_price`) 간의 편차를 bps 단위로 실시간 계산하고, 허용 한도(30bps) 초과 시 이상 슬리피지를 감지 및 기록합니다.
 - **스마트 메이커 지정가 라우터 (`SafeOrderExecutor`)**: 호가 스프레드가 촘촘할 때 Best Bid에 즉각 스냅(Tick Snap)하여 메이커 수수료 절감 및 체결율을 극대화합니다.
 - **동적 최우선 호가 추적 재정정 (`RealtimeRiskEngine.requote_pending_orders`)**: 미체결 매수 주문이 시세 상승으로 뒤처질 때 유효 범위(+0.8% 이내) 내에서 최우선 매수 호가로 자동 정정하여 체결 기회 상실을 방지합니다.
 
-### 3.9. 백테스팅 및 데이터 엄밀성 검증 체계 (Backtesting & Data Rigor Engine)
+### 3.8. 백테스팅 및 데이터 엄밀성 검증 체계 (Backtesting & Data Rigor Engine)
 - **Walk-Forward 시계열 롤링 전진 검증 (`QuantBacktester.run_walk_forward_backtest`)**: 캔들 데이터를 N개 롤링 윈도우로 분할하여 In-Sample 훈련 및 Out-of-Sample 전진 검증을 반복함으로써 전략의 시계열 과최적화를 차단하고 견고성 지표(Robustness Score)를 측정합니다.
 - **몬테카를로(Monte Carlo) 1,000회 부트스트랩 리샘플링 (`QuantBacktester.run_monte_carlo_simulation`)**: 체결 손익의 무작위 셔플링을 통해 95% 신뢰수준 최대 낙폭(MDD VaR 95%)과 최악의 시나리오 및 파산 위험률(Risk of Ruin)을 통계적으로 산출합니다.
 - **파라미터 민감도 그리드 분석기 (`QuantBacktester.run_sensitivity_analysis`)**: 리스크 비율 및 청산 파라미터 변화에 따른 계좌 성능 민감도를 비교 평가합니다.
 
-### 3.10. 운영 편의성 및 원격 텔레메트리 모니터링 (Operations & Telemetry Engine)
-- **실시간 시스템 진단 텔레메트리 (`BotController.get_diagnostics_data`)**: 시스템 Uptime, 프로세스 PID, 활성 스레드 수, 킬스위치 상태, 최근 평균 슬리피지(bps), 수동 격리 종목 현황을 실시간 집계하여 대시보드 및 원격 API로 제공합니다.
-- **텔레그램 대화형 상세 진단 및 체결 품질 명령어 확장**:
-  - `/diag`, `/health`: 실시간 시스템 건전성 및 슬리피지 통계 브리핑 회신.
-  - `/trades`: 당일 완료된 매매 내역 및 실현 손익/슬리피지 요약표 즉각 회신.
-- **듀얼 거래소 프로세스 통합 모니터링 CLI (`process_manager.py`)**: 빗썸과 업비트 양쪽 프로세스 및 하트비트 생존 신선도를 원스톱으로 점검합니다.
+### 3.9. 본전 보장(Break-Even) 및 타임스탑 지지선 보호 엔진
+- **본전 보장(Break-Even) 스탑**: 1차 분할 익절(+2.5% 달성 시 30~50% 청산) 완료 즉시 잔여 수량의 손절가를 매수가+수수료(+0.3~+0.5%) 수준의 안전 마진으로 상향 고정하여 원금 손실을 원천 차단합니다.
+- **타임스탑(Time-Stop) 지지선 보호**: 최대 보유 기간(예: 12봉/60분) 초과 시 무차별적인 시장가 투매 대신, 현재 수익권일 경우 본전 보장선 및 트레일링 스탑에 청산을 위임하여 추세 지속 이익을 극대화합니다.
+
+### 3.10. 재진입 쿨다운 및 청산 가격 필터링 (`CooldownManager`)
+- **시간 및 가격 2중 쿨다운**: 포지션 청산 후 기본 쿨다운 시간(30분~60분) 동안 재진입을 방지할 뿐만 아니라, 손절 직후 더 불리한 높은 가격에서의 뇌동 재진입을 방어합니다.
+- **영속 저장 및 메모리 동기화**: `cooldown_state.json`에 영구 기록되어 봇 재시작 시에도 쿨다운 상태를 지속 유지합니다.
+
+### 3.11. 알림 최적화 및 체결 이벤트 집중 파이프라인
+- **노이즈 억제**: 미체결 주문 접수(ACK/OPEN) 시점의 불필요한 중복 알림을 제거하고, 실제 거래소 체결(FILLED) 시점에만 체결가, 체결수량, 슬리피지, 실현손익 차트 정보를 집중 발송합니다.
+- **거래소 자체 알림과의 조화**: 텔레그램 알림은 봇의 핵심 리스크 상태, 일일 요약, 수동 원격 제어 응답 위주로 고도화되었습니다.
+
+### 3.12. 듀얼 거래소 데이터 격리 & REST 체결 대사(Reconciliation) 안전망
+- **5분 주기 REST 체결 대사 (`reconcile_exchange_statuses`)**: WebSocket 네트워크 단선이나 불완전 틱 정보 수신 시에도 주기적인 REST API 동기화를 통해 누락된 체결 내역을 복구하고 가상 손익 왜곡을 차단합니다.
+- **거래 메모리 마이그레이션 및 상호 오염 차단**: 빗썸과 업비트의 거래 내역을 저장 시 거래소 범위(Exchange Scope)를 엄격히 검증하여 타 거래소 데이터 혼입을 방지합니다.
 
 ---
 
@@ -161,7 +174,8 @@ c:\AI\bithumb\
 
 | 버전 | 일자 | 주요 변경 및 최적화 내역 |
 | :---: | :---: | :--- |
-| **v6.3** | 2026-08-25 | • **실거래-백테스트 전략 단일 기준(SSOT) 및 확정봉 진입 체계 완결 (과제 A~F)**<br>• **`StrategyPolicy` 단일 진실 공급원 일원화**: 하드코딩 오프셋 제거, 목표가/손절가/트레일링/쿨다운 실거래 및 백테스트 100% 동기화<br>• **하드 안전 게이트(`Hard Safety Gates`) vs 소프트 알파 점수 분리**: RSI 극초과열(>75) 및 볼린저 이탈 시 알파점수 우회 원천 차단<br>• **확정봉(Completed Bar) 기준 신호 생성 체계 확립**: 5분 주기에서 미완성 봉(`candles[0]`) 지표 흔들림 배제 및 `candles[1:]` 확정봉 기준 판정<br>• **시장 레짐별(NORMAL / RISK_OFF) 백테스트 성과 분리 분석기 및 호가 롤링 완충기(`OrderbookFlowTracker`) 탑재**<br>• **매매 복기 메모리(`TradeMemoryManager`) 퀀트 메타데이터 정량 태깅 및 레짐/알파티어 분석 엔진 탑재**<br>• **신규 전략 SSOT 및 하드게이트 단위 테스트 6종 추가 (총 125개 단위 테스트 100% 통과)** |
+| **v7.0** | 2026-08-30 | • **타임스탑 및 본전 보장(Break-Even) 지지선 보호 로직 고도화** (`main.py`, `main_upbit.py`, `realtime_engine.py`)<br>• **재진입 쿨다운 관리 개선 및 청산 가격 기반 재진입 검증 탑재** (`CooldownManager`)<br>• **모멘텀 및 기술적 청산 사유 레이블 세분화 및 디스크 캐시 저장 로직 개선**<br>• **텔레그램 알림 노이즈 최적화**: 주문 접수(ACK) 단계 중복 알림 제거 및 실체결(`OrderFillProcessor`) 집중화<br>• **Upbit REST 체결 대사(Reconciliation) 안전망 및 거래 메모리 마이그레이션 격리 완성**<br>• **배치 스크립트 및 프로세스 관리 간소화** (`restart_bot.bat`, `restart_upbit_bot.bat`, `restart_dashboard.bat`, `process_manager.py`)<br>• **단위 테스트 스위트 확장**: 총 50개 테스트 모듈, 178개 단위 테스트 100% 통과 |
+| **v6.3** | 2026-08-25 | • **실거래-백테스트 전략 단일 기준(SSOT) 및 확정봉 진입 체계 완결 (과제 A~F)**<br>• **`StrategyPolicy` 단일 진실 공급원 일원화**: 하드코딩 오프셋 제거, 목표가/손절가/트레일링/쿨다운 실거래 및 백테스트 100% 동기화<br>• **하드 안전 게이트(`Hard Safety Gates`) vs 소프트 알파 점수 분리**: RSI 극초과열(>75) 및 볼린저 이탈 시 알파점수 우회 원천 차단<br>• **확정봉(Completed Bar) 기준 신호 생성 체계 확립**: 5분 주기에서 미완성 봉(`candles[0]`) 지표 흔들림 배제 및 `candles[1:]` 확정봉 기준 판정<br>• **시장 레짐별(NORMAL / RISK_OFF) 백테스트 성과 분리 분석기 및 호가 롤링 완충기(`OrderbookFlowTracker`) 탑재**<br>• **매매 복기 메모리(`TradeMemoryManager`) 퀀트 메타데이터 정량 태깅 및 레짐/알파티어 분석 엔진 탑재**<br>• **신규 전략 SSOT 및 하드게이트 단위 테스트 추가 (단위 테스트 100% 통과)** |
 | **v6.2** | 2026-08-25 | • **실거래 안전성 핵심 2대 과제 완벽 완결 (Private WS ➜ FillProcessor & Directional Tick Rounding)**<br>• **Private WebSocket 체결 이벤트를 공통 체결 처리기(`OrderFillProcessor`)에 100% 연결** (`main.py`, `main_upbit.py`)<br>• **REST 체결 재조정(`reconcile_exchange_statuses`) 5분 사이클 연동으로 웹소켓 단선 시 미체결 복구망 구축**<br>• **주문 방향별 호가 보정 분리** (매수: Floor 내림, 매도: Ceil 올림, `get_tick_size` 및 `adjust_price_to_tick`) |
 | **v6.1** | 2026-08-25 | • **트레일링 스탑 최소 안전 마진 상향 (+0.2% ➜ +0.5%)** (`TrailingStopTracker.min_guaranteed_profit`)<br>• **실현 손익 기반 청산 사유 레이블 직관화** (이익: `트레일링 익절`, 본전: `트레일링 본전방어`, 손실: `트레일링 방어매도`)<br>• **텔레그램, 구글 시트, 웹 대시보드, 매매 메모리 청산 레이블 일원화** |
 | **v6.0** | 2026-08-25 | • **시스템 자체 종합 평가 100 / 100 점 만점 완성 💯**<br>• **운영 편의성 및 모니터링 10/10 만점 고도화 완료**<br>• **실시간 시스템 정밀 진단 텔레메트리 탑재** (`BotController.get_diagnostics_data`)<br>• **텔레그램 원격 진단 명령어(`/diag`, `/health`) 및 체결 품질 조회(`/trades`) 신설**<br>• **듀얼 거래소 하트비트 진단 CLI (`process_manager.py status`) 강화** |
@@ -182,7 +196,8 @@ c:\AI\bithumb\
 2. **거래소 격리 원칙**: 빗썸과 업비트의 데이터 경로, 로그 파일, 포트, 프로세스는 상호 간섭하지 않도록 엄격히 분리 유지합니다.
 3. **수동 종목 보호 원칙**: `KRW-HOLO`는 어떠한 경우에도 자동 주문 또는 자산 평가에 포함되지 않아야 합니다.
 4. **스레드 안전성 및 멱등성 준수**: 주문 저널 조작 시 `threading.Lock`/`RLock` 및 원자적 파일 쓰기/`.bak` 백업을 유지하며, 주문 요청 시 반드시 고유 식별자(`identifier`)를 사용합니다.
-5. **단위 테스트 무결성 유지**: 작업 완료 후 반드시 `python -m unittest discover tests`를 실행하여 125개 이상의 모든 단위 테스트 통과를 검증합니다.
+5. **단위 테스트 무결성 유지**: 작업 완료 후 반드시 `python -m unittest discover tests`를 실행하여 178개 이상의 모든 단위 테스트 통과를 검증합니다.
+
 
 
 

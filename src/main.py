@@ -470,15 +470,8 @@ def run_cycle():
                                 except Exception as exc:
                                     logger.debug("PARTIAL_TP 체결 조회 예외: %s", exc)
 
-                                caption = (
-                                    f"🎉 <b>[{korean_name}({market}) {stage_name} 분할익절 접수]</b>\n"
-                                    f"• 요청단가: {current_price:,.2f} KRW (+{realized_profit_pct:.2f}%)\n"
-                                    f"• 매도수량: {sell_vol:.8f} {currency}\n"
-                                    f"• 주문 ID: <code>{order_uuid}</code>\n"
-                                    f"• 상태: <i>거래소 접수 완료 (실체결 시 정산)</i>\n"
-                                    f"• 일시: {now_str}"
-                                )
-                                telegram.send_message(caption)
+                                # [알림 최적화] 분할익절 접수 알림 제거 (실체결 완료 시 OrderFillProcessor에서 발송)
+                                pass
                             finally:
                                 trailing_tracker.release_exit_lock(market)
 
@@ -535,20 +528,8 @@ def run_cycle():
                                     action="SELL",
                                 )
 
-                                caption = (
-                                    f"🎯 <b>[{korean_name}({market}) 트레일링 스탑 최고점 익절 완료!]</b>\n"
-                                    f"• 진입 평단가: {avg_buy_price:,.2f} KRW\n"
-                                    f"• 도달 최고가: {peak_p:,.2f} KRW (+{peak_profit_pct:.2f}%)\n"
-                                    f"• 익절 체결가: {current_price:,.2f} KRW\n"
-                                    f"• <b>실현 수익: +{pnl_krw:,.0f} KRW (+{realized_profit_pct:.2f}%) 🚀</b>\n"
-                                    f"• 매도 수량: {coin_available:.8f} {currency}\n"
-                                    f"• 주문 ID: <code>{order_uuid}</code>\n"
-                                    f"• 일시: {now_str}"
-                                )
-                                if chart_img:
-                                    telegram.send_photo(chart_img, caption=caption)
-                                else:
-                                    telegram.send_message(caption)
+                                # [알림 최적화] 트레일링 스탑 접수 알림 제거 (실제 체결 완료 시 OrderFillProcessor에서 발송)
+                                pass
 
 
                                 cooldown_manager.record_exit(market, "TRAILING_STOP", exit_price=current_price)
@@ -596,12 +577,12 @@ def run_cycle():
                         hold_duration_sec >= effective_time_stop and is_breakeven_or_profit
                     )
 
-                    # 3. [본전 보장 타임스탑 - Case B]: 마이너스 손실(-1.5% ~ +0.05%) 구간에서는 성급한 투매를 차단하고 반등 대기
+                    # 3. [본전 보장 타임스탑 - Case B]: 마이너스 손실 구간에서는 성급한 투매를 차단하고 반등 대기
                     #    - 지지선 유지 시 최대 120분까지 손절선(-1.5%)을 지키며 반등 기회 보장
                     #    - 추세가 명백히 붕괴되었거나 최대 유예 시간(120분) 초과 시에만 방어적 청산
                     is_time_stop_loss_trigger = (
                         (hold_duration_sec >= StrategyPolicy.TIME_STOP_MAX_HOLD_SECONDS or (hold_duration_sec >= effective_time_stop and is_trend_broken))
-                        and (-1.5 <= pnl_pct_current < be_threshold_pct)
+                        and (pnl_pct_current < be_threshold_pct)
                     )
 
                     # 4. [15분 모멘텀 조기 본전 탈출]: 15분 경과 후 실질 본전권(0.0% ~ +0.3%)에서 모멘텀 소멸(VWAP 하회) 시 수수료 세이브 탈출
@@ -661,14 +642,7 @@ def run_cycle():
                                 except Exception as exc:
                                     logger.debug(f"{exit_reason_label} 체결 조회 예외: %s", exc)
 
-                                caption = (
-                                    f"⏳ <b>[{korean_name}({market}) {exit_desc} 접수]</b>\n"
-                                    f"• 요청단가: {current_price:,.2f} KRW | 평단가: {avg_buy_price:,.2f} KRW (손익: {pnl_pct_current:+.2f}%)\n"
-                                    f"• 주문 ID: <code>{order_uuid}</code>\n"
-                                    f"• 사유: <i>모멘텀 둔화에 따른 자금 보호 및 다음 독자 급등주 순환매 확보</i>\n"
-                                    f"• 일시: {now_str}"
-                                )
-                                telegram.send_message(caption)
+                                # [알림 최적화] 타임스탑 접수 알림 제거 (실제 체결 완료 시 OrderFillProcessor에서 발송)
                                 cooldown_manager.record_exit(market, exit_reason_label, exit_price=current_price)
                             finally:
                                 trailing_tracker.release_exit_lock(market)
@@ -771,6 +745,13 @@ def run_cycle():
                 elif action == "BUY" and local_entry["allow_buy"]:
                     target_price = local_entry["target_price"]
                     stop_loss = local_entry["stop_loss"]
+
+                if coin_value >= MIN_ORDER_KRW and avg_buy_price > 0:
+                    entry_price = avg_buy_price
+                    stop_loss = avg_buy_price * (1.0 - StrategyPolicy.STOP_LOSS_PCT)
+                    if trailing_tracker.is_breakeven_active(market):
+                        stop_loss = max(stop_loss, avg_buy_price * (1.0 + StrategyPolicy.BREAKEVEN_STOP_PCT))
+                    target_price = avg_buy_price * (1.0 + StrategyPolicy.PROFIT_TARGET_PCT)
 
                 # 알파 스코어 연동 가변 사이징 (A+ 85점 이상 비중 확대)
                 alpha_val = local_entry.get("alpha_score", 70)
@@ -897,18 +878,8 @@ def run_cycle():
                         reason=reason,
                     )
 
-                    caption = (
-                        f"🚨 <b>[{korean_name}({market}) 손절 주문 접수]</b>\n"
-                        f"• 진입 평단가: {avg_buy_price:,.2f} KRW\n"
-                        f"• 요청 단가: {current_price:,.2f} KRW\n"
-                        f"• 주문 ID: <code>{order_uuid}</code>\n"
-                        f"• 사유: <i>{reason}</i>\n"
-                        f"• 일시: {now_str}"
-                    )
-                    if chart_img:
-                        telegram.send_photo(chart_img, caption=caption)
-                    else:
-                        telegram.send_message(caption)
+                    # [알림 최적화] 손절 주문 접수 알림 제거 (실제 체결 완료 시 OrderFillProcessor에서 발송)
+                    pass
                     continue
 
                 # 6. [신규 주문 실행 - 동적 복리 자금 관리 적용]
@@ -1062,20 +1033,7 @@ def run_cycle():
                         reason=reason,
                     )
 
-                    caption = (
-                        f"🛒 <b>[{korean_name}({market}) AI 신규 매수 주문 접수]</b>\n"
-                        f"• 지정가: {order_price:,.2f} KRW\n"
-                        f"• 주문수량: {formatted_volume:.6f} {currency}\n"
-                        f"• <b>투입예산: {int(trade_budget):,d} KRW (슬롯비중: {alloc_pct*100:.0f}%)</b>\n"
-                        f"• 목표가: {target_price:,.2f} KRW | 손절가: {stop_loss:,.2f} KRW\n"
-                        f"• 상태: <i>거래소 접수 완료 (체결 대기)</i>\n"
-                        f"• 주문 ID: <code>{order_uuid}</code>\n"
-                        f"• 일시: {now_str}"
-                    )
-                    if chart_img:
-                        telegram.send_photo(chart_img, caption=caption)
-                    else:
-                        telegram.send_message(caption)
+                    # [알림 최적화] 매수 주문 접수 알림 제거 (실제 체결 완료 시 OrderFillProcessor에서 발송)
 
             except Exception as e:
                 logger.error(f"[{market}] 매매 사이클 오류 발생: {e}", exc_info=True)

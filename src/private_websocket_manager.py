@@ -38,6 +38,7 @@ class BithumbPrivateWebSocketClient:
         return [f"Authorization: Bearer {token}"]
 
     def _on_open(self, ws: Any) -> None:
+        self._reconnect_delay = 2
         ws.send(json.dumps([
             {"ticket": f"quant-private-{uuid.uuid4().hex[:8]}"},
             {"type": "myOrder"},
@@ -84,14 +85,14 @@ class BithumbPrivateWebSocketClient:
         if self.is_running or not self.access_key or not self.secret_key:
             return
         self.is_running = True
+        self._reconnect_delay = 2
         def run() -> None:
-            delay = 2
             while self.is_running:
                 self.ws = websocket.WebSocketApp(self.URL, header=self._headers(), on_open=self._on_open, on_message=self._on_message, on_error=lambda _ws, err: logger.warning("Private WebSocket 오류: %s", err))
                 self.ws.run_forever(ping_interval=30, ping_timeout=None)
                 if self.is_running:
-                    time.sleep(delay)
-                    delay = min(delay * 2, 30)
+                    time.sleep(self._reconnect_delay)
+                    self._reconnect_delay = min(self._reconnect_delay * 2, 30)
         threading.Thread(target=run, daemon=True, name="BithumbPrivateWebSocket").start()
 
     def stop(self) -> None:

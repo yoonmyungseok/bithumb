@@ -27,6 +27,7 @@ class TestBuyFillAlert(unittest.TestCase):
             trailing_tracker=self.trailing_tracker,
             telegram=self.telegram,
             sheets=self.sheets,
+            send_fill_alerts=True,
         )
 
     def tearDown(self):

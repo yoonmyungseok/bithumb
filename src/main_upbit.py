@@ -540,15 +540,8 @@ def run_cycle():
                                 except Exception as exc:
                                     logger.debug("업비트 PARTIAL_TP 체결 조회 예외: %s", exc)
 
-                                caption = (
-                                    f"🎉 <b>[업비트 {korean_name}({market}) {stage_name} 분할익절 접수]</b>\n"
-                                    f"• 요청단가: {current_price:,.2f} KRW (+{realized_profit_pct:.2f}%)\n"
-                                    f"• 매도수량: {sell_vol:.8f} {currency}\n"
-                                    f"• 주문 ID: <code>{order_uuid}</code>\n"
-                                    f"• 상태: <i>거래소 접수 완료 (실체결 시 정산)</i>\n"
-                                    f"• 일시: {now_str}"
-                                )
-                                telegram.send_message(caption)
+                                # [알림 최적화] 분할익절 접수 알림 제거 (실체결 완료 시 OrderFillProcessor에서 발송)
+                                pass
                             finally:
                                 trailing_tracker.release_exit_lock(market)
 
@@ -594,14 +587,8 @@ def run_cycle():
                                 except Exception as exc:
                                     logger.debug("업비트 TRAILING_STOP 체결 조회 예외: %s", exc)
 
-                                caption = (
-                                    f"🎯 <b>[업비트 {korean_name}({market}) 트레일링 스탑 익절 접수]</b>\n"
-                                    f"• 요청단가: {current_price:,.2f} KRW (최고가 {peak_p:,.2f} KRW)\n"
-                                    f"• 매도수량: {coin_available:.8f} {currency}\n"
-                                    f"• 주문 ID: <code>{order_uuid}</code>\n"
-                                    f"• 일시: {now_str}"
-                                )
-                                telegram.send_message(caption)
+                                # [알림 최적화] 트레일링 스탑 접수 알림 제거 (실체결 완료 시 OrderFillProcessor에서 발송)
+                                pass
                             finally:
                                 trailing_tracker.release_exit_lock(market)
                             continue
@@ -645,12 +632,12 @@ def run_cycle():
                         hold_duration_sec >= effective_time_stop and is_breakeven_or_profit
                     )
 
-                    # 3. [본전 보장 타임스탑 - Case B]: 마이너스 손실(-1.5% ~ +0.05%) 구간에서는 성급한 투매를 차단하고 반등 대기
+                    # 3. [본전 보장 타임스탑 - Case B]: 마이너스 손실 구간에서는 성급한 투매를 차단하고 반등 대기
                     #    - 지지선 유지 시 최대 120분까지 손절선(-1.5%)을 지키며 반등 기회 보장
                     #    - 추세가 명백히 붕괴되었거나 최대 유예 시간(120분) 초과 시에만 방어적 청산
                     is_time_stop_loss_trigger = (
                         (hold_duration_sec >= StrategyPolicy.TIME_STOP_MAX_HOLD_SECONDS or (hold_duration_sec >= effective_time_stop and is_trend_broken))
-                        and (-1.5 <= pnl_pct_current < be_threshold_pct)
+                        and (pnl_pct_current < be_threshold_pct)
                     )
 
                     # 4. [15분 모멘텀 조기 본전 탈출]: 15분 경과 후 실질 본전권(0.0% ~ +0.3%)에서 모멘텀 소멸(VWAP 하회) 시 수수료 세이브 탈출
@@ -713,15 +700,8 @@ def run_cycle():
                                 except Exception as exc:
                                     logger.debug("업비트 %s 체결 조회 예외: %s", exit_reason_label, exc)
 
-                                caption = (
-                                    f"⏳ <b>[업비트 {korean_name}({market}) {exit_desc} 청산 접수]</b>\n"
-                                    f"• 요청단가: {current_price:,.2f} KRW (손익률 {pnl_pct_current:+.2f}%)\n"
-                                    f"• 보유시간: {hold_duration_sec/60:.0f}분 (레짐: {btc_regime})\n"
-                                    f"• 매도수량: {coin_available:.8f} {currency}\n"
-                                    f"• 주문 ID: <code>{order_uuid}</code>\n"
-                                    f"• 일시: {now_str}"
-                                )
-                                telegram.send_message(caption)
+                                # [알림 최적화] 타임스탑 접수 알림 제거 (실체결 완료 시 OrderFillProcessor에서 발송)
+                                pass
                                 continue
                             finally:
                                 trailing_tracker.release_exit_lock(market)
@@ -841,6 +821,13 @@ def run_cycle():
                 elif action == "BUY" and local_entry.get("allow_buy", False):
                     target_price = local_entry.get("target_price", target_price)
                     stop_loss = local_entry.get("stop_loss", stop_loss)
+
+                if is_holding:
+                    entry_price = avg_buy_price
+                    stop_loss = avg_buy_price * (1.0 - StrategyPolicy.STOP_LOSS_PCT)
+                    if trailing_tracker.is_breakeven_active(market):
+                        stop_loss = max(stop_loss, avg_buy_price * (1.0 + StrategyPolicy.BREAKEVEN_STOP_PCT))
+                    target_price = avg_buy_price * (1.0 + StrategyPolicy.PROFIT_TARGET_PCT)
 
                 # 알파 스코어 연동 가변 사이징 (A+ 85점 이상 비중 확대)
                 alpha_val = local_entry.get("alpha_score", 70)
@@ -1004,20 +991,8 @@ def run_cycle():
                         reason=reason,
                     )
 
-                    caption = (
-                        f"🛒 <b>[업비트 {korean_name}({market}) AI 신규 매수 주문 접수]</b>\n"
-                        f"• 지정가: {order_price:,.2f} KRW\n"
-                        f"• 주문수량: {formatted_volume:.6f} {currency}\n"
-                        f"• <b>투입예산: {int(trade_budget):,d} KRW (슬롯비중: {alloc_pct*100:.0f}%)</b>\n"
-                        f"• 목표가: {target_price:,.2f} KRW | 손절가: {stop_loss:,.2f} KRW\n"
-                        f"• 상태: <i>거래소 접수 완료 (체결 대기)</i>\n"
-                        f"• 주문 ID: <code>{order_uuid}</code>\n"
-                        f"• 일시: {now_str}"
-                    )
-                    if chart_img:
-                        telegram.send_photo(chart_img, caption=caption)
-                    else:
-                        telegram.send_message(caption)
+                    # [알림 최적화] 매수 주문 접수 알림 제거 (실체결 완료 시 OrderFillProcessor에서 발송)
+                    pass
 
             except Exception as e:
                 logger.error(f"[{market}] 매매 사이클 오류 발생: {e}", exc_info=True)

@@ -695,6 +695,7 @@ class OrderFillProcessor:
         trailing_tracker: Any = None,
         telegram: Any = None,
         sheets: Any = None,
+        send_fill_alerts: bool = False,
     ):
         self.order_journal = order_journal
         self.risk_manager = risk_manager
@@ -702,6 +703,7 @@ class OrderFillProcessor:
         self.trailing_tracker = trailing_tracker
         self.telegram = telegram
         self.sheets = sheets
+        self.send_fill_alerts = send_fill_alerts
 
     def process_order_fill(
         self,
@@ -814,7 +816,7 @@ class OrderFillProcessor:
                         f"• 체결 일시: {now_str}"
                     )
 
-                    if self.telegram:
+                    if self.send_fill_alerts and self.telegram:
                         try:
                             if chart_img:
                                 self.telegram.send_photo(chart_img, caption=caption)
@@ -905,6 +907,9 @@ class OrderFillProcessor:
                         "🎉 [%s] 실제 매도 체결 확인 (%s): 증가분=%.6f, 체결단가=%.2f, 손익=%+.0f원(%.2f%%), 슬리피지=%+.1fbps",
                         market, refined_exit_reason, fill_delta, effective_price, pnl_krw, pnl_pct, slippage_bps,
                     )
+
+                    # [알림 최적화] 거래소 앱 자체 알림 활용을 위해 텔레그램 매도 체결 알림 비활성화
+                    pass
 
             # 2. 완전 청산 상태 도달 시 트레일링 스탑 초기화
             if not is_buy and status in (OrderStatus.FILLED, OrderStatus.CANCELED) and remaining_volume == 0.0:
