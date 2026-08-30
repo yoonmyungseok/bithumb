@@ -16,6 +16,7 @@ from logging.handlers import TimedRotatingFileHandler
 
 from dotenv import load_dotenv
 import requests
+from heartbeat_monitor import get_heartbeat_health
 
 # UTF-8 출력 보장
 if sys.platform == "win32":
@@ -81,14 +82,30 @@ def send_telegram_alert(msg: str):
 
 
 def acquire_single_owner_lock(lock_file_path: str):
-    """운영체제 파일 잠금으로 워치독 단일 소유자를 보장하고 감사용 토큰을 남긴다."""
-    lock_file = open(lock_file_path, "a+", encoding="utf-8")
-    lock_file.seek(0)
-    if not lock_file.read(1):
-        lock_file.seek(0)
-        lock_file.write("0")
-        lock_file.flush()
+    """운영체제 파일 잠금 및 PID 생존 검증으로 단일 소유자를 안전하게 보장한다."""
+    owner_path = f"{lock_file_path}.owner.json"
+    
+    # 1. 기존 소유자가 살아있는지 사전 점검
+    if os.path.exists(owner_path):
+        try:
+            with open(owner_path, "r", encoding="utf-8") as of:
+                owner_data = json.load(of)
+            old_pid = int(owner_data.get("pid", 0))
+            if old_pid > 0 and is_pid_alive(old_pid) and old_pid != os.getpid():
+                # 다른 살아있는 워치독 프로세스가 이미 존재함
+                return None
+        except Exception:
+            pass
+
+    # 2. 파일 잠금 획득 시도
+    os.makedirs(os.path.dirname(lock_file_path), exist_ok=True)
     try:
+        lock_file = open(lock_file_path, "a+", encoding="utf-8")
+        lock_file.seek(0)
+        if not lock_file.read(1):
+            lock_file.seek(0)
+            lock_file.write("0")
+            lock_file.flush()
         if sys.platform == "win32":
             import msvcrt
             lock_file.seek(0)
@@ -97,13 +114,27 @@ def acquire_single_owner_lock(lock_file_path: str):
             import fcntl
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        lock_file.close()
+        # 잠금 실패 시, 소유자 PID가 이미 죽어있다면 잠금 파일 정리 후 재시도 허용
+        if os.path.exists(owner_path):
+            try:
+                with open(owner_path, "r", encoding="utf-8") as of:
+                    owner_data = json.load(of)
+                old_pid = int(owner_data.get("pid", 0))
+                if old_pid > 0 and not is_pid_alive(old_pid):
+                    try:
+                        os.remove(lock_file_path)
+                    except OSError:
+                        pass
+            except Exception:
+                pass
         return None
 
-    # PID와 시작 토큰은 운영 로그·장애 분석용이며 잠금의 진실 원천은 OS 파일 잠금이다.
-    owner_path = f"{lock_file_path}.owner.json"
-    with open(owner_path, "w", encoding="utf-8") as owner_file:
-        json.dump({"pid": os.getpid(), "started_at": time.time(), "start_token": uuid.uuid4().hex}, owner_file)
+    # 3. 신규 소유자 정보 기록
+    try:
+        with open(owner_path, "w", encoding="utf-8") as owner_file:
+            json.dump({"pid": os.getpid(), "started_at": time.time(), "start_token": uuid.uuid4().hex}, owner_file)
+    except Exception:
+        pass
     return lock_file
 
 
@@ -164,30 +195,29 @@ def main():
 
         start_ts = time.time()
         hung_detected = False
+        hang_reason = ""
 
         while process.poll() is None:
             if is_terminating:
                 break
             time.sleep(5)
 
-            # 프로세스 시작 후 2분이 경과한 시점부터 하트비트 타임아웃 감시 (최대 10분 허용)
-            if time.time() - start_ts > 120.0 and os.path.exists(hb_file):
+            # 첫 하트비트 부재와 JSON 손상도 정상 상태로 간주하지 않는다.
+            elapsed = time.time() - start_ts
+            healthy, heartbeat_reason, heartbeat_age = get_heartbeat_health(hb_file)
+            should_restart = elapsed > 120.0 and (
+                not healthy or heartbeat_age is None or heartbeat_age > 600.0
+            )
+            if should_restart:
+                hang_reason = heartbeat_reason if not healthy else f"하트비트 {heartbeat_age:.0f}초 지연"
+                logger.critical("🛑 [Upbit Hang 감지] %s. 프로세스를 강제 재시작합니다.", hang_reason)
+                hung_detected = True
+                process.terminate()
                 try:
-                    with open(hb_file, "r", encoding="utf-8") as hbf:
-                        import json
-                        hb_data = json.load(hbf)
-                        last_hb = float(hb_data.get("timestamp", 0.0))
-                        if last_hb > 0 and (time.time() - last_hb) > 600.0:  # 10분 무응답
-                            logger.critical("🛑 [Upbit Hang 감지] 업비트 봇이 10분 이상 무응답 상태입니다. 프로세스를 강제 재시작합니다.")
-                            hung_detected = True
-                            process.terminate()
-                            try:
-                                process.wait(timeout=5)
-                            except Exception:
-                                process.kill()
-                            break
-                except Exception as e:
-                    logger.debug(f"업비트 하트비트 검사 예외 (무시): {e}")
+                    process.wait(timeout=5)
+                except Exception:
+                    process.kill()
+                break
 
         if is_terminating:
             try:
@@ -202,13 +232,13 @@ def main():
         now_ts = time.time()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 정상 종료 (returncode == 0)이고 Hang이 아니었던 경우
-        if return_code == 0 and not hung_detected:
-            logger.info("✅ 업비트 봇 프로세스가 정상 종료되었습니다.")
+        # 사용자의 명시적 워치독 종료 시그널인 경우에만 루프 탈출
+        if is_terminating:
+            logger.info("✅ 업비트 봇 및 워치독 안전 종료 완료.")
             break
 
         # 비정상 종료 (returncode != 0 또는 Hang)
-        reason_desc = "10분 이상 응답 없음(Hang/Deadlock 감지)" if hung_detected else f"종료 코드: {return_code}"
+        reason_desc = f"무응답/하트비트 이상 감지: {hang_reason}" if hung_detected else f"종료 코드: {return_code}"
         logger.warning(f"⚠️ [업비트 봇 비정상 종료 감지] {reason_desc}")
         recent_crashes.append(now_ts)
         recent_crashes = [t for t in recent_crashes if now_ts - t <= 60]

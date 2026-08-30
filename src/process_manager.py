@@ -21,7 +21,15 @@ def _project_root() -> str:
 
 def _runtime_paths(exchange: str) -> tuple[str, str]:
     """거래소별 워치독 PID 파일과 봇 하트비트 파일 위치를 반환한다."""
-    subdir = "upbit" if exchange.lower() == "upbit" else ""
+    ex = exchange.lower()
+    if ex == "upbit":
+        subdir = "upbit"
+    elif ex == "dashboard":
+        subdir = ""
+        runtime_dir = os.path.join(_project_root(), "data")
+        return os.path.join(runtime_dir, ".dashboard.pid.json"), ""
+    else:
+        subdir = ""
     runtime_dir = os.path.join(_project_root(), "data", subdir)
     return os.path.join(runtime_dir, ".watchdog.pid.json"), os.path.join(runtime_dir, ".heartbeat")
 
@@ -38,14 +46,39 @@ def _read_pid_file(path: str) -> int | None:
 
 
 def _is_pid_alive(pid: int | None) -> bool:
-    """WMI 권한 없이 동일 사용자 PID의 생존 여부만 보수적으로 확인한다."""
-    if not pid:
+    """WMI 권한 없이 동일 사용자 PID의 생존 여부만 안전하고 보수적으로 확인한다."""
+    if not pid or pid <= 0:
         return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, PermissionError):
-        return False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            SYNCHRONIZE = 0x00100000
+            STILL_ACTIVE = 259
+
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, int(pid)
+            )
+            if not handle:
+                return False
+
+            exit_code = wintypes.DWORD()
+            success = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            ctypes.windll.kernel32.CloseHandle(handle)
+
+            if success:
+                return exit_code.value == STILL_ACTIVE
+            return False
+        except Exception:
+            return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, PermissionError):
+            return False
 
 
 def _write_pid_file(path: str, pid: int, exchange: str) -> None:
@@ -78,8 +111,29 @@ def _get_heartbeat_age(heartbeat_path: str) -> float | None:
 
 
 def status_action(exchange: str = "bithumb"):
-    ex_name = "업비트 (Upbit)" if exchange.lower() == "upbit" else "빗썸 (Bithumb)"
-    web_port = 7980 if exchange.lower() == "upbit" else 7979
+    ex = exchange.lower()
+    if ex == "all":
+        status_action("bithumb")
+        status_action("upbit")
+        status_action("dashboard")
+        return
+
+    if ex == "dashboard":
+        print("======================================================")
+        print(" [통합 퀀트 트레이딩 대시보드 게이트웨이 서버 상태] ")
+        print("======================================================")
+        pids = find_bot_processes("dashboard")
+        if pids:
+            for pid in pids:
+                print(f"🟢 [대시보드 서버 가동 중] PID: {pid}")
+        else:
+            print("⚪ [중지됨] 실행 중인 통합 대시보드 프로세스가 없습니다.")
+        print("🌐 [통합 대시보드 접속 URL] http://localhost:7979")
+        print()
+        return
+
+    ex_name = "업비트 (Upbit)" if ex == "upbit" else "빗썸 (Bithumb)"
+    internal_port = 17980 if ex == "upbit" else 17979
     pid_file, hb_file = _runtime_paths(exchange)
 
     print("======================================================")
@@ -92,7 +146,6 @@ def status_action(exchange: str = "bithumb"):
         for pid in pids:
             print(f"🟢 [{ex_name} 봇 가동 중] PID: {pid}")
     elif heartbeat_age is not None and heartbeat_age < 600.0:
-        # PID 파일 도입 전 실행된 레거시 워치독도 중지로 오인해 중복 기동하지 않도록 표시한다.
         print(f"🟡 [{ex_name} 봇 추정 가동 중] 신선한 하트비트가 있으나 PID 파일이 없습니다.")
     else:
         print(f"⚪ [중지됨] PID 파일에서 실행 중인 {ex_name} 워치독을 확인하지 못했습니다.")
@@ -110,7 +163,7 @@ def status_action(exchange: str = "bithumb"):
     else:
         print("💓 [하트비트 상태] ⚠️ 하트비트 파일 없음")
 
-    print(f"🌐 [웹 대시보드 URL] http://localhost:{web_port}")
+    print(f"🔌 [내부 코어 API 포트] http://127.0.0.1:{internal_port}")
     print()
 
 
@@ -153,7 +206,44 @@ def _kill_matching_script_processes(patterns: list[str]) -> list[int]:
 
 
 def stop_action(exchange: str = "bithumb"):
-    ex_name = "업비트 (Upbit)" if exchange.lower() == "upbit" else "빗썸 (Bithumb)"
+    ex = exchange.lower()
+    if ex == "all":
+        stop_action("dashboard")
+        stop_action("bithumb")
+        stop_action("upbit")
+        return
+
+    if ex == "dashboard":
+        print("======================================================")
+        print(" [통합 퀀트 트레이딩 대시보드 서버 종료] ")
+        print("======================================================\n")
+        pid_file, _ = _runtime_paths("dashboard")
+        pids = find_bot_processes("dashboard")
+        stopped_count = 0
+        if pids:
+            for pid in pids:
+                try:
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", pid], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    print(f"🛑 [종료 완료] 대시보드 서버 PID: {pid}")
+                    stopped_count += 1
+                except Exception as e:
+                    print(f"⚠️ PID {pid} 종료 실패: {e}")
+            try:
+                os.remove(pid_file)
+            except OSError:
+                pass
+        orphans = _kill_matching_script_processes(["dashboard_server.py"])
+        for opid in orphans:
+            if str(opid) not in pids:
+                print(f"🛑 [백그라운드 잔여 대시보드 정리] PID: {opid}")
+                stopped_count += 1
+        if stopped_count > 0:
+            print(f"\n✅ 통합 대시보드 서버(총 {stopped_count}개)를 완전히 종료했습니다.")
+        else:
+            print("ℹ️ 현재 실행 중인 대시보드 프로세스가 없습니다.")
+        return
+
+    ex_name = "업비트 (Upbit)" if ex == "upbit" else "빗썸 (Bithumb)"
     print("======================================================")
     print(f" [{ex_name} AI Pro Quant Trading Bot 종료] ")
     print("======================================================\n")
@@ -165,7 +255,6 @@ def stop_action(exchange: str = "bithumb"):
         for pid in pids:
             try:
                 subprocess.run(
-                    # 워치독의 자식 봇까지 함께 종료해 고아 프로세스를 남기지 않는다.
                     ["taskkill", "/F", "/T", "/PID", pid],
                     check=False,
                     stdout=subprocess.DEVNULL,
@@ -183,19 +272,22 @@ def stop_action(exchange: str = "bithumb"):
             print(f"⚠️ PID 파일 정리 실패: {exc}")
 
     # 고아 워치독 및 봇 잔여 프로세스 전수 소탕
-    script_patterns = ["watchdog_upbit.py", "main_upbit.py"] if exchange.lower() == "upbit" else ["watchdog.py", "main.py"]
+    script_patterns = ["watchdog_upbit.py", "main_upbit.py"] if ex == "upbit" else ["watchdog.py", "main.py"]
     orphaned_pids = _kill_matching_script_processes(script_patterns)
     for opid in orphaned_pids:
         if str(opid) not in pids:
             print(f"🛑 [백그라운드 잔여 프로세스 강제 정리] {ex_name} PID: {opid}")
             stopped_count += 1
 
-    # 하트비트 파일 정리
-    if os.path.exists(hb_file):
-        try:
-            os.remove(hb_file)
-        except OSError:
-            pass
+    # 하트비트 및 락 파일 정리
+    lock_file = os.path.join(os.path.dirname(hb_file), ".watchdog.lock")
+    owner_file = f"{lock_file}.owner.json"
+    for f in (hb_file, lock_file, owner_file):
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
 
     if stopped_count > 0:
         print(f"\n✅ {ex_name} 워치독 및 봇 프로세스(총 {stopped_count}개)를 완전히 종료했습니다.")
@@ -237,27 +329,112 @@ def logs_action(exchange: str = "bithumb"):
         print(f"\n👋 {ex_name} 로그 모니터링을 종료합니다.")
 
 
+def _spawn_background_process(python_exe: str, script_path: str, cwd: str) -> int | None:
+    """Windows와 Unix 환경 모두에서 부모 창이 닫혀도 영구 유지되는 백그라운드 프로세스를 스폰한다."""
+    if sys.platform == "win32":
+        try:
+            ps_cmd = (
+                f"$p = Start-Process -FilePath '{python_exe}' -ArgumentList '{script_path}' "
+                f"-WorkingDirectory '{cwd}' -WindowStyle Hidden -PassThru; "
+                f"Write-Output $p.Id"
+            )
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                timeout=10,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                pid_str = res.stdout.strip().splitlines()[-1].strip()
+                if pid_str.isdigit():
+                    return int(pid_str)
+        except Exception:
+            pass
+
+    creationflags = 0x08000000 | 0x00000200 if sys.platform == "win32" else 0
+    proc = subprocess.Popen(
+        [python_exe, script_path],
+        cwd=cwd,
+        creationflags=creationflags,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    return proc.pid
+
+
 def start_action(exchange: str = "bithumb", background: bool = True) -> bool:
-    """트레이딩 봇 및 워치독 프로세스 안전 시작 (과제: 중복 실행 방지 및 백그라운드 완벽 스폰)"""
-    ex_name = "업비트 (Upbit)" if exchange.lower() == "upbit" else "빗썸 (Bithumb)"
+    """프로세스 안전 시작 (bithumb | upbit | dashboard | all)"""
+    ex = exchange.lower()
+    if ex == "all":
+        print("======================================================")
+        print(" [빗썸 + 업비트 + 통합 대시보드 전체 일괄 가동 시작] ")
+        print("======================================================\n")
+        r1 = start_action("bithumb", background=background)
+        time.sleep(1.0)
+        r2 = start_action("upbit", background=background)
+        time.sleep(1.0)
+        r3 = start_action("dashboard", background=background)
+        return r1 and r2 and r3
+
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    python_exe = os.path.join(project_root, "venv", "Scripts", "python.exe")
+    if not os.path.exists(python_exe):
+        python_exe = sys.executable
+
+    if ex == "dashboard":
+        print("======================================================")
+        print(" [통합 퀀트 트레이딩 대시보드 서버 가동 시작] ")
+        print("======================================================\n")
+        pids = find_bot_processes("dashboard")
+        if pids:
+            print(f"ℹ️ 대시보드 서버가 이미 실행 중입니다 (PID: {', '.join(pids)}).")
+            status_action("dashboard")
+            return True
+
+        pid_file, _ = _runtime_paths("dashboard")
+        script_path = os.path.join(project_root, "src", "dashboard_server.py")
+        if background:
+            pid = _spawn_background_process(python_exe, script_path, project_root)
+            if pid:
+                _write_pid_file(pid_file, pid, "dashboard")
+                print(f"🚀 통합 대시보드 서버를 백그라운드 프로세스로 가동했습니다. (PID: {pid})")
+                time.sleep(1.0)
+                status_action("dashboard")
+                return True
+            else:
+                print("❌ 대시보드 스폰 실패")
+                return False
+        else:
+            try:
+                subprocess.run([python_exe, script_path], cwd=project_root)
+            except KeyboardInterrupt:
+                print("\n👋 대시보드 콘솔 실행을 종료합니다.")
+            return True
+
+    ex_name = "업비트 (Upbit)" if ex == "upbit" else "빗썸 (Bithumb)"
     print("======================================================")
     print(f" [{ex_name} AI Pro Quant Trading Bot 가동 시작] ")
     print("======================================================\n")
 
-    # 1. 기존 프로세스 확인: 실행 중이면 절대로 새 워치독을 중복 기동하지 않는다.
     pids = find_bot_processes(exchange)
     if pids:
         print(f"ℹ️ {ex_name} 워치독이 이미 실행 중입니다 (PID: {', '.join(pids)}). 중복 기동하지 않습니다.")
         status_action(exchange)
-        return False
+        return True
 
     pid_file, heartbeat_file = _runtime_paths(exchange)
-    heartbeat_age = _get_heartbeat_age(heartbeat_file)
-    if heartbeat_age is not None and heartbeat_age < 600.0:
-        print(f"⚠️ {ex_name} 하트비트가 신선합니다 ({heartbeat_age:.0f}초 전). PID 파일 없이 실행 중인 기존 봇일 수 있어 기동을 차단합니다.")
-        print("   기존 프로세스 확인 후 stop 배치 파일 또는 수동 점검을 진행하세요.")
-        return False
-    # 종료된 워치독의 PID 파일만 제거한다. 실행 중 PID는 위에서 이미 차단했다.
+    lock_file = os.path.join(os.path.dirname(heartbeat_file), ".watchdog.lock")
+    owner_file = f"{lock_file}.owner.json"
+    for f in (heartbeat_file, lock_file, owner_file):
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
     if os.path.exists(pid_file):
         try:
             os.remove(pid_file)
@@ -265,43 +442,16 @@ def start_action(exchange: str = "bithumb", background: bool = True) -> bool:
             print(f"❌ 오래된 PID 파일 정리 실패: {exc}")
             return False
 
-    # 2. 파이썬 실행 바이너리 및 스크립트 경로 탐색
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if background:
-        python_exe = os.path.join(project_root, "venv", "Scripts", "pythonw.exe")
-        if not os.path.exists(python_exe):
-            python_exe = os.path.join(project_root, "venv", "Scripts", "python.exe")
-    else:
-        python_exe = os.path.join(project_root, "venv", "Scripts", "python.exe")
-
-    if not os.path.exists(python_exe):
-        python_exe = sys.executable
-
-    script_name = "watchdog_upbit.py" if exchange.lower() == "upbit" else "watchdog.py"
+    script_name = "watchdog_upbit.py" if ex == "upbit" else "watchdog.py"
     script_path = os.path.join(project_root, "src", script_name)
 
-    # 3. 백그라운드 분리 스폰 (PowerShell Start-Process -WindowStyle Hidden)
     if background:
-        ps_cmd = (
-            f"Start-Process -FilePath '{python_exe}' "
-            f"-ArgumentList '\"{script_path}\"' "
-            f"-WorkingDirectory '{project_root}' "
-            f"-WindowStyle Hidden -PassThru | Select-Object -ExpandProperty Id"
-        )
-        try:
-            spawned = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps_cmd],
-                check=True,
-                timeout=10,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-            )
-            watchdog_pid = int(spawned.stdout.strip().splitlines()[-1])
+        watchdog_pid = _spawn_background_process(python_exe, script_path, project_root)
+        if watchdog_pid:
             _write_pid_file(pid_file, watchdog_pid, exchange)
-            print(f"🚀 {ex_name} 워치독 및 봇을 백그라운드 프로세스로 안전하게 가동했습니다.")
-        except Exception as e:
-            print(f"❌ 프로세스 스폰 실패: {e}")
+            print(f"🚀 {ex_name} 워치독 및 봇을 백그라운드 프로세스로 안전하게 가동했습니다. (PID: {watchdog_pid})")
+        else:
+            print(f"❌ {ex_name} 프로세스 스폰 실패")
             return False
 
         time.sleep(3.0)
@@ -318,23 +468,19 @@ def start_action(exchange: str = "bithumb", background: bool = True) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(description="Trading Bot Process Manager")
-    parser.add_argument("action_or_exchange", nargs="?", default="status", help="status | start | stop | logs | upbit | bithumb")
+    parser.add_argument("action_or_exchange", nargs="?", default="status", help="status | start | stop | logs | upbit | bithumb | dashboard | all")
     parser.add_argument("action_sub", nargs="?", default="", help="status | start | stop | logs")
-    parser.add_argument("--exchange", "-e", default="", help="bithumb or upbit")
+    parser.add_argument("--exchange", "-e", default="", help="bithumb | upbit | dashboard | all")
     parser.add_argument("--background", "-b", action="store_true", default=True, help="Run in background (pythonw)")
     parser.add_argument("--foreground", "-f", action="store_true", help="Run in foreground console")
 
     args = parser.parse_args()
 
-    # 인자 파싱 유연화
-    # 1. python process_manager.py upbit start
-    # 2. python process_manager.py start --exchange bithumb
-    # 3. python process_manager.py status
     first = (args.action_or_exchange or "").lower()
     second = (args.action_sub or "").lower()
     exchange = (args.exchange or "").lower()
 
-    if first in ("upbit", "bithumb"):
+    if first in ("upbit", "bithumb", "dashboard", "all"):
         exchange = first
         action = second if second else "status"
     else:
@@ -347,7 +493,6 @@ def main():
     if action == "status":
         status_action(exchange)
     elif action in ("start", "run"):
-        # 배치 파일이 기동 차단과 성공을 구분할 수 있도록 종료 코드를 명확히 반환한다.
         sys.exit(0 if start_action(exchange, background=is_bg) else 2)
     elif action == "stop":
         stop_action(exchange)
@@ -357,7 +502,7 @@ def main():
         print(f"알 수 없는 액션: {action}")
         print("사용법:")
         print("  python src/process_manager.py [start|status|stop|logs]")
-        print("  python src/process_manager.py [bithumb|upbit] [start|status|stop|logs]")
+        print("  python src/process_manager.py [bithumb|upbit|dashboard|all] [start|status|stop|logs]")
 
 
 if __name__ == "__main__":

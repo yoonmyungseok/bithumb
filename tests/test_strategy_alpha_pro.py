@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from gemini_analyzer import GeminiAnalyzer
 from strategy_engine import (
+    StrategyPolicy,
     calculate_composite_alpha_score,
     calculate_macd_acceleration,
     calculate_vwap,
@@ -80,7 +81,7 @@ class StrategyAlphaProTests(unittest.TestCase):
         self.assertIn("vwap_score", res["factor_breakdown"])
 
     def test_composite_alpha_score_bearish_rejection(self):
-        """역배열 급락 시장에서 65점 미만 매수 거부 검증"""
+        """역배열 급락 시장에서 알파 기준 미만 매수 거부 검증"""
         candles_5m = []
         for i in range(30):
             base_p = 1000.0 + (i * 5.0)  # 과거가 높고 최신이 낮음 (급락)
@@ -93,7 +94,7 @@ class StrategyAlphaProTests(unittest.TestCase):
             })
 
         res = calculate_composite_alpha_score(candles=candles_5m, btc_regime="NORMAL")
-        self.assertLess(res["total_score"], 65)
+        self.assertLess(res["total_score"], StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL)
         self.assertFalse(res["allow_buy"])
 
     def test_gemini_analyzer_local_quant_ensemble(self):

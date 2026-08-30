@@ -1,6 +1,42 @@
+
+def is_pid_alive(pid: int | None) -> bool:
+    """WMI 권한 없이 동일 사용자 PID의 생존 여부만 안전하고 보수적으로 확인한다."""
+    if not pid or pid <= 0:
+        return False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            SYNCHRONIZE = 0x00100000
+            STILL_ACTIVE = 259
+
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, int(pid)
+            )
+            if not handle:
+                return False
+
+            exit_code = wintypes.DWORD()
+            success = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            ctypes.windll.kernel32.CloseHandle(handle)
+
+            if success:
+                return exit_code.value == STILL_ACTIVE
+            return False
+        except Exception:
+            return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, PermissionError):
+            return False
+
 """
-스마트 자동 재시작 감시자 (Watchdog Engine)
-- 봇 프로세스를 24시간 실시간 감시하고 비정상 종료 시 텔레그램 알림 및 5초 내 자동 복구
+스마트 자동 재시작 감시자 (Bithumb Watchdog Engine)
+- 업비트 봇 프로세스(src/main.py)를 24시간 실시간 감시하고 비정상 종료 시 텔레그램 알림 및 5초 내 자동 복구
 """
 
 import logging
@@ -16,6 +52,7 @@ from logging.handlers import TimedRotatingFileHandler
 
 from dotenv import load_dotenv
 import requests
+from heartbeat_monitor import get_heartbeat_health
 
 # UTF-8 출력 보장
 if sys.platform == "win32":
@@ -75,14 +112,30 @@ def send_telegram_alert(msg: str):
 
 
 def acquire_single_owner_lock(lock_file_path: str):
-    """운영체제 파일 잠금으로 빗썸 워치독 중복 실행을 원천 차단한다."""
-    lock_file = open(lock_file_path, "a+", encoding="utf-8")
-    lock_file.seek(0)
-    if not lock_file.read(1):
-        lock_file.seek(0)
-        lock_file.write("0")
-        lock_file.flush()
+    """운영체제 파일 잠금 및 PID 생존 검증으로 단일 소유자를 안전하게 보장한다."""
+    owner_path = f"{lock_file_path}.owner.json"
+    
+    # 1. 기존 소유자가 살아있는지 사전 점검
+    if os.path.exists(owner_path):
+        try:
+            with open(owner_path, "r", encoding="utf-8") as of:
+                owner_data = json.load(of)
+            old_pid = int(owner_data.get("pid", 0))
+            if old_pid > 0 and is_pid_alive(old_pid) and old_pid != os.getpid():
+                # 다른 살아있는 워치독 프로세스가 이미 존재함
+                return None
+        except Exception:
+            pass
+
+    # 2. 파일 잠금 획득 시도
+    os.makedirs(os.path.dirname(lock_file_path), exist_ok=True)
     try:
+        lock_file = open(lock_file_path, "a+", encoding="utf-8")
+        lock_file.seek(0)
+        if not lock_file.read(1):
+            lock_file.seek(0)
+            lock_file.write("0")
+            lock_file.flush()
         if sys.platform == "win32":
             import msvcrt
             lock_file.seek(0)
@@ -91,12 +144,27 @@ def acquire_single_owner_lock(lock_file_path: str):
             import fcntl
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        lock_file.close()
+        # 잠금 실패 시, 소유자 PID가 이미 죽어있다면 잠금 파일 정리 후 재시도 허용
+        if os.path.exists(owner_path):
+            try:
+                with open(owner_path, "r", encoding="utf-8") as of:
+                    owner_data = json.load(of)
+                old_pid = int(owner_data.get("pid", 0))
+                if old_pid > 0 and not is_pid_alive(old_pid):
+                    try:
+                        os.remove(lock_file_path)
+                    except OSError:
+                        pass
+            except Exception:
+                pass
         return None
 
-    # 운영 장애 분석을 위해 잠금 소유 프로세스와 시작 토큰을 별도로 남긴다.
-    with open(f"{lock_file_path}.owner.json", "w", encoding="utf-8") as owner_file:
-        json.dump({"pid": os.getpid(), "started_at": time.time(), "start_token": uuid.uuid4().hex}, owner_file)
+    # 3. 신규 소유자 정보 기록
+    try:
+        with open(owner_path, "w", encoding="utf-8") as owner_file:
+            json.dump({"pid": os.getpid(), "started_at": time.time(), "start_token": uuid.uuid4().hex}, owner_file)
+    except Exception:
+        pass
     return lock_file
 
 
@@ -106,7 +174,6 @@ def main():
     logger.info("  (24시간 무중단 감시 및 자동 복구 시스템)")
     logger.info("======================================================")
 
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     python_exe = os.path.join(project_root, "venv", "Scripts", "python.exe")
     if not os.path.exists(python_exe):
         python_exe = sys.executable
@@ -119,6 +186,7 @@ def main():
     lock_file = acquire_single_owner_lock(lock_file_path)
     if lock_file is None:
         logger.warning("⚠️ 이미 실행 중인 빗썸 워치독 인스턴스가 존재합니다. 중복 실행을 방지하고 종료합니다.")
+        time.sleep(3)
         sys.exit(0)
 
     recent_crashes: list[float] = []
@@ -127,7 +195,7 @@ def main():
     def _sig_handler(sig, frame):
         nonlocal is_terminating
         is_terminating = True
-        logger.info("🛑 워치독 종료 시그널 감지. 봇 프로세스를 안전하게 종료합니다.")
+        logger.info("🛑 빗썸 워치독 종료 시그널 감지. 봇 프로세스를 안전하게 종료합니다.")
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _sig_handler)
@@ -137,7 +205,7 @@ def main():
 
     while not is_terminating:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        logger.info(f"🚀 [봇 프로세스 시작] {main_script}")
+        logger.info(f"🚀 [빗썸 봇 프로세스 시작] {main_script}")
 
         # 기존 오래된 하트비트 파일 제거
         if os.path.exists(hb_file):
@@ -152,36 +220,35 @@ def main():
                 cwd=project_root,
             )
         except Exception as e:
-            logger.error(f"봇 프로세스 실행 실패: {e}")
+            logger.error(f"빗썸 봇 프로세스 실행 실패: {e}")
             time.sleep(5)
             continue
 
         start_ts = time.time()
         hung_detected = False
+        hang_reason = ""
 
         while process.poll() is None:
             if is_terminating:
                 break
             time.sleep(5)
 
-            # 프로세스 시작 후 2분이 경과한 시점부터 하트비트 타임아웃 감시 (최대 10분 허용)
-            if time.time() - start_ts > 120.0 and os.path.exists(hb_file):
+            # 첫 하트비트 부재와 JSON 손상도 정상 상태로 간주하지 않는다.
+            elapsed = time.time() - start_ts
+            healthy, heartbeat_reason, heartbeat_age = get_heartbeat_health(hb_file)
+            should_restart = elapsed > 120.0 and (
+                not healthy or heartbeat_age is None or heartbeat_age > 600.0
+            )
+            if should_restart:
+                hang_reason = heartbeat_reason if not healthy else f"하트비트 {heartbeat_age:.0f}초 지연"
+                logger.critical("🛑 [Bithumb Hang 감지] %s. 프로세스를 강제 재시작합니다.", hang_reason)
+                hung_detected = True
+                process.terminate()
                 try:
-                    with open(hb_file, "r", encoding="utf-8") as hbf:
-                        import json
-                        hb_data = json.load(hbf)
-                        last_hb = float(hb_data.get("timestamp", 0.0))
-                        if last_hb > 0 and (time.time() - last_hb) > 600.0:  # 10분 무응답
-                            logger.critical(f"🛑 [Hang 감지] 봇 프로세스가 10분 이상 무응답 상태입니다. 프로세스를 강제 재시작합니다.")
-                            hung_detected = True
-                            process.terminate()
-                            try:
-                                process.wait(timeout=5)
-                            except Exception:
-                                process.kill()
-                            break
-                except Exception as e:
-                    logger.debug(f"하트비트 검사 예외 (무시): {e}")
+                    process.wait(timeout=5)
+                except Exception:
+                    process.kill()
+                break
 
         if is_terminating:
             try:
@@ -196,14 +263,14 @@ def main():
         now_ts = time.time()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 정상 종료 (returncode == 0)이고 Hang이 아니었던 경우
-        if return_code == 0 and not hung_detected:
-            logger.info("✅ 봇 프로세스가 정상 종료되었습니다.")
+        # 사용자의 명시적 워치독 종료 시그널인 경우에만 루프 탈출
+        if is_terminating:
+            logger.info("✅ 빗썸 봇 및 워치독 안전 종료 완료.")
             break
 
         # 비정상 종료 (returncode != 0 또는 Hang)
-        reason_desc = "10분 이상 응답 없음(Hang/Deadlock 감지)" if hung_detected else f"종료 코드: {return_code}"
-        logger.warning(f"⚠️ [비정상 종료 감지] {reason_desc}")
+        reason_desc = f"무응답/하트비트 이상 감지: {hang_reason}" if hung_detected else f"종료 코드: {return_code}"
+        logger.warning(f"⚠️ [빗썸 봇 비정상 종료 감지] {reason_desc}")
         recent_crashes.append(now_ts)
         recent_crashes = [t for t in recent_crashes if now_ts - t <= 60]
 
@@ -225,10 +292,10 @@ def main():
 
         alert_msg = (
             f"⚠️ <b>[빗썸 봇 비정상 종료 감지 & 자동 복구]</b>\n\n"
-            f"• 봇 프로세스가 예기치 않게 종료되었습니다.\n"
+            f"• 업비트 봇 프로세스가 예기치 않게 종료되었습니다.\n"
             f"• <b>사유:</b> <code>{reason_desc}</code>\n"
             f"• <b>일시:</b> {now_str}\n\n"
-            f"🔄 <b>5초 후 자동으로 봇을 재가동합니다...</b>"
+            f"🔄 <b>5초 후 자동으로 빗썸 봇을 재가동합니다...</b>"
         )
         logger.info("텔레그램 긴급 알림 발송 및 5초 후 자동 재시작 대기")
         send_telegram_alert(alert_msg)

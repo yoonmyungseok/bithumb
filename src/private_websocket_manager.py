@@ -6,11 +6,18 @@ import queue
 import threading
 import time
 import uuid
+import warnings
 from collections.abc import Callable
 from typing import Any
 
 import jwt
 import websocket
+
+try:
+    from jwt.warnings import InsecureKeyLengthWarning
+    warnings.filterwarnings("ignore", category=InsecureKeyLengthWarning)
+except ImportError:
+    pass
 
 logger = logging.getLogger(__name__)
 

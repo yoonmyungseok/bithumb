@@ -36,9 +36,10 @@ class GeminiAnalyzer:
 
     # 1. 안정적인 프로덕션 공식 Flash 모델 군 (쿼터 효율 최고인 Lite 우선 배치)
     STABLE_MODELS: ClassVar[list[str]] = [
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash",
         "gemini-3.5-flash-lite",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
+        "gemini-3.7-flash",
         "gemini-flash-latest",
     ]
 
@@ -47,6 +48,7 @@ class GeminiAnalyzer:
 
     def __init__(self, api_key: str = ""):
         self.api_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
+        self._analysis_cache: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def calculate_rsi(prices: list[float], period: int = 14) -> float:
@@ -339,9 +341,9 @@ class GeminiAnalyzer:
             alpha_score += 5
             reasons.append("거래량 평이(+5)")
 
-        # 판정 (총 100점 만점 중 65점 이상 충족 시 적극 BUY)
+        # 판정 (총 100점 만점 중 60점 이상 충족 시 적극 BUY)
         if not is_holding:
-            if alpha_score >= 65:
+            if alpha_score >= 60:
                 action = "BUY"
                 alloc_pct = 0.5
                 reason = f"⚡ [로컬 퀀트 앙상블 BUY] 알파 스코어 {alpha_score}/100점: {', '.join(reasons[:3])}"
@@ -384,13 +386,25 @@ class GeminiAnalyzer:
         trade_memory_context: str = "",
         btc_context: str = "비트코인(BTC): 🟢 정상 안정세",
         whale_context: str = "최근 5분간 고래 대량 체결 없음 (수급 평온)",
+        rs_context: str = "",
     ) -> dict[str, Any]:
         """
-        [7대 팩터 앙상블 + VWAP + MACD 가속도 + MTF + 호가수급 + ATR 변동성] 퀀트 분석 엔진 v5.0
+        [7대 팩터 앙상블 + VWAP + MACD 가속도 + MTF + 상대강도(RS) + 호가수급 + ATR 변동성] 퀀트 분석 엔진 v5.1
         """
         if not self.api_key:
             logger.warning("Gemini API Key가 설정되지 않았습니다.")
             return {"status": "PAUSE", "action": "HOLD", "reason": "API Key 누락"}
+
+        # 0. 동일 5분봉 캔들 분석 캐시 검사 (재시작 및 5분 이내 중복 API 호출 낭비 원천 차단)
+        latest_c_id = ""
+        if candles:
+            latest_c_id = str(candles[0].get("candle_date_time_utc") or candles[0].get("timestamp") or candles[0].get("trade_price"))
+        cache_key = f"{market}:{latest_c_id}"
+        if hasattr(self, "_analysis_cache") and cache_key in self._analysis_cache:
+            cached_entry = self._analysis_cache[cache_key]
+            if (time.time() - float(cached_entry.get("cached_at", 0))) < 270.0:
+                logger.info(f"⚡ [{market}] 동일 5분봉 AI 분석 캐시 재사용 (Gemini 중복 호출 생략, 쿼터 보존)")
+                return dict(cached_entry["result"])
 
         currency = market.split("-")[-1] if "-" in market else market
         close_prices = [float(c.get("trade_price", 0)) for c in candles if "trade_price" in c]
@@ -429,21 +443,20 @@ class GeminiAnalyzer:
             )
         candles_text = "\n".join(recent_summary)
 
-        # 4. 코인 고유 변동성(ATR %)에 따른 맞춤형 동적 손익비 가이드라인
+        # 4. 코인 고유 변동성(ATR %)에 따른 맞춤형 동적 손익비 가이드라인 (최소 손익비 1.5:1 보장)
         atr_pct = atr_info["atr_pct"]
         if atr_pct < 2.0:  # 저변동성 메이저
             tp_delta = max(current_price * 0.025, atr_info["atr"] * 1.8)
-            sl_delta = max(current_price * 0.015, atr_info["atr"] * 1.1)
+            sl_delta = max(current_price * 0.012, atr_info["atr"] * 1.0)
         elif atr_pct <= 4.0:  # 일반 알트코인
             tp_delta = max(current_price * 0.040, atr_info["atr"] * 2.0)
-            sl_delta = max(current_price * 0.020, atr_info["atr"] * 1.2)
+            sl_delta = max(current_price * 0.015, atr_info["atr"] * 1.1)
         else:  # 고변동성 급등주
             tp_delta = max(current_price * 0.060, atr_info["atr"] * 2.2)
-            sl_delta = max(current_price * 0.028, atr_info["atr"] * 1.3)
+            sl_delta = max(current_price * 0.020, atr_info["atr"] * 1.2)
 
         dynamic_tp = current_price + tp_delta
-        # 손절선: 지지선 하단 또는 ATR 기반 손절폭 중 안전한 가격 채택 (최소 -1.5% 룸 보장하여 1틱 휩소 방지)
-        support_sl = sr_levels["support_low"] * 0.990
+        support_sl = sr_levels["support_low"] * 0.992
         atr_sl = current_price - sl_delta
         dynamic_sl = min(support_sl, atr_sl, current_price * 0.985)
 
@@ -461,15 +474,16 @@ class GeminiAnalyzer:
 
         candidate_models = available_models[:2]
 
-        # 6. 기관 퀀트 헤지펀드 시스템 프롬프트 v5.0
+        # 6. 기관 퀀트 헤지펀드 시스템 프롬프트 v5.1
         memory_section = f"\n{trade_memory_context}\n" if trade_memory_context else ""
+        rs_line = f"- 비트코인 대비 상대 강도(RS): {rs_context}\n" if rs_context else ""
 
         prompt = f"""당신은 월스트리트 헤지펀드 출신의 수석 암호화폐 퀀트 트레이더이자 리스크 관리 책임자(CRO)입니다.
-제공된 실시간 {market}의 [BTC 거시 환경], [MTF 상위 추세], [VWAP 기관 수급], [MACD 가속도], [호가창 & 고래 수급], [5분봉 퀀트 지표]를 종합 분석하여 최적의 트레이딩 지침을 JSON으로 제시하세요.
+제공된 실시간 {market}의 [BTC 거시 환경 & 상대강도], [MTF 상위 추세], [VWAP 기관 수급], [MACD 가속도], [호가창 & 고래 수급], [5분봉 퀀트 지표]를 종합 분석하여 최적의 트레이딩 지침을 JSON으로 제시하세요.
 
-### [0. 대장주(BTC) 거시 시장 환경]
+### [0. 대장주(BTC) 거시 시장 환경 & 코인 상대 강도(RS)]
 - 비트코인 시장 상태: {btc_context}
-※ 알트코인은 비트코인의 단기 급락세에 매우 취약하므로, BTC 급락 위험 감지 시에는 신규 매수를 전면 금지하고 HOLD하세요.
+{rs_line}※ 알트코인은 비트코인의 단기 급락세에 취약합니다. 특히 BTC가 약세(RISK_OFF)일 때는 비트코인과 함께 흐르는 대형 코인이나 무거래량 코인의 롱 매수를 전면 거부(HOLD)하고, 비트코인 대비 압도적인 독자 수급과 상대 강도(RS >= +1.5%)가 입증된 독자 랠리 종목에 한해서만 엄선하여 BUY를 승인하세요.
 
 ### [1. MTF 상위 추세 & VWAP 기관 수급 & 호가창 수급 데이터]
 - 1시간봉 대세 방향: {mtf_1h['desc']}
@@ -496,20 +510,20 @@ class GeminiAnalyzer:
 - 보유 여부: {'🔒 [보유 중]' if is_holding else '⚪ [미보유 (현금)]'} | 가용 원화: {krw_balance:,.0f} KRW
 - 보유 수량: {coin_balance:.8f} {currency} (평가: {coin_value:,.0f} KRW) | 평단가: {avg_buy_price:,.2f} KRW (손익률: {pnl_pct:+.2f}%)
 
-### [4. 7대 복합 팩터 앙상블 매수 승인 규칙 (알파 스코어 65점 이상 시 BUY 승인)]
-신규 매수(BUY) 승인을 내리기 위해서는 아래 7대 팩터 종합 점수가 **65점 이상**이어야 합니다:
+### [4. 7대 복합 팩터 앙상블 매수 승인 규칙 (알파 스코어 60점 이상 시 BUY 승인)]
+신규 매수(BUY) 승인을 내리기 위해서는 아래 7대 팩터 종합 점수가 **60점 이상(약세장 75점 이상)**이어야 합니다:
 1. [MTF 1H 추세] 1시간봉 대세 하락장이 아닐 것.
 2. [VWAP 기관 수급] 현재가가 VWAP 상단에 안착 지지 또는 돌파할 것.
 3. [MACD 가속도] 히스토그램 기울기가 양의 방향으로 가속 확장 중일 것.
 4. [RSI 골든존] 5분봉 RSI가 38 ~ 72 사이일 것 (RSI 45~65 최적).
 5. [볼린저 밴드 & 이격] MA20 이격도 97.5%~103.5% 및 %B <= 0.88.
-6. [수급 & 호가창] 호가 갭 <= 0.6%, 체결강도 90% 이상 또는 고래 유입.
-7. [기대 손익비] (목표가 - 진입가) >= 1.2 * (진입가 - 손절가) 수학적 보장.
+6. [수급 & 호가창] 호가 갭 <= 0.35%, 체결강도 90% 이상 또는 고래 유입.
+7. [기대 손익비] (목표가 - 진입가) >= 1.5 * (진입가 - 손절가) 수학적 보장.
 
 ※ 극단적인 과열(RSI > 75, 이격도 > 105%)이나 1시간봉 하락 추세가 아니라면, 유망한 상승 모멘텀 또는 지지 반등 시 적극적으로 BUY를 결정하세요.
 
 ### [5. 목표가/손절가 수학적 유효성 규칙]
-- BUY 시: 반드시 '손절가 < 현재가 < 목표가' 관계를 만족해야 하며, 손익비 1:1.2 이상을 유지하세요.
+- BUY 시: 반드시 '손절가 < 현재가 < 목표가' 관계를 만족해야 하며, 손익비 1:1.5 이상을 유지하세요.
 - HOLD 시: 0을 적지 말고, **"5분봉 MA20 부근 눌림목 지지선(ENTRY_PRICE)"**, **"직전 지지선 손절가(STOP_LOSS)"**, **"목표가(TARGET_PRICE)"**를 기재하여 향후 진입 기준선을 제시하세요.
 {memory_section}
 ### [JSON 출력 필수 스키마]
@@ -589,7 +603,8 @@ class GeminiAnalyzer:
                     elif action == "SELL":
                         alloc_p = max(0.1, min(alloc_p, 1.0)) if alloc_p > 0 else 1.0
 
-                    return {
+                    alpha_sc = int(parsed.get("ALPHA_SCORE") or parsed.get("alpha_score", 0) or 0)
+                    res = {
                         "status": status,
                         "action": action,
                         "entry_price": entry_p,
@@ -597,7 +612,11 @@ class GeminiAnalyzer:
                         "stop_loss": stop_l,
                         "alloc_pct": alloc_p,
                         "reason": f"[{model}] {reason_t}",
+                        "alpha_score": alpha_sc,
                     }
+                    if hasattr(self, "_analysis_cache") and cache_key:
+                        self._analysis_cache[cache_key] = {"cached_at": time.time(), "result": res}
+                    return res
                 elif response.status_code == 429:
                     self._MODEL_COOLDOWNS[model] = time.time() + 900.0  # 15분 쿨다운
                     last_error = f"[{model}] 429 Quota Exceeded (15분 쿨다운 등록)"
@@ -610,7 +629,10 @@ class GeminiAnalyzer:
                 logger.warning(f"모델 '{model}' 요청 예외: {e}")
 
         logger.warning(f"Gemini API 호출 제한({last_error}) ➜ [로컬 퀀트 알고리즘 엔진]으로 즉시 자동 전환합니다.")
-        return self._run_local_quant_engine(
+        local_res = self._run_local_quant_engine(
             current_price, mtf_1h, disparity_ma20, rsi_val, bb, vol_info, candle_pattern,
             trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct
         )
+        if hasattr(self, "_analysis_cache") and cache_key:
+            self._analysis_cache[cache_key] = {"cached_at": time.time(), "result": local_res}
+        return local_res

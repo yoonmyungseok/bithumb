@@ -19,6 +19,7 @@ class WebSocketHealthState:
     DISCONNECTED = "DISCONNECTED"
     SUBSCRIPTION_FAILED = "SUBSCRIPTION_FAILED"
     DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
+    PROCESSING_DELAY = "PROCESSING_DELAY"
 
 
 class BithumbWebSocketClient:
@@ -51,6 +52,9 @@ class BithumbWebSocketClient:
         self._whale_trades: list[dict[str, Any]] = []
         # 수신 스레드와 주문 처리 스레드를 분리해 ping/pong 지연을 방지한다.
         self._callback_queue: queue.Queue[tuple[str, tuple[Any, ...]]] = queue.Queue(maxsize=2000)
+        self._callback_dropped_count = 0
+        self._last_callback_delay_seconds = 0.0
+        self._max_callback_delay_seconds = 0.0
         self.last_tick_time: float = 0.0
         self.last_tick_time_by_market: dict[str, float] = {}
         self.confirmed_markets: set[str] = set()
@@ -76,6 +80,11 @@ class BithumbWebSocketClient:
 
         latency = (now - last_tick) if last_tick > 0 else 9999.0
 
+        queue_depth = self._callback_queue.qsize()
+        with self._lock:
+            callback_delay = self._last_callback_delay_seconds
+            callback_drops = self._callback_dropped_count
+
         if not connected:
             state = WebSocketHealthState.DISCONNECTED
             is_healthy = False
@@ -87,6 +96,9 @@ class BithumbWebSocketClient:
             is_healthy = False
         elif latency > max_stale_seconds:
             state = WebSocketHealthState.STALE
+            is_healthy = False
+        elif queue_depth > 100 or callback_delay > 0.5:
+            state = WebSocketHealthState.PROCESSING_DELAY
             is_healthy = False
         else:
             state = WebSocketHealthState.DATA_AVAILABLE
@@ -100,6 +112,9 @@ class BithumbWebSocketClient:
             "market": market,
             "reconnect_count": reconnects,
             "subscribed_count": sub_count,
+            "callback_queue_depth": queue_depth,
+            "callback_delay_seconds": round(callback_delay, 3),
+            "callback_dropped_count": callback_drops,
         }
 
     def get_latest_price(self, market: str) -> float:
@@ -156,7 +171,7 @@ class BithumbWebSocketClient:
         drained = 0
         while drained < limit:
             try:
-                kind, args = self._callback_queue.get_nowait()
+                kind, args, enqueued_at = self._callback_queue.get_nowait()
             except queue.Empty:
                 break
             try:
@@ -166,17 +181,24 @@ class BithumbWebSocketClient:
                     self.on_whale_callback(*args)
             except Exception as exc:
                 logger.warning("빗썸 WebSocket 후속 콜백 처리 실패: %s", exc)
+            finally:
+                delay = max(0.0, time.monotonic() - enqueued_at)
+                with self._lock:
+                    self._last_callback_delay_seconds = delay
+                    self._max_callback_delay_seconds = max(self._max_callback_delay_seconds, delay)
             drained += 1
         return drained
 
     def _enqueue_callback(self, kind: str, args: tuple[Any, ...]) -> None:
         """큐 포화 시 오래된 이벤트를 버려 연결 유지와 최신 가격 처리를 우선한다."""
         try:
-            self._callback_queue.put_nowait((kind, args))
+            self._callback_queue.put_nowait((kind, args, time.monotonic()))
         except queue.Full:
             try:
                 self._callback_queue.get_nowait()
-                self._callback_queue.put_nowait((kind, args))
+                self._callback_queue.put_nowait((kind, args, time.monotonic()))
+                with self._lock:
+                    self._callback_dropped_count += 1
             except queue.Empty:
                 pass
 

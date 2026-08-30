@@ -16,13 +16,20 @@ from typing import Any
 
 import requests
 
+from market_policy import get_excluded_markets
+from risk_controls import RiskGuard as _RiskGuard
+from risk_controls import calculate_risk_position_size as _calculate_risk_position_size
+from risk_controls import get_dynamic_portfolio_tiers as _get_dynamic_portfolio_tiers
+from state_store import load_json_with_backup_recovery as _load_json_with_backup_recovery
+from state_store import write_json_atomically as _write_json_atomically
+
 logger = logging.getLogger(__name__)
 
 
 _FILE_WRITE_LOCK = threading.RLock()
 
 
-def write_json_atomically(path: str, payload: Any) -> None:
+def _legacy_write_json_atomically(path: str, payload: Any) -> None:
     """Persist JSON without leaving a partially-written state file after a crash,
     with robust retry and fallback logic for Windows file-locking quirks (WinError 5 / 32).
     Also maintains a .bak file for self-healing crash recovery."""
@@ -68,7 +75,7 @@ def write_json_atomically(path: str, payload: Any) -> None:
                     pass
 
 
-def load_json_with_backup_recovery(path: str, default: Any = None) -> Any:
+def _legacy_load_json_with_backup_recovery(path: str, default: Any = None) -> Any:
     """Load JSON from path with automatic fallback to .bak on corruption or decode failure."""
     backup_path = f"{path}.bak"
     if not os.path.exists(path):
@@ -79,7 +86,7 @@ def load_json_with_backup_recovery(path: str, default: Any = None) -> Any:
                     logger.warning("주 파일(%s) 부재로 백업본(%s)에서 자동 복구", path, backup_path)
                     # 주 파일 복원 시도
                     try:
-                        write_json_atomically(path, data)
+                        _write_json_atomically(path, data)
                     except Exception:
                         pass
                     return data
@@ -98,7 +105,7 @@ def load_json_with_backup_recovery(path: str, default: Any = None) -> Any:
                     recovered_data = json.load(bf)
                     logger.info("✅ 백업 파일(%s)로부터 데이터 자가 복구 성공! 주 파일 복원", backup_path)
                     try:
-                        write_json_atomically(path, recovered_data)
+                        _write_json_atomically(path, recovered_data)
                     except Exception:
                         pass
                     return recovered_data
@@ -110,17 +117,13 @@ def load_json_with_backup_recovery(path: str, default: Any = None) -> Any:
 
 def get_excluded_markets_set() -> set[str]:
     """수동 매매 보호 종목 집합 반환 (P3-1 단일 진실의 원천)"""
-    raw = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO") + "," + os.getenv("UPBIT_EXCLUDED_MARKETS", "KRW-HOLO,HOLO")
-    items = {"KRW-HOLO", "HOLO"}
-    for item in raw.split(","):
-        s = item.strip().upper()
-        if s:
-            items.add(s)
-            if s.startswith("KRW-"):
-                items.add(s.replace("KRW-", ""))
-            else:
-                items.add(f"KRW-{s}")
-    return items
+    return get_excluded_markets()
+
+
+# Compatibility exports.  State persistence now belongs to state_store.py;
+# existing consumers retain these import paths during the migration.
+write_json_atomically = _write_json_atomically
+load_json_with_backup_recovery = _load_json_with_backup_recovery
 
 
 class OrderStatus:
@@ -715,6 +718,7 @@ class OrderFillProcessor:
         korean_name: str | None = None,
         timestamp_str: str | None = None,
         expected_price: float | None = None,
+        chart_img: bytes | None = None,
     ) -> dict[str, Any]:
         """
         체결 내역을 멱등(Idempotent)하고 단조적(Monotonic)으로 반영하며 슬리피지를 추적하는 단일 체결 처리기 (P0-1, P0-3)
@@ -776,6 +780,50 @@ class OrderFillProcessor:
                         "🛒 [%s] 실제 매수 체결 확인: 증가분=%.6f, 체결단가=%.2f, 수수료=%.2f, 슬리피지=%+.1fbps",
                         market, fill_delta, effective_price, fee_delta, slippage_bps,
                     )
+
+                    # 텔레그램 매수 체결 알림 발송 (체결 기반 실시간 알림)
+                    entry_snapshot = dict(order.get("entry_strategy_snapshot") or {})
+                    k_name = korean_name or entry_snapshot.get("korean_name") or order.get("korean_name") or market.replace("KRW-", "")
+                    tp = entry_snapshot.get("target_price") or order.get("target_price")
+                    sl = entry_snapshot.get("stop_loss") or order.get("stop_loss")
+                    alpha = entry_snapshot.get("alpha_score")
+                    raw_exchange = str(entry_snapshot.get("exchange") or order.get("exchange_name") or "").upper()
+                    exchange_tag = "업비트" if "UPBIT" in raw_exchange else "빗썸"
+                    entry_reason = entry_snapshot.get("entry_reason") or order.get("entry_reason") or ""
+                    currency = market.replace("KRW-", "")
+                    total_fill_krw = int(fill_delta * effective_price)
+
+                    is_fully_filled = (status == OrderStatus.FILLED) or (remaining_volume <= 1e-8)
+                    status_label = "체결 완료" if is_fully_filled else f"부분 체결 (누적 {prev_processed_vol + fill_delta:.6f})"
+
+                    tp_str = f"• 목표가: {float(tp):,.2f} KRW | 손절가: {float(sl):,.2f} KRW\n" if tp and sl else ""
+                    alpha_str = f"• AI 알파 스코어: <b>{alpha}점</b>\n" if alpha is not None else ""
+                    reason_str = f"• 진입 사유: <i>{entry_reason}</i>\n" if entry_reason else ""
+                    slip_str = f" ({slippage_bps:+.1f} bps)" if abs(slippage_bps) >= 0.1 else ""
+
+                    caption = (
+                        f"🛒 <b>[{exchange_tag} {k_name}({market}) 매수 {status_label}!]</b>\n"
+                        f"• 실체결 단가: <b>{effective_price:,.2f} KRW</b>{slip_str}\n"
+                        f"• 체결 수량: {fill_delta:.6f} {currency}\n"
+                        f"• 체결 금액: <b>{total_fill_krw:,d} KRW</b>\n"
+                        f"• 지불 수수료: {fee_delta:,.2f} KRW\n"
+                        f"{tp_str}"
+                        f"{alpha_str}"
+                        f"{reason_str}"
+                        f"• 주문 ID: <code>{order.get('exchange_uuid') or order.get('exchange_order_id') or exchange_uuid or client_order_id}</code>\n"
+                        f"• 체결 일시: {now_str}"
+                    )
+
+                    if self.telegram:
+                        try:
+                            if chart_img:
+                                self.telegram.send_photo(chart_img, caption=caption)
+                            else:
+                                self.telegram.send_message(caption)
+                        except Exception as te:
+                            logger.warning("매수 체결 텔레그램 알림 발송 실패: %s", te)
+
+
                 else:
                     # 매도 체결: 실제 체결 증가분만 실현 손익 계산 (P0-1, P0-3)
                     effective_avg_buy_price = avg_buy_price or float(order.get("avg_buy_price", 0.0) or 0.0)
@@ -874,20 +922,26 @@ class OrderFillProcessor:
             }
 
 
-def get_dynamic_portfolio_tiers(total_equity: float) -> tuple[int, float, int]:
+def get_dynamic_portfolio_tiers(total_equity: float, custom_max_positions: int | None = None) -> tuple[int, float, int]:
     """
     총 평가 자산 규모에 따른 동적 포트폴리오 슬롯 및 비중 한도 자동 스케일링 (Auto-Scaling)
-    - 30만 원 미만 (소액/테스트): 최대 2종목 (종목당 최대 50%, 스크리닝 상위 4개 검토)
-    - 30만 원 ~ 100만 원 (중소액): 최대 3종목 (종목당 최대 35%, 스크리닝 상위 5개 검토)
-    - 100만 원 이상 (본격 운용): 최대 4종목 (종목당 최대 25%, 스크리닝 상위 6개 검토)
+    - 30만 원 미만 (소액): 최대 3종목 (종목당 최대 35%, 스크리닝 상위 10개 정밀 검토)
+    - 30만 원 ~ 100만 원 (중소액): 최대 5종목 (종목당 최대 25%, 스크리닝 상위 12개 정밀 검토)
+    - 100만 원 이상 (본격 운용): 최대 6종목 (종목당 최대 20%, 스크리닝 상위 15개 정밀 검토)
     Returns: (max_open_positions: int, max_position_pct: float, top_screener_count: int)
     """
+    if custom_max_positions and custom_max_positions > 0:
+        max_pos = custom_max_positions
+        max_pct = round(min(0.50, max(0.15, 1.0 / max_pos + 0.05)), 2)
+        top_count = max(10, min(20, max_pos * 3))
+        return max_pos, max_pct, top_count
+
     if total_equity < 300_000.0:
-        return 2, 0.50, 4
+        return 3, 0.35, 10
     elif total_equity < 1_000_000.0:
-        return 3, 0.35, 5
+        return 5, 0.25, 12
     else:
-        return 4, 0.25, 6
+        return 6, 0.20, 15
 
 
 class RiskGuard:
@@ -1126,4 +1180,11 @@ def calculate_risk_position_size(
 
     final_krw = min(raw_position_krw, max_allowed_krw)
     return round(final_krw, 2) if final_krw >= min_order_krw else 0.0
+
+
+# Public compatibility names.  New code imports risk_controls directly; this
+# facade avoids a breaking migration for existing callers.
+RiskGuard = _RiskGuard
+get_dynamic_portfolio_tiers = _get_dynamic_portfolio_tiers
+calculate_risk_position_size = _calculate_risk_position_size
 

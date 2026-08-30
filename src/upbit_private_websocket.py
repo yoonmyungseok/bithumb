@@ -15,9 +15,16 @@ import time
 import uuid
 from collections.abc import Callable
 from typing import Any
+import warnings
 
 import jwt
 import websocket
+
+try:
+    from jwt.warnings import InsecureKeyLengthWarning
+    warnings.filterwarnings("ignore", category=InsecureKeyLengthWarning)
+except ImportError:
+    pass
 
 logger = logging.getLogger(__name__)
 

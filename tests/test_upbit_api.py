@@ -5,7 +5,14 @@ import unittest
 import urllib.parse
 from unittest.mock import MagicMock, patch
 
+import warnings
 import jwt
+
+try:
+    from jwt.warnings import InsecureKeyLengthWarning
+    warnings.filterwarnings("ignore", category=InsecureKeyLengthWarning)
+except ImportError:
+    pass
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 

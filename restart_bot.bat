@@ -8,7 +8,7 @@ echo  [Restarting Bithumb Auto Trading Bot]
 echo ======================================================
 echo.
 
-venv\Scripts\python.exe src\process_manager.py stop
+venv\Scripts\python.exe src\process_manager.py bithumb stop
 timeout /t 1 > nul
 
 echo.

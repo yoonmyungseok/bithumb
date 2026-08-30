@@ -297,6 +297,8 @@ class RealtimeRiskEngine:
                 })
             except Exception as sheet_err:
                 logger.debug(f"청산 시트 기록 오류: {sheet_err}")
+        pnl_krw = float(fill_res.get("pnl_krw", 0.0) or 0.0)
+        pnl_pct = float(fill_res.get("pnl_pct", 0.0) or 0.0)
 
         return {
             "exec_price": exec_price,

@@ -13,36 +13,50 @@ class StrategyPolicy:
     ATR_TARGET_MULTIPLIER: float = 1.8   # ATR 기반 목표가 배수
     ATR_STOP_MULTIPLIER: float = 1.2     # ATR 기반 손절가 배수
     MIN_TARGET_PCT: float = 0.020        # 최소 목표 수익률 +2.0%
-    MIN_STOP_PCT: float = 0.015          # 기본 최소 손절선 -1.5%
-    STOP_LOSS_PCT: float = 0.025         # 기본 손절 -2.5% (-4.5% 비상 하드스탑)
+    MIN_STOP_PCT: float = 0.012          # 기본 최소 손절선 -1.2% (손익비 1.5:1 이상 확보)
+    STOP_LOSS_PCT: float = 0.015         # 기본 손절 -1.5% (슬리피지 감안 -2.5% 비상 하드스탑)
 
-    # 2. 익절 및 트레일링 스탑 (3단계 다단계 분할 익절 & 본전 락인)
+    # 1-1. 메이저 코인(BTC/ETH) 전용 목표가/익절/타임스탑 (낮은 변동성 적응 및 자금 잠김 방어)
+    MAJOR_MIN_TARGET_PCT: float = 0.012          # 메이저 최소 목표 수익률 +1.2%
+    MAJOR_MIN_STOP_PCT: float = 0.010            # 메이저 기본 최소 손절선 -1.0%
+    MAJOR_PARTIAL_TP_1_PCT: float = 0.015        # 메이저 1차 분할 익절 +1.5% (도달 시 50% 익절)
+    MAJOR_PARTIAL_TP_2_PCT: float = 0.030        # 메이저 2차 분할 익절 +3.0% (도달 시 50% 추가익절)
+    MAJOR_TRAILING_START_PCT: float = 0.012      # 메이저 +1.2% 트레일링 스탑 활성화
+    MAJOR_TRAILING_DROP_PCT: float = 0.008       # 메이저 최고점 대비 0.8% 하락 시 시장가 청산
+    MAJOR_TIME_STOP_SECONDS_NORMAL: int = 3600   # 메이저 정상장 60분 타임스탑 (기존 40분 완화)
+    MAJOR_TIME_STOP_SECONDS_RISK_OFF: int = 1800 # 메이저 약세장 30분 타임스탑 (기존 20분 완화)
+
+    # 2. 익절 및 트레일링 스탑 (선제적 50% 분할 익절 & 본전 락인)
     PARTIAL_TP_PCT: float = 0.025        # 기본 1차 익절 기준 +2.5%
-    PARTIAL_TP_1_PCT: float = 0.025      # 1차 +2.5% 도달 시 30% 분할 익절
-    PARTIAL_TP_1_RATIO: float = 0.30     # 1차 익절 비중 (30%)
-    PARTIAL_TP_2_PCT: float = 0.050      # 2차 +5.0% 도달 시 30% 추가 익절
-    PARTIAL_TP_2_RATIO: float = 0.30     # 2차 익절 비중 (원금 기준 30% -> 잔여 70% 중 42.85%)
+    PARTIAL_TP_1_PCT: float = 0.025      # 1차 +2.5% 도달 시 50% 분할 익절
+    PARTIAL_TP_1_RATIO: float = 0.50     # 1차 익절 비중 (50% 선제 수익 실현)
+    PARTIAL_TP_2_PCT: float = 0.050      # 2차 +5.0% 도달 시 잔여 50% 분할 익절
+    PARTIAL_TP_2_RATIO: float = 0.50     # 2차 익절 비중 (잔여 50% 중 50% = 원금의 25%)
     BREAKEVEN_STOP_PCT: float = 0.003    # 1차 익절 완료 후 본전 보장 스탑 (+0.3% 수수료 보장)
     TRAILING_START_PCT: float = 0.020    # +2.0% 트레일링 스탑 활성화
     TRAILING_DROP_PCT: float = 0.012     # 최고점 대비 1.2% 하락 시 시장가 청산
     MIN_PROFIT_BUFFER_PCT: float = 0.005 # +0.5% 최소 보장 마진 (v6.1 상향)
 
-    # 3. 시간 기반 청산 (타임스탑) & 쿨다운 / 재진입 갭 필터
+    # 3. 시간 기반 청산 (타임스탑) & 15분 모멘텀 조기 탈출 & 쿨다운
+    MOMENTUM_EARLY_EXIT_SECONDS: int = 900  # 15분 모멘텀 소멸 조기 본전 탈출 (900초)
+    MOMENTUM_EARLY_EXIT_BARS_5M: int = 3   # 5분봉 3개 캔들
     TIME_STOP_SECONDS: int = 3600        # 60분 타임스탑 (기본 정상장, 실거래 초 단위)
     TIME_STOP_SECONDS_NORMAL: int = 3600 # 정상장 60분 타임스탑
-    TIME_STOP_SECONDS_RISK_OFF: int = 1800 # RISK_OFF 약세장 30분 단축 타임스탑
+    TIME_STOP_SECONDS_RISK_OFF: int = 2700 # RISK_OFF 약세장 45분 단축 타임스탑 (기존 30분에서 완화)
     TIME_STOP_BARS_5M: int = 12          # 5분봉 12개 = 60분 (백테스트 캔들 단위)
-    TIME_STOP_BARS_5M_RISK_OFF: int = 6  # 5분봉 6개 = 30분 (RISK_OFF 백테스트 캔들 단위)
-    COOLDOWN_STOP_LOSS_SEC: float = 2700.0  # 손절 후 쿨다운 45분
-    COOLDOWN_TIME_STOP_SEC: float = 2700.0  # 타임스탑 횡보 청산 후 쿨다운 45분
-    COOLDOWN_TP_SEC: float = 1800.0         # 트레일링 익절 후 쿨다운 30분
+    TIME_STOP_BARS_5M_RISK_OFF: int = 9  # 5분봉 9개 = 45분 (RISK_OFF 백테스트 캔들 단위)
+    COOLDOWN_STOP_LOSS_SEC: float = 1500.0  # 손절 후 쿨다운 25분 (자금 회전율 최적화)
+    COOLDOWN_TIME_STOP_SEC: float = 900.0   # 타임스탑 횡보 청산 후 쿨다운 15분 (조기 2차 랠리 참여 허용)
+    COOLDOWN_TP_SEC: float = 900.0          # 트레일링 익절 후 쿨다운 15분
     REENTRY_BUFFER_PCT: float = 0.015       # 직전 청산가 대비 최소 돌파/눌림목 갭 버퍼 (+1.5%)
     REENTRY_FILTER_EXPIRY_SEC: float = 7200.0  # 직전 청산가 갭 필터 유지 시간 (2시간)
 
-    # 4. 하드 안전 게이트 (Hard Safety Gates) 임계값
-    ALPHA_BUY_THRESHOLD: int = 65        # 7대 팩터 복합 알파 승인 점수 (100점 만점, 기본/호환용)
-    ALPHA_BUY_THRESHOLD_NORMAL: int = 65 # 정상장 7대 팩터 복합 알파 승인 점수
-    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 80 # RISK_OFF 약세장 초고알파 엄선 승인 점수
+    # 4. 하드 안전 게이트 (Hard Safety Gates) & 상대 강도(RS) 임계값
+    ALPHA_BUY_THRESHOLD: int = 60        # 7대 팩터 복합 알파 승인 점수 (100점 만점, 추천 설정)
+    ALPHA_BUY_THRESHOLD_NORMAL: int = 60 # 정상장 7대 팩터 복합 알파 승인 점수 (기회 빈도 +40%)
+    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 75 # RISK_OFF 약세장 엄선 승인 점수 (75점)
+    RS_MIN_RISK_OFF: float = 0.015       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+1.5% 초과 상승)
+    MIN_TRADE_VALUE_RISK_OFF: float = 3_000_000_000.0  # 약세장 최소 24시간 거래대금 30억 원
     MIN_ASSET_PRICE_KRW: float = 10.0    # 10원 미만 극초저가 코인 차단 (호가 갭/슬리피지 방어)
     RSI_MIN_NORMAL: float = 35.0         # 정상장 RSI 최소치 (모멘텀 실종 방어)
     RSI_MAX_NORMAL: float = 75.0         # 정상장 RSI 최대치 (극초과열 추격 방어)
@@ -109,6 +123,17 @@ def build_orderbook_tracker_key(market: str, exchange: str = "") -> str:
     normalized_market = (market or "UNKNOWN_MARKET").upper()
     normalized_exchange = (exchange or "").strip().lower()
     return f"{normalized_exchange}:{normalized_market}" if normalized_exchange else normalized_market
+
+
+MAJOR_MARKETS = {"KRW-BTC", "BTC", "KRW-ETH", "ETH"}
+
+
+def is_major_market(market: str) -> bool:
+    """시가총액 상위 대형 메이저 코인(BTC, ETH) 여부 판별"""
+    if not market:
+        return False
+    m = str(market).strip().upper()
+    return m in MAJOR_MARKETS or m.replace("KRW-", "") in {"BTC", "ETH"}
 
 
 def select_completed_candles(candles: list[dict[str, Any]], minimum_count: int) -> list[dict[str, Any]]:
@@ -320,6 +345,52 @@ def classify_btc_regime(
     return {"regime": "NORMAL", "drop_pct": round(recent_drop * 100.0, 2), "reason": "BTC 정상 안정세"}
 
 
+def calculate_relative_strength(
+    candles_asset: list[dict[str, Any]],
+    candles_btc: list[dict[str, Any]],
+    lookback_bars: int = 12,
+) -> dict[str, Any]:
+    """
+    비트코인 대비 자산의 상대 강도(RS, Relative Strength) 산출
+    - RS(%) = (자산 최근 N봉 변동률%) - (BTC 최근 N봉 변동률%)
+    - 양수(+) : 비트코인 대비 초과 상승(독자 강세)
+    - 음수(-) : 비트코인 대비 약세/언더퍼폼
+    """
+    if not candles_asset or not candles_btc or len(candles_asset) < 2 or len(candles_btc) < 2:
+        return {"rs_pct": 0.0, "asset_chg_pct": 0.0, "btc_chg_pct": 0.0, "is_outlier": False, "desc": "RS 계산 데이터 부족"}
+
+    n_asset = min(len(candles_asset) - 1, lookback_bars)
+    n_btc = min(len(candles_btc) - 1, lookback_bars)
+
+    p_asset_now = float(candles_asset[0].get("trade_price", 0.0))
+    p_asset_past = float(candles_asset[n_asset].get("trade_price", p_asset_now))
+    chg_asset = ((p_asset_now - p_asset_past) / p_asset_past * 100.0) if p_asset_past > 0 else 0.0
+
+    p_btc_now = float(candles_btc[0].get("trade_price", 0.0))
+    p_btc_past = float(candles_btc[n_btc].get("trade_price", p_btc_now))
+    chg_btc = ((p_btc_now - p_btc_past) / p_btc_past * 100.0) if p_btc_past > 0 else 0.0
+
+    rs_pct = chg_asset - chg_btc
+    is_outlier = (rs_pct >= 1.5) and (chg_asset > 0.0)
+
+    if rs_pct >= 2.0:
+        desc = f"🔥 BTC 대비 압도적 독자 강세 (RS: +{rs_pct:.2f}% | 코인 {chg_asset:+.2f}% vs BTC {chg_btc:+.2f}%)"
+    elif rs_pct >= 0.5:
+        desc = f"🟢 BTC 대비 상대적 강세 (RS: +{rs_pct:.2f}% | 코인 {chg_asset:+.2f}% vs BTC {chg_btc:+.2f}%)"
+    elif rs_pct <= -1.0:
+        desc = f"🔴 BTC 대비 언더퍼폼/약세 (RS: {rs_pct:.2f}% | 코인 {chg_asset:+.2f}% vs BTC {chg_btc:+.2f}%)"
+    else:
+        desc = f"⚪ BTC와 유사/동조화 (RS: {rs_pct:+.2f}%)"
+
+    return {
+        "rs_pct": round(rs_pct, 2),
+        "asset_chg_pct": round(chg_asset, 2),
+        "btc_chg_pct": round(chg_btc, 2),
+        "is_outlier": is_outlier,
+        "desc": desc,
+    }
+
+
 def calculate_vwap(candles: list[dict[str, Any]]) -> dict[str, Any]:
     """Calculate Volume Weighted Average Price (VWAP) from recent candles."""
     if not candles:
@@ -424,11 +495,11 @@ def calculate_composite_alpha_score(
         if prices_1h[0] >= ema20_1h:
             score_mtf = 15
             mtf_reason = "1H 정배열 강세"
-        elif prices_1h[0] >= (ema20_1h * 0.990):
+        elif prices_1h[0] >= (ema20_1h * 0.980):
             score_mtf = 10
-            mtf_reason = "1H 지지선 유지"
+            mtf_reason = "1H 지지/초기 반등권"
         else:
-            score_mtf = 0
+            score_mtf = 3
             mtf_reason = "1H 역배열 약세"
     else:
         score_mtf = 10
@@ -593,7 +664,7 @@ def entry_signal(
         prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
         ema20_1h = calculate_ema(prices_1h, 20)
         current_1h = prices_1h[0]
-        mtf_ratio = 1.002 if regime_upper == "RISK_OFF" else 0.990
+        mtf_ratio = 0.998 if regime_upper == "RISK_OFF" else 0.980
         mtf_allowed = current_1h >= (ema20_1h * mtf_ratio)
         mtf_reason = f"1H {current_1h:.1f} {'>=' if mtf_allowed else '<'} EMA20 {ema20_1h:.1f} (기준 {mtf_ratio:.3f})"
 
@@ -625,10 +696,14 @@ def entry_signal(
     volatility = atr_data["atr"]
     atr_pct = atr_data["atr_pct"]
 
-    target_offset = max(current * StrategyPolicy.MIN_TARGET_PCT, volatility * StrategyPolicy.ATR_TARGET_MULTIPLIER)
+    is_major = is_major_market(market)
+    min_tgt_pct = StrategyPolicy.MAJOR_MIN_TARGET_PCT if is_major else StrategyPolicy.MIN_TARGET_PCT
+    min_stp_pct = StrategyPolicy.MAJOR_MIN_STOP_PCT if is_major else StrategyPolicy.MIN_STOP_PCT
+
+    target_offset = max(current * min_tgt_pct, volatility * StrategyPolicy.ATR_TARGET_MULTIPLIER)
     target_price = current + target_offset
 
-    stop_offset = max(current * StrategyPolicy.MIN_STOP_PCT, volatility * StrategyPolicy.ATR_STOP_MULTIPLIER)
+    stop_offset = max(current * min_stp_pct, volatility * StrategyPolicy.ATR_STOP_MULTIPLIER)
     stop_loss = current - stop_offset
 
     checklist_details = {
@@ -673,6 +748,7 @@ def entry_signal(
         "strategy_snapshot": {
             "entry_btc_regime": btc_regime,
             "alpha_score": alpha_res["total_score"],
+            "factor_breakdown": dict(alpha_res["factor_breakdown"]),
             "indicators": {
                 "rsi": rsi,
                 "pct_b": pct_b,
@@ -688,6 +764,8 @@ def entry_signal(
             "target_price": round(target_price, 2),
             "stop_loss": round(stop_loss, 2),
         },
+        "factor_breakdown": alpha_res["factor_breakdown"],
+        "checklist": checklist_details,
         "risk_reward_ratio": round(target_offset / stop_offset, 2) if stop_offset > 0 else 1.5,
         "checklist_details": checklist_details,
     }

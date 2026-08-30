@@ -1,9 +1,7 @@
 import argparse
 import logging
-import math
 import sys
 from typing import Any
-
 from bithumb_api import BithumbAPI
 from order_safety import calculate_risk_position_size
 from strategy_engine import StrategyPolicy, calculate_chandelier_exit, classify_btc_regime, entry_signal

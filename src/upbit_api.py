@@ -12,14 +12,24 @@ import hashlib
 import logging
 import math
 import os
+import threading
 import time
 import urllib.parse
 import uuid
+import warnings
 from typing import Any
 from requests.adapters import HTTPAdapter
 
 import jwt
 import requests
+
+from market_policy import get_excluded_markets
+
+try:
+    from jwt.warnings import InsecureKeyLengthWarning
+    warnings.filterwarnings("ignore", category=InsecureKeyLengthWarning)
+except ImportError:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -29,18 +39,7 @@ DEFAULT_UPBIT_EXCLUDED: set[str] = {"KRW-HOLO", "HOLO"}
 
 def get_upbit_excluded_markets() -> set[str]:
     """업비트 자동 매매에서 엄격히 격리할 종목 목록 반환 (HOLO 필수 포함)"""
-    raw = os.getenv("UPBIT_EXCLUDED_MARKETS", "KRW-HOLO,HOLO").strip()
-    result = set(DEFAULT_UPBIT_EXCLUDED)
-    if raw:
-        for item in raw.split(","):
-            s = item.strip().upper()
-            if s:
-                result.add(s)
-                if s.startswith("KRW-"):
-                    result.add(s.replace("KRW-", ""))
-                else:
-                    result.add(f"KRW-{s}")
-    return result
+    return get_excluded_markets()
 
 
 class UpbitAPI:
@@ -60,6 +59,19 @@ class UpbitAPI:
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
         self._market_name_map: dict[str, str] = {}
+        self._lock = threading.RLock()
+        self._last_request_time = 0.0
+        # 업비트 시세 API 초당 10회 제한 방어 (85ms 간격 보장)
+        self._min_request_interval = 0.085
+
+    def _throttle(self) -> None:
+        """업비트 REST API Rate Limit(초당 10회) 초과 방지를 위한 능동적 스로틀링"""
+        with self._lock:
+            now = time.time()
+            elapsed = now - self._last_request_time
+            if elapsed < self._min_request_interval:
+                time.sleep(self._min_request_interval - elapsed)
+            self._last_request_time = time.time()
 
     def _generate_jwt_token(self, params: dict[str, Any] | None = None) -> str:
         """
@@ -106,6 +118,7 @@ class UpbitAPI:
         attempts = max_retries if retryable else 1
 
         for attempt in range(1, attempts + 1):
+            self._throttle()
             headers = {"Content-Type": "application/json"}
             if self.access_key and self.secret_key:
                 query_payload = params if params is not None else data
@@ -261,6 +274,25 @@ class UpbitAPI:
             data = self._request("GET", endpoint, params=params)
             return data if isinstance(data, list) else []
         except Exception:
+            return []
+
+    def get_orderbooks(self, markets: list[str]) -> list[dict[str, Any]]:
+        """
+        여러 마켓의 실시간 호가창 정보 일괄 조회 (Upbit batch query /orderbook?markets=...)
+        """
+        if not markets:
+            return []
+        valid_set = self._get_valid_markets_set()
+        filtered = [m for m in markets if not valid_set or m in valid_set]
+        if not filtered:
+            return []
+        markets_str = ",".join(filtered)
+        params = {"markets": markets_str}
+        try:
+            data = self._request("GET", "/orderbook", params=params)
+            return data if isinstance(data, list) else []
+        except Exception as e:
+            logger.debug(f"호가창 일괄 조회 예외: {e}")
             return []
 
     def get_orderbook(self, market: str = "KRW-BTC") -> dict[str, Any]:

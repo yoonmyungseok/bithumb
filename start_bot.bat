@@ -14,7 +14,7 @@ if not exist "venv\Scripts\python.exe" (
 )
 
 REM Stop previous bot instance if running
-venv\Scripts\python.exe src\process_manager.py stop > nul 2>&1
+venv\Scripts\python.exe src\process_manager.py bithumb stop > nul 2>&1
 timeout /t 1 > nul
 
 venv\Scripts\python.exe src\watchdog.py

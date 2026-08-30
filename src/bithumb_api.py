@@ -6,10 +6,17 @@ import time
 from requests.adapters import HTTPAdapter
 import urllib.parse
 import uuid
+import warnings
 from typing import Any
 
 import jwt
 import requests
+
+try:
+    from jwt.warnings import InsecureKeyLengthWarning
+    warnings.filterwarnings("ignore", category=InsecureKeyLengthWarning)
+except ImportError:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +237,24 @@ class BithumbAPI:
             params["to"] = to
         try:
             data = self._request("GET", endpoint, params=params)
+            return data if isinstance(data, list) else []
+        except (requests.exceptions.RequestException, KeyError, ValueError):
+            return []
+
+    def get_orderbooks(self, markets: list[str]) -> list[dict[str, Any]]:
+        """
+        여러 마켓의 실시간 호가창 정보 일괄 조회 (Bithumb batch query /orderbook?markets=...)
+        """
+        if not markets:
+            return []
+        valid_set = self._get_valid_markets_set()
+        filtered = [m for m in markets if not valid_set or m in valid_set]
+        if not filtered:
+            return []
+        markets_str = ",".join(filtered)
+        params = {"markets": markets_str}
+        try:
+            data = self._request("GET", "/orderbook", params=params)
             return data if isinstance(data, list) else []
         except (requests.exceptions.RequestException, KeyError, ValueError):
             return []

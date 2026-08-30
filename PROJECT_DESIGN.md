@@ -53,8 +53,9 @@ c:\AI\bithumb\
 ├── config/               # 설정 파일 폴더
 │   └── service_account.json   # Google Sheets 연동을 위한 GCP 서비스 계정 키
 ├── src/                  # 핵심 소스코드 디렉토리
-│   ├── main.py                     # 빗썸 진입점 및 5분 사이클 오케스트레이터
-│   ├── main_upbit.py               # 업비트 진입점 및 5분 사이클 오케스트레이터
+│   ├── main.py                     # 빗썸 진입점 (트레이딩 엔진 + 127.0.0.1:17979 내부 API)
+│   ├── main_upbit.py               # 업비트 진입점 (트레이딩 엔진 + 127.0.0.1:17980 내부 API)
+│   ├── dashboard_server.py         # [독립 프로세스] 통합 퀀트 대시보드 게이트웨이 서버 (포트 7979)
 │   ├── upbit_api.py                # 업비트 REST API 클라이언트 (HS512 JWT, query_hash, identifier)
 │   ├── upbit_websocket.py          # 업비트 Public WebSocket 클라이언트 (0.1초 실시간 틱/호가/고래 체결)
 │   ├── upbit_private_websocket.py  # 업비트 Private WebSocket 클라이언트 (myOrder, myAsset)
@@ -73,11 +74,12 @@ c:\AI\bithumb\
 │   ├── telegram_alert.py           # 텔레그램 양방향 원격 제어, 디바운싱 알림, 차트 전송
 │   ├── sheets_manager.py           # Google Sheets 기반 매매 일지, 대시보드 및 Strategy 탭 동기화 (거래소 태깅)
 │   ├── chart_renderer.py           # matplotlib 기반 매매 시점 캔들 차트 이미지 렌더링 (다크 테마)
-│   ├── web_server.py               # 로컬 실시간 웹 대시보드 서버 (포트 7979/7980, 주문저널/거래이력 실시간 서빙)
-│   ├── process_manager.py          # 빗썸/업비트 독립 프로세스 탐색, 종료, 상태, 로그 관리
+│   ├── web_server.py               # 로컬 경량 웹 API 서버 모듈 (is_api_only 지원)
+│   ├── process_manager.py          # 빗썸/업비트/대시보드/전체 독립 프로세스 탐색, 종료, 상태, 로그 관리
 │   ├── watchdog.py                 # 빗썸 워치독 프로세스
 │   └── watchdog_upbit.py           # 업비트 워치독 프로세스
-├── tests/                # 단위 테스트 디렉토리 (총 49개 테스트 스위트)
+├── tests/                # 단위 테스트 디렉토리 (총 50개 테스트 스위트, 178개 테스트)
+│   ├── test_dashboard_server.py    # 통합 대시보드 게이트웨이 및 멀티 거래소 집계/라우팅 검증
 │   ├── test_upbit_api.py           # 업비트 API JWT 인증, SHA-512 query_hash, 호가단위, identifier 검증
 │   ├── test_upbit_holo_guard.py    # KRW-HOLO 7중 방어선 (자산평가, 주문, 청산, 긴급매도, 시트 배제) 검증
 │   ├── test_exchange_isolation.py  # 빗썸/업비트 데이터 및 프로세스 완전 분리 검증
@@ -87,9 +89,12 @@ c:\AI\bithumb\
 │   ├── test_strategy_engine.py
 │   ├── test_realtime_risk.py
 │   └── test_startup_integration.py
-└── *.bat                 # 빗썸 및 업비트 실행, 중지, 재시작, 상태, 로그 조회 배치 스크립트
-    ├── start_bot.bat / start_upbit_bot.bat (콘솔 창 실행)
-    ├── start_bot_background.bat / start_upbit_bot_background.bat (완전 무창 백그라운드 24시간 가동)
+└── *.bat                 # 실행, 중지, 재시작, 상태, 로그 조회 배치 스크립트
+    ├── start_all.bat / start_all_background.bat (빗썸 + 업비트 + 통합 대시보드 3대 프로세스 일괄 가동)
+    ├── stop_all.bat / status_all.bat (전체 일괄 종료 및 상태 진단)
+    ├── start_dashboard.bat / stop_dashboard.bat / status_dashboard.bat (통합 대시보드 독립 제어)
+    ├── start_bot.bat / start_upbit_bot.bat
+    ├── start_bot_background.bat / start_upbit_bot_background.bat
     ├── stop_bot.bat / stop_upbit_bot.bat
     ├── restart_bot.bat / restart_upbit_bot.bat
     ├── status_bot.bat / status_upbit_bot.bat

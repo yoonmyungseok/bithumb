@@ -1,5 +1,4 @@
 import datetime
-import json
 import logging
 import os
 import threading
@@ -9,7 +8,9 @@ from typing import Any
 import requests
 
 from bithumb_api import BithumbAPI
-from order_safety import load_json_with_backup_recovery, write_json_atomically
+from market_policy import get_excluded_markets
+from state_store import load_json_with_backup_recovery, write_json_atomically
+from strategy_engine import StrategyPolicy, is_major_market
 
 logger = logging.getLogger(__name__)
 
@@ -65,17 +66,7 @@ def get_excluded_manual_holdings() -> set[str]:
     수동 매매 전용으로 봇의 자동 매매 및 자산 평가에서 완전히 격리할 종목/화폐 집합 반환
     - KRW-HOLO, HOLO는 어떠한 경우에도 자동매매/자산평가 대상에서 엄격히 제외
     """
-    raw = os.getenv("EXCLUDED_MANUAL_HOLDINGS", "KRW-HOLO,HOLO") + "," + os.getenv("UPBIT_EXCLUDED_MARKETS", "KRW-HOLO,HOLO")
-    items = {"KRW-HOLO", "HOLO"}
-    for item in raw.split(","):
-        s = item.strip().upper()
-        if s:
-            items.add(s)
-            if s.startswith("KRW-"):
-                items.add(s.replace("KRW-", ""))
-            else:
-                items.add(f"KRW-{s}")
-    return items
+    return get_excluded_markets()
 
 
 def calculate_total_equity(balances: dict[str, dict[str, float]], bithumb: Any) -> float:
@@ -143,21 +134,126 @@ def build_positions_data(
             avg_price = info.get("avg_buy_price", 0.0)
             pnl_pct = ((price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
             strat = strategies.get(market, {})
+            action = strat.get("action") or strat.get("ACTION") or "HOLD"
+            target_price = float(strat.get("target_price") or strat.get("TARGET_PRICE") or 0.0)
+            stop_loss = float(strat.get("stop_loss") or strat.get("STOP_LOSS") or 0.0)
+            if target_price <= 0.0 and price > 0.0:
+                target_price = price * (1.0 + StrategyPolicy.PARTIAL_TP_1_PCT)
+            if stop_loss <= 0.0 and price > 0.0:
+                stop_loss = price * (1.0 - StrategyPolicy.STOP_LOSS_PCT)
+
+            reason = strat.get("reason") or strat.get("REASON") or "보유 중 (AI 실시간 관망 및 모니터링)"
+            alpha_score = int(strat.get("alpha_score", 0) or 0)
+            factor_breakdown = strat.get("factor_breakdown", {})
+            target_pct = float(strat.get("target_pct") or (((target_price - price) / price * 100) if price > 0 and target_price > 0 else 0.0))
+            stop_pct = float(strat.get("stop_pct") or (((stop_loss - price) / price * 100) if price > 0 and stop_loss > 0 else 0.0))
+            rr_denom = max(1e-6, price - stop_loss)
+            rr_ratio = float(strat.get("risk_reward_ratio") or (((target_price - price) / rr_denom) if price > stop_loss > 0 and target_price > price else 0.0))
+            if rr_ratio <= 0.0 and abs(stop_pct) > 0.0:
+                rr_ratio = target_pct / abs(stop_pct)
+
             positions.append({
                 "market": market,
                 "korean_name": bithumb.get_korean_name(market),
                 "current_price": price,
+                "avg_buy_price": avg_price,
                 "balance": f"{vol:.6f}".rstrip("0").rstrip("."),
                 "value": int(val),
                 "pnl_pct": pnl_pct,
-                "action": strat.get("ACTION", "HOLD"),
-                "target_price": strat.get("TARGET_PRICE", 0),
-                "stop_loss": strat.get("STOP_LOSS", 0),
-                "reason": strat.get("REASON", "보유 중 (AI 실시간 관망 및 모니터링)"),
+                "action": action,
+                "target_price": target_price,
+                "stop_loss": stop_loss,
+                "reason": reason,
+                "alpha_score": alpha_score,
+                "factor_breakdown": factor_breakdown,
+                "target_pct": round(target_pct, 2),
+                "stop_pct": round(stop_pct, 2),
+                "risk_reward_ratio": round(rr_ratio, 2),
             })
         except (requests.exceptions.RequestException, KeyError, ValueError):
             continue
     return positions
+
+
+def build_candidates_data(
+    balances: dict[str, dict[str, float]],
+    exchange_api: Any,
+    strategies: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """웹 대시보드 표시용 신규 스캔 종목 AI 진입 전략 후보군 (미보유 종목)"""
+    candidates = []
+    strategies = strategies or {}
+    excluded = get_excluded_manual_holdings()
+
+    # 현재 보유 중인 마켓 목록 식별
+    held_markets = set()
+    for cur, info in balances.items():
+        if cur in ("KRW", "P") or cur in excluded or f"KRW-{cur}" in excluded:
+            continue
+        vol = info.get("balance", 0.0) + info.get("locked", 0.0)
+        if vol > 0:
+            held_markets.add(f"KRW-{cur}")
+
+    for market, strat in strategies.items():
+        if not market or not isinstance(strat, dict):
+            continue
+        if market in held_markets or market.replace("KRW-", "") in excluded or market in excluded:
+            continue
+
+        try:
+            curr_price = float(strat.get("current_price", 0.0) or 0.0)
+            if curr_price <= 0:
+                curr_price = float(exchange_api.get_current_price(market) or 0.0)
+
+            korean_name = strat.get("korean_name") or exchange_api.get_korean_name(market)
+            action = strat.get("action") or strat.get("ACTION") or "HOLD"
+            entry_price = float(strat.get("entry_price", curr_price) or curr_price)
+            target_price = float(strat.get("target_price") or strat.get("TARGET_PRICE") or 0.0)
+            stop_loss = float(strat.get("stop_loss") or strat.get("STOP_LOSS") or 0.0)
+            if target_price <= 0.0 and curr_price > 0.0:
+                target_price = curr_price * (1.0 + StrategyPolicy.PARTIAL_TP_1_PCT)
+            if stop_loss <= 0.0 and curr_price > 0.0:
+                stop_loss = curr_price * (1.0 - StrategyPolicy.STOP_LOSS_PCT)
+
+            alloc_pct = float(strat.get("alloc_pct", 0.0) or 0.0)
+            reason = strat.get("reason") or strat.get("REASON") or "스캔 분석 완료"
+            alpha_score = int(strat.get("alpha_score", 0) or 0)
+            allow_buy = bool(strat.get("allow_buy", False))
+            factor_breakdown = strat.get("factor_breakdown", {})
+            updated_at = strat.get("updated_at", "")
+
+            target_pct = float(strat.get("target_pct") or (((target_price - curr_price) / curr_price * 100) if curr_price > 0 and target_price > 0 else 0.0))
+            stop_pct = float(strat.get("stop_pct") or (((stop_loss - curr_price) / curr_price * 100) if curr_price > 0 and stop_loss > 0 else 0.0))
+            rr_denom = max(1e-6, curr_price - stop_loss)
+            rr_ratio = float(strat.get("risk_reward_ratio") or (((target_price - curr_price) / rr_denom) if curr_price > stop_loss > 0 and target_price > curr_price else 0.0))
+            if rr_ratio <= 0.0 and abs(stop_pct) > 0.0:
+                rr_ratio = target_pct / abs(stop_pct)
+
+            candidates.append({
+                "market": market,
+                "korean_name": korean_name,
+                "current_price": curr_price,
+                "entry_price": entry_price,
+                "target_price": target_price,
+                "stop_loss": stop_loss,
+                "action": action,
+                "alloc_pct": alloc_pct,
+                "reason": reason,
+                "alpha_score": alpha_score,
+                "allow_buy": allow_buy,
+                "factor_breakdown": factor_breakdown,
+                "target_pct": round(target_pct, 2),
+                "stop_pct": round(stop_pct, 2),
+                "risk_reward_ratio": round(rr_ratio, 2),
+                "updated_at": updated_at,
+            })
+        except (requests.exceptions.RequestException, KeyError, ValueError, TypeError) as e:
+            logger.debug(f"후보 종목 {market} 대시보드 데이터 생성 예외: {e}")
+            continue
+
+    # 1. 매수 허용(allow_buy) 여부 우선, 2. 알파 점수 높은 순 정렬
+    candidates.sort(key=lambda x: (1 if x.get("allow_buy") else 0, x.get("alpha_score", 0)), reverse=True)
+    return candidates
 
 
 class TrailingStopTracker:
@@ -249,19 +345,23 @@ class TrailingStopTracker:
         current_profit_pct = current_profit_rate * 100.0
 
         with self._lock:
-            # 1. [3단계 다단계 분할 익절: 1차 +2.5%(30%) / 2차 +5.0%(30%) / 3차 잔여(40%) 가속 트레일링]
+            is_major = is_major_market(market)
+            tp_1_target = StrategyPolicy.MAJOR_PARTIAL_TP_1_PCT if is_major else StrategyPolicy.PARTIAL_TP_1_PCT
+            tp_2_target = StrategyPolicy.MAJOR_PARTIAL_TP_2_PCT if is_major else StrategyPolicy.PARTIAL_TP_2_PCT
+
+            # 1. [3단계 다단계 분할 익절: 1차(30%) / 2차(30%) / 3차 잔여(40%) 가속 트레일링]
             raw_stage = self.partial_tp_done.get(market, 0)
             cur_stage = 1 if raw_stage is True else int(raw_stage or 0)
 
-            # 1-A. 1차 30% 분할 익절 (+2.5% 도달 시)
-            if current_profit_rate >= 0.025 and cur_stage < 1:
+            # 1-A. 1차 30% 분할 익절 (메이저 +1.5% / 알트 +2.5% 도달 시)
+            if current_profit_rate >= tp_1_target and cur_stage < 1:
                 self.partial_tp_done[market] = 1
                 self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
                 self._save_state()
                 return "PARTIAL_TP_1", current_price, current_price, current_profit_pct, current_profit_pct
 
-            # 1-B. 2차 30% 추가 분할 익절 (+5.0% 도달 시)
-            if current_profit_rate >= 0.050 and cur_stage < 2:
+            # 1-B. 2차 30% 추가 분할 익절 (메이저 +3.0% / 알트 +5.0% 도달 시)
+            if current_profit_rate >= tp_2_target and cur_stage < 2:
                 self.partial_tp_done[market] = 2
                 self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
                 self._save_state()
@@ -269,7 +369,16 @@ class TrailingStopTracker:
 
             # 2. [수익률 단계별 가속 트레일링 스탑 (Ratchet Tightening)]
             # 비상 방어 모드 가동 시: +0.8%부터 즉시 0.4% 초밀착 트레일링 가동
-            effective_start_pct = 0.008 if self.macro_defensive_mode else self.start_profit_pct
+            if self.macro_defensive_mode:
+                effective_start_pct = 0.008
+                base_drop_pct = 0.004
+            elif is_major:
+                effective_start_pct = StrategyPolicy.MAJOR_TRAILING_START_PCT  # +1.2%
+                base_drop_pct = StrategyPolicy.MAJOR_TRAILING_DROP_PCT        # 0.8%
+            else:
+                effective_start_pct = self.start_profit_pct                    # +2.0%
+                base_drop_pct = self.trailing_drop_pct                        # 1.2%
+
             has_peak_trailing = (market in self.peaks and self.peaks[market] >= avg_buy_price * (1.0 + effective_start_pct))
 
             if current_profit_rate >= effective_start_pct or (cur_stage >= 1) or has_peak_trailing:
@@ -282,17 +391,20 @@ class TrailingStopTracker:
 
                 if self.macro_defensive_mode:
                     active_drop_pct = 0.004  # 비상 방어 모드: 0.4% 극초밀착
+                elif is_major:
+                    active_drop_pct = min(base_drop_pct, 0.008)  # 메이저: 0.8% 밀착
                 elif peak_profit_pct >= 10.0:
                     active_drop_pct = 0.005  # +10% 이상: 0.5% 초밀착
                 elif peak_profit_pct >= 5.0:
                     active_drop_pct = 0.008  # +5% 이상: 0.8% 밀착
                 else:
-                    active_drop_pct = self.trailing_drop_pct  # 기본 1.2%
+                    active_drop_pct = base_drop_pct  # 기본 1.2%
 
                 trailing_stop_price = current_peak * (1.0 - active_drop_pct)
 
-                # 수수료(0.08%) 및 슬리피지(0.2~0.3%) 차감 후 최소 +0.5% 순수익 안전 마진 확보
-                min_guaranteed_profit = avg_buy_price * 1.005
+                # 수수료 및 슬리피지 차감 후 최소 안전 마진 확보 (메이저 +0.3%, 알트 +0.5%)
+                min_buffer = 1.003 if is_major else 1.005
+                min_guaranteed_profit = avg_buy_price * min_buffer
                 trailing_stop_price = max(trailing_stop_price, min_guaranteed_profit)
 
                 now_ts = time.time()
@@ -526,3 +638,54 @@ class DailyRiskManager:
                 self.kill_switch_active = False
 
             return self.kill_switch_active, daily_pnl_pct
+
+
+class StrategyCacheManager:
+    """
+    프로그램 재시작 시 불필요한 중복 캔들 조회, 스크리닝 및 Gemini AI API 호출을 방지하고
+    최근 유효 분석 데이터를 복원/보존하는 영속 캐시 관리자 (P0 Quota & Efficiency Guard)
+    """
+
+    def __init__(self, data_dir: str | None = None, exchange_name: str = "bithumb"):
+        self.exchange = (exchange_name or "bithumb").lower()
+        base_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+        if self.exchange == "upbit":
+            self.cache_dir = os.path.join(base_dir, "upbit")
+        else:
+            self.cache_dir = base_dir
+        os.makedirs(self.cache_dir, exist_ok=True)
+        self.cache_file = os.path.join(self.cache_dir, "strategy_cache.json")
+        self._lock = threading.Lock()
+
+    def save_cache(self, strategies: dict[str, dict[str, Any]]) -> None:
+        if not strategies:
+            return
+        with self._lock:
+            try:
+                write_json_atomically(self.cache_file, {
+                    "timestamp": time.time(),
+                    "datetime": get_kst_now_str(),
+                    "exchange": self.exchange,
+                    "strategies": strategies,
+                })
+            except Exception as e:
+                logger.debug("전략 캐시 저장 예외: %s", e)
+
+    def load_cache(self) -> dict[str, Any]:
+        with self._lock:
+            data = load_json_with_backup_recovery(self.cache_file, default={})
+            if isinstance(data, dict):
+                return data
+            return {}
+
+    def get_valid_strategies(self, ttl: float = 270.0) -> tuple[dict[str, dict[str, Any]], float, bool]:
+        """
+        유효 캐시 반환 (전략 딕셔너리, 경과 시간(초), 유효 여부)
+        """
+        cache = self.load_cache()
+        if not cache:
+            return {}, 0.0, False
+        cache_ts = float(cache.get("timestamp", 0.0))
+        elapsed = time.time() - cache_ts
+        is_valid = (0 < elapsed < ttl) and bool(cache.get("strategies"))
+        return cache.get("strategies", {}), elapsed, is_valid

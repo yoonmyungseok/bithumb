@@ -9,6 +9,7 @@ from order_safety import OrderJournal, SafeOrderExecutor
 from risk_manager import (
     DailyRiskManager,
     TrailingStopTracker,
+    build_candidates_data,
     build_positions_data,
     calculate_total_equity,
     get_excluded_manual_holdings,
@@ -16,6 +17,7 @@ from risk_manager import (
     get_held_markets,
     get_kst_now_str,
 )
+from strategy_engine import StrategyPolicy
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
 
@@ -56,6 +58,8 @@ class BotController:
         self.exchange_name = exchange_name
         self.web_port = web_port
         self.start_time = time.time()
+        self._last_dashboard_fetch_ts: float = 0.0
+        self._dashboard_cache_lock = threading.Lock()
         self.latest_dashboard_data: dict[str, Any] = {
             "total_equity": 0,
             "krw_available": 0,
@@ -66,9 +70,17 @@ class BotController:
             "total_trades": 0,
             "win_trades": 0,
             "win_rate": 0.0,
+            "position_win_rate": 0.0,
+            "total_positions": 0,
+            "kill_switch_active": False,
+            "kill_switch_latched_date": "",
+            "unknown_orders_count": 0,
             "fear_and_greed": "50점 (중립)",
+            "btc_regime": "NORMAL",
+            "btc_regime_desc": "🟢 정상장",
             "bot_state": "🟢 정상 가동 중",
             "positions": [],
+            "candidates": [],
             "recent_trades": [],
             "recent_orders": [],
         }
@@ -221,8 +233,52 @@ class BotController:
             f"• <b>일시:</b> {now_str}"
         )
 
+    def restore_missing_position_strategies(self, held_markets: list[str]) -> int:
+        """재시작 직후 보유 중이나 latest_strategies가 없는 종목을 주문 저널 스냅샷으로 복원"""
+        restored = 0
+        for market in held_markets:
+            if market in self.latest_strategies:
+                continue
+            entry_snapshot = None
+            if hasattr(self.order_journal, "get_last_entry_strategy"):
+                try:
+                    entry_snapshot = self.order_journal.get_last_entry_strategy(market)
+                except Exception:
+                    pass
+            if not entry_snapshot and hasattr(self.order_journal, "orders"):
+                try:
+                    for o in reversed(self.order_journal.orders):
+                        if o.get("market") == market and str(o.get("side", "")).lower() in ("bid", "buy", "매수") and o.get("status") in ("FILLED", "DONE"):
+                            entry_snapshot = o.get("entry_strategy_snapshot")
+                            if entry_snapshot:
+                                break
+                except Exception:
+                    pass
+            if not entry_snapshot:
+                continue
+            self.latest_strategies[market] = {
+                "action": "HOLD",
+                "target_price": float(entry_snapshot.get("target_price", 0.0) or 0.0),
+                "stop_loss": float(entry_snapshot.get("stop_loss", 0.0) or 0.0),
+                "reason": entry_snapshot.get("entry_reason", "기보유 포지션 퀀트 감시"),
+                "alpha_score": int(entry_snapshot.get("alpha_score", 70) or 70),
+                "indicators": entry_snapshot.get("indicators", {}),
+                "allow_buy": False,
+                "restored_from_order_journal": True,
+            }
+            restored += 1
+            logger.info("[%s] 재시작 후 주문 저널의 진입 전략을 대시보드에 복원했습니다.", market)
+        return restored
+
     def get_dashboard_data(self) -> dict[str, Any]:
-        """웹 대시보드 프론트엔드 실시간 API 데이터 반환"""
+        """웹 대시보드 프론트엔드 실시간 API 데이터 반환 (2.0초 캐싱으로 거래소 Rate Limit 및 지연 방지)"""
+        now = time.time()
+        if self._last_dashboard_fetch_ts > 0.0 and (now - self._last_dashboard_fetch_ts < 2.0) and self.latest_dashboard_data.get("total_equity", 0) > 0:
+            return self.latest_dashboard_data
+
+        if not self._dashboard_cache_lock.acquire(blocking=True, timeout=0.5):
+            return self.latest_dashboard_data
+
         try:
             bithumb = self.get_exchange()
             fng = get_fear_and_greed_index()
@@ -246,8 +302,10 @@ class BotController:
 
             state_badge = "⏸️ 일시정지 중" if self.get_is_paused() else "🟢 정상 가동 중"
 
-            # 1. 포지션 데이터
+            # 1. 포지션 및 후보군 데이터
+            self.restore_missing_position_strategies(get_held_markets(balances, bithumb))
             positions_data = build_positions_data(balances, bithumb, self.latest_strategies)
+            candidates_data = build_candidates_data(balances, bithumb, self.latest_strategies)
 
             # 2. 최근 완료 거래 내역
             recent_trades_data = []
@@ -274,7 +332,6 @@ class BotController:
                         "side": o.get("side", ""),
                         "status": o.get("status", ""),
                         "price": float(o.get("price", 0.0) or 0.0),
-                        # 체결 수량이 있는 경우에만 대시보드에서 평균 체결가를 표시한다.
                         "avg_price": float(o.get("avg_price", 0.0) or 0.0),
                         "executed_volume": float(o.get("executed_volume", 0.0) or 0.0),
                         "volume": float(o.get("volume", 0.0) or 0.0),
@@ -287,6 +344,12 @@ class BotController:
             # 4. 포지션 단위 통합 통계 및 UNKNOWN 주문 수
             pos_stats = self.trade_memory.get_position_level_stats() if hasattr(self.trade_memory, "get_position_level_stats") else {}
             unknown_count = sum(1 for o in self.order_journal.orders if o.get("status") == "UNKNOWN")
+
+            # 5. BTC 시장 레짐 정보
+            btc_regime = "NORMAL"
+            btc_regime_desc = f"🟢 정상장 (진입 {StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL}점+)"
+            btc_reason = "BTC 정상 안정세"
+            btc_threshold = StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL
 
             self.latest_dashboard_data = {
                 "total_equity": int(total_equity),
@@ -303,14 +366,22 @@ class BotController:
                 "kill_switch_active": self.risk_manager.kill_switch_active,
                 "kill_switch_latched_date": getattr(self.risk_manager, "kill_switch_latched_date", ""),
                 "unknown_orders_count": unknown_count,
-                "fear_and_greed": fng["desc"],
+                "fear_and_greed": fng.get("desc", str(fng)) if isinstance(fng, dict) else str(fng),
+                "btc_regime": btc_regime,
+                "btc_regime_desc": btc_regime_desc,
+                "btc_regime_reason": btc_reason,
+                "btc_regime_threshold": btc_threshold,
                 "bot_state": state_badge,
                 "positions": positions_data,
+                "candidates": candidates_data,
                 "recent_trades": recent_trades_data,
                 "recent_orders": recent_orders_data,
             }
+            self._last_dashboard_fetch_ts = time.time()
         except Exception as e:
             logger.debug(f"대시보드 데이터 갱신 예외: {e}")
+        finally:
+            self._dashboard_cache_lock.release()
 
         return self.latest_dashboard_data
 

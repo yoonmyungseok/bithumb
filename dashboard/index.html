@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 퀀트 트레이딩 Pro 대시보드</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- TradingView Widget Script -->
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body class="p-4 sm:p-6 min-h-screen">
+  <div class="max-w-7xl mx-auto space-y-6">
+
+    <!-- Top Navigation & Control Bar -->
+    <header class="flex flex-wrap justify-between items-center bg-slate-900/90 p-5 rounded-2xl border border-slate-800 backdrop-blur shadow-2xl">
+      <div class="flex items-center space-x-4">
+        <div class="w-12 h-12 rounded-xl bg-gradient-to-tr from-blue-600 via-indigo-600 to-emerald-500 flex items-center justify-center shadow-lg shadow-blue-500/20 text-2xl">
+          🚀
+        </div>
+        <div>
+          <div class="flex items-center space-x-2">
+            <h1 id="bot-header-title" class="text-xl sm:text-2xl font-black bg-gradient-to-r from-blue-400 via-indigo-200 to-emerald-400 bg-clip-text text-transparent">
+              AI 퀀트 트레이딩 Pro
+            </h1>
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-500/20 text-blue-300 border border-blue-500/30">v2.0 SPA</span>
+          </div>
+          <div id="connection-status" class="flex items-center mt-1 text-xs text-slate-400">
+            <span class="inline-block w-2.5 h-2.5 rounded-full bg-slate-500 mr-2"></span>
+            <span>연결 상태 확인 중...</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Multi-Bot Exchange Switcher & Action Controls -->
+      <div class="flex flex-wrap items-center gap-3 mt-4 lg:mt-0">
+        <!-- Exchange Switcher Tabs -->
+        <div class="flex bg-slate-950/80 p-1 rounded-xl border border-slate-800">
+          <button id="exchange_combined" onclick="window.switchExchange('combined')" class="exchange-tab-btn px-3 py-1.5 rounded-lg text-xs font-bold transition bg-blue-600 text-white">
+            🌐 전체 통합
+          </button>
+          <button id="exchange_bithumb" onclick="window.switchExchange('bithumb')" class="exchange-tab-btn px-3 py-1.5 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white">
+            🟡 빗썸
+          </button>
+          <button id="exchange_upbit" onclick="window.switchExchange('upbit')" class="exchange-tab-btn px-3 py-1.5 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white">
+            🔵 업비트
+          </button>
+        </div>
+
+        <!-- Quick Remote Actions -->
+        <div class="flex items-center gap-2">
+          <button onclick="window.triggerAction('panic')" class="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 font-bold rounded-xl text-xs sm:text-sm text-white shadow-lg shadow-rose-600/30 transition active:scale-95 flex items-center gap-1.5">
+            <span>🚨</span>
+            <span class="hidden sm:inline">긴급 전량 매도</span>
+          </button>
+          <button onclick="window.triggerAction('pause')" class="px-3.5 py-2 bg-amber-600 hover:bg-amber-700 font-bold rounded-xl text-xs sm:text-sm text-white shadow-lg shadow-amber-600/30 transition active:scale-95 flex items-center gap-1.5">
+            <span>⏸️</span>
+            <span class="hidden sm:inline">일시정지</span>
+          </button>
+          <button onclick="window.triggerAction('resume')" class="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 font-bold rounded-xl text-xs sm:text-sm text-white shadow-lg shadow-emerald-600/30 transition active:scale-95 flex items-center gap-1.5">
+            <span>▶️</span>
+            <span class="hidden sm:inline">재개</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- 4 Major Asset & Risk KPI Cards -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <!-- Card 1: Total Equity -->
+      <div class="card-glass p-5">
+        <div class="text-xs text-slate-400 uppercase font-semibold tracking-wider flex justify-between items-center">
+          <span>총 평가 자산</span>
+          <span class="text-blue-400 text-sm">💰</span>
+        </div>
+        <div id="total_equity" class="text-2xl font-bold text-white mt-1">- 원</div>
+        <div class="text-xs text-emerald-400 mt-2 flex items-center justify-between">
+          <span>가용 원화</span>
+          <span id="krw_avail" class="font-medium">- 원</span>
+        </div>
+      </div>
+
+      <!-- Card 2: Daily PnL -->
+      <div class="card-glass p-5">
+        <div class="text-xs text-slate-400 uppercase font-semibold tracking-wider flex justify-between items-center">
+          <span>금일 자산 변동 (평가손익)</span>
+          <span class="text-indigo-400 text-sm">📊</span>
+        </div>
+        <div id="daily_pnl" class="text-2xl font-bold text-white mt-1">- 원 (0.00%)</div>
+        <div class="text-xs text-slate-400 mt-2 flex items-center justify-between">
+          <span>기준 자산</span>
+          <span id="start_equity" class="font-medium">- 원</span>
+        </div>
+      </div>
+
+      <!-- Card 3: Realized PnL & Win Rate -->
+      <div class="card-glass p-5">
+        <div class="text-xs text-slate-400 uppercase font-semibold tracking-wider flex justify-between items-center">
+          <span>금일 확정 실현 손익</span>
+          <span class="text-emerald-400 text-sm">🎯</span>
+        </div>
+        <div id="realized_pnl" class="text-2xl font-bold text-emerald-400 mt-1">+0 원</div>
+        <div class="text-xs text-slate-400 mt-2 flex items-center justify-between">
+          <span>당일 거래</span>
+          <span id="trade_stats" class="font-medium">-</span>
+        </div>
+      </div>
+
+      <!-- Card 4: Crypto Market & BTC Regime -->
+      <div class="card-glass p-5">
+        <div class="text-xs text-slate-400 uppercase font-semibold tracking-wider flex justify-between items-center">
+          <span>시장 공포탐욕 & BTC 레짐</span>
+          <span id="btc_regime_badge" class="px-2 py-0.5 rounded-full text-xs font-semibold badge-regime-normal">🟢 정상장</span>
+        </div>
+        <div id="fear_greed" class="text-2xl font-bold text-amber-400 mt-1">-</div>
+        <div class="text-xs text-slate-400 mt-2 flex items-center justify-between">
+          <span id="btc_regime_desc" class="truncate max-w-[160px]">진입 기준: 60점+</span>
+          <span id="bot_state" class="text-emerald-400 font-semibold">🟢 가동 중</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Strategy View Switcher Tabs -->
+    <div class="flex items-center justify-between bg-slate-900/60 p-2 rounded-2xl border border-slate-800 shadow-sm">
+      <div class="flex space-x-2">
+        <button id="tab_all" onclick="window.switchStrategyTab('all')" class="tab-button active">
+          🌐 전체 뷰
+        </button>
+        <button id="tab_positions" onclick="window.switchStrategyTab('positions')" class="tab-button">
+          📊 보유 포지션 (<span id="count_positions">0</span>)
+        </button>
+        <button id="tab_candidates" onclick="window.switchStrategyTab('candidates')" class="tab-button">
+          🎯 신규 스캔 후보 (<span id="count_candidates">0</span>)
+        </button>
+      </div>
+      <div class="text-xs text-slate-400 flex items-center gap-2 pr-3">
+        <span class="inline-block w-2 h-2 rounded-full bg-blue-500 animate-ping"></span>
+        <span id="refresh-countdown" class="font-mono text-blue-400 font-bold">5s</span>
+        <span>주기 동기화</span>
+      </div>
+    </div>
+
+    <!-- Section 1: Real-time Positions Table -->
+    <div id="section_positions" class="card-glass p-5 sm:p-6">
+      <div class="flex flex-wrap justify-between items-center mb-4">
+        <div>
+          <h2 class="text-lg font-bold text-white flex items-center">
+            <span class="mr-2">📊</span> 현재 보유 포지션 및 실시간 AI 퀀트 전략
+          </h2>
+          <p class="text-xs text-slate-400 mt-0.5">보유 중인 코인의 목표가, 손절가, 3단계 익절 락인 및 가속 트레일링 현황</p>
+        </div>
+        <div class="text-xs text-slate-400 mt-2 sm:mt-0">
+          💡 종목명을 클릭하면 <strong class="text-blue-400">실시간 TradingView 차트</strong>가 팝업됩니다.
+        </div>
+      </div>
+      <div class="overflow-x-auto rounded-xl border border-slate-800/80">
+        <table class="w-full text-left text-sm text-slate-300">
+          <thead class="bg-slate-800/80 text-slate-400 uppercase text-xs">
+            <tr>
+              <th class="p-3 whitespace-nowrap">종목명 (마켓)</th>
+              <th class="p-3 whitespace-nowrap">현재가 / 평단가</th>
+              <th class="p-3 whitespace-nowrap">보유 수량 / 평가액</th>
+              <th class="p-3 whitespace-nowrap">수익률</th>
+              <th class="p-3 whitespace-nowrap min-w-[90px]">AI 행동</th>
+              <th class="p-3 whitespace-nowrap">목표가 / 손절가</th>
+              <th class="p-3 whitespace-nowrap">알파 스코어</th>
+              <th class="p-3 min-w-[200px]">AI 분석 근거 / 실시간 대응</th>
+            </tr>
+          </thead>
+          <tbody id="positions_tbody" class="divide-y divide-slate-800 bg-slate-900/30">
+            <tr><td colspan="7" class="p-6 text-center text-slate-500">데이터 로딩 중...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Section 2: Scanned Non-Held Candidates Watchlist -->
+    <div id="section_candidates" class="card-glass p-5 sm:p-6">
+      <div class="flex flex-wrap justify-between items-center mb-4">
+        <div>
+          <h2 class="text-lg font-bold text-white flex items-center">
+            <span class="mr-2">🎯</span> 신규 스캔 종목 AI 진입 전략 후보군 (Watchlist)
+          </h2>
+          <p class="text-xs text-slate-400 mt-0.5">실시간 거래대금 & 급등 모멘텀 스크리너가 발굴한 7대 알파 분석 결과</p>
+        </div>
+      </div>
+      <div class="overflow-x-auto rounded-xl border border-slate-800/80">
+        <table class="w-full text-left text-sm text-slate-300">
+          <thead class="bg-slate-800/80 text-slate-400 uppercase text-xs">
+            <tr>
+              <th class="p-3 whitespace-nowrap">종목명 (마켓)</th>
+              <th class="p-3 whitespace-nowrap">현재가 (KRW)</th>
+              <th class="p-3 whitespace-nowrap min-w-[90px]">7대 알파 스코어</th>
+              <th class="p-3 whitespace-nowrap min-w-[90px]">AI 추천 행동</th>
+              <th class="p-3 whitespace-nowrap">목표가 (+%) / 손절가 (-%)</th>
+              <th class="p-3 whitespace-nowrap">예상 손익비 (R:R)</th>
+              <th class="p-3 min-w-[220px]">AI / 퀀트 진입 분석 근거</th>
+            </tr>
+          </thead>
+          <tbody id="candidates_tbody" class="divide-y divide-slate-800 bg-slate-900/30">
+            <tr><td colspan="7" class="p-6 text-center text-slate-500">후보 종목 데이터를 불러오는 중...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Dual Column: Recent Completed Trades & Order Journal -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <!-- Recent Completed Trades -->
+      <div class="card-glass p-5 sm:p-6">
+        <h2 class="text-base font-bold text-white mb-3 flex items-center">
+          <span class="mr-2">💰</span> 최근 완료 거래 내역
+        </h2>
+        <div class="overflow-x-auto rounded-xl border border-slate-800/80">
+          <table class="w-full text-left text-xs text-slate-300">
+            <thead class="bg-slate-800/80 text-slate-400 uppercase">
+              <tr>
+                <th class="p-2.5 whitespace-nowrap">일시</th>
+                <th class="p-2.5 whitespace-nowrap">종목명</th>
+                <th class="p-2.5 whitespace-nowrap">구분</th>
+                <th class="p-2.5 whitespace-nowrap">실현 손익</th>
+                <th class="p-2.5">체결 사유</th>
+              </tr>
+            </thead>
+            <tbody id="trades_tbody" class="divide-y divide-slate-800 bg-slate-900/30">
+              <tr><td colspan="5" class="p-4 text-center text-slate-500">완료된 거래 기록이 없습니다.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Real-time Order Journal -->
+      <div class="card-glass p-5 sm:p-6">
+        <h2 class="text-base font-bold text-white mb-3 flex items-center">
+          <span class="mr-2">🛡️</span> 실시간 주문 저널 (Order Journal)
+        </h2>
+        <div class="overflow-x-auto rounded-xl border border-slate-800/80">
+          <table class="w-full text-left text-xs text-slate-300">
+            <thead class="bg-slate-800/80 text-slate-400 uppercase">
+              <tr>
+                <th class="p-2.5 whitespace-nowrap">주문 일시</th>
+                <th class="p-2.5 whitespace-nowrap">종목명</th>
+                <th class="p-2.5 whitespace-nowrap">방향</th>
+                <th class="p-2.5 whitespace-nowrap">상태</th>
+                <th class="p-2.5 whitespace-nowrap">체결/주문가</th>
+              </tr>
+            </thead>
+            <tbody id="orders_tbody" class="divide-y divide-slate-800 bg-slate-900/30">
+              <tr><td colspan="5" class="p-4 text-center text-slate-500">주문 저널 데이터 로딩 중...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Strategy Policy Guide & Architecture Summary -->
+    <div class="card-glass p-5 text-xs text-slate-400 bg-slate-900/40">
+      <div class="font-bold text-slate-300 mb-2 flex items-center">
+        <span class="mr-1.5">💡</span> AI 퀀트 트레이딩 핵심 전략 정책 (Strategy Policy SSOT)
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+        <div class="bg-slate-800/40 p-3 rounded-xl border border-slate-800">
+          <div class="text-slate-200 font-semibold mb-1">🎯 3단계 분할 익절 & 락인</div>
+          <div>• 1차 +2.5% 도달 시 30% 익절</div>
+          <div>• 2차 +5.0% 도달 시 30% 추가익절</div>
+          <div>• 1차 익절 완료 시 본전스탑(+0.3%) 보장</div>
+        </div>
+        <div class="bg-slate-800/40 p-3 rounded-xl border border-slate-800">
+          <div class="text-slate-200 font-semibold mb-1">🚀 가속 트레일링 러너</div>
+          <div>• +2.0% 수익 시 트레일링 감시 가동</div>
+          <div>• 최고점 대비 1.2% 하락 시 잔여분 익절</div>
+          <div>• 최소 보장 마진 +0.5% 슬리피지 방어</div>
+        </div>
+        <div class="bg-slate-800/40 p-3 rounded-xl border border-slate-800">
+          <div class="text-slate-200 font-semibold mb-1">🛡️ 7대 팩터 하드 게이트</div>
+          <div>• MTF 1H + VWAP + MACD 가속도</div>
+          <div>• RSI 골든존 + 볼린저 %B + 호가 잔량비</div>
+          <div>• 60점(정상장) / 75점(약세장) 미만 차단</div>
+        </div>
+        <div class="bg-slate-800/40 p-3 rounded-xl border border-slate-800">
+          <div class="text-slate-200 font-semibold mb-1">⏳ 타임스탑 & 쿨다운</div>
+          <div>• 40~60분간 ±1% 횡보 시 순환매 청산</div>
+          <div>• 손절 후 25~45분 쿨다운 보호</div>
+          <div>• 일일 계좌 최대 손실 -5.0% 킬스위치</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="text-center text-xs text-slate-500 py-3">
+      AI Quant Trading Pro • Real-time Monitoring & Execution Control Dashboard
+    </footer>
+
+  </div>
+
+  <!-- Interactive Chart Modal -->
+  <div id="chart-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-5xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-150">
+      <div class="flex justify-between items-center p-4 border-b border-slate-800 bg-slate-950">
+        <h3 id="chart-coin-title" class="font-bold text-white flex items-center gap-2">
+          <span>📈</span>
+          <span>실시간 차트</span>
+        </h3>
+        <button onclick="window.closeChartModal()" class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center font-bold">
+          ✕
+        </button>
+      </div>
+      <div id="chart-container" class="p-2 bg-slate-950">
+        <!-- TradingView Widget Injected Here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Main JavaScript App -->
+  <script src="/src/app.js"></script>
+</body>
+</html>
