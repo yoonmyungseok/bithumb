@@ -1080,7 +1080,12 @@ def run_cycle():
             except Exception as e:
                 logger.error(f"[{market}] 매매 사이클 오류 발생: {e}", exc_info=True)
 
-        # 6. 이번 사이클에서 분석/갱신된 전체 전략 영속 디스크 캐시 저장 (재시작 시 중복 API 호출 방지)
+        # 6. 이번 사이클 대상(기보유 + 신규 스크리닝 후보) 외의 과거 종목 정리 후 디스크 캐시 저장
+        current_valid_markets = set(target_markets).union(held_markets)
+        for old_m in list(LATEST_STRATEGIES.keys()):
+            if old_m not in current_valid_markets:
+                LATEST_STRATEGIES.pop(old_m, None)
+
         strategy_cache_mgr.save_cache(LATEST_STRATEGIES)
 
     except Exception as e:

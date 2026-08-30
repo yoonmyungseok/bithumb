@@ -203,6 +203,8 @@
   function formatReason(r) {
     if (!r) return '-';
     return String(r)
+      .replace(/MOMENTUM_EARLY_EXIT/gi, '⚡ 모멘텀 조기 본전탈출')
+      .replace(/MOMENTUM_EXIT/gi, '⚡ 모멘텀 조기 탈출')
       .replace(/TIME_STOP/gi, '⏳ 타임스탑 (횡보 청산)')
       .replace(/TRAILING_STOP_PARTIAL/gi, '🚀 트레일링 분할익절')
       .replace(/TRAILING_STOP/gi, '🚀 가속 트레일링 익절')
@@ -260,6 +262,9 @@
     }
     if (s.includes('TIME_STOP') || s.includes('타임스탑')) {
       return '<span class="px-2 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 whitespace-nowrap">타임스탑</span>';
+    }
+    if (s.includes('MOMENTUM') || s.includes('모멘텀')) {
+      return '<span class="px-2 py-0.5 rounded text-xs font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 whitespace-nowrap">모멘텀탈출</span>';
     }
     if (s.includes('TRAILING') || s.includes('트레일링')) {
       return '<span class="px-2 py-0.5 rounded text-xs font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 whitespace-nowrap">트레일링</span>';

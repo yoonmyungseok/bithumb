@@ -542,6 +542,7 @@ class DashboardWebServer:
                         if (a === 'PARTIAL_TP') return '1차 분할익절';
                         if (a === 'TRAILING_STOP') return '트레일링 익절';
                         if (a === 'TIME_STOP') return '타임스탑 청산';
+                        if (a === 'MOMENTUM_EARLY_EXIT' || a === 'MOMENTUM_EXIT') return '모멘텀 조기탈출';
                         if (a === 'PANIC_SELL') return '긴급 전량매도';
                         if (a === 'PROFIT_TAKE' || a === 'TAKE_PROFIT') return '전량 익절';
                         return action;
@@ -557,6 +558,7 @@ class DashboardWebServer:
                         if (s === 'TRAILING_STOP') return '트레일링 익절';
                         if (s === 'STOP_LOSS') return '손절';
                         if (s === 'TIME_STOP') return '타임스탑 청산';
+                        if (s === 'MOMENTUM_EARLY_EXIT' || s.includes('MOMENTUM') || s.includes('모멘텀')) return '모멘텀 조기탈출';
                         if (s === 'PANIC_SELL') return '긴급 전량매도';
                         if (s === 'PROFIT_TAKE' || s === 'TAKE_PROFIT') return '전량 익절';
                         return side;
@@ -582,6 +584,8 @@ class DashboardWebServer:
                     function formatReason(r) {{
                         if (!r) return '-';
                         return String(r)
+                            .replace(/MOMENTUM_EARLY_EXIT/g, '모멘텀 조기 본전탈출')
+                            .replace(/MOMENTUM_EXIT/g, '모멘텀 조기탈출')
                             .replace(/MANUAL_EXIT/g, '수동 청산')
                             .replace(/TRAILING_STOP/g, '트레일링 익절')
                             .replace(/TIME_STOP/g, '타임스탑 청산')

@@ -106,8 +106,6 @@ class TradingOrchestrator:
         """Select markets through one policy while retaining exchange exclusions."""
         held = [market for market in held_markets if exchange.is_tradeable_market(market)]
         if is_auto_mode:
-            if len(held) >= max_positions:
-                return held
             screened = create_screener().scan_markets(top_count=top_count, held_markets=held, btc_regime=btc_regime)
             candidates = [item.get("market", "") for item in screened if isinstance(item, dict)]
         else:

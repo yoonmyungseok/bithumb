@@ -844,14 +844,30 @@ class OrderFillProcessor:
                     # 실현 손익 기반 청산 사유 레이블 직관화
                     refined_exit_reason = stored_exit_reason
                     is_win = pnl_krw > 0
-                    if "TRAILING" in stored_exit_reason.upper() or "트레일링" in stored_exit_reason:
+                    stored_upper = str(stored_exit_reason).upper()
+                    if "TRAILING" in stored_upper or "트레일링" in str(stored_exit_reason):
                         if pnl_krw > 0:
                             refined_exit_reason = "트레일링 익절"
                         elif pnl_pct >= -0.5:
                             refined_exit_reason = "트레일링 본전방어"
                         else:
                             refined_exit_reason = "트레일링 방어매도"
-
+                    elif "MOMENTUM_EARLY_EXIT" in stored_upper or "모멘텀" in str(stored_exit_reason):
+                        if pnl_krw >= 0:
+                            refined_exit_reason = "모멘텀 조기 본전탈출"
+                        else:
+                            refined_exit_reason = "모멘텀 소멸 방어탈출"
+                    elif "TIME_STOP" in stored_upper or "타임스탑" in str(stored_exit_reason):
+                        if pnl_krw > 0:
+                            refined_exit_reason = "타임스탑 본전익절"
+                        elif pnl_pct >= -0.5:
+                            refined_exit_reason = "타임스탑 횡보청산"
+                        else:
+                            refined_exit_reason = "타임스탑 추세이탈청산"
+                    elif "PARTIAL_TP" in stored_upper or "분할익절" in str(stored_exit_reason):
+                        refined_exit_reason = "1차 분할익절"
+                    elif "STOP_LOSS" in stored_upper or "HARD_STOP" in stored_upper or "손절" in str(stored_exit_reason):
+                        refined_exit_reason = "손절 방어"
                     if self.risk_manager:
                         self.risk_manager.add_realized_trade(pnl_krw, is_win=is_win)
 

@@ -331,38 +331,22 @@ def logs_action(exchange: str = "bithumb"):
 
 def _spawn_background_process(python_exe: str, script_path: str, cwd: str) -> int | None:
     """Windows와 Unix 환경 모두에서 부모 창이 닫혀도 영구 유지되는 백그라운드 프로세스를 스폰한다."""
-    if sys.platform == "win32":
-        try:
-            ps_cmd = (
-                f"$p = Start-Process -FilePath '{python_exe}' -ArgumentList '{script_path}' "
-                f"-WorkingDirectory '{cwd}' -WindowStyle Hidden -PassThru; "
-                f"Write-Output $p.Id"
-            )
-            res = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps_cmd],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=10,
-            )
-            if res.returncode == 0 and res.stdout.strip():
-                pid_str = res.stdout.strip().splitlines()[-1].strip()
-                if pid_str.isdigit():
-                    return int(pid_str)
-        except Exception:
-            pass
+    creationflags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
 
-    creationflags = 0x08000000 | 0x00000200 if sys.platform == "win32" else 0
-    proc = subprocess.Popen(
-        [python_exe, script_path],
-        cwd=cwd,
-        creationflags=creationflags,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        close_fds=True,
-    )
-    return proc.pid
+    try:
+        proc = subprocess.Popen(
+            [python_exe, script_path],
+            cwd=cwd,
+            creationflags=creationflags,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+        )
+        return proc.pid
+    except Exception as e:
+        print(f"❌ 스폰 실패 ({script_path}): {e}")
+        return None
 
 
 def start_action(exchange: str = "bithumb", background: bool = True) -> bool:
