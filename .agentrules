@@ -1,0 +1,26 @@
+# 프로젝트 규칙: Bithumb & Upbit AI Quant Trading Bot
+
+## 1. 프로젝트 요약 & 핵심 스택
+- **목적**: 빗썸(Bithumb) & 업비트(Upbit) 듀얼 거래소 지원 실시간 AI 퀀트 트레이딩 시스템
+- **스택**: Python 3.11, WebSocket/REST API, Google Gemini API, Google Sheets API, Telegram API
+- **설계 문서**: 상세 아키텍처는 `PROJECT_DESIGN.md` 참고 (코드 수정 시 동기화 필수)
+
+## 2. 주요 모듈 및 디렉토리 역할
+- `src/main.py` & `src/main_upbit.py`: 빗썸 / 업비트 트레이딩 엔진 진입점 및 내부 API (포트 17979 / 17980)
+- `src/dashboard_server.py`: 통합 웹 대시보드 게이트웨이 (포트 7979)
+- `src/strategy_engine.py` & `src/realtime_engine.py`: 기술적 지표 분석(MTF, 볼린저밴드, RSI 등) 및 실시간 틱/리스크 엔진
+- `src/bithumb_api.py` & `src/upbit_api.py`: 거래소별 REST API 및 JWT/서명 통신 모듈
+- `src/order_safety.py` & `src/risk_manager.py`: 호가 스프레드 검증, 분할익절/트레일링스탑, Fail-Closed 안전망
+- `data/bithumb/` & `data/upbit/`: 거래소별 격리된 영구 상태 데이터 (포지션, 저널, 통계)
+- `logs/`: `trading.log`, `trading_upbit.log` 등 일자별 트레이딩 로그
+
+## 3. 핵심 아키텍처 & 안전 원칙 (필수 준수)
+- **거래소 격리**: 빗썸과 업비트는 환경변수(`.env` / `.env.upbit`), 데이터 폴더(`data/`), 로그, 포트가 완전히 분리되어야 함.
+- **수동 종목 보호**: 업비트 `KRW-HOLO` 등 수동 관리 종목은 자동매매/긴급매도/평가 로직에서 영구 제외.
+- **주문 안전(Fail-Closed)**: 호가 스프레드 및 호가 잔량 검증 실패 시 주문 즉시 차단.
+- **멱등성 보장**: 주문 시 `identifier` 및 `order_journal`을 통한 중복 체결 방지.
+
+## 4. AI 응답 지침 (토큰 절약 규칙)
+- 불필요한 인사말, 장황한 서론/결론, 사족은 생략하고 핵심 위주로 명확히 답변할 것.
+- 코드 제안 시 전체 파일 재출력을 지양하고, **수정 대상 함수나 변경 블록(Diff 형태)만 간결하게 출력**할 것.
+- 코드를 변경한 경우 `PROJECT_DESIGN.md`에 반영해야 할 사항이 있다면 1~2줄로 요약 전달할 것.
