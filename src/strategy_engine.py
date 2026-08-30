@@ -10,68 +10,68 @@ class StrategyPolicy:
     - 진입 목표가, 손절가, 부분익절, 트레일링, 타임스탑, 쿨다운, 알파 하드게이트 일원화
     """
     # 1. 목표가 / 손절가 / 손익비 (ATR 기반 동적 산출)
-    ATR_TARGET_MULTIPLIER: float = 1.8   # ATR 기반 목표가 배수
-    ATR_STOP_MULTIPLIER: float = 1.2     # ATR 기반 손절가 배수
-    MIN_TARGET_PCT: float = 0.020        # 최소 목표 수익률 +2.0%
-    PROFIT_TARGET_PCT: float = 0.025     # 기본 목표 수익률 호환 별칭 (+2.5%)
-    MIN_STOP_PCT: float = 0.012          # 기본 최소 손절선 -1.2% (손익비 1.5:1 이상 확보)
-    STOP_LOSS_PCT: float = 0.015         # 기본 손절 -1.5% (슬리피지 감안 -2.5% 비상 하드스탑)
+    ATR_TARGET_MULTIPLIER: float = 2.2   # ATR 기반 목표가 배수 (상향)
+    ATR_STOP_MULTIPLIER: float = 1.6     # ATR 기반 손절가 배수 (노이즈 방어)
+    MIN_TARGET_PCT: float = 0.035        # 최소 목표 수익률 +3.5%
+    PROFIT_TARGET_PCT: float = 0.035     # 기본 목표 수익률 호환 별칭 (+3.5%)
+    MIN_STOP_PCT: float = 0.018          # 기본 최소 손절선 -1.8%
+    STOP_LOSS_PCT: float = 0.022         # 기본 손절 -2.2% (단기 노이즈 휩소 방어)
 
     # 1-1. 메이저 코인(BTC/ETH) 전용 목표가/익절/타임스탑 (낮은 변동성 적응 및 자금 잠김 방어)
-    MAJOR_MIN_TARGET_PCT: float = 0.012          # 메이저 최소 목표 수익률 +1.2%
-    MAJOR_MIN_STOP_PCT: float = 0.010            # 메이저 기본 최소 손절선 -1.0%
-    MAJOR_PARTIAL_TP_1_PCT: float = 0.015        # 메이저 1차 분할 익절 +1.5% (도달 시 50% 익절)
-    MAJOR_PARTIAL_TP_2_PCT: float = 0.030        # 메이저 2차 분할 익절 +3.0% (도달 시 50% 추가익절)
-    MAJOR_TRAILING_START_PCT: float = 0.012      # 메이저 +1.2% 트레일링 스탑 활성화
-    MAJOR_TRAILING_DROP_PCT: float = 0.008       # 메이저 최고점 대비 0.8% 하락 시 시장가 청산
-    MAJOR_TIME_STOP_SECONDS_NORMAL: int = 3600   # 메이저 정상장 60분 타임스탑 (기존 40분 완화)
-    MAJOR_TIME_STOP_SECONDS_RISK_OFF: int = 1800 # 메이저 약세장 30분 타임스탑 (기존 20분 완화)
+    MAJOR_MIN_TARGET_PCT: float = 0.015          # 메이저 최소 목표 수익률 +1.5%
+    MAJOR_MIN_STOP_PCT: float = 0.012            # 메이저 기본 최소 손절선 -1.2%
+    MAJOR_PARTIAL_TP_1_PCT: float = 0.018        # 메이저 1차 분할 익절 +1.8% (도달 시 30% 익절)
+    MAJOR_PARTIAL_TP_2_PCT: float = 0.035        # 메이저 2차 분할 익절 +3.5% (도달 시 30% 추가익절)
+    MAJOR_TRAILING_START_PCT: float = 0.015      # 메이저 +1.5% 트레일링 스탑 활성화
+    MAJOR_TRAILING_DROP_PCT: float = 0.010       # 메이저 최고점 대비 1.0% 하락 시 시장가 청산
+    MAJOR_TIME_STOP_SECONDS_NORMAL: int = 7200   # 메이저 정상장 120분 타임스탑
+    MAJOR_TIME_STOP_SECONDS_RISK_OFF: int = 3600 # 메이저 약세장 60분 타임스탑
 
-    # 2. 익절 및 트레일링 스탑 (선제적 50% 분할 익절 & 본전 락인)
-    PARTIAL_TP_PCT: float = 0.025        # 기본 1차 익절 기준 +2.5%
-    PARTIAL_TP_1_PCT: float = 0.025      # 1차 +2.5% 도달 시 50% 분할 익절
-    PARTIAL_TP_1_RATIO: float = 0.50     # 1차 익절 비중 (50% 선제 수익 실현)
-    PARTIAL_TP_2_PCT: float = 0.050      # 2차 +5.0% 도달 시 잔여 50% 분할 익절
-    PARTIAL_TP_2_RATIO: float = 0.50     # 2차 익절 비중 (잔여 50% 중 50% = 원금의 25%)
+    # 2. 익절 및 트레일링 스탑 (3단계 다단계 분할 익절 & 40% 러너 추세 추종)
+    PARTIAL_TP_PCT: float = 0.035        # 기본 1차 익절 기준 +3.5%
+    PARTIAL_TP_1_PCT: float = 0.035      # 1차 +3.5% 도달 시 30% 분할 익절
+    PARTIAL_TP_1_RATIO: float = 0.30     # 1차 익절 비중 (30% 선제 수익 실현)
+    PARTIAL_TP_2_PCT: float = 0.070      # 2차 +7.0% 도달 시 원금의 30% 분할 익절
+    PARTIAL_TP_2_RATIO: float = 0.30     # 2차 익절 비중 (잔여 중 42.85% = 원금의 30%)
     BREAKEVEN_STOP_PCT: float = 0.003    # 1차 익절 완료 후 본전 보장 스탑 (+0.3% 수수료 보장)
-    TRAILING_START_PCT: float = 0.020    # +2.0% 트레일링 스탑 활성화
-    TRAILING_DROP_PCT: float = 0.012     # 최고점 대비 1.2% 하락 시 시장가 청산
-    MIN_PROFIT_BUFFER_PCT: float = 0.005 # +0.5% 최소 보장 마진 (v6.1 상향)
+    TRAILING_START_PCT: float = 0.030    # +3.0% 트레일링 스탑 활성화
+    TRAILING_DROP_PCT: float = 0.020     # 최고점 대비 2.0% 하락 시 시장가 청산 (알트 숨고르기 허용)
+    MIN_PROFIT_BUFFER_PCT: float = 0.005 # +0.5% 최소 보장 마진
 
     # 3. 시간 기반 청산 (타임스탑) & 15분 모멘텀 조기 탈출 & 쿨다운
-    MOMENTUM_EARLY_EXIT_SECONDS: int = 900  # 15분 모멘텀 소멸 조기 본전 탈출 (900초)
-    MOMENTUM_EARLY_EXIT_BARS_5M: int = 3   # 5분봉 3개 캔들
-    TIME_STOP_SECONDS: int = 3600        # 60분 타임스탑 (기본 정상장, 실거래 초 단위)
-    TIME_STOP_SECONDS_NORMAL: int = 3600 # 정상장 60분 타임스탑
-    TIME_STOP_SECONDS_RISK_OFF: int = 2700 # RISK_OFF 약세장 45분 단축 타임스탑 (기존 30분에서 완화)
-    TIME_STOP_MAX_HOLD_SECONDS: int = 7200 # 지지선 유지 시 최대 120분 반등 대기 유예
-    TIME_STOP_BARS_5M: int = 12          # 5분봉 12개 = 60분 (백테스트 캔들 단위)
-    TIME_STOP_BARS_5M_RISK_OFF: int = 9  # 5분봉 9개 = 45분 (RISK_OFF 백테스트 캔들 단위)
-    TIME_STOP_MAX_HOLD_BARS_5M: int = 24 # 최대 유예 24봉 (120분)
+    MOMENTUM_EARLY_EXIT_SECONDS: int = 1800 # 30분 모멘텀 소멸 조기 본전 탈출 (1800초)
+    MOMENTUM_EARLY_EXIT_BARS_5M: int = 6   # 5분봉 6개 캔들
+    TIME_STOP_SECONDS: int = 7200        # 120분 타임스탑 (기본 정상장, 실거래 초 단위)
+    TIME_STOP_SECONDS_NORMAL: int = 7200 # 정상장 120분 타임스탑
+    TIME_STOP_SECONDS_RISK_OFF: int = 3600 # RISK_OFF 약세장 60분 단축 타임스탑
+    TIME_STOP_MAX_HOLD_SECONDS: int = 10800 # 지지선 유지 시 최대 180분 반등 대기 유예
+    TIME_STOP_BARS_5M: int = 24          # 5분봉 24개 = 120분 (백테스트 캔들 단위)
+    TIME_STOP_BARS_5M_RISK_OFF: int = 12 # 5분봉 12개 = 60분 (RISK_OFF 백테스트 캔들 단위)
+    TIME_STOP_MAX_HOLD_BARS_5M: int = 36 # 최대 유예 36봉 (180분)
     TIME_STOP_BREAKEVEN_MIN_PNL_PCT: float = 0.0005 # 타임스탑 실질 본전 기준 (+0.05% 수수료 세이브)
-    COOLDOWN_STOP_LOSS_SEC: float = 1500.0  # 손절 후 쿨다운 25분 (자금 회전율 최적화)
-    COOLDOWN_TIME_STOP_SEC: float = 900.0   # 타임스탑 횡보 청산 후 쿨다운 15분 (조기 2차 랠리 참여 허용)
-    COOLDOWN_TP_SEC: float = 900.0          # 트레일링 익절 후 쿨다운 15분
-    REENTRY_BUFFER_PCT: float = 0.015       # 직전 청산가 대비 최소 돌파/눌림목 갭 버퍼 (+1.5%)
-    REENTRY_FILTER_EXPIRY_SEC: float = 7200.0  # 직전 청산가 갭 필터 유지 시간 (2시간)
+    COOLDOWN_STOP_LOSS_SEC: float = 1200.0  # 손절 후 쿨다운 20분
+    COOLDOWN_TIME_STOP_SEC: float = 600.0   # 타임스탑 횡보 청산 후 쿨다운 10분
+    COOLDOWN_TP_SEC: float = 300.0          # 트레일링 익절 후 쿨다운 5분 (2차 랠리 조기 참여)
+    REENTRY_BUFFER_PCT: float = 0.012       # 직전 청산가 대비 최소 돌파/눌림목 갭 버퍼 (+1.2%)
+    REENTRY_FILTER_EXPIRY_SEC: float = 2700.0  # 직전 청산가 갭 필터 유지 시간 (45분)
 
     # 4. 하드 안전 게이트 (Hard Safety Gates) & 상대 강도(RS) 임계값
-    ALPHA_BUY_THRESHOLD: int = 60        # 7대 팩터 복합 알파 승인 점수 (100점 만점, 추천 설정)
-    ALPHA_BUY_THRESHOLD_NORMAL: int = 60 # 정상장 7대 팩터 복합 알파 승인 점수 (기회 빈도 +40%)
-    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 75 # RISK_OFF 약세장 엄선 승인 점수 (75점)
-    RS_MIN_RISK_OFF: float = 0.015       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+1.5% 초과 상승)
-    MIN_TRADE_VALUE_RISK_OFF: float = 3_000_000_000.0  # 약세장 최소 24시간 거래대금 30억 원
-    MIN_ASSET_PRICE_KRW: float = 10.0    # 10원 미만 극초저가 코인 차단 (호가 갭/슬리피지 방어)
-    RSI_MIN_NORMAL: float = 38.0         # 정상장 RSI 최소치 (바닥 모멘텀 확인)
-    RSI_MAX_NORMAL: float = 65.0         # 정상장 RSI 최대치 (단기 과매수/고점 추격 원천 차단)
+    ALPHA_BUY_THRESHOLD: int = 60        # 7대 팩터 복합 알파 승인 점수 (100점 만점)
+    ALPHA_BUY_THRESHOLD_NORMAL: int = 60 # 정상장 7대 팩터 복합 알파 승인 점수
+    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 70 # RISK_OFF 약세장 엄선 승인 점수 (70점 완화)
+    RS_MIN_RISK_OFF: float = 0.012       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+1.2% 초과 상승)
+    MIN_TRADE_VALUE_RISK_OFF: float = 2_000_000_000.0  # 약세장 최소 24시간 거래대금 20억 원
+    MIN_ASSET_PRICE_KRW: float = 10.0    # 10원 미만 극초저가 코인 차단
+    RSI_MIN_NORMAL: float = 38.0         # 정상장 RSI 최소치
+    RSI_MAX_NORMAL: float = 70.0         # 정상장 RSI 최대치 (상향하여 강한 상승 추세 진입 허용)
     RSI_MIN_RISK_OFF: float = 40.0       # RISK_OFF RSI 최소치
-    RSI_MAX_RISK_OFF: float = 62.0       # RISK_OFF RSI 최대치 (약세장 보수적 상한)
-    PCT_B_MIN: float = 0.20              # 볼린저 밴드 %B 최소치 (하단 밴드 붕괴 방어)
-    PCT_B_MAX: float = 0.78              # 볼린저 밴드 %B 최대치 (밴드 상단 꼭대기 추격 차단)
-    MAX_MA20_DISPARITY: float = 1.025    # MA20 대비 최대 이격도 +2.5% (단기 이격 과열 차단)
-    MAX_UPPER_SHADOW_RATIO: float = 0.50 # 캔들 윗꼬리(피뢰침 매도 피로) 최대 허용 비율 (50%)
-    MA_ALIGNMENT_RATIO: float = 0.995    # MA5 >= MA20 * 0.995 (역배열 폭락세 차단)
-    RISK_OFF_ALLOC_RATIO: float = 0.3    # RISK_OFF 진입 비중 축소 비율 (30%)
+    RSI_MAX_RISK_OFF: float = 68.0       # RISK_OFF RSI 최대치
+    PCT_B_MIN: float = 0.20              # 볼린저 밴드 %B 최소치
+    PCT_B_MAX: float = 0.85              # 볼린저 밴드 %B 최대치 (강한 모멘텀 돌파 진입 허용)
+    MAX_MA20_DISPARITY: float = 1.035    # MA20 대비 최대 이격도 +3.5%
+    MAX_UPPER_SHADOW_RATIO: float = 0.55 # 캔들 윗꼬리 최대 허용 비율 (55%)
+    MA_ALIGNMENT_RATIO: float = 0.995    # MA5 >= MA20 * 0.995
+    RISK_OFF_ALLOC_RATIO: float = 0.6    # RISK_OFF 진입 비중 (60%로 확대하여 알트 불장 수익 확보)
 
     # 5. 거시 시장 리스크 및 거래소 비용
     BTC_CRASH_THRESHOLD_PCT: float = 0.015  # BTC 15분 -1.5% 급락 시 차단

@@ -275,10 +275,10 @@ class TestExecutionSafetyComprehensive(unittest.TestCase):
     # -------------------------------------------------------------------------
     def test_strategy_policy_constants(self):
         """StrategyPolicy의 단일 정책 상수가 정합하게 정의되어 있는지 검증"""
-        self.assertEqual(StrategyPolicy.TIME_STOP_SECONDS, 3600)
-        self.assertEqual(StrategyPolicy.TIME_STOP_BARS_5M, 12)
-        self.assertAlmostEqual(StrategyPolicy.PARTIAL_TP_PCT, 0.025)
-        self.assertAlmostEqual(StrategyPolicy.TRAILING_DROP_PCT, 0.012)
+        self.assertEqual(StrategyPolicy.TIME_STOP_SECONDS, 7200)
+        self.assertEqual(StrategyPolicy.TIME_STOP_BARS_5M, 24)
+        self.assertAlmostEqual(StrategyPolicy.PARTIAL_TP_PCT, 0.035)
+        self.assertAlmostEqual(StrategyPolicy.TRAILING_DROP_PCT, 0.020)
         self.assertAlmostEqual(StrategyPolicy.FEE_RATE, 0.0004)
         self.assertAlmostEqual(StrategyPolicy.SLIPPAGE_RATE, 0.001)
 

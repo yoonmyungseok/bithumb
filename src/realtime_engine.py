@@ -436,7 +436,11 @@ class RealtimeRiskEngine:
                         return
 
                     try:
-                        stage_label = "2차 +5.0%(30%)" if is_stage2 else "1차 +2.5%(30%)"
+                        stage_label = (
+                            f"2차 +{StrategyPolicy.PARTIAL_TP_2_PCT*100:.1f}%(30%)"
+                            if is_stage2
+                            else f"1차 +{StrategyPolicy.PARTIAL_TP_1_PCT*100:.1f}%(30%)"
+                        )
                         logger.info(
                             f"⚡ [실시간 {stage_label} 분할익절] {korean_name}({market}) 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 시장가 분할 익절!"
                         )

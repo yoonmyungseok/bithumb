@@ -626,26 +626,31 @@ def run_cycle():
                             is_holding_support = (current_price >= ma20_5m) or is_above_vwap
                             is_trend_broken = (ma5_5m < ma20_5m * 0.995) and (not is_above_vwap)
 
-                    # 2. [본전 보장 타임스탑 - Case A]: 실질 본전 이상(+0.05% 이상) 시 60분 경과 즉시 익절/본전 청산하여 자금 회전
+                    # 2. [본전 보장 타임스탑 - Case A]: 실질 본전 이상(+0.05% 이상) 구간
+                    #    - 5분봉 지지선(MA20/VWAP) 유지 시 최대 180분까지 추세 상승 대기
+                    #    - 지지선 이탈 시에만 타임스탑 경과 후 안전하게 분할/본전 청산
                     be_threshold_pct = StrategyPolicy.TIME_STOP_BREAKEVEN_MIN_PNL_PCT * 100.0  # +0.05%
                     is_breakeven_or_profit = pnl_pct_current >= be_threshold_pct
                     is_time_stop_profit_trigger = (
-                        hold_duration_sec >= effective_time_stop and is_breakeven_or_profit
+                        hold_duration_sec >= effective_time_stop
+                        and is_breakeven_or_profit
+                        and (not is_holding_support or hold_duration_sec >= StrategyPolicy.TIME_STOP_MAX_HOLD_SECONDS)
                     )
 
                     # 3. [본전 보장 타임스탑 - Case B]: 마이너스 손실 구간에서는 성급한 투매를 차단하고 반등 대기
-                    #    - 지지선 유지 시 최대 120분까지 손절선(-1.5%)을 지키며 반등 기회 보장
-                    #    - 추세가 명백히 붕괴되었거나 최대 유예 시간(120분) 초과 시에만 방어적 청산
+                    #    - 지지선 유지 시 최대 180분까지 손절선(-2.2%)을 지키며 반등 기회 보장
+                    #    - 추세가 명백히 붕괴되었거나 최대 유예 시간(180분) 초과 시에만 방어적 청산
                     is_time_stop_loss_trigger = (
                         (hold_duration_sec >= StrategyPolicy.TIME_STOP_MAX_HOLD_SECONDS or (hold_duration_sec >= effective_time_stop and is_trend_broken))
                         and (pnl_pct_current < be_threshold_pct)
                     )
 
-                    # 4. [15분 모멘텀 조기 본전 탈출]: 15분 경과 후 실질 본전권(0.0% ~ +0.3%)에서 모멘텀 소멸(VWAP 하회) 시 수수료 세이브 탈출
+                    # 4. [모멘텀 조기 본전 탈출]: 30분 경과 후 실질 본전권(0.0% ~ +0.3%)에서 모멘텀 소멸(VWAP 하회) 시 수수료 세이브 탈출
                     is_early_momentum_exit = (
                         hold_duration_sec >= StrategyPolicy.MOMENTUM_EARLY_EXIT_SECONDS
                         and (0.0 <= pnl_pct_current <= 0.3)
                         and (not is_above_vwap)
+                        and is_trend_broken
                     )
 
                     is_time_stop_trigger = (
@@ -828,7 +833,7 @@ def run_cycle():
                     stop_loss = avg_buy_price * (1.0 - StrategyPolicy.STOP_LOSS_PCT)
                     if trailing_tracker.is_breakeven_active(market):
                         stop_loss = max(stop_loss, avg_buy_price * (1.0 + StrategyPolicy.BREAKEVEN_STOP_PCT))
-                    target_price = avg_buy_price * (1.0 + StrategyPolicy.PROFIT_TARGET_PCT)
+                    target_price = avg_buy_price * (1.0 + getattr(StrategyPolicy, "PROFIT_TARGET_PCT", StrategyPolicy.PARTIAL_TP_1_PCT))
 
                 # 알파 스코어 연동 가변 사이징 (A+ 85점 이상 비중 확대)
                 alpha_val = local_entry.get("alpha_score", 70)
@@ -839,8 +844,11 @@ def run_cycle():
                     alloc_pct = dyn_max_pos_pct * 0.7
 
                 if btc_regime == "RISK_OFF" and action == "BUY":
-                    alloc_pct = alloc_pct * StrategyPolicy.RISK_OFF_ALLOC_RATIO
-                    reason = f"[BTC 약세 레짐 비중 30% 축소 & 알파 80점 이상 엄선] {reason}"
+                    alloc_ratio = StrategyPolicy.RISK_OFF_ALLOC_RATIO
+                    if alpha_val >= 80:
+                        alloc_ratio = min(0.8, alloc_ratio * 1.3)
+                    alloc_pct = alloc_pct * alloc_ratio
+                    reason = f"[BTC 약세 레짐 비중 {int(alloc_ratio*100)}% 적용 & 알파 {alpha_val}점 엄선] {reason}"
 
                 if fng.get("is_extreme_fear", False) and action == "BUY":
                     alloc_pct = min(alloc_pct, 0.4)

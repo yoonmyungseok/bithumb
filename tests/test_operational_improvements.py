@@ -32,29 +32,29 @@ class TestOperationalImprovements(unittest.TestCase):
         tracker.clear('KRW-ETH')
         tracker.clear('KRW-GRVT')
 
-        # 1. 메이저 코인 (KRW-ETH): +1.5% 도달 시 1차 분할 익절 발생
+        # 1. 메이저 코인 (KRW-ETH): +1.8% 도달 시 1차 분할 익절 발생
         res, peak, stop, peak_pct, real_pct = tracker.check_position(
             market='KRW-ETH',
-            current_price=3451000.0,
+            current_price=3465000.0,
             avg_buy_price=3400000.0,
         )
         self.assertEqual(res, 'PARTIAL_TP_1')
 
-        # 2. 일반 알트코인 (KRW-GRVT): +1.5%에서는 1차 분할 익절 미발생 (알트는 +2.5% 기준)
+        # 2. 일반 알트코인 (KRW-GRVT): +2.5%에서는 1차 분할 익절 미발생 (알트는 +3.5% 기준)
         res_alt, _, _, _, _ = tracker.check_position(
-            market='KRW-GRVT',
-            current_price=248.675,
-            avg_buy_price=245.0,
-        )
-        self.assertEqual(res_alt, 'NONE')
-
-        # 알트코인은 +2.5% 도달 시 1차 분할 익절 발생
-        res_alt_25, _, _, _, _ = tracker.check_position(
             market='KRW-GRVT',
             current_price=251.125,
             avg_buy_price=245.0,
         )
-        self.assertEqual(res_alt_25, 'PARTIAL_TP_1')
+        self.assertEqual(res_alt, 'NONE')
+
+        # 알트코인은 +3.5% 도달 시 1차 분할 익절 발생
+        res_alt_35, _, _, _, _ = tracker.check_position(
+            market='KRW-GRVT',
+            current_price=254.0,
+            avg_buy_price=245.0,
+        )
+        self.assertEqual(res_alt_35, 'PARTIAL_TP_1')
 
     def test_major_coin_dynamic_target_in_entry_signal(self):
         candles = [{'trade_price': 3400000.0, 'high_price': 3410000.0, 'low_price': 3390000.0, 'opening_price': 3400000.0, 'candle_acc_trade_volume': 100.0} for _ in range(30)]

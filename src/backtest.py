@@ -250,10 +250,10 @@ class QuantBacktester:
                     position_vol = 0.0
                     continue
 
-                # B. 1차 50% 분할 익절 (ATR 2.0x 목표가 도달 시)
+                # B. 1차 분할 익절 (ATR 목표가 도달 시)
                 if hit_tp:
                     partial_tp_done = True
-                    sell_vol = position_vol * 0.5
+                    sell_vol = position_vol * StrategyPolicy.PARTIAL_TP_1_RATIO
                     exit_price = active_target * (1.0 - self.slippage_rate)
                     realized_val = sell_vol * exit_price * (1.0 - self.fee_rate)
                     realized_profit = realized_val - (sell_vol * entry_price)

@@ -103,15 +103,15 @@ class TestP1Safety(unittest.TestCase):
 
     def test_05_strategy_policy_unification(self):
         """5. 실거래와 백테스트 공통 StrategyPolicy 일원화 검증 (P1-3)"""
-        # 타임스탑: 실거래 3600초 (60분), 백테스트 12개 5분봉 (60분)
-        self.assertEqual(StrategyPolicy.TIME_STOP_SECONDS, 3600)
-        self.assertEqual(StrategyPolicy.TIME_STOP_BARS_5M, 12)
+        # 타임스탑: 실거래 7200초 (120분), 백테스트 24개 5분봉 (120분)
+        self.assertEqual(StrategyPolicy.TIME_STOP_SECONDS, 7200)
+        self.assertEqual(StrategyPolicy.TIME_STOP_BARS_5M, 24)
         self.assertEqual(StrategyPolicy.TIME_STOP_BARS_5M * 5 * 60, StrategyPolicy.TIME_STOP_SECONDS)
-        self.assertEqual(StrategyPolicy.PARTIAL_TP_PCT, 0.025)
+        self.assertEqual(StrategyPolicy.PARTIAL_TP_PCT, 0.035)
         self.assertEqual(StrategyPolicy.MAX_DAILY_LOSS_PCT, 0.05)
 
     def test_06_timestop_uninitialized_entry_time_protection(self):
-        """6. 진입 시점 미설정(0.0) 상태에서 타임스탑 오발동 방지 및 정상 60분 후 발동 검증"""
+        """6. 진입 시점 미설정(0.0) 상태에서 타임스탑 오발동 방지 및 정상 120분 후 발동 검증"""
         from risk_manager import TrailingStopTracker
         tracker = TrailingStopTracker(data_dir=self.d_dir)
         market = "KRW-BTC"
@@ -128,16 +128,16 @@ class TestP1Safety(unittest.TestCase):
 
         self.assertGreater(entry_ts, 0.0)
         hold_duration = time.time() - entry_ts
-        # 방금 보정되었으므로 보유 시간은 5초 미만이어야 하며 3600초 미만
+        # 방금 보정되었으므로 보유 시간은 5초 미만이어야 하며 7200초 미만
         self.assertLess(hold_duration, 5.0)
         self.assertFalse(hold_duration >= StrategyPolicy.TIME_STOP_SECONDS)
 
-        # 3) 60분(3600초) 이상 실제로 경과한 경우에만 타임스탑 조건 충족
-        past_ts = time.time() - 3650
+        # 3) 120분(7200초) 이상 실제로 경과한 경우에만 타임스탑 조건 충족
+        past_ts = time.time() - 7250
         tracker.set_entry_time(market, past_ts)
-        entry_ts_60m = tracker.get_entry_time(market)
-        hold_duration_60m = time.time() - entry_ts_60m
-        self.assertGreaterEqual(hold_duration_60m, StrategyPolicy.TIME_STOP_SECONDS)
+        entry_ts_120m = tracker.get_entry_time(market)
+        hold_duration_120m = time.time() - entry_ts_120m
+        self.assertGreaterEqual(hold_duration_120m, StrategyPolicy.TIME_STOP_SECONDS)
 
 
 if __name__ == "__main__":

@@ -38,10 +38,10 @@ class TestRelativeStrengthAndMomentumExit(unittest.TestCase):
         self.assertIn("언더퍼폼/약세", rs_res["desc"])
 
     def test_strategy_policy_ssot_constants(self):
-        self.assertEqual(StrategyPolicy.PARTIAL_TP_1_RATIO, 0.50)
-        self.assertEqual(StrategyPolicy.STOP_LOSS_PCT, 0.015)
-        self.assertEqual(StrategyPolicy.MOMENTUM_EARLY_EXIT_SECONDS, 900)
-        self.assertEqual(StrategyPolicy.RS_MIN_RISK_OFF, 0.015)
+        self.assertEqual(StrategyPolicy.PARTIAL_TP_1_RATIO, 0.30)
+        self.assertEqual(StrategyPolicy.STOP_LOSS_PCT, 0.022)
+        self.assertEqual(StrategyPolicy.MOMENTUM_EARLY_EXIT_SECONDS, 1800)
+        self.assertEqual(StrategyPolicy.RS_MIN_RISK_OFF, 0.012)
 
 
 if __name__ == "__main__":

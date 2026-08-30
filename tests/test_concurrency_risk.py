@@ -90,8 +90,8 @@ class TestConcurrencyRisk(unittest.TestCase):
         # 초기 상태: 1차 분할익절 미완료
         self.assertFalse(self.trailing.partial_tp_done.get(market, False))
 
-        # +3.0% 도달 시 check_position 호출
-        action, peak_p, trig_p, peak_pct, real_pct = self.trailing.check_position(market, 1030.0, avg_buy)
+        # +3.6% 도달 시 check_position 호출 (1차 분할 익절 기준 +3.5%)
+        action, peak_p, trig_p, peak_pct, real_pct = self.trailing.check_position(market, 1036.0, avg_buy)
         self.assertEqual(action, "PARTIAL_TP_1")
         self.assertTrue(self.trailing.partial_tp_done.get(market, False))
 

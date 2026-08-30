@@ -259,10 +259,10 @@ def build_candidates_data(
 
 class TrailingStopTracker:
     """
-    [50% 분할 익절 + 50% 가속 트레일링 러너] 관리자 (영구 저장 연동, RLock 스레드 안전성 보장)
+    [3단계 다단계 분할 익절 + 40% 잔여 러너 가속 트레일링] 관리자 (영구 저장 연동, RLock 스레드 안전성 보장)
     """
 
-    def __init__(self, start_profit_pct: float = 0.02, trailing_drop_pct: float = 0.012, data_dir: str | None = None):
+    def __init__(self, start_profit_pct: float = 0.030, trailing_drop_pct: float = 0.020, data_dir: str | None = None):
         self._lock = threading.RLock()
         self.start_profit_pct = start_profit_pct
         self.trailing_drop_pct = trailing_drop_pct
@@ -400,13 +400,15 @@ class TrailingStopTracker:
                 if self.macro_defensive_mode:
                     active_drop_pct = 0.004  # 비상 방어 모드: 0.4% 극초밀착
                 elif is_major:
-                    active_drop_pct = min(base_drop_pct, 0.008)  # 메이저: 0.8% 밀착
+                    active_drop_pct = min(base_drop_pct, 0.010)  # 메이저: 1.0% 밀착
+                elif peak_profit_pct >= 20.0:
+                    active_drop_pct = 0.012  # +20% 이상 폭등 구간: 1.2% 고점 추적
                 elif peak_profit_pct >= 10.0:
-                    active_drop_pct = 0.005  # +10% 이상: 0.5% 초밀착
+                    active_drop_pct = 0.015  # +10% 이상 대세 상승: 1.5% 추적
                 elif peak_profit_pct >= 5.0:
-                    active_drop_pct = 0.008  # +5% 이상: 0.8% 밀착
+                    active_drop_pct = 0.018  # +5% 이상: 1.8% 추적
                 else:
-                    active_drop_pct = base_drop_pct  # 기본 1.2%
+                    active_drop_pct = base_drop_pct  # 기본 2.0% 버퍼 (노이즈 방어)
 
                 trailing_stop_price = current_peak * (1.0 - active_drop_pct)
 
