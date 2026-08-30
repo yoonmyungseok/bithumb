@@ -34,12 +34,13 @@ class GeminiAnalyzer:
     - [안정형 모델 라우터 & 무중단 로컬 퀀트 폴백]: Rate Limit 429 시 100% 로컬 앙상블 자율 전환
     """
 
-    # 1. 안정적인 프로덕션 공식 Flash 모델 군 (쿼터 효율 최고인 Lite 우선 배치)
+    # 1. 안정적인 프로덕션 공식 Flash-Lite 모델 최우선 배치 (쿼터 효율 및 반응속도 극대화)
     STABLE_MODELS: ClassVar[list[str]] = [
-        "gemini-2.5-flash-lite",
-        "gemini-2.5-flash",
         "gemini-3.5-flash-lite",
+        "gemini-flash-lite-latest",
         "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
         "gemini-flash-latest",
     ]
 
