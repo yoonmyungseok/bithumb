@@ -167,41 +167,86 @@ def status_action(exchange: str = "bithumb"):
     print()
 
 
+import signal
+
+def _kill_pid(pid: int | str) -> bool:
+    """Windows와 Linux 모두에서 안전하게 PID 프로세스를 종료시킨다."""
+    try:
+        pid_int = int(pid)
+        if pid_int <= 0:
+            return False
+    except (ValueError, TypeError):
+        return False
+
+    if sys.platform == "win32":
+        res = subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid_int)],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return res.returncode == 0
+    else:
+        try:
+            os.kill(pid_int, signal.SIGTERM)
+            time.sleep(0.3)
+            if _is_pid_alive(pid_int):
+                os.kill(pid_int, signal.SIGKILL)
+            return True
+        except (OSError, PermissionError):
+            return False
+
+
 def _kill_matching_script_processes(patterns: list[str]) -> list[int]:
-    """PowerShell을 통해 해당 스크립트명을 포함하는 모든 고아 프로세스를 찾아 강제 종료한다."""
-    if sys.platform != "win32":
-        return []
+    """PowerShell(Windows) 또는 pgrep/kill(Linux)을 통해 스크립트명을 포함하는 프로세스를 찾아 강제 종료한다."""
     killed_pids: list[int] = []
     my_pid = os.getpid()
-    for pat in patterns:
-        ps_cmd = (
-            f"Get-CimInstance Win32_Process | "
-            f"Where-Object {{ $_.CommandLine -like '*{pat}*' }} | "
-            f"Select-Object -ExpandProperty ProcessId"
-        )
-        try:
-            res = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps_cmd],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                timeout=5,
+
+    if sys.platform == "win32":
+        for pat in patterns:
+            ps_cmd = (
+                f"Get-CimInstance Win32_Process | "
+                f"Where-Object {{ $_.CommandLine -like '*{pat}*' }} | "
+                f"Select-Object -ExpandProperty ProcessId"
             )
-            if res.returncode == 0 and res.stdout.strip():
-                for line in res.stdout.strip().splitlines():
-                    pid_str = line.strip()
-                    if pid_str.isdigit():
-                        pid_val = int(pid_str)
-                        if pid_val != my_pid:
-                            subprocess.run(
-                                ["taskkill", "/F", "/T", "/PID", str(pid_val)],
-                                check=False,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                            )
-                            killed_pids.append(pid_val)
-        except Exception:
-            pass
+            try:
+                res = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=5,
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    for line in res.stdout.strip().splitlines():
+                        pid_str = line.strip()
+                        if pid_str.isdigit():
+                            pid_val = int(pid_str)
+                            if pid_val != my_pid:
+                                _kill_pid(pid_val)
+                                killed_pids.append(pid_val)
+            except Exception:
+                pass
+    else:
+        for pat in patterns:
+            try:
+                res = subprocess.run(
+                    ["pgrep", "-f", pat],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    for line in res.stdout.strip().splitlines():
+                        pid_str = line.strip()
+                        if pid_str.isdigit():
+                            pid_val = int(pid_str)
+                            if pid_val != my_pid:
+                                if _kill_pid(pid_val):
+                                    killed_pids.append(pid_val)
+            except Exception:
+                pass
+
     return killed_pids
 
 
@@ -222,12 +267,11 @@ def stop_action(exchange: str = "bithumb"):
         stopped_count = 0
         if pids:
             for pid in pids:
-                try:
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", pid], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if _kill_pid(pid):
                     print(f"🛑 [종료 완료] 대시보드 서버 PID: {pid}")
                     stopped_count += 1
-                except Exception as e:
-                    print(f"⚠️ PID {pid} 종료 실패: {e}")
+                else:
+                    print(f"⚠️ PID {pid} 종료 실패 또는 이미 종료됨")
             try:
                 os.remove(pid_file)
             except OSError:
@@ -253,17 +297,11 @@ def stop_action(exchange: str = "bithumb"):
     stopped_count = 0
     if pids:
         for pid in pids:
-            try:
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", pid],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+            if _kill_pid(pid):
                 print(f"🛑 [종료 완료] {ex_name} 봇 PID: {pid}")
                 stopped_count += 1
-            except Exception as e:
-                print(f"⚠️ PID {pid} 종료 실패: {e}")
+            else:
+                print(f"⚠️ PID {pid} 종료 실패 또는 이미 종료됨")
         try:
             os.remove(pid_file)
         except FileNotFoundError:
@@ -366,7 +404,13 @@ def start_action(exchange: str = "bithumb", background: bool = True) -> bool:
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     python_exe = os.path.join(project_root, "venv", "Scripts", "python.exe")
     if not os.path.exists(python_exe):
-        python_exe = sys.executable
+        for candidate in [os.path.join("venv", "bin", "python3"), os.path.join("venv", "bin", "python")]:
+            full_path = os.path.join(project_root, candidate)
+            if os.path.exists(full_path):
+                python_exe = full_path
+                break
+        else:
+            python_exe = sys.executable
 
     if ex == "dashboard":
         print("======================================================")

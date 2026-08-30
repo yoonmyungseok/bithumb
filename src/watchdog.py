@@ -176,7 +176,13 @@ def main():
 
     python_exe = os.path.join(project_root, "venv", "Scripts", "python.exe")
     if not os.path.exists(python_exe):
-        python_exe = sys.executable
+        for candidate in [os.path.join("venv", "bin", "python3"), os.path.join("venv", "bin", "python")]:
+            full_path = os.path.join(project_root, candidate)
+            if os.path.exists(full_path):
+                python_exe = full_path
+                break
+        else:
+            python_exe = sys.executable
 
     main_script = os.path.join(project_root, "src", "main.py")
     hb_file = os.path.join(project_root, "data", ".heartbeat")
@@ -191,11 +197,21 @@ def main():
 
     recent_crashes: list[float] = []
     is_terminating = False
+    current_process = None
 
     def _sig_handler(sig, frame):
-        nonlocal is_terminating
+        nonlocal is_terminating, current_process
         is_terminating = True
         logger.info("🛑 빗썸 워치독 종료 시그널 감지. 봇 프로세스를 안전하게 종료합니다.")
+        if current_process and current_process.poll() is None:
+            try:
+                current_process.terminate()
+                current_process.wait(timeout=3)
+            except Exception:
+                try:
+                    current_process.kill()
+                except Exception:
+                    pass
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _sig_handler)
@@ -215,10 +231,11 @@ def main():
                 pass
 
         try:
-            process = subprocess.Popen(
+            current_process = subprocess.Popen(
                 [python_exe, main_script],
                 cwd=project_root,
             )
+            process = current_process
         except Exception as e:
             logger.error(f"빗썸 봇 프로세스 실행 실패: {e}")
             time.sleep(5)
