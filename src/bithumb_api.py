@@ -169,12 +169,30 @@ class BithumbAPI:
                 self._valid_markets_cache = set()
         return self._valid_markets_cache
 
-    def get_all_markets(self) -> list[dict[str, Any]]:
+    def get_all_markets(self, is_details: bool = False) -> list[dict[str, Any]]:
         """
-        빗썸에서 거래 지원하는 전체 마켓 목록 조회
+        빗썸에서 거래 지원하는 전체 마켓 목록 조회 (1시간 메모리 캐싱)
         """
-        data = self._request("GET", "/market/all")
-        return data if isinstance(data, list) else []
+        now = time.time()
+        if not hasattr(self, "_all_markets_cache"):
+            self._all_markets_cache = {}
+        cached_entry = self._all_markets_cache.get(is_details)
+        if cached_entry:
+            cached_time, cached_data = cached_entry
+            if now - cached_time < 3600.0 and cached_data:
+                return cached_data
+
+        params = {"isDetails": "true" if is_details else "false"} if is_details else None
+        try:
+            data = self._request("GET", "/market/all", params=params)
+            if isinstance(data, list) and data:
+                self._all_markets_cache[is_details] = (now, data)
+                return data
+        except Exception as e:
+            logger.warning(f"빗썸 전체 마켓 조회 실패: {e}")
+            if cached_entry:
+                return cached_entry[1]
+        return []
 
     def get_korean_name(self, market: str) -> str:
         """

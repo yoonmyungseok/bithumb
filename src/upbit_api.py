@@ -198,11 +198,28 @@ class UpbitAPI:
 
     def get_all_markets(self, is_details: bool = False) -> list[dict[str, Any]]:
         """
-        업비트에서 거래 지원하는 전체 마켓 목록 조회
+        업비트에서 거래 지원하는 전체 마켓 목록 조회 (1시간 메모리 캐싱으로 429 Rate Limit 방어)
         """
+        now = time.time()
+        if not hasattr(self, "_all_markets_cache"):
+            self._all_markets_cache = {}
+        cached_entry = self._all_markets_cache.get(is_details)
+        if cached_entry:
+            cached_time, cached_data = cached_entry
+            if now - cached_time < 3600.0 and cached_data:
+                return cached_data
+
         params = {"isDetails": "true" if is_details else "false"}
-        data = self._request("GET", "/market/all", params=params)
-        return data if isinstance(data, list) else []
+        try:
+            data = self._request("GET", "/market/all", params=params)
+            if isinstance(data, list) and data:
+                self._all_markets_cache[is_details] = (now, data)
+                return data
+        except Exception as e:
+            logger.warning(f"업비트 전체 마켓 조회 실패: {e}")
+            if cached_entry:
+                return cached_entry[1]
+        return []
 
     def _get_valid_markets_set(self) -> set[str]:
         """업비트에서 거래 지원하는 유효 마켓 코드 세트 캐싱 반환"""
