@@ -11,6 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 
 from bithumb_api import BithumbAPI
+from db_manager import migrate_legacy_json_to_sqlite
 from exchange_adapter import BithumbAdapter, ExchangeAdapter
 from bot_controller import BotController
 from chart_renderer import ChartRenderer
@@ -1071,7 +1072,11 @@ def main():
     logger.info("  Bithumb AI Pro Quant Trading Bot v5.0 가동 시작")
     logger.info("============================================================")
 
-    # 0. 즉시 첫 하트비트 기록
+    # 0. SQLite 자동 마이그레이션 및 첫 하트비트 기록
+    try:
+        migrate_legacy_json_to_sqlite(DATA_DIR)
+    except Exception as e:
+        logger.warning("SQLite 초기 마이그레이션 건너뜀: %s", e)
     update_heartbeat()
 
     # 1. 텔레그램 명령어 리스너 가동

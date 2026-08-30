@@ -16,6 +16,7 @@ from typing import Any
 
 import requests
 
+from db_manager import get_db_manager
 from market_policy import get_excluded_markets
 from risk_controls import RiskGuard as _RiskGuard
 from risk_controls import calculate_risk_position_size as _calculate_risk_position_size
@@ -155,6 +156,7 @@ class OrderJournal:
         d_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(d_dir, exist_ok=True)
         self.path = path or os.path.join(d_dir, "order_journal.json")
+        self.db = get_db_manager(os.path.join(os.path.dirname(d_dir) if "upbit" in d_dir.lower() else d_dir, "trading.db"))
         # 저장소 간 주문/학습 데이터 혼입을 막기 위한 명시적 거래소 범위다.
         self.exchange_scope = exchange_scope.strip().lower()
         self.reconciliation_state = "PENDING"
@@ -210,6 +212,12 @@ class OrderJournal:
             write_json_atomically(self.path, payload)
         except Exception as exc:
             logger.warning("주문 저널 저장 경고: %s", exc)
+        try:
+            ex = self.exchange_scope or "bithumb"
+            for order in self.orders[-5:]:
+                self.db.upsert_order(ex, order)
+        except Exception as exc:
+            logger.debug("SQLite 주문 동기화 예외: %s", exc)
 
     def record_intent(
         self,

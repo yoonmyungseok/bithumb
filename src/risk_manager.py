@@ -8,6 +8,7 @@ from typing import Any
 import requests
 
 from bithumb_api import BithumbAPI
+from db_manager import get_db_manager
 from market_policy import get_excluded_markets
 from state_store import load_json_with_backup_recovery, write_json_atomically
 from strategy_engine import StrategyPolicy, is_major_market
@@ -275,6 +276,8 @@ class TrailingStopTracker:
         self.data_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(self.data_dir, exist_ok=True)
         self.state_file = os.path.join(self.data_dir, "position_state.json")
+        self.exchange = "upbit" if "upbit" in self.data_dir.lower() else "bithumb"
+        self.db = get_db_manager(os.path.join(os.path.dirname(self.data_dir) if "upbit" in self.data_dir.lower() else self.data_dir, "trading.db"))
         self._load_state()
 
     def set_macro_defensive_mode(self, enabled: bool) -> None:
@@ -317,14 +320,19 @@ class TrailingStopTracker:
 
     def _save_state(self):
         with self._lock:
+            payload = {
+                "peaks": self.peaks,
+                "partial_tp_done": self.partial_tp_done,
+                "entry_times": self.entry_times,
+            }
             try:
-                write_json_atomically(self.state_file, {
-                    "peaks": self.peaks,
-                    "partial_tp_done": self.partial_tp_done,
-                    "entry_times": self.entry_times,
-                })
+                write_json_atomically(self.state_file, payload)
             except OSError as e:
                 logger.warning(f"포지션 상태 파일 저장 실패: {e}")
+            try:
+                self.db.save_position_state(self.exchange, payload)
+            except Exception as e:
+                logger.debug(f"SQLite 포지션 저장 예외: {e}")
 
     def set_entry_time(self, market: str, ts: float | None = None):
         with self._lock:
@@ -469,6 +477,8 @@ class DailyRiskManager:
         self.data_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(self.data_dir, exist_ok=True)
         self.stats_file = os.path.join(self.data_dir, "daily_stats.json")
+        self.exchange = "upbit" if "upbit" in self.data_dir.lower() else "bithumb"
+        self.db = get_db_manager(os.path.join(os.path.dirname(self.data_dir) if "upbit" in self.data_dir.lower() else self.data_dir, "trading.db"))
 
         self.current_date_str = ""
         self.daily_start_equity = 0.0
@@ -506,21 +516,27 @@ class DailyRiskManager:
 
     def _save_state(self):
         with self._lock:
+            payload = {
+                "date": self.current_date_str,
+                "start_equity": self.daily_start_equity,
+                "realized_pnl_krw": self.realized_pnl_krw,
+                "total_trades": self.total_trades_today,
+                "win_trades": self.win_trades_today,
+                "consecutive_losses": self.consecutive_losses,
+                "cooldown_until_ts": self.cooldown_until_ts,
+                "kill_switch_latched_date": self.kill_switch_latched_date,
+                "kill_switch_active": self.kill_switch_active,
+                "history": self.daily_history,
+            }
             try:
-                write_json_atomically(self.stats_file, {
-                    "date": self.current_date_str,
-                    "start_equity": self.daily_start_equity,
-                    "realized_pnl_krw": self.realized_pnl_krw,
-                    "total_trades": self.total_trades_today,
-                    "win_trades": self.win_trades_today,
-                    "consecutive_losses": self.consecutive_losses,
-                    "cooldown_until_ts": self.cooldown_until_ts,
-                    "kill_switch_latched_date": self.kill_switch_latched_date,
-                    "kill_switch_active": self.kill_switch_active,
-                    "history": self.daily_history,
-                })
+                write_json_atomically(self.stats_file, payload)
             except OSError as e:
                 logger.warning(f"일일 통계 저장 실패: {e}")
+            if self.current_date_str:
+                try:
+                    self.db.save_daily_stats(self.exchange, self.current_date_str, payload)
+                except Exception as e:
+                    logger.debug(f"SQLite 일일 통계 저장 예외: {e}")
 
     def add_realized_trade(self, pnl_krw: float, is_win: bool):
         with self._lock:

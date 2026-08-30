@@ -5,6 +5,7 @@ import threading
 import time
 from typing import Any
 
+from db_manager import get_db_manager
 from order_safety import load_json_with_backup_recovery, write_json_atomically
 
 logger = logging.getLogger(__name__)
@@ -12,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 class TradeMemoryManager:
     """
-    자가 진화형 AI 매매 복기 및 피드백 메모리 (Self-Learning Trade Memory, RLock 스레드 안전성 보장)
-    - data/trade_memory.json 파일에 완료된 거래의 진입 근거, 결과(익절/손절), 수익률 영구 저장
+    자가 진화형 AI 매매 복기 및 피드백 메모리 (SQLite DB + JSON 듀얼 영속성)
+    - SQLite trading.db 및 data/trade_memory.json 파일에 완료된 거래의 진입 근거, 결과(익절/손절), 수익률 영구 저장
     - 퀀트 속성(BTC 레짐, 알파 점수 구간, 지표 상태, 보유시간) 정량 태깅 및 성과 분석 (과제 F)
     - 최근 성공 및 실패 패턴을 분석하여 Gemini 퀀트 프롬프트에 '피드백 교훈'으로 자동 주입
     - 시간이 지날수록 동일한 실수를 반복하지 않고 승률이 우상향하도록 진화
@@ -30,6 +31,7 @@ class TradeMemoryManager:
         self.data_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(self.data_dir, exist_ok=True)
         self.memory_file = memory_file or os.path.join(self.data_dir, "trade_memory.json")
+        self.db = get_db_manager(os.path.join(self.data_dir, "trading.db"))
         # 거래소별 성과 표본을 분리해 다른 거래소 결과가 AI 피드백에 섞이지 않게 한다.
         self.exchange_scope = exchange_scope.strip().lower()
         # 전용 저장소에서만 허용하는 구형 무표기 기록의 안전한 귀속 대상이다.
@@ -180,6 +182,10 @@ class TradeMemoryManager:
         with self._lock:
             self.trades.append(trade_item)
             self._save_memory()
+            try:
+                self.db.insert_trade(exchange, trade_item)
+            except Exception as exc:
+                logger.warning("SQLite 매매 기록 저장 오류: %s", exc)
         logger.info(f"🧠 [AI 매매 메모리 저장] {market} {side} 결과: {'승리(익절)' if is_win else '패배(손절)'} ({pnl_pct:+.2f}%, 실현: {pnl_krw:+,.0f}원)")
 
     def get_regime_performance_stats(self, min_sample_size: int = 3) -> dict[str, Any]:
