@@ -305,8 +305,14 @@ class QuantBacktester:
                         position_vol = 0.0
                         continue
 
-                # D. 동적 타임스탑 (StrategyPolicy.TIME_STOP_BARS_5M = 12개 봉 / 60분 경과 시 청산, P1-3)
-                if bars_held >= StrategyPolicy.TIME_STOP_BARS_5M:
+                # D. 동적 본전 보장 타임스탑 (StrategyPolicy.TIME_STOP_BARS_5M = 12개 봉 / 60분 경과 시 실질 본전 이상 청산, 최대 24봉 유예)
+                be_pct = StrategyPolicy.TIME_STOP_BREAKEVEN_MIN_PNL_PCT * 100.0
+                cur_unrealized_pct = ((cur_price - entry_price) / entry_price) * 100.0
+                should_time_stop = (
+                    (bars_held >= StrategyPolicy.TIME_STOP_BARS_5M and cur_unrealized_pct >= be_pct)
+                    or (bars_held >= StrategyPolicy.TIME_STOP_MAX_HOLD_BARS_5M)
+                )
+                if should_time_stop:
                     exit_p = cur_price * (1.0 - self.slippage_rate)
                     pnl_pct = ((exit_p - entry_price) / entry_price) * 100.0
                     proceeds = position_vol * exit_p * (1.0 - self.fee_rate)

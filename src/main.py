@@ -575,32 +575,43 @@ def run_cycle():
                         else StrategyPolicy.TIME_STOP_SECONDS_NORMAL
                     )
 
-                    # 지능형 지지선 유예 (수익권이면서 5분봉 MA20 위에서 지지 중이면 타임스탑 50% 연장하여 횡보 후 돌파 기회 보장)
-                    is_holding_ma20 = False
-                    if candles_5m and len(candles_5m) >= 20:
-                        prices_5m = [float(c.get("trade_price", 0.0)) for c in candles_5m]
-                        ma20_5m = sum(prices_5m[:20]) / 20.0
-                        is_holding_ma20 = current_price >= ma20_5m
-
-                    if is_holding_ma20 and pnl_pct_current > 0.0:
-                        effective_time_stop = int(effective_time_stop * 1.5)
-
-                    # ⚡ [15분 모멘텀 조기 탈출]: 15분 경과 후 수익이 지지부진(-0.6% ~ +0.3%)하고 5분봉 VWAP 아래로 꺾인 경우 조기 본전 탈출
-                    is_below_vwap = False
+                    # 1. 5분봉 지지선 및 추세 붕괴 여부 정밀 판정
+                    is_holding_support = False
+                    is_trend_broken = False
+                    is_above_vwap = True
                     if candles_5m:
                         vwap_data = calculate_vwap(candles_5m)
-                        is_below_vwap = not vwap_data.get("is_above", True)
+                        is_above_vwap = vwap_data.get("is_above", True)
+                        if len(candles_5m) >= 20:
+                            prices_5m = [float(c.get("trade_price", 0.0)) for c in candles_5m]
+                            ma20_5m = sum(prices_5m[:20]) / 20.0
+                            ma5_5m = sum(prices_5m[:5]) / 5.0
+                            is_holding_support = (current_price >= ma20_5m) or is_above_vwap
+                            is_trend_broken = (ma5_5m < ma20_5m * 0.995) and (not is_above_vwap)
 
+                    # 2. [본전 보장 타임스탑 - Case A]: 실질 본전 이상(+0.05% 이상) 시 60분 경과 즉시 익절/본전 청산하여 자금 회전
+                    be_threshold_pct = StrategyPolicy.TIME_STOP_BREAKEVEN_MIN_PNL_PCT * 100.0  # +0.05%
+                    is_breakeven_or_profit = pnl_pct_current >= be_threshold_pct
+                    is_time_stop_profit_trigger = (
+                        hold_duration_sec >= effective_time_stop and is_breakeven_or_profit
+                    )
+
+                    # 3. [본전 보장 타임스탑 - Case B]: 마이너스 손실(-1.5% ~ +0.05%) 구간에서는 성급한 투매를 차단하고 반등 대기
+                    #    - 지지선 유지 시 최대 120분까지 손절선(-1.5%)을 지키며 반등 기회 보장
+                    #    - 추세가 명백히 붕괴되었거나 최대 유예 시간(120분) 초과 시에만 방어적 청산
+                    is_time_stop_loss_trigger = (
+                        (hold_duration_sec >= StrategyPolicy.TIME_STOP_MAX_HOLD_SECONDS or (hold_duration_sec >= effective_time_stop and is_trend_broken))
+                        and (-1.5 <= pnl_pct_current < be_threshold_pct)
+                    )
+
+                    # 4. [15분 모멘텀 조기 본전 탈출]: 15분 경과 후 실질 본전권(0.0% ~ +0.3%)에서 모멘텀 소멸(VWAP 하회) 시 수수료 세이브 탈출
                     is_early_momentum_exit = (
                         hold_duration_sec >= StrategyPolicy.MOMENTUM_EARLY_EXIT_SECONDS
-                        and (-0.8 <= pnl_pct_current <= 0.3)
-                        and is_below_vwap
+                        and (0.0 <= pnl_pct_current <= 0.3)
+                        and (not is_above_vwap)
                     )
 
-                    is_time_stop_trigger = (
-                        (is_early_momentum_exit or hold_duration_sec >= effective_time_stop)
-                        and (-1.5 <= pnl_pct_current <= 1.5)
-                    )
+                    is_time_stop_trigger = is_time_stop_profit_trigger or is_time_stop_loss_trigger or is_early_momentum_exit
 
                     if is_time_stop_trigger:
                         exit_reason_label = "MOMENTUM_EARLY_EXIT" if is_early_momentum_exit else "TIME_STOP"

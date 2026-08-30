@@ -43,8 +43,11 @@ class StrategyPolicy:
     TIME_STOP_SECONDS: int = 3600        # 60분 타임스탑 (기본 정상장, 실거래 초 단위)
     TIME_STOP_SECONDS_NORMAL: int = 3600 # 정상장 60분 타임스탑
     TIME_STOP_SECONDS_RISK_OFF: int = 2700 # RISK_OFF 약세장 45분 단축 타임스탑 (기존 30분에서 완화)
+    TIME_STOP_MAX_HOLD_SECONDS: int = 7200 # 지지선 유지 시 최대 120분 반등 대기 유예
     TIME_STOP_BARS_5M: int = 12          # 5분봉 12개 = 60분 (백테스트 캔들 단위)
     TIME_STOP_BARS_5M_RISK_OFF: int = 9  # 5분봉 9개 = 45분 (RISK_OFF 백테스트 캔들 단위)
+    TIME_STOP_MAX_HOLD_BARS_5M: int = 24 # 최대 유예 24봉 (120분)
+    TIME_STOP_BREAKEVEN_MIN_PNL_PCT: float = 0.0005 # 타임스탑 실질 본전 기준 (+0.05% 수수료 세이브)
     COOLDOWN_STOP_LOSS_SEC: float = 1500.0  # 손절 후 쿨다운 25분 (자금 회전율 최적화)
     COOLDOWN_TIME_STOP_SEC: float = 900.0   # 타임스탑 횡보 청산 후 쿨다운 15분 (조기 2차 랠리 참여 허용)
     COOLDOWN_TP_SEC: float = 900.0          # 트레일링 익절 후 쿨다운 15분
