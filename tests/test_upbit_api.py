@@ -92,6 +92,31 @@ class UpbitAPITests(unittest.TestCase):
         self.assertEqual(UpbitAPI.round_volume("KRW-BTC", 0.123456789), 0.12345679)
         self.assertEqual(UpbitAPI.round_volume("KRW-BTC", -1.0), 0.0)
 
+    def test_rate_limit_header_parsing_blocks_only_exhausted_group(self):
+        # Remaining-Req의 sec=0은 해당 그룹만 다음 초 경계까지 차단해야 한다.
+        response = MagicMock()
+        response.headers = {"Remaining-Req": "group=ticker; min=600; sec=0"}
+
+        group, remaining = self.api._update_rate_limit_from_response(response, "ticker")
+
+        self.assertEqual(group, "ticker")
+        self.assertEqual(remaining, 0)
+        self.assertIn("ticker", self.api._rate_limit_blocked_until)
+        self.assertNotIn("orderbook", self.api._rate_limit_blocked_until)
+
+    def test_get_tickers_reuses_short_lived_cache_and_force_refresh_bypasses_it(self):
+        # 시장 스캔으로 받은 시세는 짧은 시간 동안 개별 현재가 조회에 재사용한다.
+        self.api._valid_markets_cache = {"KRW-BTC"}
+        with patch.object(self.api, "_request") as mock_request:
+            mock_request.return_value = [{"market": "KRW-BTC", "trade_price": 100.0}]
+
+            self.assertEqual(self.api.get_current_price("KRW-BTC"), 100.0)
+            self.assertEqual(self.api.get_current_price("KRW-BTC"), 100.0)
+            self.assertEqual(mock_request.call_count, 1)
+
+            self.assertEqual(self.api.get_current_price("KRW-BTC", force_refresh=True), 100.0)
+            self.assertEqual(mock_request.call_count, 2)
+
     @patch("requests.Session.get")
     def test_get_balances_normalization(self, mock_get):
         mock_response = MagicMock()

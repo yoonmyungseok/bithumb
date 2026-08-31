@@ -102,13 +102,20 @@ class TradingOrchestrator:
         top_count: int,
         create_screener: Callable[[], Any],
         btc_regime: str = "NORMAL",
+        on_screened_candidates: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> list[str]:
         """Select markets through one policy while retaining exchange exclusions."""
         held = [market for market in held_markets if exchange.is_tradeable_market(market)]
         if is_auto_mode:
             screened = create_screener().scan_markets(top_count=top_count, held_markets=held, btc_regime=btc_regime)
+            # 호출자가 후보 유형 등 선별 메타데이터를 주문 기록에 보존할 수 있게 전달한다.
+            if on_screened_candidates is not None:
+                on_screened_candidates(screened)
             candidates = [item.get("market", "") for item in screened if isinstance(item, dict)]
         else:
+            # 수동 종목 목록에는 스크리너 메타데이터가 없으므로 이전 사이클 정보를 비운다.
+            if on_screened_candidates is not None:
+                on_screened_candidates([])
             candidates = [market.strip().upper() for market in raw_markets.split(",") if market.strip()]
 
         return list(dict.fromkeys(

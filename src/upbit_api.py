@@ -60,18 +60,99 @@ class UpbitAPI:
         self.session.mount("http://", adapter)
         self._market_name_map: dict[str, str] = {}
         self._lock = threading.RLock()
-        self._last_request_time = 0.0
-        # 업비트 시세 API 초당 10회 제한 방어 (85ms 간격 보장)
-        self._min_request_interval = 0.085
+        # 업비트 응답 헤더의 Rate Limit 그룹별 예약 시각과 차단 시각을 관리한다.
+        self._rate_limit_next_at: dict[str, float] = {}
+        self._rate_limit_blocked_until: dict[str, float] = {}
+        self._rate_limit_remaining: dict[str, int] = {}
+        # 시장 스캔 결과를 재사용해 분석·대시보드의 중복 /ticker 요청을 줄인다.
+        self._ticker_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._ticker_cache_ttl = 1.5
 
-    def _throttle(self) -> None:
-        """업비트 REST API Rate Limit(초당 10회) 초과 방지를 위한 능동적 스로틀링"""
+    @staticmethod
+    def _get_rate_limit_group(method: str, endpoint: str) -> str:
+        """요청 전에도 안전한 간격을 적용할 수 있도록 API 그룹을 판별한다."""
+        if endpoint == "/ticker":
+            return "ticker"
+        if endpoint == "/orderbook":
+            return "orderbook"
+        if endpoint == "/market/all":
+            return "market"
+        if endpoint.startswith("/candles/"):
+            return "candle"
+        if endpoint == "/trades/ticks":
+            return "trade"
+        if method.upper() == "POST" and endpoint == "/orders":
+            return "order"
+        return "default"
+
+    @staticmethod
+    def _get_rate_limit_interval(group: str) -> float:
+        """공식 초당 한도보다 여유를 둔 그룹별 최소 요청 간격을 반환한다."""
+        # 시세 그룹은 초당 10회보다 낮은 약 7.7회, 주문은 초당 10회로 제한한다.
+        if group in {"market", "candle", "trade", "ticker", "orderbook"}:
+            return 0.13
+        if group == "order":
+            return 0.10
+        # 거래·자산 기본 그룹의 공식 한도(초당 30회)보다 여유를 둔다.
+        return 0.04
+
+    @staticmethod
+    def _seconds_until_next_boundary() -> float:
+        """429 또는 sec=0 이후 다음 초 경계까지의 안전 대기 시간을 계산한다."""
+        return max(0.02, 1.02 - (time.time() % 1.0))
+
+    def _throttle(self, group: str) -> None:
+        """그룹별 요청 예약으로 동시 호출에도 초당 한도를 선제적으로 지킨다."""
         with self._lock:
-            now = time.time()
-            elapsed = now - self._last_request_time
-            if elapsed < self._min_request_interval:
-                time.sleep(self._min_request_interval - elapsed)
-            self._last_request_time = time.time()
+            now = time.monotonic()
+            reserved_at = max(
+                now,
+                self._rate_limit_next_at.get(group, now),
+                self._rate_limit_blocked_until.get(group, now),
+            )
+            self._rate_limit_next_at[group] = reserved_at + self._get_rate_limit_interval(group)
+
+        wait_sec = reserved_at - time.monotonic()
+        if wait_sec > 0:
+            time.sleep(wait_sec)
+
+    def _update_rate_limit_from_response(self, response: requests.Response, fallback_group: str) -> tuple[str, int | None]:
+        """Remaining-Req 헤더를 반영하고, 한도 소진 그룹은 다음 초까지 차단한다."""
+        # requests의 CaseInsensitiveDict와 테스트용 dict 모두 get()을 지원한다.
+        header = response.headers.get("Remaining-Req", "")
+        if not isinstance(header, str):
+            return fallback_group, None
+
+        parts: dict[str, str] = {}
+        for item in header.split(";"):
+            key, separator, value = item.strip().partition("=")
+            if separator:
+                parts[key.strip()] = value.strip()
+
+        group = parts.get("group", fallback_group)
+        try:
+            remaining_sec = int(parts["sec"])
+        except (KeyError, TypeError, ValueError):
+            return group, None
+
+        with self._lock:
+            self._rate_limit_remaining[group] = remaining_sec
+            if remaining_sec <= 0:
+                blocked_until = time.monotonic() + self._seconds_until_next_boundary()
+                self._rate_limit_blocked_until[group] = max(
+                    self._rate_limit_blocked_until.get(group, 0.0), blocked_until
+                )
+        return group, remaining_sec
+
+    def _block_rate_limit_group(self, group: str) -> float:
+        """429를 받은 그룹만 다음 초 경계까지 차단하고 실제 대기 시간을 반환한다."""
+        wait_sec = self._seconds_until_next_boundary()
+        with self._lock:
+            blocked_until = time.monotonic() + wait_sec
+            self._rate_limit_blocked_until[group] = max(
+                self._rate_limit_blocked_until.get(group, 0.0), blocked_until
+            )
+        return wait_sec
 
     def _generate_jwt_token(self, params: dict[str, Any] | None = None) -> str:
         """
@@ -116,9 +197,10 @@ class UpbitAPI:
         method_upper = method.upper()
         retryable = method_upper == "GET"
         attempts = max_retries if retryable else 1
+        request_group = self._get_rate_limit_group(method_upper, endpoint)
 
         for attempt in range(1, attempts + 1):
-            self._throttle()
+            self._throttle(request_group)
             headers = {"Content-Type": "application/json"}
             if self.access_key and self.secret_key:
                 query_payload = params if params is not None else data
@@ -135,13 +217,28 @@ class UpbitAPI:
                 else:
                     raise ValueError(f"지원하지 않는 HTTP 메서드: {method}")
 
+                response_group, remaining_sec = self._update_rate_limit_from_response(
+                    response, request_group
+                )
+
                 # Rate Limit (429) 또는 서버 일시 장애 (5xx) 시 지수 백오프 재시도
                 if response.status_code in (429, 500, 502, 503, 504):
                     if retryable and attempt < attempts:
-                        sleep_sec = 2 ** (attempt - 1)
-                        logger.warning(
-                            f"⚠️ Upbit API [{response.status_code}] {endpoint} 일시 오류. {sleep_sec}초 후 재시도 ({attempt}/{max_retries})"
-                        )
+                        if response.status_code == 429:
+                            # 429는 지수 백오프보다 다음 초 경계 대기가 우선이다.
+                            sleep_sec = self._block_rate_limit_group(response_group)
+                            remaining_text = "미확인" if remaining_sec is None else str(remaining_sec)
+                            logger.warning(
+                                f"⚠️ Upbit API [429] {endpoint} 요청 제한. "
+                                f"그룹={response_group}, 잔여초당요청={remaining_text}, "
+                                f"{sleep_sec:.2f}초 후 재시도 ({attempt}/{max_retries})"
+                            )
+                        else:
+                            sleep_sec = 2 ** (attempt - 1)
+                            logger.warning(
+                                f"⚠️ Upbit API [{response.status_code}] {endpoint} 일시 오류. "
+                                f"{sleep_sec}초 후 재시도 ({attempt}/{max_retries})"
+                            )
                         time.sleep(sleep_sec)
                         continue
 
@@ -243,9 +340,11 @@ class UpbitAPI:
                 self._market_name_map = {}
         return self._market_name_map.get(market, market.split("-")[-1])
 
-    def get_tickers(self, markets: list[str]) -> list[dict[str, Any]]:
+    def get_tickers(self, markets: list[str], force_refresh: bool = False) -> list[dict[str, Any]]:
         """
         여러 마켓의 Ticker 시세 일괄 조회 (존재하지 않는 마켓 404 방지)
+        - 기본값은 1.5초 캐시를 사용해 시장 스캔 직후의 중복 호출을 방지한다.
+        - 주문 직전처럼 최신 시세가 필요한 호출자는 force_refresh=True를 사용할 수 있다.
         """
         if not markets:
             return []
@@ -253,21 +352,48 @@ class UpbitAPI:
         filtered = [m for m in markets if not valid_set or m in valid_set]
         if not filtered:
             return []
-        markets_str = ",".join(filtered)
+
+        now = time.monotonic()
+        cached_by_market: dict[str, dict[str, Any]] = {}
+        if not force_refresh:
+            with self._lock:
+                for market in filtered:
+                    cached_entry = self._ticker_cache.get(market)
+                    if cached_entry and now - cached_entry[0] < self._ticker_cache_ttl:
+                        cached_by_market[market] = dict(cached_entry[1])
+
+        missing_markets = [market for market in filtered if market not in cached_by_market]
+        if not missing_markets:
+            return [cached_by_market[market] for market in filtered if market in cached_by_market]
+
+        markets_str = ",".join(missing_markets)
         params = {"markets": markets_str}
         try:
             data = self._request("GET", "/ticker", params=params)
-            return data if isinstance(data, list) else []
+            tickers = data if isinstance(data, list) else []
+            fetched_by_market = {
+                ticker["market"]: dict(ticker)
+                for ticker in tickers
+                if isinstance(ticker, dict) and isinstance(ticker.get("market"), str)
+            }
+            if fetched_by_market:
+                cached_at = time.monotonic()
+                with self._lock:
+                    for market, ticker in fetched_by_market.items():
+                        self._ticker_cache[market] = (cached_at, ticker)
+            merged = {**cached_by_market, **fetched_by_market}
+            return [merged[market] for market in filtered if market in merged]
         except Exception as e:
             logger.debug(f"Ticker 조회 예외: {e}")
-            return []
+            # 이미 확보한 짧은 캐시만 반환해 장애 시 불필요한 빈 시세 전파를 줄인다.
+            return [cached_by_market[market] for market in filtered if market in cached_by_market]
 
-    def get_ticker(self, market: str = "KRW-BTC") -> dict[str, Any]:
+    def get_ticker(self, market: str = "KRW-BTC", force_refresh: bool = False) -> dict[str, Any]:
         """단일 코인 시세 조회"""
         valid_set = self._get_valid_markets_set()
         if valid_set and market not in valid_set:
             return {}
-        res = self.get_tickers([market])
+        res = self.get_tickers([market], force_refresh=force_refresh)
         return res[0] if res else {}
 
     def get_candles(self, unit: int = 5, count: int = 30, market: str = "KRW-BTC", to: str | None = None) -> list[dict[str, Any]]:
@@ -340,12 +466,12 @@ class UpbitAPI:
         except Exception:
             return {}
 
-    def get_current_price(self, market: str = "KRW-BTC") -> float:
-        """현재 체결가 float 조회"""
+    def get_current_price(self, market: str = "KRW-BTC", force_refresh: bool = False) -> float:
+        """현재 체결가 float 조회. force_refresh=True면 캐시를 우회한다."""
         valid_set = self._get_valid_markets_set()
         if valid_set and market not in valid_set:
             return 0.0
-        ticker = self.get_ticker(market)
+        ticker = self.get_ticker(market, force_refresh=force_refresh)
         return float(ticker.get("trade_price", 0.0))
 
     @staticmethod

@@ -51,12 +51,19 @@ class MarketScreener:
         min_change_rate: float = 0.005,
         max_change_rate: float = 0.12,
         max_spread_pct: float = 0.0035,
+        enable_early_breakout: bool = False,
+        early_breakout_min_change_rate: float = 0.003,
+        early_breakout_max_candidates: int = 2,
     ):
         self.api = bithumb_api
         self.min_trade_value_krw = min_trade_value_krw
         self.min_change_rate = min_change_rate
         self.max_change_rate = max_change_rate
         self.max_spread_pct = max_spread_pct
+        # 초기 돌파는 확인형 후보와 분리하며, 기본값은 기존 동작 보존을 위해 비활성화한다.
+        self.enable_early_breakout = enable_early_breakout
+        self.early_breakout_min_change_rate = max(0.0, early_breakout_min_change_rate)
+        self.early_breakout_max_candidates = max(0, early_breakout_max_candidates)
 
     def scan_markets(
         self,
@@ -102,6 +109,7 @@ class MarketScreener:
             btc_change_rate = _safe_float(btc_ticker.get("signed_change_rate", btc_ticker.get("change_rate", 0.0))) if btc_ticker else 0.0
 
             qualified_candidates: list[dict[str, Any]] = []
+            early_breakout_candidates: list[dict[str, Any]] = []
             held_candidates: list[dict[str, Any]] = []
             excluded_manual = get_excluded_manual_holdings()
 
@@ -143,33 +151,50 @@ class MarketScreener:
                 if acc_price_24h < min_trade_val:
                     continue
 
-                if not (self.min_change_rate <= change_rate <= self.max_change_rate):
-                    continue
-
                 if is_risk_off and relative_strength < StrategyPolicy.RS_MIN_RISK_OFF:
                     continue
 
-                # 상승 초입(+1.5% ~ +6.0%) 종목에 최고 가중치를 부여하고, 이미 많이 오른(+8% 초과) 종목은 감점
-                if 0.015 <= change_rate <= 0.060:
-                    momentum_multiplier = 2.0   # 상승 초입 골든존 최고 가중치
-                elif 0.005 <= change_rate < 0.015:
-                    momentum_multiplier = 1.3   # 바닥 탈출 초기 구간
-                elif 0.060 < change_rate <= 0.090:
-                    momentum_multiplier = 1.0   # 진행 중인 상승세
-                else:
-                    momentum_multiplier = 0.5   # +9% 이상 급등 과열 종목 (고점 피로도 감점)
+                # 확인형 후보는 기존 상승률 조건을 그대로 사용한다.
+                if self.min_change_rate <= change_rate <= self.max_change_rate:
+                    # 상승 초입(+1.5% ~ +6.0%) 종목에 최고 가중치를 부여하고, 이미 많이 오른(+8% 초과) 종목은 감점
+                    if 0.015 <= change_rate <= 0.060:
+                        momentum_multiplier = 2.0   # 상승 초입 골든존 최고 가중치
+                    elif 0.005 <= change_rate < 0.015:
+                        momentum_multiplier = 1.3   # 바닥 탈출 초기 구간
+                    elif 0.060 < change_rate <= 0.090:
+                        momentum_multiplier = 1.0   # 진행 중인 상승세
+                    else:
+                        momentum_multiplier = 0.5   # +9% 이상 급등 과열 종목 (고점 피로도 감점)
 
-                rs_bonus = max(0.0, relative_strength * 60.0)
-                # 거래대금의 로그 스케일과 초입 모멘텀 가중치를 결합
-                effective_rate = min(change_rate, 0.08)  # 지나치게 높은 상승률이 점수를 과도하게 왜곡하지 않도록 상한 8% 캡 적용
-                score = ((effective_rate * 100.0) * momentum_multiplier * math.log10(max(1.0, acc_price_24h))) + rs_bonus
-                ticker_info["score"] = score
-                ticker_info["is_held"] = False
-                qualified_candidates.append(ticker_info)
+                    rs_bonus = max(0.0, relative_strength * 60.0)
+                    # 거래대금의 로그 스케일과 초입 모멘텀 가중치를 결합
+                    effective_rate = min(change_rate, 0.08)  # 지나치게 높은 상승률이 점수를 과도하게 왜곡하지 않도록 상한 8% 캡 적용
+                    score = ((effective_rate * 100.0) * momentum_multiplier * math.log10(max(1.0, acc_price_24h))) + rs_bonus
+                    ticker_info["score"] = score
+                    ticker_info["candidate_type"] = "CONFIRMED"
+                    ticker_info["is_held"] = False
+                    qualified_candidates.append(ticker_info)
+                    continue
+
+                # 초기 돌파 후보는 당일 상승률이 확인형 기준에 도달하기 전 구간만 별도로 감시한다.
+                if (
+                    self.enable_early_breakout
+                    and self.early_breakout_min_change_rate <= change_rate < self.min_change_rate
+                    and relative_strength >= 0.0
+                ):
+                    # 상대강도와 거래대금은 이미 위에서 검증했으므로, 초입 변동과 유동성을 함께 점수화한다.
+                    early_score = (change_rate * 100.0 * math.log10(max(1.0, acc_price_24h))) + max(0.0, relative_strength * 80.0)
+                    ticker_info["score"] = early_score
+                    ticker_info["candidate_type"] = "EARLY_BREAKOUT"
+                    ticker_info["is_held"] = False
+                    early_breakout_candidates.append(ticker_info)
 
             qualified_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+            early_breakout_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
             top_candidates = qualified_candidates[: max(top_count * 4, 20)]
+            early_scan_limit = max(4, self.early_breakout_max_candidates * 3)
+            top_candidates.extend(early_breakout_candidates[:early_scan_limit])
             markets_to_check = [c["market"] for c in top_candidates if "market" in c]
             ob_map: dict[str, dict[str, Any]] = {}
 
@@ -208,12 +233,14 @@ class MarketScreener:
                         continue
 
                     screened_by_spread.append(cand)
-                    if len(screened_by_spread) >= top_count * 2:
+                    # 확인형과 초기 돌파형을 모두 검사해 한 유형이 다른 유형의 검사를 막지 않게 한다.
+                    if len(screened_by_spread) >= (top_count * 2 + early_scan_limit):
                         break
                 except Exception:
                     continue
 
-            qualified_candidates = screened_by_spread
+            qualified_candidates = [c for c in screened_by_spread if c.get("candidate_type") != "EARLY_BREAKOUT"]
+            screened_early_breakouts = [c for c in screened_by_spread if c.get("candidate_type") == "EARLY_BREAKOUT"]
 
             if not is_risk_off and len(qualified_candidates) < top_count:
                 min_fb_trade_val = min(self.min_trade_value_krw, 1_000_000_000.0)
@@ -276,6 +303,7 @@ class MarketScreener:
                         "change_rate": _safe_float(ft.get("signed_change_rate", ft.get("change_rate"))),
                         "acc_trade_price_24h": _safe_float(ft.get("acc_trade_price_24h", ft.get("acc_trade_value_24h", 0.0))),
                         "relative_strength": _safe_float(ft.get("signed_change_rate", ft.get("change_rate"))) - btc_change_rate,
+                        "candidate_type": "CONFIRMED_FALLBACK",
                         "is_held": False,
                     })
 
@@ -293,9 +321,20 @@ class MarketScreener:
                     final_selection.append(qc)
                     selected_markets_set.add(qc["market"])
 
+            # 초기 돌파형은 확인형 후보와 별도의 소수 슬롯만 사용한다.
+            for ec in screened_early_breakouts[:self.early_breakout_max_candidates]:
+                if ec["market"] not in selected_markets_set:
+                    final_selection.append(ec)
+                    selected_markets_set.add(ec["market"])
+
             logger.info("========== [실시간 핫스팟 코인 스크리닝 결과] ==========")
             for rank, item in enumerate(final_selection, 1):
-                held_tag = " [🔒보유중 포지션]" if item.get("is_held") else " [🔥신규 급등 포착]"
+                if item.get("is_held"):
+                    held_tag = " [🔒보유중 포지션]"
+                elif item.get("candidate_type") == "EARLY_BREAKOUT":
+                    held_tag = " [🌱초기 돌파 후보]"
+                else:
+                    held_tag = " [🔥신규 급등 포착]"
                 trade_b_krw = item.get("acc_trade_price_24h", 0.0) / 100_000_000.0
                 rs_info = f" | RS: {item.get('relative_strength', 0.0)*100:+.2f}%" if "relative_strength" in item else ""
                 logger.info(

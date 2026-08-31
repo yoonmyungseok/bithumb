@@ -73,6 +73,13 @@ class StrategyPolicy:
     MA_ALIGNMENT_RATIO: float = 0.995    # MA5 >= MA20 * 0.995
     RISK_OFF_ALLOC_RATIO: float = 0.6    # RISK_OFF 진입 비중 (60%로 확대하여 알트 불장 수익 확보)
 
+    # 4-1. 초기 돌파 소액 진입 정책: 확인형 진입보다 이른 구간만 허용하되 핵심 안전 게이트는 유지한다.
+    EARLY_BREAKOUT_ALPHA_THRESHOLD_NORMAL: int = 55
+    EARLY_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF: int = 65
+    EARLY_BREAKOUT_VOLUME_RATIO_MIN: float = 1.5
+    EARLY_BREAKOUT_LOOKBACK_BARS: int = 4
+    EARLY_BREAKOUT_ALLOC_RATIO: float = 0.35
+
     # 5. 거시 시장 리스크 및 거래소 비용
     BTC_CRASH_THRESHOLD_PCT: float = 0.015  # BTC 15분 -1.5% 급락 시 차단
     FEE_RATE: float = 0.0004             # 편도 수수료 0.04%
@@ -628,6 +635,7 @@ def entry_signal(
     orderbook: dict[str, Any] | None = None,
     market: str = "",
     exchange: str = "",
+    entry_type: str = "CONFIRMED",
 ) -> dict[str, Any]:
     """
     결정론적 퀀트 진입 신호 생성기 (Deterministic Entry Engine)
@@ -719,9 +727,40 @@ def entry_signal(
     pct_b_min, pct_b_max = (0.28, 0.70) if regime_upper == "RISK_OFF" else (0.25, 0.75)
     signal_5m = (ma5 > ma20) and (rsi_min <= rsi <= rsi_max) and (pct_b_min <= pct_b <= pct_b_max)
 
+    total_score = int(alpha_res.get("total_score", 0) or 0)
     alpha_score_passed = alpha_res["allow_buy"] or (regime_upper == "RISK_OFF" and is_high_alpha and total_score >= 70)
+    normalized_entry_type = (entry_type or "CONFIRMED").upper()
+
+    # 초기 돌파는 확정된 직전 5분봉의 거래량·고점 돌파·양봉을 모두 만족해야 한다.
+    early_breakout_passed = False
+    early_breakout_reason = "확인형 후보"
+    if normalized_entry_type == "EARLY_BREAKOUT":
+        lookback = StrategyPolicy.EARLY_BREAKOUT_LOOKBACK_BARS
+        previous_candles = candles[1:lookback + 1]
+        previous_high = max((float(c.get("high_price", c.get("trade_price", 0.0)) or 0.0) for c in previous_candles), default=0.0)
+        previous_volumes = [float(c.get("candle_acc_trade_volume", 0.0) or 0.0) for c in candles[1:21]]
+        average_volume = (sum(previous_volumes) / len(previous_volumes)) if previous_volumes else 0.0
+        current_volume = float(candles[0].get("candle_acc_trade_volume", 0.0) or 0.0)
+        current_open = float(candles[0].get("opening_price", current) or current)
+        volume_confirmed = average_volume > 0 and current_volume >= average_volume * StrategyPolicy.EARLY_BREAKOUT_VOLUME_RATIO_MIN
+        price_breakout = previous_high > 0 and current > previous_high
+        bullish_candle = current >= current_open
+        early_breakout_passed = price_breakout and volume_confirmed and bullish_candle
+        early_breakout_reason = (
+            f"직전 {lookback}봉 고점 돌파={'통과' if price_breakout else '차단'}, "
+            f"거래량배수={(current_volume / average_volume) if average_volume > 0 else 0.0:.2f}, "
+            f"양봉={'통과' if bullish_candle else '차단'}"
+        )
     # RISK_OFF 약세장에서는 단순 5분봉 지표만으로 우회 불가하며, 반드시 알파 엄선 조건(alpha_score_passed)을 충족해야 함
-    if regime_upper == "RISK_OFF":
+    if normalized_entry_type == "EARLY_BREAKOUT":
+        early_threshold = (
+            StrategyPolicy.EARLY_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF
+            if regime_upper == "RISK_OFF"
+            else StrategyPolicy.EARLY_BREAKOUT_ALPHA_THRESHOLD_NORMAL
+        )
+        # 초기 진입도 동일한 하드 안전 게이트를 우회하지 않으며, 알파 기준만 별도 소액 진입 기준을 적용한다.
+        allowed = hard_gates_passed and early_breakout_passed and total_score >= early_threshold
+    elif regime_upper == "RISK_OFF":
         allowed = hard_gates_passed and alpha_score_passed
     else:
         allowed = hard_gates_passed and (signal_5m or alpha_score_passed)
@@ -743,6 +782,11 @@ def entry_signal(
 
     checklist_details = {
         "alpha_score": alpha_res["total_score"],
+        "entry_type": normalized_entry_type,
+        "early_breakout": {
+            "pass": early_breakout_passed,
+            "detail": early_breakout_reason,
+        },
         "factor_breakdown": alpha_res["factor_breakdown"],
         "hard_gates": {
             "all_passed": hard_gates_passed,
@@ -770,6 +814,8 @@ def entry_signal(
         f"이격 {'안정' if hard_gate_disparity else '과열차단'}",
         mtf_reason,
     ]
+    if normalized_entry_type == "EARLY_BREAKOUT":
+        reasons.append(f"초기 돌파 {early_breakout_reason}")
 
     return {
         "allow_buy": allowed,
@@ -782,9 +828,16 @@ def entry_signal(
         "rsi": rsi,
         "pct_b": pct_b,
         "alpha_score": alpha_res["total_score"],
+        "entry_type": normalized_entry_type,
+        "early_breakout_passed": early_breakout_passed,
         # 주문 원장에 그대로 보관할 수 있는 진입 시점의 결정론적 지표 스냅샷이다.
         "strategy_snapshot": {
             "entry_btc_regime": btc_regime,
+            "entry_type": normalized_entry_type,
+            "early_breakout": {
+                "pass": early_breakout_passed,
+                "detail": early_breakout_reason,
+            },
             "alpha_score": alpha_res["total_score"],
             "factor_breakdown": dict(alpha_res["factor_breakdown"]),
             "indicators": {

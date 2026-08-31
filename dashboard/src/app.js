@@ -501,6 +501,9 @@
     }
 
     tbody.innerHTML = candidates.map((cand, idx) => {
+      const candidateTypeBadge = cand.candidate_type === 'EARLY_BREAKOUT'
+        ? '<span class="text-xs text-emerald-400">🌱 초기 돌파</span>'
+        : '<span class="text-xs text-blue-400">📈 확인형</span>';
       const rawRr = Number(cand.risk_reward_ratio || cand.rr_ratio || 0);
       let rrDisplay = rawRr;
       if (rrDisplay <= 0 && cand.target_pct && cand.stop_pct) {
@@ -519,7 +522,7 @@
               <span class="text-slate-500 text-xs font-mono">#${idx + 1}</span>
               <span>${cand.korean_name || cand.market}</span>
               <span class="text-xs text-slate-400 font-normal">(${cand.market})</span>
-              <span class="text-xs text-blue-400">📈</span>
+              ${candidateTypeBadge}
             </div>
           </td>
           <td class="p-3 whitespace-nowrap font-medium text-slate-200">

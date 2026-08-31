@@ -18,7 +18,7 @@
   - Google Gemini API (Flash 모델군), Telegram API, Google Sheets API
 - **주요 전략 및 아키텍처**: 
   - **다중 시간대(MTF) 분석**: 1시간봉 대세 추세 + 5분봉 정밀 타점 정렬
-  - **거래대금 및 모멘텀 기반 동적 시장 스크리닝**: 24시간 거래대금 $\ge 10$억 원, 당일 상승률 +1.0%~+25.0%
+  - **거래대금 및 모멘텀 기반 동적 시장 스크리닝**: 확인형 후보는 24시간 거래대금 $\ge 10$억 원과 당일 상승률 +1.0%~+25.0%를 적용하며, 빗썸은 별도 초기 돌파 후보(단기 상승 초입·유동성·호가 안전성 통과)를 소액 진입 경로로 운영
   - **2중 호가 안전망 (Fail-Closed)**: 매수/매도 스프레드 $\le 0.35\%$, 상위 5호가 누적 매수 잔량 $\ge 2,000$만 원 검증
   - **결정론적 기술지표 엔진**: 볼린저 밴드(%B), RSI, ATR, MACD, EMA 기반 진입 게이트 (LLM 환각 차단)
   - **0.1초 초저지연 실시간 리스크 엔진**: WebSocket 틱 기반 0.1초 즉각 손절, 1차 30~50% 분할익절, 무한 트레일링 스탑
@@ -67,9 +67,9 @@ c:\AI\bithumb\
 │   ├── realtime_engine.py          # 0.1초 실시간 웹소켓 체결 틱 손절/익절 청산 엔진 (`RealtimeRiskEngine`), 미체결 정정/취소
 │   ├── bot_controller.py           # 텔레그램 양방향 제어, 웹 대시보드 API 공급자 (거래소별 독립 인스턴스)
 │   ├── order_safety.py             # 주문 저널(`OrderJournal`), 멱등성 집행(`SafeOrderExecutor`), 리스크 검증(`RiskGuard`), 체결 처리(`OrderFillProcessor`)
-│   ├── strategy_engine.py          # 표준 기술지표(RSI, BB, ATR, MACD, EMA) 계산, 결정론적 진입 게이트, StrategyPolicy SSOT
+│   ├── strategy_engine.py          # 표준 기술지표(RSI, BB, ATR, MACD, EMA) 계산, 확인형·초기 돌파 결정론적 진입 게이트, StrategyPolicy SSOT
 │   ├── gemini_analyzer.py          # Gemini AI 퀀트 분석 및 시그널 생성 엔진
-│   ├── market_screener.py          # 조건(거래대금, 상승률, 스프레드, 호가깊이) 시장 동적 탐색 (Fail-Closed, HOLO 제외)
+│   ├── market_screener.py          # 확인형·초기 돌파 후보와 조건(거래대금, 상승률, 스프레드, 호가깊이) 시장 동적 탐색 (Fail-Closed, HOLO 제외)
 │   ├── paper_broker.py             # 모의투자 어댑터 (거래소별 원장 격리 지원)
 │   ├── trade_memory.py             # 트레이딩 기록, 통계 및 AI 자가학습 메모리 관리
 │   ├── telegram_alert.py           # 텔레그램 양방향 원격 제어, 디바운싱 알림, 차트 전송

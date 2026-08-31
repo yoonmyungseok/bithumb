@@ -83,6 +83,16 @@ class StrategyPolicySSOTTests(unittest.TestCase):
             self.assertFalse(signal["allow_buy"])
             self.assertFalse(signal["checklist_details"]["hard_gates"]["bb_guard"]["pass"])
 
+    def test_early_breakout_requires_a_confirmed_breakout_condition(self):
+        """초기 돌파 유형도 고점 돌파·거래량 급증·양봉 중 하나라도 빠지면 매수하지 않는다."""
+        candles = self._generate_mock_candles(count=30, base_price=1000.0, trend=1.0)
+        signal = entry_signal(candles, btc_regime="NORMAL", entry_type="EARLY_BREAKOUT")
+
+        self.assertEqual(signal["entry_type"], "EARLY_BREAKOUT")
+        self.assertIn("early_breakout", signal["strategy_snapshot"])
+        self.assertFalse(signal["early_breakout_passed"])
+        self.assertFalse(signal["allow_buy"])
+
     def test_orderbook_flow_tracker_rolling_smoothing(self):
         """OrderbookFlowTracker가 단일 스냅샷 왜곡을 완충하고 롤링 평균을 정상 계산하는지 검증 (과제 E)"""
         tracker = OrderbookFlowTracker(max_history=3)

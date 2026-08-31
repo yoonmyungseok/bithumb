@@ -114,6 +114,10 @@ MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
 MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.35"))
 MAX_TOTAL_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_EXPOSURE_PCT", "0.90"))
 MAX_ORDER_KRW = float(os.getenv("MAX_ORDER_KRW", "20000000"))
+# 초기 돌파 경로는 빗썸에서만 활성화하며, 기존 확인형 안전 게이트와 주문 안전 검증을 함께 사용한다.
+EARLY_BREAKOUT_ENABLED = os.getenv("EARLY_BREAKOUT_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+EARLY_BREAKOUT_MIN_CHANGE_RATE = float(os.getenv("EARLY_BREAKOUT_MIN_CHANGE_RATE", "0.003"))
+EARLY_BREAKOUT_MAX_CANDIDATES = int(os.getenv("EARLY_BREAKOUT_MAX_CANDIDATES", "2"))
 # 비율 설정은 소수(0.05)와 기존 퍼센트 표기(5, -5)를 모두 지원한다.
 # 모든 실행 경로에서 동일한 정규화 함수를 사용해 200% 등의 오입력을 막는다.
 _risk_settings = load_runtime_risk_settings()
@@ -396,12 +400,26 @@ def run_cycle():
 
 
 
+        screened_candidate_metadata: dict[str, dict[str, Any]] = {}
+
+        def capture_screened_candidates(candidates: list[dict[str, Any]]) -> None:
+            """이번 사이클의 후보 유형을 주문 기록까지 전달하기 위한 로컬 저장소다."""
+            screened_candidate_metadata.clear()
+            for candidate in candidates:
+                market_code = str(candidate.get("market", "")).upper()
+                if market_code:
+                    screened_candidate_metadata[market_code] = dict(candidate)
+
         target_markets = cycle_orchestrator.select_target_markets(
             bithumb, held_markets=held_markets, is_auto_mode=is_auto_mode, raw_markets=raw_markets,
             max_positions=dyn_max_positions, top_count=dyn_top_count,
             create_screener=lambda: MarketScreener(bithumb, min_trade_value_krw=min_trade_val,
-                                                    min_change_rate=min_change, max_change_rate=max_change),
+                                                    min_change_rate=min_change, max_change_rate=max_change,
+                                                    enable_early_breakout=EARLY_BREAKOUT_ENABLED,
+                                                    early_breakout_min_change_rate=EARLY_BREAKOUT_MIN_CHANGE_RATE,
+                                                    early_breakout_max_candidates=EARLY_BREAKOUT_MAX_CANDIDATES),
             btc_regime=btc_regime,
+            on_screened_candidates=capture_screened_candidates,
         )
         logger.info(f"이번 사이클 최종 분석 대상 마켓 ({len(target_markets)}개): {target_markets}")
 
@@ -413,6 +431,8 @@ def run_cycle():
         # 5. 마켓별 순회 분석 및 매매 실행
         for market in target_markets:
             try:
+                candidate_metadata = screened_candidate_metadata.get(market, {})
+                candidate_type = str(candidate_metadata.get("candidate_type", "CONFIRMED")).upper()
                 market_snapshot = cycle_orchestrator.load_market_snapshot(bithumb, market, INTERVAL_MINUTES)
                 currency, korean_name = market_snapshot.currency, market_snapshot.korean_name
                 logger.info(f"--- [{korean_name} / {market} AI 퀀트 분석 시작] ---")
@@ -676,6 +696,7 @@ def run_cycle():
                     orderbook=orderbook,
                     market=market,
                     exchange="bithumb",
+                    entry_type=candidate_type,
                 )
                 reentry_allowed, reentry_reason = cooldown_manager.check_reentry_allowed(market, current_price)
                 is_holding = (coin_value >= MIN_ORDER_KRW and avg_buy_price > 0)
@@ -783,6 +804,11 @@ def run_cycle():
                 if fng["is_extreme_fear"] and action == "BUY":
                     alloc_pct = min(alloc_pct, 0.4)
 
+                if candidate_type == "EARLY_BREAKOUT" and action == "BUY":
+                    # 초기 돌파는 확인형 진입의 일부 비중만 사용하고, 추가 매수는 기존 확인형 신호에 맡긴다.
+                    alloc_pct = min(alloc_pct, dyn_max_pos_pct * StrategyPolicy.EARLY_BREAKOUT_ALLOC_RATIO)
+                    reason = f"[🌱초기 돌파 소액 진입] {reason}"
+
                 logger.info(f"[{market}] 전략: ACTION={action}, 진입가={entry_price:,.2f}, 목표가={target_price:,.2f}, 손절가={stop_loss:,.2f}, 비중={alloc_pct*100:.0f}%")
                 logger.info(f"[{market}] 근거: {reason}")
 
@@ -813,6 +839,8 @@ def run_cycle():
                     "alloc_pct": alloc_pct,
                     "reason": reason,
                     "alpha_score": alpha_score_val,
+                    "candidate_type": candidate_type,
+                    "early_breakout": local_entry.get("early_breakout", {}),
                     "allow_buy": allow_buy_val,
                     "factor_breakdown": factor_breakdown,
                     "target_pct": round(target_pct_val, 2),
@@ -985,8 +1013,9 @@ def run_cycle():
                         logger.warning(f"[{market}] 계산된 수량이 너무 작아 주문 취소: {formatted_volume}")
                         continue
 
+                    entry_label = "초기 돌파 소액" if candidate_type == "EARLY_BREAKOUT" else "AI 승인"
                     logger.info(
-                        f"🛒 [{korean_name} / {market} AI 승인 매수 실행] 주문가={order_price:,.2f}원, 수량={formatted_volume:.6f}, 투입금액={int(trade_budget):,d}원"
+                        f"🛒 [{korean_name} / {market} {entry_label} 매수 실행] 주문가={order_price:,.2f}원, 수량={formatted_volume:.6f}, 투입금액={int(trade_budget):,d}원"
                     )
 
                     cancel_bot_open_orders(bithumb, market)
