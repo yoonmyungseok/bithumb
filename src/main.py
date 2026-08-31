@@ -64,8 +64,12 @@ if sys.platform == "win32":
     except (OSError, AttributeError):
         pass
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
 # 1. 로깅(Logging) 환경 설정
-LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "trading.log")
 
@@ -1061,8 +1065,7 @@ def run_cycle():
 
 def update_heartbeat() -> None:
     """워치독 헬스체크 및 무응답(Hang) 방지를 위한 하트비트 파일 원자적 갱신"""
-    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-    hb_file = os.path.join(data_dir, ".heartbeat")
+    hb_file = os.path.join(DATA_DIR, ".heartbeat")
     try:
         write_json_atomically(hb_file, {
             "timestamp": time.time(),
@@ -1137,14 +1140,14 @@ def main():
             f"중복 AI/REST 호출을 생략하고 {remaining_sec}초 후 다음 정기 분석을 시작합니다."
         )
     else:
-        first_run_time = datetime.now()
+        first_run_time = datetime.now() + timedelta(minutes=INTERVAL_MINUTES)
 
     scheduler = BackgroundScheduler(timezone="Asia/Seoul")
     scheduler.add_job(
         run_cycle,
         "interval",
         minutes=INTERVAL_MINUTES,
-        next_run_time=first_run_time if not should_run_immediate else None,
+        next_run_time=first_run_time,
         id="run_trading_cycle",
         max_instances=1,
         coalesce=True,

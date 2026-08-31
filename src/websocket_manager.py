@@ -57,14 +57,17 @@ class BithumbWebSocketClient:
         self._max_callback_delay_seconds = 0.0
         self.last_tick_time: float = 0.0
         self.last_tick_time_by_market: dict[str, float] = {}
+        self.market_subscription_time: dict[str, float] = {}
         self.confirmed_markets: set[str] = set()
         self.subscription_error: bool = False
         self.reconnect_count: int = 0
         self.is_connected: bool = False
 
-    def get_health_status(self, market: str | None = None, max_stale_seconds: float = 15.0) -> dict[str, Any]:
+    def get_health_status(self, market: str | None = None, max_stale_seconds: float = 45.0) -> dict[str, Any]:
         """웹소켓 데이터 건강상태 검사 (시장별 개별 상태 판정 지원, P1-2)"""
         now = time.time()
+        effective_stale_sec = 15.0 if market and "BTC" in market.upper() else max_stale_seconds
+
         with self._lock:
             connected = self.is_connected
             reconnects = self.reconnect_count
@@ -72,13 +75,17 @@ class BithumbWebSocketClient:
             sub_markets = list(self.subscribed_markets)
 
             if market:
-                last_tick = self.last_tick_time_by_market.get(market.upper(), 0.0)
-                is_sub = market.upper() in [m.upper() for m in sub_markets]
+                market_upper = market.upper()
+                last_tick = self.last_tick_time_by_market.get(market_upper, 0.0)
+                is_sub = market_upper in [m.upper() for m in sub_markets]
+                sub_time = self.market_subscription_time.get(market_upper, 0.0)
             else:
                 last_tick = self.last_tick_time
                 is_sub = True
+                sub_time = 0.0
 
         latency = (now - last_tick) if last_tick > 0 else 9999.0
+        time_since_sub = (now - sub_time) if sub_time > 0 else 9999.0
 
         queue_depth = self._callback_queue.qsize()
         with self._lock:
@@ -92,12 +99,17 @@ class BithumbWebSocketClient:
             state = WebSocketHealthState.SUBSCRIPTION_FAILED
             is_healthy = False
         elif last_tick <= 0:
-            state = WebSocketHealthState.DATA_UNAVAILABLE
-            is_healthy = False
-        elif latency > max_stale_seconds:
+            # 신규 구독 후 60초 이내 유예(Grace Period) 적용: 아직 틱 미수신이어도 웹소켓 정상 연결 시 유효 간주
+            if market and is_sub and time_since_sub <= 60.0:
+                state = WebSocketHealthState.DATA_AVAILABLE
+                is_healthy = True
+            else:
+                state = WebSocketHealthState.DATA_UNAVAILABLE
+                is_healthy = False
+        elif latency > effective_stale_sec:
             state = WebSocketHealthState.STALE
             is_healthy = False
-        elif queue_depth > 100 or callback_delay > 0.5:
+        elif queue_depth > 100 or (callback_delay > 2.0 and queue_depth > 20):
             state = WebSocketHealthState.PROCESSING_DELAY
             is_healthy = False
         else:
@@ -158,7 +170,13 @@ class BithumbWebSocketClient:
         if not clean_markets:
             return
 
+        now_ts = time.time()
         with self._lock:
+            for m in clean_markets:
+                m_upper = m.upper()
+                if m_upper not in self.market_subscription_time:
+                    self.market_subscription_time[m_upper] = now_ts
+
             if set(self.subscribed_markets) == set(clean_markets):
                 return
             self.subscribed_markets = clean_markets
@@ -187,6 +205,12 @@ class BithumbWebSocketClient:
                     self._last_callback_delay_seconds = delay
                     self._max_callback_delay_seconds = max(self._max_callback_delay_seconds, delay)
             drained += 1
+
+        # 큐가 비워졌다면 잔여 딜레이를 0으로 리셋하여 다음 사이클 오탐 방지
+        if self._callback_queue.empty():
+            with self._lock:
+                self._last_callback_delay_seconds = 0.0
+
         return drained
 
     def _enqueue_callback(self, kind: str, args: tuple[Any, ...]) -> None:

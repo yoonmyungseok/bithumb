@@ -1096,14 +1096,14 @@ def main():
             f"중복 AI/REST 호출을 생략하고 {remaining_sec}초 후 다음 정기 분석을 시작합니다."
         )
     else:
-        first_run_time = datetime.now()
+        first_run_time = datetime.now() + timedelta(minutes=INTERVAL_MINUTES)
 
     scheduler = BackgroundScheduler(timezone="Asia/Seoul")
     scheduler.add_job(
         run_cycle,
         "interval",
         minutes=INTERVAL_MINUTES,
-        next_run_time=first_run_time if not should_run_immediate else None,
+        next_run_time=first_run_time,
         id="run_upbit_trading_cycle",
         max_instances=1,
         coalesce=True,

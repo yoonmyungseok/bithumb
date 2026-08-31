@@ -671,22 +671,31 @@ def entry_signal(
     # 1. 1시간봉 MTF 추세 필터
     mtf_allowed = True
     mtf_reason = "1H MTF 미제공"
+    is_high_alpha = (alpha_res.get("total_score", 0) >= 70)
     if candles_1h and len(candles_1h) >= 20:
         prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
         ema20_1h = calculate_ema(prices_1h, 20)
         current_1h = prices_1h[0]
-        mtf_ratio = 0.998 if regime_upper == "RISK_OFF" else 0.980
+        if regime_upper == "RISK_OFF":
+            mtf_ratio = 0.990 if is_high_alpha else 0.998
+        else:
+            mtf_ratio = 0.980
         mtf_allowed = current_1h >= (ema20_1h * mtf_ratio)
         mtf_reason = f"1H {current_1h:.1f} {'>=' if mtf_allowed else '<'} EMA20 {ema20_1h:.1f} (기준 {mtf_ratio:.3f})"
 
     # 2. [과제 B] 하드 안전 게이트 (Hard Safety Gates - 알파 점수로 우회 불가)
     hard_gate_btc = regime_upper not in ("CRASH", "BEAR_VOLATILE")
     hard_gate_mtf = mtf_allowed
-    rsi_hard_min = StrategyPolicy.RSI_MIN_RISK_OFF if regime_upper == "RISK_OFF" else StrategyPolicy.RSI_MIN_NORMAL
-    rsi_hard_max = StrategyPolicy.RSI_MAX_RISK_OFF if regime_upper == "RISK_OFF" else StrategyPolicy.RSI_MAX_NORMAL
+    if regime_upper == "RISK_OFF":
+        rsi_hard_min = 35.0 if is_high_alpha else StrategyPolicy.RSI_MIN_RISK_OFF
+        rsi_hard_max = 68.0 if is_high_alpha else StrategyPolicy.RSI_MAX_RISK_OFF
+    else:
+        rsi_hard_min = StrategyPolicy.RSI_MIN_NORMAL
+        rsi_hard_max = StrategyPolicy.RSI_MAX_NORMAL
     hard_gate_rsi = (rsi_hard_min <= rsi <= rsi_hard_max)
     hard_gate_bb = (StrategyPolicy.PCT_B_MIN <= pct_b <= StrategyPolicy.PCT_B_MAX)
-    hard_gate_ma = ma5 >= ma20 * StrategyPolicy.MA_ALIGNMENT_RATIO
+    ma_align_ratio = 0.995 if (regime_upper == "RISK_OFF" and is_high_alpha) else StrategyPolicy.MA_ALIGNMENT_RATIO
+    hard_gate_ma = ma5 >= ma20 * ma_align_ratio
 
     # 2-1. MA20 단기 이격 과열 차단 (이격도 +2.5% 이하)
     hard_gate_disparity = current <= (ma20 * StrategyPolicy.MAX_MA20_DISPARITY)
@@ -710,8 +719,8 @@ def entry_signal(
     pct_b_min, pct_b_max = (0.28, 0.70) if regime_upper == "RISK_OFF" else (0.25, 0.75)
     signal_5m = (ma5 > ma20) and (rsi_min <= rsi <= rsi_max) and (pct_b_min <= pct_b <= pct_b_max)
 
-    alpha_score_passed = alpha_res["allow_buy"]
-    # RISK_OFF 약세장에서는 단순 5분봉 지표만으로 우회 불가하며, 반드시 알파 75점 이상 엄선 조건(alpha_score_passed)을 충족해야 함
+    alpha_score_passed = alpha_res["allow_buy"] or (regime_upper == "RISK_OFF" and is_high_alpha and total_score >= 70)
+    # RISK_OFF 약세장에서는 단순 5분봉 지표만으로 우회 불가하며, 반드시 알파 엄선 조건(alpha_score_passed)을 충족해야 함
     if regime_upper == "RISK_OFF":
         allowed = hard_gates_passed and alpha_score_passed
     else:

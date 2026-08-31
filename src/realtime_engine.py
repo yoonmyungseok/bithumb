@@ -378,6 +378,7 @@ class RealtimeRiskEngine:
                     self.trailing_tracker.clear(market)
                     self.cancel_bot_open_orders(market)
 
+                    ex_name = "bithumb" if hasattr(bithumb, "get_candlestick") else "upbit"
                     order_res = self.order_executor.submit(
                         bithumb,
                         market=market,
@@ -385,6 +386,10 @@ class RealtimeRiskEngine:
                         volume=coin_available,
                         ord_type="market",
                         position_id=market,
+                        expected_price=current_price,
+                        exit_reason=f"0.1초 실시간 웹소켓 {stop_type} 실행",
+                        avg_buy_price=avg_buy_price,
+                        exchange_name=ex_name,
                     )
                     self._invalidate_balance_cache()
                     self.cooldown_manager.record_exit(market, "STOP_LOSS", exit_price=current_price)
@@ -446,6 +451,7 @@ class RealtimeRiskEngine:
                         )
                         self.cancel_bot_open_orders(market)
 
+                        ex_name = "bithumb" if hasattr(bithumb, "get_candlestick") else "upbit"
                         order_res = self.order_executor.submit(
                             bithumb,
                             market=market,
@@ -453,6 +459,10 @@ class RealtimeRiskEngine:
                             volume=sell_vol,
                             ord_type="market",
                             position_id=market,
+                            expected_price=current_price,
+                            exit_reason=f"0.1초 실시간 {stage_label} 도달 분할 익절",
+                            avg_buy_price=avg_buy_price,
+                            exchange_name=ex_name,
                         )
                         self._invalidate_balance_cache()
 
@@ -492,6 +502,7 @@ class RealtimeRiskEngine:
                     )
                     self.cancel_bot_open_orders(market)
 
+                    ex_name = "bithumb" if hasattr(bithumb, "get_candlestick") else "upbit"
                     order_res = self.order_executor.submit(
                         bithumb,
                         market=market,
@@ -499,6 +510,10 @@ class RealtimeRiskEngine:
                         volume=coin_available,
                         ord_type="market",
                         position_id=market,
+                        expected_price=current_price,
+                        exit_reason="0.1초 실시간 최고점 대비 트레일링 스탑 익절",
+                        avg_buy_price=avg_buy_price,
+                        exchange_name=ex_name,
                     )
                     self._invalidate_balance_cache()
                     self.cooldown_manager.record_exit(market, "TRAILING_STOP", exit_price=current_price)
