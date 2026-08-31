@@ -7,10 +7,12 @@
 """
 
 import argparse
+import hmac
 import json
 import logging
 import mimetypes
 import os
+import re
 import signal
 import sys
 import threading
@@ -58,6 +60,21 @@ if sys.stdout is not None:
     logger.addHandler(stream_handler)
 logger.propagate = False
 
+# 대시보드에서 조회할 운영 로그를 고정한다. 요청값으로 파일 경로를 받지 않아
+# 경로 조작을 통한 임의 파일 노출을 원천 차단한다.
+ALERT_LOG_SOURCES = {
+    "trading.log": ("빗썸 봇", "bithumb"),
+    "trading_upbit.log": ("업비트 봇", "upbit"),
+    "watchdog.log": ("빗썸 워치독", "bithumb"),
+    "watchdog_upbit.log": ("업비트 워치독", "upbit"),
+    # 통합 화면에서만 대시보드 자체 오류를 보조 정보로 제공한다.
+    "dashboard.log": ("통합 대시보드", "combined"),
+}
+ALERT_LEVEL_PATTERN = re.compile(r"\[(WARNING|ERROR|CRITICAL)\]", re.IGNORECASE)
+ALERT_TIMESTAMP_PATTERN = re.compile(r"^\[?(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})")
+ALERT_TAIL_BYTES = 256 * 1024
+ALERT_LIMIT = 100
+
 
 class QuietThreadingHTTPServer(ThreadingHTTPServer):
     """클라이언트 연결 조기 종료 시 불필요한 스택트레이스 억제"""
@@ -83,12 +100,17 @@ class UnifiedDashboardServer:
         bithumb_api_url: str = "http://127.0.0.1:17979",
         upbit_api_url: str = "http://127.0.0.1:17980",
         static_dir: str | None = None,
+        alert_log_dir: str | None = None,
     ):
         self.port = port
         self.host = host
         self.bithumb_api_url = bithumb_api_url.rstrip("/")
         self.upbit_api_url = upbit_api_url.rstrip("/")
         self.static_dir = static_dir or self._resolve_static_dir()
+        # 설정된 경우에만 원격 제어에 토큰을 요구해 기존 로컬 운영 환경의 호환을 유지한다.
+        self.action_token = os.getenv("DASHBOARD_ACTION_TOKEN", "").strip()
+        # 테스트에서는 임시 경로를 주입할 수 있지만 운영에서는 프로젝트 logs만 읽는다.
+        self.alert_log_dir = os.path.abspath(alert_log_dir or log_dir)
         self.server: QuietThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._poll_thread: threading.Thread | None = None
@@ -99,6 +121,65 @@ class UnifiedDashboardServer:
         self._last_success_ts: dict[str, float] = {}
         self.http_session = requests.Session()
         self.http_session.trust_env = False
+
+    def is_action_authorized(self, supplied_token: str) -> bool:
+        """원격 제어 토큰이 설정된 경우에만 상수 시간 비교로 검증한다."""
+        return not self.action_token or hmac.compare_digest(supplied_token or "", self.action_token)
+
+    @staticmethod
+    def _mask_sensitive_log_text(text: str) -> str:
+        """로그에 우연히 포함된 인증 값이 브라우저로 전달되지 않게 마스킹한다."""
+        # 키 이름 뒤의 값만 가려 진단에 필요한 메시지 구조는 보존한다.
+        return re.sub(
+            r"(?i)(access[_ -]?key|secret|token|password|authorization)(\s*[:=]\s*)([^\s,}\]\"']+)",
+            r"\1\2***",
+            text,
+        )
+
+    @staticmethod
+    def _read_recent_lines(path: str, max_bytes: int = ALERT_TAIL_BYTES) -> list[str]:
+        """대용량 로그도 마지막 일부만 읽어 대시보드 응답 지연을 제한한다."""
+        try:
+            with open(path, "rb") as log_stream:
+                log_stream.seek(0, os.SEEK_END)
+                size = log_stream.tell()
+                log_stream.seek(max(0, size - max_bytes))
+                chunk = log_stream.read()
+        except (OSError, ValueError):
+            return []
+
+        text = chunk.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        # 중간부터 읽은 경우 첫 행은 잘린 레코드이므로 제외한다.
+        return lines if size <= max_bytes else lines[1:]
+
+    def get_alert_logs(self, exchange_target: str = "combined") -> dict[str, Any]:
+        """선택한 거래소 범위의 WARNING 이상 로그만 최신순으로 반환한다."""
+        target = exchange_target.lower()
+        if target not in {"combined", "bithumb", "upbit"}:
+            target = "combined"
+
+        alerts: list[dict[str, str]] = []
+        for filename, (source, exchange) in ALERT_LOG_SOURCES.items():
+            # 통합 탭은 양쪽 거래소와 통합 게이트웨이 로그를 모두 포함한다.
+            if target != "combined" and exchange != target:
+                continue
+            path = os.path.join(self.alert_log_dir, filename)
+            for line in self._read_recent_lines(path):
+                level_match = ALERT_LEVEL_PATTERN.search(line)
+                if not level_match:
+                    continue
+                timestamp_match = ALERT_TIMESTAMP_PATTERN.search(line)
+                alerts.append({
+                    "source": source,
+                    "level": level_match.group(1).upper(),
+                    "timestamp": timestamp_match.group(1) if timestamp_match else "",
+                    "message": self._mask_sensitive_log_text(line.strip()),
+                })
+
+        # 로그 포맷의 날짜 문자열은 ISO 순서이므로 문자열 정렬로 최신순을 보장한다.
+        alerts.sort(key=lambda item: item["timestamp"], reverse=True)
+        return {"alerts": alerts[:ALERT_LIMIT], "exchange": target, "updated_at": time.time()}
 
     def _resolve_static_dir(self) -> str | None:
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dashboard"))
@@ -159,6 +240,13 @@ class UnifiedDashboardServer:
             "recent_trades": [],
             "recent_orders": [],
             "message": "봇 프로세스 미구동 또는 응답 없음",
+            # 오프라인은 신규 매수 가능으로 해석될 여지가 없도록 명시적으로 차단한다.
+            "safety": {
+                "entry_ready": False,
+                "entry_block_reasons": ["봇 프로세스 미구동 또는 응답 없음"],
+                "order_status_counts": {},
+                "feed": {"is_healthy": False, "status": "OFFLINE"},
+            },
         }
 
     def get_aggregated_status(self) -> dict[str, Any]:
@@ -276,6 +364,50 @@ class UnifiedDashboardServer:
         up_status = "ONLINE" if upbit_data.get("online") else "OFFLINE"
         bot_state = "🟢 정상 가동 중" if (bithumb_data.get("online") or upbit_data.get("online")) else "⚪ 봇 미가동 (오프라인)"
 
+        # 통합 화면은 한 거래소라도 안전 상태가 불명확하면 신규 매수를 허용하지 않는다.
+        safety_by_exchange = {
+            "bithumb": bithumb_data.get("safety") if isinstance(bithumb_data.get("safety"), dict) else {},
+            "upbit": upbit_data.get("safety") if isinstance(upbit_data.get("safety"), dict) else {},
+        }
+        combined_block_reasons: list[str] = []
+        combined_counts: dict[str, int] = {}
+        feed_by_exchange: dict[str, dict[str, Any]] = {}
+        for exchange, data in (("bithumb", bithumb_data), ("upbit", upbit_data)):
+            safety = safety_by_exchange[exchange]
+            label = "빗썸" if exchange == "bithumb" else "업비트"
+            raw_feed = safety.get("feed")
+            feed_by_exchange[exchange] = dict(raw_feed) if isinstance(raw_feed, dict) else {
+                "is_healthy": False,
+                "status": "DATA_UNAVAILABLE",
+                "message": "시세 스트림 상태 미전달",
+            }
+            if not data.get("online", False):
+                combined_block_reasons.append(f"{label} 봇 오프라인")
+            if not bool(safety.get("entry_ready", False)):
+                for reason in safety.get("entry_block_reasons", []) or ["매수 준비 상태 확인 불가"]:
+                    combined_block_reasons.append(f"{label}: {reason}")
+            for status, count in (safety.get("order_status_counts", {}) or {}).items():
+                try:
+                    combined_counts[str(status)] = combined_counts.get(str(status), 0) + int(count)
+                except (TypeError, ValueError):
+                    continue
+        healthy_feed_count = sum(1 for feed in feed_by_exchange.values() if feed.get("is_healthy") is True)
+        combined_feed = {
+            # 통합 탭은 두 거래소의 시세 스트림이 모두 정상일 때만 정상으로 표기한다.
+            "is_healthy": healthy_feed_count == len(feed_by_exchange),
+            "status": "DATA_AVAILABLE" if healthy_feed_count == len(feed_by_exchange) else (
+                "DEGRADED" if healthy_feed_count > 0 else "DATA_UNAVAILABLE"
+            ),
+            "by_exchange": feed_by_exchange,
+        }
+        combined_safety = {
+            "entry_ready": len(combined_block_reasons) == 0,
+            "entry_block_reasons": combined_block_reasons,
+            "order_status_counts": combined_counts,
+            "by_exchange": safety_by_exchange,
+            "feed": combined_feed,
+        }
+
         combined = {
             "title": "Bithumb & Upbit AI 퀀트 트레이딩 Pro (통합)",
             "total_equity": total_equity,
@@ -288,6 +420,9 @@ class UnifiedDashboardServer:
             "win_trades": total_wins,
             "win_rate": round(win_rate, 1),
             "bot_state": bot_state,
+            "safety": combined_safety,
+            # 전략 정책은 양 거래소가 공유하므로 정상 응답을 우선 사용한다.
+            "policy": bithumb_data.get("policy") or upbit_data.get("policy") or {},
             "positions": combined_positions,
             "candidates": combined_candidates,
             "recent_trades": combined_recent_trades,
@@ -314,14 +449,16 @@ class UnifiedDashboardServer:
 
         if target in ("bithumb", "all"):
             try:
-                res = self.http_session.post(f"{self.bithumb_api_url}/api/action/{action}", timeout=2.0)
+                headers = {"X-Dashboard-Action-Token": self.action_token} if self.action_token else None
+                res = self.http_session.post(f"{self.bithumb_api_url}/api/action/{action}", timeout=2.0, headers=headers)
                 results["bithumb"] = res.json() if res.status_code == 200 else {"success": False, "message": f"HTTP {res.status_code}"}
             except Exception as e:
                 results["bithumb"] = {"success": False, "message": f"빗썸 연결 실패: {e}"}
 
         if target in ("upbit", "all"):
             try:
-                res = self.http_session.post(f"{self.upbit_api_url}/api/action/{action}", timeout=2.0)
+                headers = {"X-Dashboard-Action-Token": self.action_token} if self.action_token else None
+                res = self.http_session.post(f"{self.upbit_api_url}/api/action/{action}", timeout=2.0, headers=headers)
                 results["upbit"] = res.json() if res.status_code == 200 else {"success": False, "message": f"HTTP {res.status_code}"}
             except Exception as e:
                 results["upbit"] = {"success": False, "message": f"업비트 연결 실패: {e}"}
@@ -411,7 +548,7 @@ class UnifiedDashboardServer:
                     self.send_response(204)
                     self.send_header("Access-Control-Allow-Origin", "*")
                     self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                    self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization")
+                    self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, X-Dashboard-Action-Token")
                     self.send_header("Access-Control-Max-Age", "86400")
                     self.send_header("Connection", "close")
                     self.end_headers()
@@ -437,7 +574,20 @@ class UnifiedDashboardServer:
                         self.wfile.write(body)
                         return
 
-                    # 2. 정적 SPA 파일 서빙
+                    # 2. WARNING 이상 운영 로그만 별도 조회한다.
+                    if path == "/api/alerts":
+                        target = urllib.parse.parse_qs(parsed_url.query).get("exchange", ["combined"])[0]
+                        body = json.dumps(server_self.get_alert_logs(target), ensure_ascii=False).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+
+                    # 3. 정적 SPA 파일 서빙
                     if server_self.static_dir:
                         rel_path = path.lstrip("/")
                         if not rel_path or rel_path == "index.html":
@@ -493,6 +643,16 @@ class UnifiedDashboardServer:
                     query = urllib.parse.parse_qs(parsed_url.query)
 
                     if path.startswith("/api/action/"):
+                        if not server_self.is_action_authorized(self.headers.get("X-Dashboard-Action-Token", "")):
+                            body = json.dumps({"success": False, "message": "원격 제어 인증이 필요합니다."}, ensure_ascii=False).encode("utf-8")
+                            self.send_response(401)
+                            self.send_header("Content-Type", "application/json; charset=utf-8")
+                            self.send_header("Access-Control-Allow-Origin", "*")
+                            self.send_header("Content-Length", str(len(body)))
+                            self.send_header("Connection", "close")
+                            self.end_headers()
+                            self.wfile.write(body)
+                            return
                         action_name = path.split("/")[-1]
                         exchange_target = query.get("exchange", ["all"])[0]
 

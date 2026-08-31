@@ -121,6 +121,31 @@
       </div>
     </div>
 
+    <!-- 신규 매수와 기존 포지션 보호를 분리해 보여 주는 실거래 안전 관제 영역 -->
+    <section id="safety_panel" class="card-glass p-5 sm:p-6 border border-slate-700/80" aria-live="polite">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+        <div>
+          <h2 class="text-base font-bold text-white flex items-center"><span class="mr-2">🛡️</span>실거래 안전 상태</h2>
+          <p id="safety_summary" class="text-xs text-slate-400 mt-1">안전 상태를 확인 중입니다.</p>
+        </div>
+        <span id="entry_ready_badge" class="px-3 py-1 rounded-full text-xs font-bold bg-slate-700 text-slate-300">확인 중</span>
+      </div>
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
+        <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+          <div class="text-slate-400 mb-1">신규 매수 차단 사유</div>
+          <ul id="entry_block_reasons" class="space-y-1 text-slate-200"><li>상태 수신 대기</li></ul>
+        </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+          <div class="text-slate-400 mb-1">시세 스트림</div>
+          <div id="feed_health" class="text-slate-200">상태 수신 대기</div>
+        </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
+          <div class="text-slate-400 mb-1">주문 상태 집계</div>
+          <div id="order_status_counts" class="text-slate-200">상태 수신 대기</div>
+        </div>
+      </div>
+    </section>
+
     <!-- Strategy View Switcher Tabs -->
     <div class="flex items-center justify-between bg-slate-900/60 p-2 rounded-2xl border border-slate-800 shadow-sm">
       <div class="flex space-x-2">
@@ -243,14 +268,42 @@
                 <th class="p-2.5 whitespace-nowrap">종목명</th>
                 <th class="p-2.5 whitespace-nowrap">방향</th>
                 <th class="p-2.5 whitespace-nowrap">상태</th>
+                <th class="p-2.5 whitespace-nowrap">체결 진행</th>
                 <th class="p-2.5 whitespace-nowrap">체결/주문가</th>
+                <th class="p-2.5 whitespace-nowrap">비용</th>
               </tr>
             </thead>
             <tbody id="orders_tbody" class="divide-y divide-slate-800 bg-slate-900/30">
-              <tr><td colspan="5" class="p-4 text-center text-slate-500">주문 저널 데이터 로딩 중...</td></tr>
+              <tr><td colspan="7" class="p-4 text-center text-slate-500">주문 저널 데이터 로딩 중...</td></tr>
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+
+    <!-- 비정상 운영 로그: INFO는 제외하고 경고 이상만 노출 -->
+    <div id="section_alerts" class="card-glass p-5 sm:p-6">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <h2 class="text-base font-bold text-white flex items-center">
+          <span class="mr-2">⚠️</span> 비정상 운영 로그
+        </h2>
+        <span id="alerts_count" class="text-xs text-slate-400">조회 중...</span>
+      </div>
+      <p class="text-xs text-slate-500 mb-3">WARNING · ERROR · CRITICAL만 최근순으로 표시합니다.</p>
+      <div class="overflow-x-auto rounded-xl border border-slate-800/80 max-h-96 overflow-y-auto">
+        <table class="w-full text-left text-xs text-slate-300">
+          <thead class="bg-slate-800/80 text-slate-400 uppercase sticky top-0">
+            <tr>
+              <th class="p-2.5 whitespace-nowrap">일시</th>
+              <th class="p-2.5 whitespace-nowrap">구성요소</th>
+              <th class="p-2.5 whitespace-nowrap">수준</th>
+              <th class="p-2.5">내용</th>
+            </tr>
+          </thead>
+          <tbody id="alerts_tbody" class="divide-y divide-slate-800 bg-slate-900/30">
+            <tr><td colspan="4" class="p-4 text-center text-slate-500">비정상 로그를 조회 중입니다.</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
@@ -262,26 +315,26 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
         <div class="bg-slate-800/40 p-3 rounded-xl border border-slate-800">
           <div class="text-slate-200 font-semibold mb-1">🎯 3단계 분할 익절 & 락인</div>
-          <div>• 1차 +2.5% 도달 시 30% 익절</div>
-          <div>• 2차 +5.0% 도달 시 30% 추가익절</div>
+          <div id="policy_partial_tp_1">• 정책 값 수신 대기</div>
+          <div id="policy_partial_tp_2">• 정책 값 수신 대기</div>
           <div>• 1차 익절 완료 시 본전스탑(+0.3%) 보장</div>
         </div>
         <div class="bg-slate-800/40 p-3 rounded-xl border border-slate-800">
           <div class="text-slate-200 font-semibold mb-1">🚀 가속 트레일링 러너</div>
-          <div>• +2.0% 수익 시 트레일링 감시 가동</div>
-          <div>• 최고점 대비 1.2% 하락 시 잔여분 익절</div>
+          <div id="policy_trailing_start">• 정책 값 수신 대기</div>
+          <div id="policy_trailing_drop">• 정책 값 수신 대기</div>
           <div>• 최소 보장 마진 +0.5% 슬리피지 방어</div>
         </div>
         <div class="bg-slate-800/40 p-3 rounded-xl border border-slate-800">
           <div class="text-slate-200 font-semibold mb-1">🛡️ 7대 팩터 하드 게이트</div>
           <div>• MTF 1H + VWAP + MACD 가속도</div>
           <div>• RSI 골든존 + 볼린저 %B + 호가 잔량비</div>
-          <div>• 60점(정상장) / 75점(약세장) 미만 차단</div>
+          <div id="policy_alpha_threshold">• 정책 값 수신 대기</div>
         </div>
         <div class="bg-slate-800/40 p-3 rounded-xl border border-slate-800">
           <div class="text-slate-200 font-semibold mb-1">⏳ 타임스탑 & 쿨다운</div>
-          <div>• 40~60분간 ±1% 횡보 시 순환매 청산</div>
-          <div>• 손절 후 25~45분 쿨다운 보호</div>
+          <div id="policy_time_stop">• 정책 값 수신 대기</div>
+          <div>• 체결 확정 전에는 보유 시간·쿨다운을 시작하지 않음</div>
           <div>• 일일 계좌 최대 손실 -5.0% 킬스위치</div>
         </div>
       </div>

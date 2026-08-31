@@ -300,6 +300,8 @@
       const data = await res.json();
       state.lastData = data;
       renderDashboard(data);
+      // 상태 갱신과 같은 주기로 비정상 로그만 읽어 운영 이상을 빠르게 확인한다.
+      fetchAlertLogs();
 
       if (connStatusEl) {
         connStatusEl.innerHTML = `
@@ -319,6 +321,194 @@
     } finally {
       state.isFetching = false;
     }
+  }
+
+  // WARNING, ERROR, CRITICAL 로그 전용 조회. 로그 원문은 반드시 textContent로 렌더링한다.
+  async function fetchAlertLogs() {
+    const tbody = document.getElementById('alerts_tbody');
+    const countEl = document.getElementById('alerts_count');
+    if (!tbody) return;
+
+    try {
+      // 활성 거래소 탭에 맞춰 로그 범위를 서버에서 제한한다.
+      const exchange = ['combined', 'bithumb', 'upbit'].includes(state.activeExchange)
+        ? state.activeExchange
+        : 'combined';
+      const res = await fetch(`${getApiBaseUrl()}/api/alerts?exchange=${encodeURIComponent(exchange)}`, {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      renderAlertLogs(Array.isArray(data.alerts) ? data.alerts : []);
+      if (countEl) countEl.textContent = `${Array.isArray(data.alerts) ? data.alerts.length : 0}건`;
+    } catch (err) {
+      tbody.replaceChildren();
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 4;
+      cell.className = 'p-4 text-center text-rose-400';
+      cell.textContent = `비정상 로그 조회 실패: ${err.message}`;
+      row.appendChild(cell);
+      tbody.appendChild(row);
+      if (countEl) countEl.textContent = '조회 실패';
+    }
+  }
+
+  // 서버 로그는 외부 입력으로 취급해 HTML 삽입 없이 셀 단위로 안전하게 표시한다.
+  function renderAlertLogs(alerts) {
+    const tbody = document.getElementById('alerts_tbody');
+    if (!tbody) return;
+    tbody.replaceChildren();
+
+    if (alerts.length === 0) {
+      const row = document.createElement('tr');
+      const cell = document.createElement('td');
+      cell.colSpan = 4;
+      cell.className = 'p-4 text-center text-emerald-400';
+      cell.textContent = '현재 WARNING 이상 비정상 로그가 없습니다.';
+      row.appendChild(cell);
+      tbody.appendChild(row);
+      return;
+    }
+
+    alerts.forEach(alert => {
+      const row = document.createElement('tr');
+      row.className = 'hover:bg-slate-800/30 border-b border-slate-800/60';
+      const level = String(alert.level || '').toUpperCase();
+      const levelClass = level === 'WARNING' ? 'text-amber-300' : 'text-rose-400';
+      const cells = [
+        { value: alert.timestamp || '-', className: 'p-2.5 whitespace-nowrap text-slate-400 font-mono' },
+        { value: alert.source || '-', className: 'p-2.5 whitespace-nowrap text-slate-200' },
+        { value: level || '-', className: `p-2.5 whitespace-nowrap font-bold ${levelClass}` },
+        { value: alert.message || '-', className: 'p-2.5 text-slate-300 break-all whitespace-pre-wrap' }
+      ];
+      cells.forEach(({ value, className }) => {
+        const cell = document.createElement('td');
+        cell.className = className;
+        cell.textContent = String(value);
+        row.appendChild(cell);
+      });
+      tbody.appendChild(row);
+    });
+  }
+
+  // 서버가 전달한 안전 상태는 HTML로 삽입하지 않고 DOM 텍스트로만 표시한다.
+  function renderSafetyPanel(safety) {
+    const data = (safety && typeof safety === 'object') ? safety : {};
+    const isReady = data.entry_ready === true;
+    const badge = document.getElementById('entry_ready_badge');
+    const summary = document.getElementById('safety_summary');
+    const reasonsEl = document.getElementById('entry_block_reasons');
+    const feedEl = document.getElementById('feed_health');
+    const countsEl = document.getElementById('order_status_counts');
+
+    if (badge) {
+      badge.textContent = isReady ? '🟢 신규 매수 가능' : '🛑 신규 매수 차단';
+      badge.className = isReady
+        ? 'px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+        : 'px-3 py-1 rounded-full text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40';
+    }
+    if (summary) {
+      summary.textContent = isReady
+        ? '시세·주문 대사·리스크 조건이 확인되어 신규 매수 분석을 진행할 수 있습니다.'
+        : '기존 보유 포지션 보호는 계속되며, 신규 매수만 안전하게 차단됩니다.';
+    }
+    if (reasonsEl) {
+      reasonsEl.replaceChildren();
+      const reasons = Array.isArray(data.entry_block_reasons) ? data.entry_block_reasons : [];
+      (reasons.length ? reasons : ['차단 사유 없음']).forEach(reason => {
+        const item = document.createElement('li');
+        item.textContent = `• ${String(reason)}`;
+        item.className = isReady ? 'text-emerald-300' : 'text-amber-200';
+        reasonsEl.appendChild(item);
+      });
+    }
+    if (feedEl) {
+      const feed = (data.feed && typeof data.feed === 'object') ? data.feed : {};
+      const feeds = (feed.by_exchange && typeof feed.by_exchange === 'object') ? feed.by_exchange : null;
+      const formatFeed = (label, item) => {
+        const isHealthy = item && item.is_healthy === true;
+        const latency = Number(item && item.latency_seconds);
+        const latencyText = Number.isFinite(latency) && latency < 9999 ? `, 마지막 틱 ${latency.toFixed(1)}초 전` : '';
+        return `${label}: ${isHealthy ? '정상' : '비정상'} (${(item && item.status) || 'DATA_UNAVAILABLE'}${latencyText})`;
+      };
+      if (feeds) {
+        feedEl.textContent = [
+          formatFeed('빗썸', feeds.bithumb),
+          formatFeed('업비트', feeds.upbit)
+        ].join(' · ');
+      } else {
+        feedEl.textContent = formatFeed('현재 거래소', feed);
+      }
+      feedEl.className = feed.is_healthy === true ? 'text-emerald-300' : 'text-rose-300';
+    }
+    if (countsEl) {
+      const counts = (data.order_status_counts && typeof data.order_status_counts === 'object') ? data.order_status_counts : {};
+      // 저장 상태 코드는 그대로 두고, 사용자 화면에서만 한글 상태명으로 변환한다.
+      const orderStatusLabels = {
+        PENDING_SUBMISSION: '주문 제출 대기',
+        ACKNOWLEDGED: '주문 접수',
+        OPEN: '미체결 대기',
+        PARTIALLY_FILLED: '부분 체결',
+        FILLED: '체결 완료',
+        CANCELED: '주문 취소',
+        CANCELLED: '주문 취소',
+        REJECTED: '주문 거절',
+        FAILED: '주문 실패',
+        UNKNOWN: '확인 필요',
+        RECONCILIATION_PENDING: '체결 대사 진행 중',
+        RECONCILED: '체결 대사 완료',
+      };
+      const text = Object.entries(counts)
+        .map(([status, count]) => `${orderStatusLabels[String(status).toUpperCase()] || String(status)} ${count}건`)
+        .join(' · ');
+      countsEl.textContent = text || '최근 주문 없음';
+    }
+  }
+
+  // 표시 문구가 코드의 StrategyPolicy와 달라지지 않도록 API 값을 사용한다.
+  function renderPolicyGuide(policy) {
+    if (!policy || typeof policy !== 'object') return;
+    const pct = value => `${(Number(value || 0) * 100).toFixed(1)}%`;
+    const setText = (id, value) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = value;
+    };
+    setText('policy_partial_tp_1', `• 1차 +${pct(policy.partial_tp_1_pct)} 도달 시 ${pct(policy.partial_tp_1_ratio)} 익절`);
+    setText('policy_partial_tp_2', `• 2차 +${pct(policy.partial_tp_2_pct)} 도달 시 ${pct(policy.partial_tp_2_ratio)} 추가 익절`);
+    setText('policy_trailing_start', `• +${pct(policy.trailing_start_pct)} 수익 시 트레일링 감시 가동`);
+    setText('policy_trailing_drop', `• 최고점 대비 ${pct(policy.trailing_drop_pct)} 하락 시 잔여분 청산`);
+    setText('policy_alpha_threshold', `• ${policy.alpha_buy_threshold_normal ?? '-'}점(정상장) / ${policy.alpha_buy_threshold_risk_off ?? '-'}점(약세장) 미만 차단`);
+    const normalMinutes = Math.round(Number(policy.time_stop_seconds_normal || 0) / 60);
+    const riskOffMinutes = Math.round(Number(policy.time_stop_seconds_risk_off || 0) / 60);
+    setText('policy_time_stop', `• 정상장 ${normalMinutes}분 / 약세장 ${riskOffMinutes}분 타임스탑 기준`);
+  }
+
+  function formatHoldSeconds(seconds) {
+    const value = Number(seconds);
+    if (!Number.isFinite(value) || value < 0) return '확정 체결 시각 없음';
+    const hours = Math.floor(value / 3600);
+    const minutes = Math.floor((value % 3600) / 60);
+    return hours > 0 ? `${hours}시간 ${minutes}분` : `${minutes}분`;
+  }
+
+  function renderPositionRiskState(riskState) {
+    const state = (riskState && typeof riskState === 'object') ? riskState : {};
+    const stage = Number(state.partial_tp_stage || 0);
+    const peak = Number(state.peak_price || 0);
+    const parts = [`보유: ${formatHoldSeconds(state.hold_seconds)}`, `분할익절: ${stage}단계`];
+    if (peak > 0) parts.push(`고점: ${formatPrice(peak)}원`);
+    if (state.exit_in_progress === true) parts.push('청산 주문 진행 중');
+    return `<div class="mt-1 text-[11px] text-amber-200">${parts.join(' · ')}</div>`;
+  }
+
+  function renderOrderProgress(order) {
+    const executed = Number(order.executed_volume || 0);
+    const requested = Number(order.volume || 0);
+    const remaining = Number(order.remaining_volume || 0);
+    const quantity = requested > 0 ? `${executed.toFixed(6)} / ${requested.toFixed(6)}` : `${executed.toFixed(6)} 체결`;
+    const remainingText = remaining > 0 ? `잔여 ${remaining.toFixed(6)}` : '잔여 없음';
+    return `<div class="font-mono text-slate-200">${quantity}</div><div class="text-[11px] text-slate-400">${remainingText}</div>`;
   }
 
   // Render Core Dashboard Data
@@ -404,6 +594,9 @@
       botStateEl.innerText = d.bot_state || '🟢 정상 가동 중';
     }
 
+    renderSafetyPanel(d.safety);
+    renderPolicyGuide(d.policy);
+
     // Tab Counts
     const positions = d.positions || [];
     const candidates = d.candidates || [];
@@ -477,6 +670,7 @@
           </td>
           <td class="p-3 text-xs text-slate-300 max-w-xs break-words">
             ${formatReason(pos.reason)}
+            ${renderPositionRiskState(pos.risk_state)}
           </td>
         </tr>
       `;
@@ -586,7 +780,7 @@
     if (!tbody) return;
 
     if (!orders || orders.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-slate-500">주문 저널 기록이 없습니다.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7" class="p-4 text-center text-slate-500">주문 저널 기록이 없습니다.</td></tr>`;
       return;
     }
 
@@ -605,8 +799,15 @@
           <td class="p-2.5 whitespace-nowrap">
             ${formatOrderStatusBadge(o.status)}
           </td>
+          <td class="p-2.5 whitespace-nowrap text-xs">
+            ${renderOrderProgress(o)}
+          </td>
           <td class="p-2.5 whitespace-nowrap text-xs text-slate-300 font-mono">
             ${formatPrice(o.avg_price || o.price)} 원
+          </td>
+          <td class="p-2.5 whitespace-nowrap text-[11px] text-slate-400 font-mono">
+            <div>수수료 ${formatKrw(o.fee || 0)}</div>
+            <div>슬리피지 ${Number(o.slippage_bps || 0).toFixed(1)} bps</div>
           </td>
         </tr>
       `;
@@ -627,9 +828,20 @@
     try {
       const baseUrl = getApiBaseUrl();
       const targetEx = state.activeExchange || 'all';
+      // 토큰은 브라우저 세션에만 보관하며 서버가 인증을 요구할 때만 입력받는다.
+      const actionToken = window.sessionStorage.getItem('dashboardActionToken') || '';
+      const headers = actionToken ? { 'X-Dashboard-Action-Token': actionToken } : {};
       const res = await fetch(`${baseUrl}/api/action/${actionName}?exchange=${targetEx}`, {
-        method: 'POST'
+        method: 'POST',
+        headers
       });
+      if (res.status === 401) {
+        const suppliedToken = window.prompt('원격 제어 토큰을 입력하세요. 토큰은 이 브라우저 세션에만 저장됩니다.');
+        if (!suppliedToken) throw new Error('원격 제어 인증이 필요합니다.');
+        window.sessionStorage.setItem('dashboardActionToken', suppliedToken);
+        alert('인증 토큰이 저장되었습니다. 안전 확인을 위해 명령을 다시 실행하세요.');
+        return;
+      }
       const result = await res.json();
       alert(`[결과] ${result.message || '명령이 성공적으로 전달되었습니다.'}`);
       fetchStatus();

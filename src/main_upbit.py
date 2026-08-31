@@ -271,6 +271,8 @@ bot_controller = BotController(
     latest_strategies=LATEST_STRATEGIES,
     exchange_name="업비트",
     web_port=WEB_PORT,
+    # 지연 평가 람다로 웹소켓 생성 이후에도 최신 건강 상태를 대시보드에 제공한다.
+    get_feed_health=lambda: ws_client.get_health_status(),
 )
 
 strategy_cache_mgr = StrategyCacheManager(exchange_name="upbit")

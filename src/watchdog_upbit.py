@@ -78,7 +78,8 @@ file_handler = TimedRotatingFileHandler(
     filename=log_file, when="midnight", interval=1, backupCount=14, encoding="utf-8"
 )
 file_handler.setFormatter(
-    logging.Formatter("[%(asctime)s] [UPBIT-WATCHDOG] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    # 대시보드가 WARNING 이상을 신뢰성 있게 필터링할 수 있도록 로그 레벨을 기록한다.
+    logging.Formatter("[%(asctime)s] [%(levelname)s] [UPBIT-WATCHDOG] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 )
 
 handlers = [file_handler]
@@ -87,7 +88,7 @@ if sys.stderr is not None:
     # 포그라운드 콘솔은 운영 중 확인이 필요한 경고 이상만 출력한다.
     stream_handler.setLevel(logging.WARNING)
     stream_handler.setFormatter(
-        logging.Formatter("[%(asctime)s] [UPBIT-WATCHDOG] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+        logging.Formatter("[%(asctime)s] [%(levelname)s] [UPBIT-WATCHDOG] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     )
     handlers.append(stream_handler)
 

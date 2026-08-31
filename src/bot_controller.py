@@ -44,6 +44,7 @@ class BotController:
         latest_strategies: dict[str, dict[str, Any]] | None = None,
         exchange_name: str = "빗썸",
         web_port: int = 7979,
+        get_feed_health: Callable[[], dict[str, Any]] | None = None,
     ):
         self.get_exchange = exchange_factory
         self.order_executor = order_executor
@@ -57,6 +58,8 @@ class BotController:
         self.latest_strategies = latest_strategies if latest_strategies is not None else {}
         self.exchange_name = exchange_name
         self.web_port = web_port
+        # 웹소켓 구현에 직접 결합하지 않고, 호출자가 제공한 읽기 전용 상태만 사용한다.
+        self.get_feed_health = get_feed_health
         self.start_time = time.time()
         self._last_dashboard_fetch_ts: float = 0.0
         self._dashboard_cache_lock = threading.Lock()
@@ -75,6 +78,13 @@ class BotController:
             "kill_switch_active": False,
             "kill_switch_latched_date": "",
             "unknown_orders_count": 0,
+            "safety": {
+                "entry_ready": False,
+                "entry_block_reasons": ["대시보드 상태 초기화 대기"],
+                "order_status_counts": {},
+                "feed": {"is_healthy": False, "status": "DATA_UNAVAILABLE"},
+            },
+            "policy": {},
             "fear_and_greed": "50점 (중립)",
             "btc_regime": "NORMAL",
             "btc_regime_desc": "🟢 정상장",
@@ -83,6 +93,69 @@ class BotController:
             "candidates": [],
             "recent_trades": [],
             "recent_orders": [],
+        }
+
+    def _get_feed_health(self) -> dict[str, Any]:
+        """시세 스트림 상태를 안전하게 읽고, 확인 불가 시 매수 불가로 반환한다."""
+        if self.get_feed_health is None:
+            return {"is_healthy": False, "status": "DATA_UNAVAILABLE", "message": "시세 상태 공급자 없음"}
+        try:
+            health = self.get_feed_health()
+            if isinstance(health, dict):
+                return dict(health)
+        except Exception as exc:
+            logger.debug("대시보드 시세 상태 조회 예외: %s", exc)
+        return {"is_healthy": False, "status": "DATA_UNAVAILABLE", "message": "시세 상태 확인 실패"}
+
+    def _build_safety_data(self, orders: list[dict[str, Any]]) -> dict[str, Any]:
+        """신규 매수 안전 게이트와 사람이 읽을 수 있는 차단 사유를 함께 만든다."""
+        status_counts: dict[str, int] = {}
+        for order in orders:
+            status = str(order.get("status", "UNKNOWN") or "UNKNOWN").upper()
+            status_counts[status] = status_counts.get(status, 0) + 1
+
+        feed = self._get_feed_health()
+        block_reasons: list[str] = []
+        if self.get_is_paused():
+            block_reasons.append("봇이 일시정지 상태")
+        if self.risk_manager.kill_switch_active:
+            block_reasons.append("일일 손실 킬스위치 활성화")
+        if not self.order_journal.is_entry_ready():
+            block_reasons.append("초기 주문 체결 대사 미완료")
+        if status_counts.get("RECONCILIATION_PENDING", 0) > 0:
+            block_reasons.append(f"체결 대사 진행 주문 {status_counts['RECONCILIATION_PENDING']}건")
+        if status_counts.get("UNKNOWN", 0) > 0:
+            block_reasons.append(f"확인 불가 주문 {status_counts['UNKNOWN']}건")
+        if not bool(feed.get("is_healthy", False)):
+            block_reasons.append(f"시세 스트림 비정상 ({feed.get('status', 'DATA_UNAVAILABLE')})")
+
+        return {
+            # 화면의 매수 가능 표시는 엔진의 대사 상태와 운영 안전 조건을 모두 만족할 때만 켠다.
+            "entry_ready": len(block_reasons) == 0,
+            "entry_block_reasons": block_reasons,
+            # 구형 테스트 더블과의 호환을 위해 상태 필드가 없으면 보수적으로 PENDING으로 처리한다.
+            "reconciliation_state": getattr(self.order_journal, "reconciliation_state", "PENDING"),
+            "order_status_counts": status_counts,
+            "unknown_orders_count": status_counts.get("UNKNOWN", 0),
+            "reconciliation_pending_count": status_counts.get("RECONCILIATION_PENDING", 0),
+            "feed": feed,
+        }
+
+    @staticmethod
+    def _build_policy_data() -> dict[str, Any]:
+        """화면 안내가 코드 정책과 어긋나지 않도록 SSOT 값을 전달한다."""
+        return {
+            "partial_tp_1_pct": StrategyPolicy.PARTIAL_TP_1_PCT,
+            "partial_tp_1_ratio": StrategyPolicy.PARTIAL_TP_1_RATIO,
+            "partial_tp_2_pct": StrategyPolicy.PARTIAL_TP_2_PCT,
+            "partial_tp_2_ratio": StrategyPolicy.PARTIAL_TP_2_RATIO,
+            "trailing_start_pct": StrategyPolicy.TRAILING_START_PCT,
+            "trailing_drop_pct": StrategyPolicy.TRAILING_DROP_PCT,
+            "time_stop_seconds_normal": StrategyPolicy.TIME_STOP_SECONDS_NORMAL,
+            "time_stop_seconds_risk_off": StrategyPolicy.TIME_STOP_SECONDS_RISK_OFF,
+            "stop_loss_pct": StrategyPolicy.STOP_LOSS_PCT,
+            "alpha_buy_threshold_normal": StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL,
+            "alpha_buy_threshold_risk_off": StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF,
         }
 
     def cancel_bot_open_orders(self, market: str | None = None) -> int:
@@ -305,6 +378,11 @@ class BotController:
             # 1. 포지션 및 후보군 데이터
             self.restore_missing_position_strategies(get_held_markets(balances, bithumb))
             positions_data = build_positions_data(balances, bithumb, self.latest_strategies)
+            # 확정 체결 기반 보유 시간과 익절 단계를 덧붙인다. 수동 보유분에는 시간을 추정하지 않는다.
+            for position in positions_data:
+                position["risk_state"] = self.trailing_tracker.get_position_dashboard_state(
+                    str(position.get("market", "")), now=now
+                )
             candidates_data = build_candidates_data(balances, bithumb, self.latest_strategies)
 
             # 2. 최근 완료 거래 내역
@@ -335,8 +413,13 @@ class BotController:
                         "avg_price": float(o.get("avg_price", 0.0) or 0.0),
                         "executed_volume": float(o.get("executed_volume", 0.0) or 0.0),
                         "volume": float(o.get("volume", 0.0) or 0.0),
+                        "remaining_volume": float(o.get("remaining_volume", 0.0) or 0.0),
+                        "fee": float(o.get("fee", 0.0) or 0.0),
+                        "slippage_bps": float(o.get("slippage_bps", 0.0) or 0.0),
                         "ord_type": o.get("ord_type", "market"),
                         "timestamp": o.get("updated_at") or o.get("created_at", ""),
+                        "created_at": o.get("created_at", ""),
+                        "updated_at": o.get("updated_at", ""),
                     })
             except Exception as e:
                 logger.debug(f"대시보드 주문 저널 로드 예외: {e}")
@@ -344,6 +427,7 @@ class BotController:
             # 4. 포지션 단위 통합 통계 및 UNKNOWN 주문 수
             pos_stats = self.trade_memory.get_position_level_stats() if hasattr(self.trade_memory, "get_position_level_stats") else {}
             unknown_count = sum(1 for o in self.order_journal.orders if o.get("status") == "UNKNOWN")
+            safety_data = self._build_safety_data(self.order_journal.orders)
 
             # 5. BTC 시장 레짐 정보
             btc_regime = "NORMAL"
@@ -366,6 +450,8 @@ class BotController:
                 "kill_switch_active": self.risk_manager.kill_switch_active,
                 "kill_switch_latched_date": getattr(self.risk_manager, "kill_switch_latched_date", ""),
                 "unknown_orders_count": unknown_count,
+                "safety": safety_data,
+                "policy": self._build_policy_data(),
                 "fear_and_greed": fng.get("desc", str(fng)) if isinstance(fng, dict) else str(fng),
                 "btc_regime": btc_regime,
                 "btc_regime_desc": btc_regime_desc,

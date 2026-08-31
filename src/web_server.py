@@ -1,4 +1,5 @@
 import json
+import hmac
 import logging
 import mimetypes
 import os
@@ -51,9 +52,15 @@ class DashboardWebServer:
         self.action_handler = action_handler_func or action_handler or kwargs.get("action_handler")
         self.title = title or kwargs.get("title", "Bithumb AI 퀀트 트레이딩 Pro")
         self.is_api_only = is_api_only or kwargs.get("is_api_only", False)
+        # 설정된 경우에만 원격 제어에 토큰을 요구해 기존 로컬 운영 환경의 호환을 유지한다.
+        self.action_token = os.getenv("DASHBOARD_ACTION_TOKEN", "").strip()
         self.static_dir = None if self.is_api_only else (static_dir or self._resolve_static_dir())
         self.server: QuietThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+
+    def is_action_authorized(self, supplied_token: str) -> bool:
+        """원격 제어 토큰이 설정된 경우에만 상수 시간 비교로 검증한다."""
+        return not self.action_token or hmac.compare_digest(supplied_token or "", self.action_token)
 
     def _resolve_static_dir(self) -> str | None:
         """대시보드 SPA 정적 디렉터리 경로 자동 감지"""
@@ -106,7 +113,7 @@ class DashboardWebServer:
                     self.send_response(204)
                     self.send_header("Access-Control-Allow-Origin", "*")
                     self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                    self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization")
+                    self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization, X-Dashboard-Action-Token")
                     self.send_header("Access-Control-Max-Age", "86400")
                     self.send_header("Connection", "close")
                     self.end_headers()
@@ -201,6 +208,16 @@ class DashboardWebServer:
                 self.close_connection = True
                 try:
                     if self.path.startswith("/api/action/"):
+                        if not server_self.is_action_authorized(self.headers.get("X-Dashboard-Action-Token", "")):
+                            body = json.dumps({"success": False, "message": "원격 제어 인증이 필요합니다."}, ensure_ascii=False).encode("utf-8")
+                            self.send_response(401)
+                            self.send_header("Content-Type", "application/json; charset=utf-8")
+                            self.send_header("Access-Control-Allow-Origin", "*")
+                            self.send_header("Content-Length", str(len(body)))
+                            self.send_header("Connection", "close")
+                            self.end_headers()
+                            self.wfile.write(body)
+                            return
                         action_name = self.path.split("/")[-1]
                         reply = ""
                         if server_self.action_handler:

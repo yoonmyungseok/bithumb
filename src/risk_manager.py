@@ -363,6 +363,29 @@ class TrailingStopTracker:
         with self._lock:
             return float(self.entry_times.get(market, 0.0))
 
+    def get_position_dashboard_state(self, market: str, now: float | None = None) -> dict[str, Any]:
+        """대시보드용 포지션 상태를 읽기 전용으로 반환한다.
+
+        체결 확정 시각이 없는 보유분에는 보유 시간을 만들지 않아, 재시작·수동 보유분이
+        잘못된 타임스탑 경과 시간으로 보이지 않게 한다.
+        """
+        current_ts = now if now is not None else time.time()
+        market_key = market.upper()
+        with self._lock:
+            entry_time = float(self.entry_times.get(market, self.entry_times.get(market_key, 0.0)) or 0.0)
+            raw_stage = self.partial_tp_done.get(market, self.partial_tp_done.get(market_key, 0))
+            stage = 1 if raw_stage is True else int(raw_stage or 0)
+            peak_price = float(self.peaks.get(market, self.peaks.get(market_key, 0.0)) or 0.0)
+            exiting = market_key in self._exiting_markets
+
+        return {
+            "entry_time": entry_time,
+            "hold_seconds": max(0.0, current_ts - entry_time) if entry_time > 0.0 else None,
+            "partial_tp_stage": stage,
+            "peak_price": peak_price,
+            "exit_in_progress": exiting,
+        }
+
     def check_position(
         self, market: str, current_price: float, avg_buy_price: float
     ) -> tuple[str, float, float, float, float]:
