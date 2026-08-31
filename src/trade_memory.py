@@ -5,7 +5,7 @@ import threading
 import time
 from typing import Any
 
-from db_manager import get_db_manager
+from db_manager import get_db_manager, get_exchange_db_path
 from order_safety import load_json_with_backup_recovery, write_json_atomically
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,8 @@ class TradeMemoryManager:
         self.data_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(self.data_dir, exist_ok=True)
         self.memory_file = memory_file or os.path.join(self.data_dir, "trade_memory.json")
-        self.db = get_db_manager(os.path.join(self.data_dir, "trading.db"))
+        # 거래 메모리는 자신이 소유한 거래소 data_dir의 DB에만 기록한다.
+        self.db = get_db_manager(get_exchange_db_path(self.data_dir))
         # 거래소별 성과 표본을 분리해 다른 거래소 결과가 AI 피드백에 섞이지 않게 한다.
         self.exchange_scope = exchange_scope.strip().lower()
         # 전용 저장소에서만 허용하는 구형 무표기 기록의 안전한 귀속 대상이다.

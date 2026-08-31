@@ -8,7 +8,7 @@ from typing import Any
 import requests
 
 from bithumb_api import BithumbAPI
-from db_manager import get_db_manager
+from db_manager import get_db_manager, get_exchange_db_path
 from market_policy import get_excluded_markets
 from state_store import load_json_with_backup_recovery, write_json_atomically
 from strategy_engine import StrategyPolicy, is_major_market
@@ -293,11 +293,16 @@ class TrailingStopTracker:
         self._exiting_markets: set[str] = set()
         self._last_log_ts: dict[str, float] = {}
         self._last_logged_peak: dict[str, float] = {}
+        # 고빈도 가격 틱마다 디스크를 쓰지 않도록 마지막 영속 스냅샷을 보관한다.
+        self._last_state_saved_ts = 0.0
+        self._last_saved_peaks: dict[str, float] = {}
+        self._last_saved_partial: dict[str, Any] = {}
         self.data_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(self.data_dir, exist_ok=True)
         self.state_file = os.path.join(self.data_dir, "position_state.json")
         self.exchange = "upbit" if "upbit" in self.data_dir.lower() else "bithumb"
-        self.db = get_db_manager(os.path.join(os.path.dirname(self.data_dir) if "upbit" in self.data_dir.lower() else self.data_dir, "trading.db"))
+        # 포지션 최고가·진입 시각은 거래소별 DB에 격리해 복원한다.
+        self.db = get_db_manager(get_exchange_db_path(self.data_dir))
         self._load_state()
 
     def set_macro_defensive_mode(self, enabled: bool) -> None:
@@ -338,8 +343,18 @@ class TrailingStopTracker:
                 self.partial_tp_done = data.get("partial_tp_done", {})
                 self.entry_times = data.get("entry_times", {})
 
-    def _save_state(self):
+    def _save_state(self, force: bool = False):
+        """주문·체결 경계는 즉시, 최고가 갱신은 의미 있는 변화만 저장한다."""
         with self._lock:
+            now_ts = time.time()
+            peak_changed_meaningfully = any(
+                peak > (float(self._last_saved_peaks.get(market, 0.0)) * 1.001)
+                for market, peak in self.peaks.items()
+            )
+            stage_changed = self.partial_tp_done != self._last_saved_partial
+            # 최고가는 0.1% 이상 상승했거나 5초가 지나야 파일/SQLite에 반영한다.
+            if not force and not stage_changed and not peak_changed_meaningfully and now_ts - self._last_state_saved_ts < 5.0:
+                return
             payload = {
                 "peaks": self.peaks,
                 "partial_tp_done": self.partial_tp_done,
@@ -353,11 +368,14 @@ class TrailingStopTracker:
                 self.db.save_position_state(self.exchange, payload)
             except Exception as e:
                 logger.debug(f"SQLite 포지션 저장 예외: {e}")
+            self._last_state_saved_ts = now_ts
+            self._last_saved_peaks = dict(self.peaks)
+            self._last_saved_partial = dict(self.partial_tp_done)
 
     def set_entry_time(self, market: str, ts: float | None = None):
         with self._lock:
             self.entry_times[market] = ts or time.time()
-            self._save_state()
+            self._save_state(force=True)
 
     def get_entry_time(self, market: str) -> float:
         with self._lock:
@@ -408,14 +426,14 @@ class TrailingStopTracker:
             if current_profit_rate >= tp_1_target and cur_stage < 1:
                 self.partial_tp_done[market] = 1
                 self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
-                self._save_state()
+                self._save_state(force=True)
                 return "PARTIAL_TP_1", current_price, current_price, current_profit_pct, current_profit_pct
 
             # 1-B. 2차 30% 추가 분할 익절 (메이저 +3.0% / 알트 +5.0% 도달 시)
             if current_profit_rate >= tp_2_target and cur_stage < 2:
                 self.partial_tp_done[market] = 2
                 self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
-                self._save_state()
+                self._save_state(force=True)
                 return "PARTIAL_TP_2", current_price, current_price, current_profit_pct, current_profit_pct
 
             # 2. [수익률 단계별 가속 트레일링 스탑 (Ratchet Tightening)]
@@ -496,7 +514,7 @@ class TrailingStopTracker:
             self.entry_times.pop(market, None)
             self._last_log_ts.pop(market, None)
             self._last_logged_peak.pop(market, None)
-            self._save_state()
+            self._save_state(force=True)
 
     def reconcile_markets(self, held_markets: list[str]) -> int:
         """Drop stale trailing state after a restart; exchange balances are authoritative."""
@@ -507,7 +525,7 @@ class TrailingStopTracker:
                 self.partial_tp_done.pop(market, None)
                 self.entry_times.pop(market, None)
             if stale_markets:
-                self._save_state()
+                self._save_state(force=True)
             return len(stale_markets)
 
 
@@ -523,7 +541,8 @@ class DailyRiskManager:
         os.makedirs(self.data_dir, exist_ok=True)
         self.stats_file = os.path.join(self.data_dir, "daily_stats.json")
         self.exchange = "upbit" if "upbit" in self.data_dir.lower() else "bithumb"
-        self.db = get_db_manager(os.path.join(os.path.dirname(self.data_dir) if "upbit" in self.data_dir.lower() else self.data_dir, "trading.db"))
+        # 킬스위치와 일일 통계도 거래소 전용 DB에 즉시 기록한다.
+        self.db = get_db_manager(get_exchange_db_path(self.data_dir))
 
         self.current_date_str = ""
         self.daily_start_equity = 0.0

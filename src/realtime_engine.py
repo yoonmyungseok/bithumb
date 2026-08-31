@@ -47,6 +47,8 @@ class RealtimeRiskEngine:
             risk_manager=self.risk_manager,
             trade_memory=self.trade_memory,
             trailing_tracker=self.trailing_tracker,
+            # 실시간 청산도 확인 체결 뒤에만 쿨다운을 기록한다.
+            cooldown_manager=self.cooldown_manager,
             telegram=self.telegram,
         )
         self._lock = threading.Lock()
@@ -175,10 +177,12 @@ class RealtimeRiskEngine:
                             bithumb,
                             market=market,
                             side="bid",
-                            price=new_price,
-                            volume=order_vol,
-                            ord_type="limit",
-                        )
+                        price=new_price,
+                        volume=order_vol,
+                        ord_type="limit",
+                        # 재호가도 제출 직전 최신가 확인 경계를 통과하게 한다.
+                        expected_price=new_price,
+                    )
                         requoted_count += 1
         except Exception as e:
             logger.warning(f"스마트 호가 재정정 중 오류: {e}")

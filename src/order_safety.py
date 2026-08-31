@@ -16,7 +16,7 @@ from typing import Any
 
 import requests
 
-from db_manager import get_db_manager
+from db_manager import get_db_manager, get_exchange_db_path
 from market_policy import get_excluded_markets
 from risk_controls import RiskGuard as _RiskGuard
 from risk_controls import calculate_risk_position_size as _calculate_risk_position_size
@@ -156,11 +156,17 @@ class OrderJournal:
         d_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(d_dir, exist_ok=True)
         self.path = path or os.path.join(d_dir, "order_journal.json")
-        self.db = get_db_manager(os.path.join(os.path.dirname(d_dir) if "upbit" in d_dir.lower() else d_dir, "trading.db"))
+        # 주문 저널은 상위 data/가 아니라 해당 거래소의 data_dir DB를 사용한다.
+        self.db = get_db_manager(get_exchange_db_path(d_dir))
         # 저장소 간 주문/학습 데이터 혼입을 막기 위한 명시적 거래소 범위다.
         self.exchange_scope = exchange_scope.strip().lower()
         self.reconciliation_state = "PENDING"
         self._last_reconcile_failed_count = 0
+        # 대사 백필 지연과 실패를 대시보드/로그에서 추적할 수 있게 보존한다.
+        self.reconciliation_metrics: dict[str, Any] = {
+            "last_started_at": 0.0, "last_completed_at": 0.0,
+            "last_updated_count": 0, "last_failed_count": 0,
+        }
         self.orders: list[dict[str, Any]] = self._load()
 
     def _load(self) -> list[dict[str, Any]]:
@@ -170,6 +176,9 @@ class OrderJournal:
             # Schema v2 object wrapper 호환
             stored_scope = str(data.get("exchange_scope", "")).lower()
             self.reconciliation_state = str(data.get("reconciliation_state", "PENDING"))
+            saved_metrics = data.get("reconciliation_metrics", {})
+            if isinstance(saved_metrics, dict):
+                self.reconciliation_metrics.update(saved_metrics)
             orders = data.get("orders", [])
         elif isinstance(data, list):
             # Schema v1 raw list 호환
@@ -207,6 +216,7 @@ class OrderJournal:
                 "updated_at": time.time(),
                 "exchange_scope": self.exchange_scope,
                 "reconciliation_state": self.reconciliation_state,
+                "reconciliation_metrics": self.reconciliation_metrics,
                 "orders": self.orders[-500:],
             }
             write_json_atomically(self.path, payload)
@@ -387,6 +397,7 @@ class OrderJournal:
     ) -> int:
         """Update acknowledged orders from the exchange's canonical order endpoint with execution reconciler (P0-1)."""
         updated = 0
+        self.reconciliation_metrics["last_started_at"] = time.time()
         # 이번 전체 대사 회차의 실패만으로 진입 재개 여부를 판단한다.
         self._last_reconcile_failed_count = 0
         state_map = {
@@ -488,6 +499,16 @@ class OrderJournal:
                     trades=trades,
                 )
                 updated += 1
+        self.reconciliation_metrics.update({
+            "last_completed_at": time.time(),
+            "last_updated_count": updated,
+            "last_failed_count": self._last_reconcile_failed_count,
+        })
+        # 대사 관측값은 신규 매수 차단 판단에 영향을 주므로 즉시 영속화한다.
+        self._save()
+        logger.info(
+            "REST 주문 대사 완료: 갱신=%d 실패=%d", updated, self._last_reconcile_failed_count,
+        )
         return updated
 
     def reconcile_open_orders(self, open_orders: list[dict[str, Any]]) -> int:
@@ -635,6 +656,21 @@ class SafeOrderExecutor:
             logger.error(f"🛑 [{market}] 미해결 UNKNOWN 주문이 존재하여 신규 주문 제출 차단")
             raise RuntimeError(f"{market}에 확인되지 않은 이전 주문(UNKNOWN)이 존재합니다. REST 재조정 전까지 주문이 차단됩니다.")
 
+        if side.lower() in ("ask", "sell") and self.journal.has_active_exit_order(market):
+            # 대사 대기 청산을 중복 제출하면 기존 보유분을 초과 매도할 수 있어 반드시 차단한다.
+            raise RuntimeError(f"{market}에 체결 대기 중인 청산 주문이 있어 중복 매도를 차단합니다.")
+
+        if side.lower() in ("bid", "buy") and expected_price is not None:
+            # 신규 매수 직전에는 캐시 가격을 신뢰하지 않고 거래소 최신가를 다시 확인한다.
+            # 최신가를 확인할 수 없으면 기존 포지션은 건드리지 않되 신규 매수만 fail-closed 한다.
+            try:
+                latest_price = float(exchange.get_current_price(market) or 0.0)
+            except Exception as exc:
+                raise RuntimeError(f"{market} 주문 직전 최신가 조회 실패로 신규 매수를 차단합니다.") from exc
+            if latest_price <= 0:
+                raise RuntimeError(f"{market} 주문 직전 최신가가 유효하지 않아 신규 매수를 차단합니다.")
+            expected_price = latest_price
+
         client_order_id = self.journal.record_intent(
             market,
             side,
@@ -663,6 +699,8 @@ class SafeOrderExecutor:
 
         exchange_uuid = response.get("uuid") if isinstance(response, dict) else None
         exchange_order_id = response.get("order_id") if isinstance(response, dict) else None
+        # ACK는 주문 수락일 뿐 체결 증빙이 아니다. 아래 상태는 접수 단계만 뜻하며,
+        # Private WS 알림과 주기적 REST 대사만 체결량·평균가·수수료를 확정할 수 있다.
         self.journal.mark(
             client_order_id,
             OrderStatus.ACKNOWLEDGED,
@@ -703,11 +741,14 @@ class OrderFillProcessor:
         trailing_tracker: Any = None,
         telegram: Any = None,
         send_fill_alerts: bool = False,
+        cooldown_manager: Any = None,
     ):
         self.order_journal = order_journal
         self.risk_manager = risk_manager
         self.trade_memory = trade_memory
         self.trailing_tracker = trailing_tracker
+        # 청산 쿨다운은 주문 접수 시점이 아닌 확인 체결 증가분에만 기록한다.
+        self.cooldown_manager = cooldown_manager
         self.telegram = telegram
         self.send_fill_alerts = send_fill_alerts
 
@@ -878,6 +919,12 @@ class OrderFillProcessor:
                         refined_exit_reason = "손절 방어"
                     if self.risk_manager:
                         self.risk_manager.add_realized_trade(pnl_krw, is_win=is_win)
+
+                    if self.cooldown_manager:
+                        # 부분 체결도 실제 포지션 축소이므로 확인된 체결가만 쿨다운 기준으로 사용한다.
+                        self.cooldown_manager.record_exit(
+                            market, refined_exit_reason, exit_price=effective_price,
+                        )
 
                     entry_order = self.order_journal.get_entry_order_for_exit(order)
                     entry_snapshot = dict((entry_order or {}).get("entry_strategy_snapshot") or {})

@@ -18,6 +18,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _DB_LOCK = threading.RLock()
+# DB 인스턴스는 경로별로 분리한다. 전역 단일 인스턴스는 빗썸이 먼저 로드된 뒤
+# 업비트 상태까지 data/trading.db에 기록하는 교차 거래소 오염을 일으킬 수 있다.
+_DB_MANAGER_BY_PATH: dict[str, "DatabaseManager"] = {}
 
 
 def get_default_db_path() -> str:
@@ -26,11 +29,17 @@ def get_default_db_path() -> str:
     return os.path.join(project_root, "data", "trading.db")
 
 
+def get_exchange_db_path(data_dir: str | None = None) -> str:
+    """서비스가 소유한 data_dir 안의 DB 경로를 일관되게 반환한다."""
+    directory = data_dir or os.path.dirname(get_default_db_path())
+    return os.path.abspath(os.path.normpath(os.path.join(directory, "trading.db")))
+
+
 class DatabaseManager:
     """Thread-safe SQLite Database Manager with connection pooling & WAL mode."""
 
     def __init__(self, db_path: str | None = None):
-        self.db_path = db_path or get_default_db_path()
+        self.db_path = os.path.abspath(os.path.normpath(db_path or get_default_db_path()))
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._init_db()
 
@@ -475,17 +484,15 @@ class DatabaseManager:
                 return default
 
 
-# Singleton instance
-_db_manager_instance: DatabaseManager | None = None
-
-
 def get_db_manager(db_path: str | None = None) -> DatabaseManager:
-    """Get or create singleton DatabaseManager instance."""
-    global _db_manager_instance
+    """정규화된 DB 경로별 DatabaseManager를 반환해 거래소 상태를 격리한다."""
+    resolved_path = os.path.abspath(os.path.normpath(db_path or get_default_db_path()))
     with _DB_LOCK:
-        if _db_manager_instance is None:
-            _db_manager_instance = DatabaseManager(db_path)
-        return _db_manager_instance
+        manager = _DB_MANAGER_BY_PATH.get(resolved_path)
+        if manager is None:
+            manager = DatabaseManager(resolved_path)
+            _DB_MANAGER_BY_PATH[resolved_path] = manager
+        return manager
 
 
 # =============================================================================
@@ -498,8 +505,16 @@ def migrate_legacy_json_to_sqlite(data_dir: str | None = None) -> dict[str, int]
     """
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     base_data_dir = data_dir or os.path.join(project_root, "data")
-    migration_flag = os.path.join(base_data_dir, ".migrated_to_sqlite")
-    if os.path.exists(migration_flag):
+    # 거래소별 DB가 분리됐으므로 완료 표식과 감사 결과도 각 data_dir에 둔다.
+    exchange_dirs = {
+        "bithumb": base_data_dir,
+        "upbit": os.path.join(base_data_dir, "upbit"),
+    }
+    migration_flags = {
+        exchange: os.path.join(directory, ".migrated_to_sqlite")
+        for exchange, directory in exchange_dirs.items()
+    }
+    if all(os.path.exists(flag) for flag in migration_flags.values()):
         return {
             "bithumb_trades": 0,
             "upbit_trades": 0,
@@ -508,7 +523,10 @@ def migrate_legacy_json_to_sqlite(data_dir: str | None = None) -> dict[str, int]
             "daily_stats": 0,
         }
 
-    db = get_db_manager(os.path.join(base_data_dir, "trading.db"))
+    databases = {
+        exchange: get_db_manager(get_exchange_db_path(directory))
+        for exchange, directory in exchange_dirs.items()
+    }
 
     migration_stats = {
         "bithumb_trades": 0,
@@ -524,20 +542,22 @@ def migrate_legacy_json_to_sqlite(data_dir: str | None = None) -> dict[str, int]
         ("upbit", os.path.join(base_data_dir, "upbit", "trade_memory.json")),
     ]
     for ex, path in trade_files:
-        if os.path.exists(path):
+        if os.path.exists(path) and not os.path.exists(migration_flags[ex]):
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 trades = data if isinstance(data, list) else data.get("completed_trades", [])
+                rejected = 0
                 for t in trades:
                     if isinstance(t, dict) and t.get("market"):
+                        # 해당 거래소 파일은 자기 거래소 레코드만 적재한다.
                         t_ex = str(t.get("exchange", ex)).lower() or ex
-                        db.insert_trade(t_ex, t)
-                        if t_ex == "bithumb":
-                            migration_stats["bithumb_trades"] += 1
-                        else:
-                            migration_stats["upbit_trades"] += 1
-                logger.info(f"✅ [{ex.upper()}] trade_memory.json 마이그레이션 완료 ({len(trades)}건)")
+                        if t_ex != ex:
+                            rejected += 1
+                            continue
+                        databases[ex].insert_trade(ex, t)
+                        migration_stats[f"{ex}_trades"] += 1
+                logger.info("✅ [%s] trade_memory.json 마이그레이션 완료 (%d건, 타 거래소 %d건 제외)", ex.upper(), len(trades), rejected)
             except Exception as e:
                 logger.warning(f"⚠️ [{ex.upper()}] trade_memory.json 마이그레이션 오류: {e}")
 
@@ -547,20 +567,21 @@ def migrate_legacy_json_to_sqlite(data_dir: str | None = None) -> dict[str, int]
         ("upbit", os.path.join(base_data_dir, "upbit", "order_journal.json")),
     ]
     for ex, path in journal_files:
-        if os.path.exists(path):
+        if os.path.exists(path) and not os.path.exists(migration_flags[ex]):
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 orders = data if isinstance(data, list) else data.get("orders", [])
+                rejected = 0
                 for o in orders:
                     if isinstance(o, dict) and (o.get("market") or o.get("uuid") or o.get("client_order_id")):
                         o_ex = str(o.get("exchange", ex)).lower() or ex
-                        db.upsert_order(o_ex, o)
-                        if o_ex == "bithumb":
-                            migration_stats["bithumb_orders"] += 1
-                        else:
-                            migration_stats["upbit_orders"] += 1
-                logger.info(f"✅ [{ex.upper()}] order_journal.json 마이그레이션 완료 ({len(orders)}건)")
+                        if o_ex != ex:
+                            rejected += 1
+                            continue
+                        databases[ex].upsert_order(ex, o)
+                        migration_stats[f"{ex}_orders"] += 1
+                logger.info("✅ [%s] order_journal.json 마이그레이션 완료 (%d건, 타 거래소 %d건 제외)", ex.upper(), len(orders), rejected)
             except Exception as e:
                 logger.warning(f"⚠️ [{ex.upper()}] order_journal.json 마이그레이션 오류: {e}")
 
@@ -570,12 +591,12 @@ def migrate_legacy_json_to_sqlite(data_dir: str | None = None) -> dict[str, int]
         ("upbit", os.path.join(base_data_dir, "upbit", "daily_stats.json")),
     ]
     for ex, path in stats_files:
-        if os.path.exists(path):
+        if os.path.exists(path) and not os.path.exists(migration_flags[ex]):
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, dict) and data.get("date"):
-                    db.save_daily_stats(ex, data["date"], data)
+                    databases[ex].save_daily_stats(ex, data["date"], data)
                     migration_stats["daily_stats"] += 1
                 logger.info(f"✅ [{ex.upper()}] daily_stats.json 마이그레이션 완료")
             except Exception as e:
@@ -587,20 +608,32 @@ def migrate_legacy_json_to_sqlite(data_dir: str | None = None) -> dict[str, int]
         ("upbit", os.path.join(base_data_dir, "upbit", "position_state.json")),
     ]
     for ex, path in position_files:
-        if os.path.exists(path):
+        if os.path.exists(path) and not os.path.exists(migration_flags[ex]):
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, dict):
-                    db.save_position_state(ex, data)
+                    databases[ex].save_position_state(ex, data)
                 logger.info(f"✅ [{ex.upper()}] position_state.json 마이그레이션 완료")
             except Exception as e:
                 logger.warning(f"⚠️ [{ex.upper()}] position_state.json 마이그레이션 오류: {e}")
 
-    try:
-        with open(migration_flag, "w", encoding="utf-8") as f:
-            f.write("done\n")
-    except Exception:
-        pass
+    for ex, migration_flag in migration_flags.items():
+        if os.path.exists(migration_flag):
+            continue
+        try:
+            # 재실행 시 중복 적재를 막는 완료 표식과 감사 가능한 결과를 함께 남긴다.
+            audit_path = os.path.join(exchange_dirs[ex], "sqlite_migration.audit.json")
+            with open(audit_path, "w", encoding="utf-8") as audit_file:
+                json.dump({
+                    "exchange": ex,
+                    "db_path": databases[ex].db_path,
+                    "completed_at": time.time(),
+                    "counts": {key: value for key, value in migration_stats.items() if key.startswith(ex)},
+                }, audit_file, ensure_ascii=False, indent=2)
+            with open(migration_flag, "w", encoding="utf-8") as marker_file:
+                marker_file.write("done\n")
+        except Exception as exc:
+            logger.warning("[%s] SQLite 마이그레이션 감사/완료 표식 기록 실패: %s", ex.upper(), exc)
 
     return migration_stats

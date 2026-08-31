@@ -138,6 +138,8 @@ class BotController:
             "order_status_counts": status_counts,
             "unknown_orders_count": status_counts.get("UNKNOWN", 0),
             "reconciliation_pending_count": status_counts.get("RECONCILIATION_PENDING", 0),
+            # REST 백필의 최근 성공·실패 결과를 화면/API 소비자에게 그대로 전달한다.
+            "reconciliation_metrics": dict(getattr(self.order_journal, "reconciliation_metrics", {})),
             "feed": feed,
         }
 

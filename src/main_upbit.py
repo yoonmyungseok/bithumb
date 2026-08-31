@@ -189,6 +189,7 @@ fill_processor = OrderFillProcessor(
     risk_manager=risk_manager,
     trade_memory=trade_memory,
     trailing_tracker=trailing_tracker,
+    cooldown_manager=cooldown_manager,
     telegram=telegram,
 )
 
@@ -467,26 +468,7 @@ def run_cycle():
                                 order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
                                 client_order_id = order_res.get("client_order_id", "")
 
-                                # 실제 체결 내역 조회 (가상 손익 미생성, P0-1, P0-3)
-                                time.sleep(0.05)
-                                try:
-                                    remote = upbit.get_order(order_uuid) if order_uuid != "UNKNOWN" else None
-                                    if isinstance(remote, dict) and float(remote.get("executed_volume", 0.0) or 0.0) > 0:
-                                        fill_processor.process_order_fill(
-                                            order_identifier=client_order_id or order_uuid,
-                                            status=OrderStatus.FILLED if float(remote.get("remaining_volume", 0.0) or 0.0) == 0 else OrderStatus.PARTIALLY_FILLED,
-                                            executed_volume=float(remote.get("executed_volume", 0.0)),
-                                            avg_price=float(remote.get("price", 0.0) or current_price),
-                                            fee=float(remote.get("paid_fee", 0.0) or 0.0),
-                                            remaining_volume=float(remote.get("remaining_volume", 0.0) or 0.0),
-                                            exchange_uuid=order_uuid,
-                                            exit_reason=f"PARTIAL_TP_{2 if is_stage2 else 1}",
-                                            avg_buy_price=avg_buy_price,
-                                            korean_name=korean_name,
-                                            timestamp_str=now_str,
-                                        )
-                                except Exception as exc:
-                                    logger.debug("업비트 PARTIAL_TP 체결 조회 예외: %s", exc)
+                                # ACK 뒤 50ms 단건 조회는 제거한다. 다음 REST 대사에서만 체결을 확정한다.
 
                                 # [알림 최적화] 분할익절 접수 알림 제거 (실체결 완료 시 OrderFillProcessor에서 발송)
                                 pass
@@ -513,27 +495,7 @@ def run_cycle():
                                 )
                                 order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
                                 client_order_id = order_res.get("client_order_id", "")
-                                cooldown_manager.record_exit(market, "TRAILING_STOP", exit_price=current_price)
-
-                                time.sleep(0.05)
-                                try:
-                                    remote = upbit.get_order(order_uuid) if order_uuid != "UNKNOWN" else None
-                                    if isinstance(remote, dict) and float(remote.get("executed_volume", 0.0) or 0.0) > 0:
-                                        fill_processor.process_order_fill(
-                                            order_identifier=client_order_id or order_uuid,
-                                            status=OrderStatus.FILLED if float(remote.get("remaining_volume", 0.0) or 0.0) == 0 else OrderStatus.PARTIALLY_FILLED,
-                                            executed_volume=float(remote.get("executed_volume", 0.0)),
-                                            avg_price=float(remote.get("price", 0.0) or current_price),
-                                            fee=float(remote.get("paid_fee", 0.0) or 0.0),
-                                            remaining_volume=float(remote.get("remaining_volume", 0.0) or 0.0),
-                                            exchange_uuid=order_uuid,
-                                            exit_reason="TRAILING_STOP",
-                                            avg_buy_price=avg_buy_price,
-                                            korean_name=korean_name,
-                                            timestamp_str=now_str,
-                                        )
-                                except Exception as exc:
-                                    logger.debug("업비트 TRAILING_STOP 체결 조회 예외: %s", exc)
+                                # 쿨다운과 손익은 다음 REST 대사가 확인한 체결 증가분에서만 기록한다.
 
                                 # [알림 최적화] 트레일링 스탑 접수 알림 제거 (실체결 완료 시 OrderFillProcessor에서 발송)
                                 pass
@@ -631,27 +593,7 @@ def run_cycle():
                                 )
                                 order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
                                 client_order_id = order_res.get("client_order_id", "")
-                                cooldown_manager.record_exit(market, exit_reason_label, exit_price=current_price)
-
-                                time.sleep(0.05)
-                                try:
-                                    remote = upbit.get_order(order_uuid) if order_uuid != "UNKNOWN" else None
-                                    if isinstance(remote, dict) and float(remote.get("executed_volume", 0.0) or 0.0) > 0:
-                                        fill_processor.process_order_fill(
-                                            order_identifier=client_order_id or order_uuid,
-                                            status=OrderStatus.FILLED if float(remote.get("remaining_volume", 0.0) or 0.0) == 0 else OrderStatus.PARTIALLY_FILLED,
-                                            executed_volume=float(remote.get("executed_volume", 0.0)),
-                                            avg_price=float(remote.get("price", 0.0) or current_price),
-                                            fee=float(remote.get("paid_fee", 0.0) or 0.0),
-                                            remaining_volume=float(remote.get("remaining_volume", 0.0) or 0.0),
-                                            exchange_uuid=order_uuid,
-                                            exit_reason=exit_reason_label,
-                                            avg_buy_price=avg_buy_price,
-                                            korean_name=korean_name,
-                                            timestamp_str=now_str,
-                                        )
-                                except Exception as exc:
-                                    logger.debug("업비트 %s 체결 조회 예외: %s", exit_reason_label, exc)
+                                # 쿨다운과 손익은 다음 REST 대사가 확인한 체결 증가분에서만 기록한다.
 
                                 # [알림 최적화] 타임스탑 접수 알림 제거 (실체결 완료 시 OrderFillProcessor에서 발송)
                                 pass
@@ -916,25 +858,7 @@ def run_cycle():
                     order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
                     client_order_id = order_res.get("client_order_id", "")
 
-                    # 즉시 체결 여부 확인 (실제 체결 시에만 진입시간 생성, P0-1)
-                    time.sleep(0.05)
-                    try:
-                        remote = upbit.get_order(order_uuid) if order_uuid != "UNKNOWN" else None
-                        if isinstance(remote, dict) and float(remote.get("executed_volume", 0.0) or 0.0) > 0:
-                            fill_processor.process_order_fill(
-                                order_identifier=client_order_id or order_uuid,
-                                status=OrderStatus.FILLED if float(remote.get("remaining_volume", 0.0) or 0.0) == 0 else OrderStatus.PARTIALLY_FILLED,
-                                executed_volume=float(remote.get("executed_volume", 0.0)),
-                                avg_price=float(remote.get("price", 0.0) or order_price),
-                                fee=float(remote.get("paid_fee", 0.0) or 0.0),
-                                remaining_volume=float(remote.get("remaining_volume", 0.0) or 0.0),
-                                exchange_uuid=order_uuid,
-                                korean_name=korean_name,
-                                timestamp_str=now_str,
-                                expected_price=order_price,
-                            )
-                    except Exception as exc:
-                        logger.debug("업비트 BUY 체결 조회 예외: %s", exc)
+                    # 매수 ACK는 체결이 아니다. 진입 시각은 REST 대사에서만 생성한다.
 
                     chart_img = chart_renderer.render_trade_chart(
                         market=market,

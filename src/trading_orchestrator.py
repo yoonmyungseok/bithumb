@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -21,6 +22,32 @@ class TradingOrchestrator:
 
     def __init__(self, logger: logging.Logger):
         self.logger = logger
+        # 한 사이클의 반복 잔고 조회를 줄이되, 주문 직전에는 force_refresh로 우회한다.
+        self._balance_snapshot: dict[str, Any] = {}
+        self._balance_snapshot_at = 0.0
+        self._balance_snapshot_exchange_id: int | None = None
+
+    def get_balance_snapshot(
+        self, exchange: ExchangeAdapter, *, force_refresh: bool = False, ttl_seconds: float = 2.0,
+    ) -> dict[str, Any]:
+        """짧은 TTL의 잔고 스냅샷을 재사용하고, 주문 경계에서는 강제 최신 조회를 허용한다."""
+        now_ts = time.monotonic()
+        same_exchange = self._balance_snapshot_exchange_id == id(exchange)
+        if (
+            not force_refresh
+            and same_exchange
+            and self._balance_snapshot
+            and now_ts - self._balance_snapshot_at < ttl_seconds
+        ):
+            return self._balance_snapshot
+        balances = exchange.get_balances()
+        # 실패/빈 응답은 캐시하지 않아 오래된 잔고가 신규 매수 승인에 쓰이지 않게 한다.
+        if not isinstance(balances, dict):
+            raise RuntimeError("거래소 잔고 스냅샷이 유효하지 않습니다.")
+        self._balance_snapshot = balances
+        self._balance_snapshot_at = now_ts
+        self._balance_snapshot_exchange_id = id(exchange)
+        return balances
 
     def reconcile_orders(
         self,
@@ -59,7 +86,8 @@ class TradingOrchestrator:
         now: datetime.datetime,
     ) -> "PortfolioSnapshot":
         """Refresh the shared account/risk snapshot without changing trade rules."""
-        balances = exchange.get_balances()
+        # 포트폴리오·킬스위치 계산은 매 사이클 첫 조회를 강제 최신 상태로 시작한다.
+        balances = self.get_balance_snapshot(exchange, force_refresh=True)
         total_equity = calculate_total_equity(balances, exchange)
         held_markets = get_held_markets(balances, exchange)
         stale_states = trailing_tracker.reconcile_markets(held_markets)
@@ -67,7 +95,8 @@ class TradingOrchestrator:
         canceled_stale = realtime_engine.clean_stale_orders(max_age_seconds=180)
         requoted = realtime_engine.requote_pending_orders()
         if canceled_stale or requoted:
-            balances = exchange.get_balances()
+            # 취소/재호가 직후에는 잠긴 잔고가 달라질 수 있으므로 다시 강제 조회한다.
+            balances = self.get_balance_snapshot(exchange, force_refresh=True)
 
         krw_available = float(balances.get("KRW", {}).get("balance", 0.0))
         is_kill_switch, daily_pnl = risk_manager.update_daily_equity(total_equity, now)
@@ -126,7 +155,8 @@ class TradingOrchestrator:
     def load_market_snapshot(self, exchange: ExchangeAdapter, market: str, interval_minutes: int) -> "MarketSnapshot":
         """Load the common per-market inputs used by strategy and exit logic."""
         currency = market.split("-")[-1] if "-" in market else market
-        balances = exchange.get_balances()
+        # 시장별 분석은 짧은 TTL 잔고 스냅샷을 공유해 종목 수만큼 REST를 반복하지 않는다.
+        balances = self.get_balance_snapshot(exchange)
         coin = balances.get(currency, {"balance": 0.0, "locked": 0.0, "avg_buy_price": 0.0})
         return MarketSnapshot(
             market=market,
