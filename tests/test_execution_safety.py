@@ -42,7 +42,6 @@ class TestExecutionSafetyComprehensive(unittest.TestCase):
         self.trade_memory = TradeMemoryManager(data_dir=self.data_dir)
         self.trailing_tracker = TrailingStopTracker(data_dir=self.data_dir)
         self.mock_telegram = MagicMock()
-        self.mock_sheets = MagicMock()
 
         self.fill_processor = OrderFillProcessor(
             order_journal=self.journal,
@@ -50,7 +49,6 @@ class TestExecutionSafetyComprehensive(unittest.TestCase):
             trade_memory=self.trade_memory,
             trailing_tracker=self.trailing_tracker,
             telegram=self.mock_telegram,
-            sheets=self.mock_sheets,
         )
 
     def tearDown(self):
@@ -200,7 +198,6 @@ class TestExecutionSafetyComprehensive(unittest.TestCase):
             trade_memory=self.trade_memory,
             trailing_tracker=self.trailing_tracker,
             telegram=self.mock_telegram,
-            sheets=self.mock_sheets,
         )
 
         cid = self.journal.record_intent("KRW-DOGE", "ask", 1000.0, None, "market", position_id="KRW-DOGE")
@@ -217,8 +214,6 @@ class TestExecutionSafetyComprehensive(unittest.TestCase):
             fallback_price=200.0,
             fallback_vol=1000.0,
             exit_reason="TRAILING_STOP",
-            sheet_order_uuid="doge-ord-1",
-            sheet_status_reason="트레일링 스탑",
             now_str="2026-08-25 12:00:00",
         )
 

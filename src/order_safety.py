@@ -702,7 +702,6 @@ class OrderFillProcessor:
         trade_memory: Any = None,
         trailing_tracker: Any = None,
         telegram: Any = None,
-        sheets: Any = None,
         send_fill_alerts: bool = False,
     ):
         self.order_journal = order_journal
@@ -710,7 +709,6 @@ class OrderFillProcessor:
         self.trade_memory = trade_memory
         self.trailing_tracker = trailing_tracker
         self.telegram = telegram
-        self.sheets = sheets
         self.send_fill_alerts = send_fill_alerts
 
     def process_order_fill(

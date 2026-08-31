@@ -31,7 +31,6 @@ class RealtimeRiskEngine:
         telegram: TelegramAlert,
         min_order_krw: float = 5000.0,
         latest_strategies: dict[str, dict[str, Any]] | None = None,
-        sheets=None,
     ):
         self.get_exchange = exchange_factory
         self.order_executor = order_executor
@@ -43,14 +42,12 @@ class RealtimeRiskEngine:
         self.telegram = telegram
         self.min_order_krw = min_order_krw
         self.latest_strategies = latest_strategies if latest_strategies is not None else {}
-        self.sheets = sheets
         self.fill_processor = OrderFillProcessor(
             order_journal=self.order_journal,
             risk_manager=self.risk_manager,
             trade_memory=self.trade_memory,
             trailing_tracker=self.trailing_tracker,
             telegram=self.telegram,
-            sheets=self.sheets,
         )
         self._lock = threading.Lock()
         self._last_trigger: dict[str, float] = {}
@@ -199,8 +196,6 @@ class RealtimeRiskEngine:
         fallback_price: float,
         fallback_vol: float,
         exit_reason: str,
-        sheet_order_uuid: str,
-        sheet_status_reason: str,
         now_str: str,
     ) -> dict[str, Any]:
         """주문 접수 후 거래소 체결 조회를 통해 실제 체결가/수수료 기반으로만 손익 확정 (가상 체결/손익 완전 제거, P0-1)"""
@@ -278,25 +273,6 @@ class RealtimeRiskEngine:
             expected_price=fallback_price,
         )
 
-        # 4. 구글 시트 기록 (실제 체결 확인 시에만 발송)
-        if self.sheets and fill_res.get("fill_delta", 0.0) > 0:
-            try:
-                self.sheets.append_trade_log({
-                    "Timestamp": now_str,
-                    "Korean_Name": korean_name,
-                    "Market": market,
-                    "Order_UUID": sheet_order_uuid or order_uuid or identifier,
-                    "Side": "SELL",
-                    "Order_Type": "MARKET",
-                    "Price": exec_price,
-                    "Volume": f"{exec_vol:.6f}",
-                    "Total_KRW": int(exec_vol * exec_price),
-                    "Realized_PnL_Pct": f"{fill_res.get('pnl_pct', 0.0):+.2f}%",
-                    "Current_Balance_KRW": 0,
-                    "Status_Reason": f"[{exit_reason}] {sheet_status_reason} (실체결 완료)",
-                })
-            except Exception as sheet_err:
-                logger.debug(f"청산 시트 기록 오류: {sheet_err}")
         pnl_krw = float(fill_res.get("pnl_krw", 0.0) or 0.0)
         pnl_pct = float(fill_res.get("pnl_pct", 0.0) or 0.0)
 
@@ -404,8 +380,6 @@ class RealtimeRiskEngine:
                         fallback_price=current_price,
                         fallback_vol=coin_available,
                         exit_reason=f"0.1초 실시간 웹소켓 손절 실행 (손절선 {effective_stop_loss:,.2f}원 터치)",
-                        sheet_order_uuid="REALTIME-SL",
-                        sheet_status_reason=f"0.1초 실시간 웹소켓 급락 칼손절",
                         now_str=now_str,
                     )
 
@@ -476,8 +450,6 @@ class RealtimeRiskEngine:
                             fallback_price=current_price,
                             fallback_vol=sell_vol,
                             exit_reason=f"0.1초 실시간 {stage_label} 도달 분할 익절",
-                            sheet_order_uuid=f"REALTIME-TP{2 if is_stage2 else 1}",
-                            sheet_status_reason=f"0.1초 실시간 {stage_label} 분할익절 (+{realized_profit_pct:.2f}%)",
                             now_str=now_str,
                         )
 
@@ -528,8 +500,6 @@ class RealtimeRiskEngine:
                         fallback_price=current_price,
                         fallback_vol=coin_available,
                         exit_reason="0.1초 실시간 최고점 대비 트레일링 스탑 익절",
-                        sheet_order_uuid="REALTIME-TRAIL",
-                        sheet_status_reason=f"0.1초 실시간 트레일링 익절 (+{realized_profit_pct:.2f}%)",
                         now_str=now_str,
                     )
 

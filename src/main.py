@@ -42,7 +42,6 @@ from risk_manager import (
     get_kst_now,
     get_kst_now_str,
 )
-from sheets_manager import SheetsManager
 from strategy_engine import (
     StrategyPolicy,
     calculate_relative_strength,
@@ -104,8 +103,6 @@ BITHUMB_SECRET_KEY = os.getenv("BITHUMB_SECRET_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "service_account.json")
-GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "비트코인자동매매")
 
 INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "5"))
 TARGET_MARKETS = os.getenv("TARGET_MARKETS", "KRW-BTC,KRW-ETH,KRW-XRP,KRW-SOL,KRW-DOGE")
@@ -162,18 +159,12 @@ trailing_tracker = TrailingStopTracker(
 )
 risk_manager = DailyRiskManager(max_loss_pct=MAX_DAILY_LOSS_PCT)
 telegram = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
-sheets = SheetsManager(
-    json_key_path=GOOGLE_SERVICE_ACCOUNT_JSON,
-    sheet_name=GOOGLE_SHEET_NAME,
-)
-
 fill_processor = OrderFillProcessor(
     order_journal=order_journal,
     risk_manager=risk_manager,
     trade_memory=trade_memory,
     trailing_tracker=trailing_tracker,
     telegram=telegram,
-    sheets=sheets,
 )
 
 paper_broker: PaperBroker | None = None
@@ -205,7 +196,6 @@ realtime_engine = RealtimeRiskEngine(
     telegram=telegram,
     min_order_krw=MIN_ORDER_KRW,
     latest_strategies=LATEST_STRATEGIES,
-    sheets=sheets,
 )
 
 bot_controller = BotController(
@@ -253,7 +243,7 @@ def check_btc_market_crash(bithumb: BithumbAPI, threshold_pct: float = BTC_CRASH
 
 
 def send_daily_morning_report():
-    """매일 아침 09:00 KST 일일 결산 모닝 리포트 전송 및 구글 스프레드시트 일괄 배치 동기화"""
+    """매일 아침 09:00 KST 일일 결산 모닝 리포트를 전송한다."""
     now_str = get_kst_now_str()
     logger.info(f"📊 [아침 9시 일일 결산 브리핑 발송: {now_str}]")
 
@@ -275,42 +265,6 @@ def send_daily_morning_report():
         held_names = [f"{bithumb.get_korean_name(m)}({m.split('-')[-1]})" for m in held_markets]
         held_desc = ", ".join(held_names) if held_names else "없음 (100% 현금 보유)"
 
-        # 🔄 구글 스프레드시트 09:00 일괄 배치 동기화 실행
-        sheet_sync_status = "건너뜀 (미설정)"
-        if sheets:
-            try:
-                summary_data = {
-                    "updated_at": now_str,
-                    "total_equity": total_equity,
-                    "krw_available": krw_avail,
-                    "daily_pnl_pct": daily_pnl_pct,
-                    "daily_pnl_krw": daily_pnl_krw,
-                    "realized_pnl_krw": risk_manager.realized_pnl_krw,
-                    "trades_count": risk_manager.total_trades_today,
-                    "win_count": risk_manager.win_trades_today,
-                    "held_coins": held_desc,
-                    "kill_switch_status": "🟢 정상",
-                    "btc_health": "🟢 정상",
-                    "fear_and_greed": fng.get("desc", "50점 (중립)"),
-                    "bot_state": "🟢 24시간 정상 가동 중",
-                }
-                synced = sheets.sync_all_daily_batch(
-                    summary_data=summary_data,
-                    total_trades=risk_manager.total_trades_today,
-                    win_trades=risk_manager.win_trades_today,
-                    realized_pnl_krw=risk_manager.realized_pnl_krw,
-                    daily_history=risk_manager.daily_history,
-                    order_journal_orders=order_journal.orders,
-                    trade_memory_trades=trade_memory.trades,
-                    latest_strategies=LATEST_STRATEGIES,
-                    target_markets=list(LATEST_STRATEGIES.keys()),
-                    get_korean_name_fn=bithumb.get_korean_name,
-                )
-                sheet_sync_status = "✅ 동기화 완료" if synced else "⚠️ 동기화 실패"
-            except Exception as se:
-                logger.warning(f"모닝 리포트 구글 시트 동기화 예외: {se}")
-                sheet_sync_status = f"⚠️ 오류 ({se})"
-
         telegram.send_message(
             f"🌅 <b>[빗썸 AI 퀀트 봇 - 09:00 KST 일일 성과 결산 브리핑]</b>\n\n"
             f"• <b>총 평가 자산:</b> {total_equity:,.0f} KRW\n"
@@ -319,7 +273,6 @@ def send_daily_morning_report():
             f"• <b>가용 원화 잔고:</b> {krw_avail:,.0f} KRW\n"
             f"• <b>현재 보유 포지션:</b> {held_desc}\n"
             f"• <b>크립토 공포/탐욕 지수:</b> {fng['desc']}\n"
-            f"• <b>구글 시트 동기화:</b> {sheet_sync_status}\n"
             f"• <b>웹 대시보드:</b> <code>http://localhost:7979</code>\n"
             f"• <b>기준 일시:</b> {now_str}"
         )

@@ -10,7 +10,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from bot_controller import BotController
 from order_safety import OrderJournal, SafeOrderExecutor, calculate_risk_position_size
 from risk_manager import DailyRiskManager, TrailingStopTracker
-from sheets_manager import SheetsManager
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
 
@@ -48,40 +47,6 @@ class TestP2AsyncAndSizing(unittest.TestCase):
             # 비동기 큐에 푸시하고 즉시 반환되므로 경과 시간은 0.1초 미만이어야 함
             self.assertTrue(res)
             self.assertLess(elapsed, 0.2)
-
-    def test_02_sheets_async_queue_non_blocking(self):
-        """2. 구글 시트 네트워크 지연 발생 시에도 append_trade_log가 즉시 반환 검증 (P2-1)"""
-        # SheetsManager 인스턴스를 mock credentials로 생성
-        mock_sheet = MagicMock()
-        mock_ws = MagicMock()
-        mock_sheet.worksheet.return_value = mock_ws
-        
-        sm = SheetsManager.__new__(SheetsManager)
-        sm.enable_async = True
-        sm.exchange_name = "BITHUMB"
-        sm.spreadsheet = mock_sheet
-        sm._queue = __import__("queue").Queue(maxsize=100)
-        sm._is_running = True
-        sm._worker_thread = __import__("threading").Thread(target=sm._queue_worker, daemon=True)
-        sm._worker_thread.start()
-
-        def slow_append_row(*args, **kwargs):
-            time.sleep(1.0)
-
-        mock_ws.append_row.side_effect = slow_append_row
-
-        start_t = time.time()
-        sm.append_trade_log({
-            "market": "KRW-BTC",
-            "side": "BUY",
-            "price": 100_000_000.0,
-            "volume": 0.01,
-            "total_krw": 1_000_000,
-        })
-        elapsed = time.time() - start_t
-
-        # 큐에 비동기 위임하므로 0.2초 이내 즉시 반환
-        self.assertLess(elapsed, 0.2)
 
     def test_03_position_sizing_dynamic_slot_budget(self):
         """3. 포지션 사이징 시 슬롯 예산(open_slots) 및 가용 원화(available_krw) 한도 준수 검증 (P2-2)"""

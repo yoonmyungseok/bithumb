@@ -8,7 +8,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 from bithumb_api import BithumbAPI
 from market_screener import MarketScreener
 from risk_manager import TrailingStopTracker
-from sheets_manager import SheetsManager
 from strategy_engine import StrategyPolicy, entry_signal, is_major_market
 from upbit_api import UpbitAPI
 
@@ -108,26 +107,6 @@ class TestOperationalImprovements(unittest.TestCase):
         results = screener.scan_markets(top_count=2)
         mock_api.get_orderbooks.assert_called()
         self.assertGreaterEqual(len(results), 1)
-
-    @patch('os.path.exists', return_value=True)
-    @patch('google.oauth2.service_account.Credentials.from_service_account_file')
-    @patch('gspread.authorize')
-    def test_sheets_manager_batch_and_async_update(self, mock_auth, mock_creds, mock_exists):
-        mock_client = MagicMock()
-        mock_auth.return_value = mock_client
-        mock_sheet = MagicMock()
-        mock_client.open.return_value = mock_sheet
-        mock_ws = MagicMock()
-        mock_sheet.worksheet.return_value = mock_ws
-
-        sheets = SheetsManager(json_key_path='dummy.json', sheet_name='테스트', enable_async=False)
-        strategies = [
-            {'market': 'KRW-ETH', 'strategy': {'action': 'HOLD', 'entry_price': 3400000.0, 'target_price': 3450000.0, 'stop_loss': 3350000.0, 'alloc_pct': 0.5, 'reason': '정상'}, 'korean_name': '이더리움'},
-            {'market': 'KRW-GRVT', 'strategy': {'action': 'BUY', 'entry_price': 245.0, 'target_price': 251.0, 'stop_loss': 238.0, 'alloc_pct': 0.5, 'reason': '모멘텀'}, 'korean_name': '그래비티토큰'},
-        ]
-        sheets.update_strategies_batch(strategies, '2026-08-29 21:00:00', sync=True)
-        mock_ws.clear.assert_called_once()
-        mock_ws.update.assert_called_once()
 
 if __name__ == '__main__':
     unittest.main()

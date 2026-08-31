@@ -15,7 +15,6 @@ class TestBuyFillAlert(unittest.TestCase):
         self.journal_path = os.path.join(self.temp_dir.name, "order_journal.json")
         self.journal = OrderJournal(path=self.journal_path)
         self.telegram = MagicMock()
-        self.sheets = MagicMock()
         self.trailing_tracker = MagicMock()
         self.risk_manager = MagicMock()
         self.trade_memory = MagicMock()
@@ -26,7 +25,6 @@ class TestBuyFillAlert(unittest.TestCase):
             trade_memory=self.trade_memory,
             trailing_tracker=self.trailing_tracker,
             telegram=self.telegram,
-            sheets=self.sheets,
             send_fill_alerts=True,
         )
 

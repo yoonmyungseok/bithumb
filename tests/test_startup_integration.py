@@ -11,7 +11,6 @@ from bot_controller import BotController
 from order_safety import CooldownManager, OrderJournal, RiskGuard, SafeOrderExecutor
 from realtime_engine import RealtimeRiskEngine
 from risk_manager import DailyRiskManager, TrailingStopTracker
-from sheets_manager import SheetsManager
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
 from web_server import DashboardWebServer
@@ -46,23 +45,6 @@ class StartupAndIntegrationAuditTests(unittest.TestCase):
         server.start()
         self.assertIsNotNone(server.server)
         server.stop()
-
-    def test_sheets_manager_flexible_kwargs(self):
-        key_path = os.path.join(self.data_dir, "test_sa.json")
-        with open(key_path, "w", encoding="utf-8") as f:
-            f.write('{"type": "service_account", "project_id": "test", "private_key_id": "123", "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7V3D9\n-----END PRIVATE KEY-----\n", "client_email": "test@test.iam.gserviceaccount.com"}')
-
-        try:
-            sm1 = SheetsManager(json_key_path=key_path, sheet_name="test_sheet")
-            self.assertEqual(sm1.sheet_name, "test_sheet")
-        except Exception:
-            pass
-
-        try:
-            sm2 = SheetsManager(service_account_json_path=key_path, spreadsheet_name="test_sheet2")
-            self.assertEqual(sm2.sheet_name, "test_sheet2")
-        except Exception:
-            pass
 
     def test_bithumb_api_round_volume_and_tick(self):
         vol = BithumbAPI.round_volume("KRW-BTC", 0.12345678)

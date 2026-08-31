@@ -15,7 +15,7 @@
 - **핵심 기술**: 
   - 빗썸 REST API & WebSocket (v1/v2)
   - 업비트 REST API & WebSocket (Public: 시세/체결, Private: myOrder/myAsset, HS512 JWT + unencoded query string SHA-512 hash, `identifier` 멱등성)
-  - Google Gemini API (Flash 모델군), Telegram API, Google Sheets API
+  - Google Gemini API (Flash 모델군), Telegram API
 - **주요 전략 및 아키텍처**: 
   - **다중 시간대(MTF) 분석**: 1시간봉 대세 추세 + 5분봉 정밀 타점 정렬
   - **거래대금 및 모멘텀 기반 동적 시장 스크리닝**: 확인형 후보는 24시간 거래대금 $\ge 10$억 원과 당일 상승률 +1.0%~+25.0%를 적용하며, 빗썸은 별도 초기 돌파 후보(단기 상승 초입·유동성·호가 안전성 통과)를 소액 진입 경로로 운영
@@ -52,7 +52,6 @@ c:\AI\bithumb\
 │       ├── cooldown_state.json    # 업비트 재진입 쿨다운 상태
 │       └── paper_account.json     # 업비트 모의투자 가상 원장
 ├── config/               # 설정 파일 폴더
-│   └── service_account.json   # Google Sheets 연동을 위한 GCP 서비스 계정 키
 ├── src/                  # 핵심 소스코드 디렉토리
 │   ├── main.py                     # 빗썸 진입점 (트레이딩 엔진 + 127.0.0.1:17979 내부 API)
 │   ├── main_upbit.py               # 업비트 진입점 (트레이딩 엔진 + 127.0.0.1:17980 내부 API)
@@ -73,7 +72,6 @@ c:\AI\bithumb\
 │   ├── paper_broker.py             # 모의투자 어댑터 (거래소별 원장 격리 지원)
 │   ├── trade_memory.py             # 트레이딩 기록, 통계 및 AI 자가학습 메모리 관리
 │   ├── telegram_alert.py           # 텔레그램 양방향 원격 제어, 디바운싱 알림, 차트 전송
-│   ├── sheets_manager.py           # Google Sheets 기반 매매 일지, 대시보드 및 Strategy 탭 동기화 (거래소 태깅)
 │   ├── chart_renderer.py           # matplotlib 기반 매매 시점 캔들 차트 이미지 렌더링 (다크 테마)
 │   ├── web_server.py               # 로컬 경량 웹 API 서버 모듈 (is_api_only 지원)
 │   ├── process_manager.py          # 빗썸/업비트/대시보드/전체 독립 프로세스 탐색, 종료, 상태, 로그 관리 CLI
