@@ -184,6 +184,11 @@ def main():
         else:
             python_exe = sys.executable
 
+    if sys.platform == "win32":
+        pythonw_candidate = os.path.join(os.path.dirname(python_exe), "pythonw.exe")
+        if os.path.exists(pythonw_candidate):
+            python_exe = pythonw_candidate
+
     main_script = os.path.join(project_root, "src", "main.py")
     hb_file = os.path.join(project_root, "data", ".heartbeat")
 
@@ -230,10 +235,25 @@ def main():
             except Exception:
                 pass
 
+        creationflags = (
+            (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000)
+            if sys.platform == "win32"
+            else 0
+        )
+        base_name = os.path.splitext(os.path.basename(main_script))[0]
+        spawn_log = os.path.join(project_root, "logs", f"{base_name}_spawn.log")
+        os.makedirs(os.path.dirname(spawn_log), exist_ok=True)
+        f_spawn = open(spawn_log, "a", encoding="utf-8", errors="replace")
+
         try:
             current_process = subprocess.Popen(
                 [python_exe, main_script],
                 cwd=project_root,
+                creationflags=creationflags,
+                stdout=f_spawn,
+                stderr=f_spawn,
+                stdin=subprocess.DEVNULL,
+                close_fds=(sys.platform != "win32"),
             )
             process = current_process
         except Exception as e:

@@ -182,6 +182,7 @@ def _kill_pid(pid: int | str) -> bool:
         res = subprocess.run(
             ["taskkill", "/F", "/T", "/PID", str(pid_int)],
             check=False,
+            creationflags=0x08000000,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -213,8 +214,10 @@ def _kill_matching_script_processes(patterns: list[str]) -> list[int]:
                 res = subprocess.run(
                     ["powershell", "-NoProfile", "-Command", ps_cmd],
                     capture_output=True,
+                    creationflags=0x08000000,
                     text=True,
                     encoding="utf-8",
+                    errors="replace",
                     timeout=5,
                 )
                 if res.returncode == 0 and res.stdout.strip():
@@ -272,10 +275,13 @@ def stop_action(exchange: str = "bithumb"):
                     stopped_count += 1
                 else:
                     print(f"⚠️ PID {pid} 종료 실패 또는 이미 종료됨")
+
+        if os.path.exists(pid_file):
             try:
                 os.remove(pid_file)
             except OSError:
                 pass
+
         orphans = _kill_matching_script_processes(["dashboard_server.py"])
         for opid in orphans:
             if str(opid) not in pids:
@@ -366,20 +372,55 @@ def logs_action(exchange: str = "bithumb"):
     except KeyboardInterrupt:
         print(f"\n👋 {ex_name} 로그 모니터링을 종료합니다.")
 
-
 def _spawn_background_process(python_exe: str, script_path: str, cwd: str) -> int | None:
     """Windows와 Unix 환경 모두에서 부모 창이 닫혀도 영구 유지되는 백그라운드 프로세스를 스폰한다."""
-    creationflags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+    base_name = os.path.splitext(os.path.basename(script_path))[0]
+    log_dir = os.path.join(cwd, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    out_log = os.path.join(log_dir, f"{base_name}_spawn.log")
+
+    if sys.platform == "win32":
+        # PowerShell Start-Process를 통해 OS 레벨에서 완전 독립 백그라운드 프로세스로 생성
+        ps_cmd = (
+            f"$p = Start-Process -FilePath '{python_exe}' "
+            f"-ArgumentList '{script_path}' "
+            f"-WorkingDirectory '{cwd}' "
+            f"-RedirectStandardOutput '{out_log}' "
+            f"-RedirectStandardError '{out_log}' "
+            f"-WindowStyle Hidden -PassThru; $p.Id"
+        )
+        try:
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                capture_output=True,
+                creationflags=0x08000000,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+            )
+            out_str = res.stdout.strip()
+            if out_str.isdigit():
+                return int(out_str)
+        except Exception as e:
+            pass
+
+    creationflags = (
+        (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000)
+        if sys.platform == "win32"
+        else 0
+    )
 
     try:
+        f_out = open(out_log, "a", encoding="utf-8", errors="replace")
         proc = subprocess.Popen(
             [python_exe, script_path],
             cwd=cwd,
             creationflags=creationflags,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=f_out,
+            stderr=f_out,
             stdin=subprocess.DEVNULL,
-            close_fds=True,
+            close_fds=(sys.platform != "win32"),
         )
         return proc.pid
     except Exception as e:
@@ -411,6 +452,11 @@ def start_action(exchange: str = "bithumb", background: bool = True) -> bool:
                 break
         else:
             python_exe = sys.executable
+
+    if sys.platform == "win32":
+        pythonw_candidate = os.path.join(os.path.dirname(python_exe), "pythonw.exe")
+        if os.path.exists(pythonw_candidate):
+            python_exe = pythonw_candidate
 
     if ex == "dashboard":
         print("======================================================")

@@ -86,7 +86,12 @@ class UnifiedDashboardServer:
         self.static_dir = static_dir or self._resolve_static_dir()
         self.server: QuietThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+        self._poll_thread: threading.Thread | None = None
+        self._running = False
+        self._cached_status: dict[str, Any] = {}
+        self._cache_lock = threading.Lock()
         self.http_session = requests.Session()
+        self.http_session.trust_env = False
 
     def _resolve_static_dir(self) -> str | None:
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dashboard"))
@@ -98,17 +103,17 @@ class UnifiedDashboardServer:
         return None
 
     def fetch_exchange_status(self, api_url: str, exchange_name: str) -> dict[str, Any]:
-        """개별 거래소 봇의 상태를 2.5초 타임아웃으로 안전 조회"""
+        """개별 거래소 봇의 상태를 3.0초 타임아웃으로 안전 조회"""
         try:
-            res = self.http_session.get(f"{api_url}/api/status", timeout=2.5)
+            res = self.http_session.get(f"{api_url}/api/status", timeout=3.0)
             if res.status_code == 200:
                 data = res.json()
                 if isinstance(data, dict):
                     data["online"] = True
                     data.setdefault("exchange", exchange_name)
                     return data
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[{exchange_name}] status fetch error: {e}")
 
         return {
             "online": False,
@@ -304,9 +309,44 @@ class UnifiedDashboardServer:
             "message": f"[{action.upper()}] 명령 전달 완료 ({target})",
         }
 
+    def get_cached_status(self) -> dict[str, Any]:
+        """메모리에 캐시된 최신 통합 지표를 즉각 반환하며, 캐시가 비어있으면 즉시 조회"""
+        with self._cache_lock:
+            cached_comb = self._cached_status.get("combined", {}) if isinstance(self._cached_status, dict) else {}
+            if cached_comb.get("bithumb_online") or cached_comb.get("upbit_online"):
+                return self._cached_status
+
+        # 캐시가 아직 없거나 오프라인 상태이면 즉시 수집
+        data = self.get_aggregated_status()
+        with self._cache_lock:
+            self._cached_status = data
+        return data
+
+    def _poll_loop(self):
+        """백그라운드에서 1.5초마다 거래소 상태를 폴링하여 캐시 유지"""
+        while self._running:
+            try:
+                data = self.get_aggregated_status()
+                with self._cache_lock:
+                    self._cached_status = data
+            except Exception as e:
+                logger.debug(f"대시보드 캐시 갱신 예외: {e}")
+            time.sleep(1.5)
+
     def start(self, block: bool = False):
         """웹 대시보드 서버 가동"""
         handler_cls = self._create_handler()
+        self._running = True
+        # 초기 캐시 1회 생성
+        try:
+            self._cached_status = self.get_aggregated_status()
+        except Exception:
+            pass
+
+        # 백그라운드 캐시 폴링 워커 가동
+        self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True, name="DashboardPoller")
+        self._poll_thread.start()
+
         try:
             self.server = QuietThreadingHTTPServer((self.host, self.port), handler_cls)
             logger.info(f"🌐 [통합 퀀트 트레이딩 대시보드 가동] 접속 주소: http://localhost:{self.port}")
@@ -323,6 +363,7 @@ class UnifiedDashboardServer:
 
     def stop(self):
         """서버 안전 종료"""
+        self._running = False
         if self.server:
             try:
                 self.server.shutdown()
@@ -357,9 +398,9 @@ class UnifiedDashboardServer:
                     parsed_url = urllib.parse.urlparse(self.path)
                     path = parsed_url.path
 
-                    # 1. API Status 반환 (통합 + 빗썸 + 업비트 데이터)
+                    # 1. API Status 반환 (즉각 캐시 응답)
                     if path == "/api/status":
-                        data = server_self.get_aggregated_status()
+                        data = server_self.get_cached_status()
                         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json; charset=utf-8")
