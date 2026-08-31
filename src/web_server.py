@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 class QuietThreadingHTTPServer(ThreadingHTTPServer):
     """클라이언트 연결 끊김(새로고침, 탭 닫기 등) 시 발생하는 불필요한 스택트레이스 억제"""
+    allow_reuse_address = True
 
     def handle_error(self, request, client_address):
         exc_type, exc_val, _ = sys.exc_info()
@@ -66,13 +67,20 @@ class DashboardWebServer:
 
     def start(self):
         handler_cls = self._create_handler()
-        try:
-            self.server = QuietThreadingHTTPServer((self.host, self.port), handler_cls)
-            self._thread = threading.Thread(target=self.server.serve_forever, daemon=True, name="WebDashboard")
-            self._thread.start()
-            logger.info(f"🌐 [{self.title} 웹 대시보드 가동] 접속 주소: http://localhost:{self.port}")
-        except OSError as e:
-            logger.warning(f"웹 대시보드 포트 {self.port} 바인딩 실패: {e}")
+        for attempt in range(5):
+            try:
+                QuietThreadingHTTPServer.allow_reuse_address = True
+                self.server = QuietThreadingHTTPServer((self.host, self.port), handler_cls)
+                self._thread = threading.Thread(target=self.server.serve_forever, daemon=True, name="WebDashboard")
+                self._thread.start()
+                logger.info(f"🌐 [{self.title} 웹 대시보드 가동] 접속 주소: http://localhost:{self.port}")
+                return
+            except OSError as e:
+                if attempt < 4:
+                    import time
+                    time.sleep(1.0)
+                else:
+                    logger.warning(f"웹 대시보드 포트 {self.port} 바인딩 실패: {e}")
 
     def stop(self):
         """웹 대시보드 서버 안전 종료"""

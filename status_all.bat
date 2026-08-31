@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 > nul
 cd /d "%~dp0"
-title All Quant Bots and Dashboard Status
+title Quant Bots and Dashboard Status Monitor
 
 set "PYTHON_BIN=venv\Scripts\python.exe"
 if not exist "%PYTHON_BIN%" (
@@ -9,4 +9,5 @@ if not exist "%PYTHON_BIN%" (
 )
 
 %PYTHON_BIN% src\process_manager.py all status
+echo.
 pause

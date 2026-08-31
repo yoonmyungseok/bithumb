@@ -46,39 +46,21 @@ def _read_pid_file(path: str) -> int | None:
 
 
 def _is_pid_alive(pid: int | None) -> bool:
-    """WMI 권한 없이 동일 사용자 PID의 생존 여부만 안전하고 보수적으로 확인한다."""
+    """PID 프로세스의 생존 여부를 안전하게 확인한다."""
     if not pid or pid <= 0:
         return False
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            SYNCHRONIZE = 0x00100000
-            STILL_ACTIVE = 259
-
-            handle = ctypes.windll.kernel32.OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, int(pid)
-            )
-            if not handle:
-                return False
-
-            exit_code = wintypes.DWORD()
-            success = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-            ctypes.windll.kernel32.CloseHandle(handle)
-
-            if success:
-                return exit_code.value == STILL_ACTIVE
-            return False
-        except Exception:
-            return False
-    else:
-        try:
-            os.kill(pid, 0)
-            return True
-        except (OSError, PermissionError):
-            return False
+    try:
+        import psutil
+        return psutil.pid_exists(int(pid))
+    except Exception:
+        pass
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
 
 
 def _write_pid_file(path: str, pid: int, exchange: str) -> None:
@@ -94,10 +76,23 @@ def _write_pid_file(path: str, pid: int, exchange: str) -> None:
 
 
 def find_bot_processes(exchange: str = "bithumb") -> list[str]:
-    """PID 파일로 관리되는 워치독만 반환한다. WMI/CIM 의존성은 사용하지 않는다."""
-    pid_path, _ = _runtime_paths(exchange)
-    pid = _read_pid_file(pid_path)
-    return [str(pid)] if _is_pid_alive(pid) else []
+    """PID 파일, 워치독 소유자 파일, 하트비트로 관리되는 워치독 및 봇 PID를 반환한다."""
+    ex = exchange.lower()
+    if ex == "dashboard":
+        pid_path, _ = _runtime_paths("dashboard")
+        pid = _read_pid_file(pid_path)
+        return [str(pid)] if _is_pid_alive(pid) else []
+
+    pid_path, hb_path = _runtime_paths(exchange)
+    owner_path = os.path.join(os.path.dirname(hb_path), ".watchdog.lock.owner.json")
+
+    candidates = [pid_path, owner_path, hb_path]
+    live_pids: list[str] = []
+    for cand in candidates:
+        pid = _read_pid_file(cand)
+        if pid and _is_pid_alive(pid) and str(pid) not in live_pids:
+            live_pids.append(str(pid))
+    return live_pids
 
 
 def _get_heartbeat_age(heartbeat_path: str) -> float | None:
@@ -170,13 +165,23 @@ def status_action(exchange: str = "bithumb"):
 import signal
 
 def _kill_pid(pid: int | str) -> bool:
-    """Windows와 Linux 모두에서 안전하게 PID 프로세스를 종료시킨다."""
+    """psutil 또는 OS 명령으로 PID 프로세스를 안전하게 종료시킨다."""
     try:
         pid_int = int(pid)
         if pid_int <= 0:
             return False
     except (ValueError, TypeError):
         return False
+
+    try:
+        import psutil
+        if psutil.pid_exists(pid_int):
+            p = psutil.Process(pid_int)
+            p.kill()
+            return True
+        return False
+    except Exception:
+        pass
 
     if sys.platform == "win32":
         res = subprocess.run(
@@ -189,48 +194,34 @@ def _kill_pid(pid: int | str) -> bool:
         return res.returncode == 0
     else:
         try:
-            os.kill(pid_int, signal.SIGTERM)
-            time.sleep(0.3)
-            if _is_pid_alive(pid_int):
-                os.kill(pid_int, signal.SIGKILL)
+            os.kill(pid_int, signal.SIGKILL)
             return True
         except (OSError, PermissionError):
             return False
 
 
 def _kill_matching_script_processes(patterns: list[str]) -> list[int]:
-    """PowerShell(Windows) 또는 pgrep/kill(Linux)을 통해 스크립트명을 포함하는 프로세스를 찾아 강제 종료한다."""
+    """스크립트명을 포함하는 프로세스를 찾아 일괄 강제 종료한다."""
     killed_pids: list[int] = []
     my_pid = os.getpid()
 
-    if sys.platform == "win32":
-        for pat in patterns:
-            ps_cmd = (
-                f"Get-CimInstance Win32_Process | "
-                f"Where-Object {{ $_.CommandLine -like '*{pat}*' }} | "
-                f"Select-Object -ExpandProperty ProcessId"
-            )
+    try:
+        import psutil
+        for proc in psutil.process_iter(['pid', 'cmdline']):
             try:
-                res = subprocess.run(
-                    ["powershell", "-NoProfile", "-Command", ps_cmd],
-                    capture_output=True,
-                    creationflags=0x08000000,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=5,
-                )
-                if res.returncode == 0 and res.stdout.strip():
-                    for line in res.stdout.strip().splitlines():
-                        pid_str = line.strip()
-                        if pid_str.isdigit():
-                            pid_val = int(pid_str)
-                            if pid_val != my_pid:
-                                _kill_pid(pid_val)
-                                killed_pids.append(pid_val)
-            except Exception:
+                p_id = proc.info['pid']
+                if p_id == my_pid:
+                    continue
+                cmdline = " ".join(proc.info['cmdline'] or [])
+                if any(p in cmdline for p in patterns):
+                    proc.kill()
+                    killed_pids.append(p_id)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
-    else:
+    except Exception:
+        pass
+
+    if sys.platform != "win32":
         for pat in patterns:
             try:
                 res = subprocess.run(
@@ -244,12 +235,11 @@ def _kill_matching_script_processes(patterns: list[str]) -> list[int]:
                         pid_str = line.strip()
                         if pid_str.isdigit():
                             pid_val = int(pid_str)
-                            if pid_val != my_pid:
+                            if pid_val != my_pid and pid_val not in killed_pids:
                                 if _kill_pid(pid_val):
                                     killed_pids.append(pid_val)
             except Exception:
                 pass
-
     return killed_pids
 
 
@@ -373,52 +363,25 @@ def logs_action(exchange: str = "bithumb"):
         print(f"\n👋 {ex_name} 로그 모니터링을 종료합니다.")
 
 def _spawn_background_process(python_exe: str, script_path: str, cwd: str) -> int | None:
-    """Windows와 Unix 환경 모두에서 부모 창이 닫혀도 영구 유지되는 백그라운드 프로세스를 스폰한다."""
+    """Windows와 Unix 환경 모두에서 부모 창이 닫혀도 영구 유지되는 완전 무창 백그라운드 프로세스를 즉각 스폰한다."""
     base_name = os.path.splitext(os.path.basename(script_path))[0]
     log_dir = os.path.join(cwd, "logs")
     os.makedirs(log_dir, exist_ok=True)
-    out_log = os.path.join(log_dir, f"{base_name}_spawn.log")
+    spawn_log = os.path.join(log_dir, f"{base_name}_spawn.log")
 
     if sys.platform == "win32":
-        # PowerShell Start-Process를 통해 OS 레벨에서 완전 독립 백그라운드 프로세스로 생성
-        ps_cmd = (
-            f"$p = Start-Process -FilePath '{python_exe}' "
-            f"-ArgumentList '{script_path}' "
-            f"-WorkingDirectory '{cwd}' "
-            f"-RedirectStandardOutput '{out_log}' "
-            f"-RedirectStandardError '{out_log}' "
-            f"-WindowStyle Hidden -PassThru; $p.Id"
-        )
-        try:
-            res = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps_cmd],
-                capture_output=True,
-                creationflags=0x08000000,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=10,
-            )
-            out_str = res.stdout.strip()
-            if out_str.isdigit():
-                return int(out_str)
-        except Exception as e:
-            pass
-
-    creationflags = (
-        (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000)
-        if sys.platform == "win32"
-        else 0
-    )
+        flags = 0x08000000 | 0x00000200 | 0x00000008
+    else:
+        flags = 0
 
     try:
-        f_out = open(out_log, "a", encoding="utf-8", errors="replace")
+        f_log = open(spawn_log, "a", encoding="utf-8", errors="replace")
         proc = subprocess.Popen(
             [python_exe, script_path],
             cwd=cwd,
-            creationflags=creationflags,
-            stdout=f_out,
-            stderr=f_out,
+            creationflags=flags,
+            stdout=f_log,
+            stderr=f_log,
             stdin=subprocess.DEVNULL,
             close_fds=(sys.platform != "win32"),
         )
@@ -452,11 +415,6 @@ def start_action(exchange: str = "bithumb", background: bool = True) -> bool:
                 break
         else:
             python_exe = sys.executable
-
-    if sys.platform == "win32":
-        pythonw_candidate = os.path.join(os.path.dirname(python_exe), "pythonw.exe")
-        if os.path.exists(pythonw_candidate):
-            python_exe = pythonw_candidate
 
     if ex == "dashboard":
         print("======================================================")

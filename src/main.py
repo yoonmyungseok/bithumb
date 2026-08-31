@@ -83,6 +83,8 @@ file_handler.setFormatter(
 handlers = [file_handler]
 if sys.stderr is not None:
     stream_handler = logging.StreamHandler()
+    # 포그라운드 콘솔은 운영 중 확인이 필요한 경고 이상만 출력한다.
+    stream_handler.setLevel(logging.WARNING)
     stream_handler.setFormatter(
         logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     )
@@ -1206,7 +1208,7 @@ def main():
     signal.signal(signal.SIGINT, _handle_exit)
     signal.signal(signal.SIGTERM, _handle_exit)
     if hasattr(signal, "SIGBREAK"):
-        signal.signal(signal.SIGBREAK, _handle_exit)
+        signal.signal(signal.SIGBREAK, signal.SIG_IGN)
 
     # 7. 메인 스레드 유지 및 주기적 하트비트 루프
     last_hb_ts = 0.0

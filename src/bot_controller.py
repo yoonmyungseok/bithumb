@@ -271,9 +271,9 @@ class BotController:
         return restored
 
     def get_dashboard_data(self) -> dict[str, Any]:
-        """웹 대시보드 프론트엔드 실시간 API 데이터 반환 (2.0초 캐싱으로 거래소 Rate Limit 및 지연 방지)"""
+        """웹 대시보드 프론트엔드 실시간 API 데이터 반환 (3.0초 캐싱으로 거래소 Rate Limit 및 지연 방지)"""
         now = time.time()
-        if self._last_dashboard_fetch_ts > 0.0 and (now - self._last_dashboard_fetch_ts < 2.0) and self.latest_dashboard_data.get("total_equity", 0) > 0:
+        if self._last_dashboard_fetch_ts > 0.0 and (now - self._last_dashboard_fetch_ts < 3.0) and self.latest_dashboard_data.get("total_equity", 0) > 0:
             return self.latest_dashboard_data
 
         if not self._dashboard_cache_lock.acquire(blocking=True, timeout=0.5):

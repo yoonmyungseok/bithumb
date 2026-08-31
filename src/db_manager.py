@@ -498,6 +498,16 @@ def migrate_legacy_json_to_sqlite(data_dir: str | None = None) -> dict[str, int]
     """
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     base_data_dir = data_dir or os.path.join(project_root, "data")
+    migration_flag = os.path.join(base_data_dir, ".migrated_to_sqlite")
+    if os.path.exists(migration_flag):
+        return {
+            "bithumb_trades": 0,
+            "upbit_trades": 0,
+            "bithumb_orders": 0,
+            "upbit_orders": 0,
+            "daily_stats": 0,
+        }
+
     db = get_db_manager(os.path.join(base_data_dir, "trading.db"))
 
     migration_stats = {
@@ -586,5 +596,11 @@ def migrate_legacy_json_to_sqlite(data_dir: str | None = None) -> dict[str, int]
                 logger.info(f"✅ [{ex.upper()}] position_state.json 마이그레이션 완료")
             except Exception as e:
                 logger.warning(f"⚠️ [{ex.upper()}] position_state.json 마이그레이션 오류: {e}")
+
+    try:
+        with open(migration_flag, "w", encoding="utf-8") as f:
+            f.write("done\n")
+    except Exception:
+        pass
 
     return migration_stats

@@ -11,6 +11,7 @@ import json
 import logging
 import mimetypes
 import os
+import signal
 import sys
 import threading
 import time
@@ -43,20 +44,24 @@ file_handler.setFormatter(
     logging.Formatter("%(asctime)s [%(levelname)s] [DASHBOARD] %(message)s")
 )
 
-handlers = [file_handler]
-if sys.stderr is not None:
-    stream_handler = logging.StreamHandler()
+logger = logging.getLogger("DashboardServer")
+logger.setLevel(logging.INFO)
+logger.handlers.clear()
+logger.addHandler(file_handler)
+if sys.stdout is not None:
+    stream_handler = logging.StreamHandler(sys.stdout)
+    # 포그라운드 콘솔은 운영 중 확인이 필요한 경고 이상만 출력한다.
+    stream_handler.setLevel(logging.WARNING)
     stream_handler.setFormatter(
         logging.Formatter("%(asctime)s [%(levelname)s] [DASHBOARD] %(message)s")
     )
-    handlers.append(stream_handler)
-
-logging.basicConfig(level=logging.INFO, handlers=handlers)
-logger = logging.getLogger("DashboardServer")
+    logger.addHandler(stream_handler)
+logger.propagate = False
 
 
 class QuietThreadingHTTPServer(ThreadingHTTPServer):
     """클라이언트 연결 조기 종료 시 불필요한 스택트레이스 억제"""
+    allow_reuse_address = True
 
     def handle_error(self, request, client_address):
         exc_type, exc_val, _ = sys.exc_info()
@@ -90,6 +95,8 @@ class UnifiedDashboardServer:
         self._running = False
         self._cached_status: dict[str, Any] = {}
         self._cache_lock = threading.Lock()
+        self._last_known_good: dict[str, dict[str, Any]] = {}
+        self._last_success_ts: dict[str, float] = {}
         self.http_session = requests.Session()
         self.http_session.trust_env = False
 
@@ -103,17 +110,35 @@ class UnifiedDashboardServer:
         return None
 
     def fetch_exchange_status(self, api_url: str, exchange_name: str) -> dict[str, Any]:
-        """개별 거래소 봇의 상태를 3.0초 타임아웃으로 안전 조회"""
+        """개별 거래소 봇의 상태를 5.0초 타임아웃으로 안전 조회 및 Stale-While-Revalidate 지원"""
+        now = time.time()
         try:
-            res = self.http_session.get(f"{api_url}/api/status", timeout=3.0)
+            res = self.http_session.get(f"{api_url}/api/status", timeout=5.0)
             if res.status_code == 200:
                 data = res.json()
-                if isinstance(data, dict):
+                if isinstance(data, dict) and data.get("total_equity", 0) > 0:
+                    data["online"] = True
+                    data.setdefault("exchange", exchange_name)
+                    self._last_known_good[exchange_name] = data
+                    self._last_success_ts[exchange_name] = now
+                    return data
+                elif isinstance(data, dict):
                     data["online"] = True
                     data.setdefault("exchange", exchange_name)
                     return data
         except Exception as e:
             logger.debug(f"[{exchange_name}] status fetch error: {e}")
+
+        # 일시적 지연 시 직전 정상 캐시 데이터 유지 (화면 깜빡임 및 데이터 증발 방지)
+        last_good = self._last_known_good.get(exchange_name)
+        last_ts = self._last_success_ts.get(exchange_name, 0.0)
+        if last_good and (now - last_ts < 60.0):
+            fallback_data = dict(last_good)
+            fallback_data["online"] = (now - last_ts < 20.0)
+            if not fallback_data["online"]:
+                fallback_data["status"] = "UPDATING"
+                fallback_data["bot_state"] = "⏳ 데이터 동기화 중"
+            return fallback_data
 
         return {
             "online": False,
@@ -337,29 +362,30 @@ class UnifiedDashboardServer:
         """웹 대시보드 서버 가동"""
         handler_cls = self._create_handler()
         self._running = True
-        # 초기 캐시 1회 생성
-        try:
-            self._cached_status = self.get_aggregated_status()
-        except Exception:
-            pass
 
-        # 백그라운드 캐시 폴링 워커 가동
-        self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True, name="DashboardPoller")
-        self._poll_thread.start()
+        for attempt in range(5):
+            try:
+                QuietThreadingHTTPServer.allow_reuse_address = True
+                self.server = QuietThreadingHTTPServer((self.host, self.port), handler_cls)
+                logger.info(f"🌐 [통합 퀀트 트레이딩 대시보드 가동] 접속 주소: http://localhost:{self.port}")
+                logger.info(f"   • 빗썸 내부 API 연동: {self.bithumb_api_url}")
+                logger.info(f"   • 업비트 내부 API 연동: {self.upbit_api_url}")
 
-        try:
-            self.server = QuietThreadingHTTPServer((self.host, self.port), handler_cls)
-            logger.info(f"🌐 [통합 퀀트 트레이딩 대시보드 가동] 접속 주소: http://localhost:{self.port}")
-            logger.info(f"   • 빗썸 내부 API 연동: {self.bithumb_api_url}")
-            logger.info(f"   • 업비트 내부 API 연동: {self.upbit_api_url}")
+                # 백그라운드 캐시 폴링 워커 가동
+                self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True, name="DashboardPoller")
+                self._poll_thread.start()
 
-            if block:
-                self.server.serve_forever()
-            else:
-                self._thread = threading.Thread(target=self.server.serve_forever, daemon=True, name="UnifiedDashboard")
-                self._thread.start()
-        except OSError as e:
-            logger.error(f"통합 대시보드 포트 {self.port} 바인딩 실패: {e}")
+                if block:
+                    self.server.serve_forever()
+                else:
+                    self._thread = threading.Thread(target=self.server.serve_forever, daemon=True, name="UnifiedDashboard")
+                    self._thread.start()
+                return
+            except OSError as e:
+                if attempt < 4:
+                    time.sleep(1.0)
+                else:
+                    logger.error(f"통합 대시보드 포트 {self.port} 바인딩 실패: {e}")
 
     def stop(self):
         """서버 안전 종료"""
@@ -787,11 +813,25 @@ class UnifiedDashboardServer:
 
 def main():
     load_dotenv()
+
     parser = argparse.ArgumentParser(description="Unified Quant Trading Dashboard Server")
     parser.add_argument("--port", type=int, default=int(os.getenv("DASHBOARD_PORT", "7979")), help="Dashboard Port (default: 7979)")
     parser.add_argument("--bithumb-url", type=str, default=os.getenv("BITHUMB_API_URL", "http://127.0.0.1:17979"), help="Bithumb Internal API URL")
     parser.add_argument("--upbit-url", type=str, default=os.getenv("UPBIT_API_URL", "http://127.0.0.1:17980"), help="Upbit Internal API URL")
     args = parser.parse_args()
+
+    pid_file = os.path.join(project_root, "data", ".dashboard.pid.json")
+    os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+    try:
+        with open(pid_file, "w", encoding="utf-8") as f:
+            json.dump({"pid": os.getpid(), "exchange": "dashboard", "created_at": time.time()}, f)
+    except Exception:
+        pass
+
+    logger.info("======================================================")
+    logger.info("  통합 퀀트 트레이딩 대시보드 게이트웨이 서버 가동")
+    logger.info("  접속 URL: http://localhost:%d", args.port)
+    logger.info("======================================================")
 
     server = UnifiedDashboardServer(
         port=args.port,
@@ -799,12 +839,29 @@ def main():
         bithumb_api_url=args.bithumb_url,
         upbit_api_url=args.upbit_url,
     )
+    server.start(block=False)
+
     try:
-        server.start(block=True)
+        while server._running:
+            time.sleep(1.0)
     except KeyboardInterrupt:
-        logger.info("대시보드 서버 중지 신호 수신")
+        logger.info("👋 대시보드 서버 종료 신호를 수신했습니다.")
+    finally:
         server.stop()
+        if os.path.exists(pid_file):
+            try:
+                os.remove(pid_file)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        try:
+            with open(os.path.join(project_root, "logs", "dashboard_crash.log"), "w", encoding="utf-8") as f:
+                import traceback
+                traceback.print_exc(file=f)
+        except Exception:
+            pass

@@ -1,6 +1,6 @@
 
 def is_pid_alive(pid: int | None) -> bool:
-    """WMI 권한 없이 동일 사용자 PID의 생존 여부만 안전하고 보수적으로 확인한다."""
+    """PID 프로세스의 생존 여부를 안전하게 확인한다."""
     if not pid or pid <= 0:
         return False
     if sys.platform == "win32":
@@ -8,19 +8,24 @@ def is_pid_alive(pid: int | None) -> bool:
             import ctypes
             from ctypes import wintypes
 
+            kernel32 = ctypes.windll.kernel32
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+            kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            kernel32.CloseHandle.restype = wintypes.BOOL
+            kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
             PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            SYNCHRONIZE = 0x00100000
             STILL_ACTIVE = 259
 
-            handle = ctypes.windll.kernel32.OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, int(pid)
-            )
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
             if not handle:
                 return False
 
             exit_code = wintypes.DWORD()
-            success = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-            ctypes.windll.kernel32.CloseHandle(handle)
+            success = kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            kernel32.CloseHandle(handle)
 
             if success:
                 return exit_code.value == STILL_ACTIVE
@@ -31,7 +36,9 @@ def is_pid_alive(pid: int | None) -> bool:
         try:
             os.kill(pid, 0)
             return True
-        except (OSError, PermissionError):
+        except PermissionError:
+            return True
+        except OSError:
             return False
 
 """
@@ -78,6 +85,8 @@ file_handler.setFormatter(
 handlers = [file_handler]
 if sys.stderr is not None:
     stream_handler = logging.StreamHandler()
+    # 포그라운드 콘솔은 운영 중 확인이 필요한 경고 이상만 출력한다.
+    stream_handler.setLevel(logging.WARNING)
     stream_handler.setFormatter(
         logging.Formatter("[%(asctime)s] [WATCHDOG] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     )
@@ -174,6 +183,14 @@ def main():
     logger.info("  (24시간 무중단 감시 및 자동 복구 시스템)")
     logger.info("======================================================")
 
+    pid_file = os.path.join(project_root, "data", ".watchdog.pid.json")
+    os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+    try:
+        with open(pid_file, "w", encoding="utf-8") as f:
+            json.dump({"pid": os.getpid(), "exchange": "bithumb", "created_at": time.time()}, f)
+    except Exception:
+        pass
+
     python_exe = os.path.join(project_root, "venv", "Scripts", "python.exe")
     if not os.path.exists(python_exe):
         for candidate in [os.path.join("venv", "bin", "python3"), os.path.join("venv", "bin", "python")]:
@@ -183,11 +200,6 @@ def main():
                 break
         else:
             python_exe = sys.executable
-
-    if sys.platform == "win32":
-        pythonw_candidate = os.path.join(os.path.dirname(python_exe), "pythonw.exe")
-        if os.path.exists(pythonw_candidate):
-            python_exe = pythonw_candidate
 
     main_script = os.path.join(project_root, "src", "main.py")
     hb_file = os.path.join(project_root, "data", ".heartbeat")
@@ -219,10 +231,13 @@ def main():
                     pass
         sys.exit(0)
 
-    signal.signal(signal.SIGINT, _sig_handler)
-    signal.signal(signal.SIGTERM, _sig_handler)
     if hasattr(signal, "SIGBREAK"):
-        signal.signal(signal.SIGBREAK, _sig_handler)
+        signal.signal(signal.SIGBREAK, signal.SIG_IGN)
+    if sys.platform == "win32":
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    else:
+        signal.signal(signal.SIGINT, _sig_handler)
+    signal.signal(signal.SIGTERM, _sig_handler)
 
     while not is_terminating:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -236,7 +251,7 @@ def main():
                 pass
 
         creationflags = (
-            (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000)
+            (0x08000000 | 0x00000200 | 0x00000008)
             if sys.platform == "win32"
             else 0
         )
@@ -253,7 +268,7 @@ def main():
                 stdout=f_spawn,
                 stderr=f_spawn,
                 stdin=subprocess.DEVNULL,
-                close_fds=(sys.platform != "win32"),
+                close_fds=True,
             )
             process = current_process
         except Exception as e:

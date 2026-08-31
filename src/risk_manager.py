@@ -27,10 +27,19 @@ def get_kst_now_str() -> str:
     return get_kst_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def get_fear_and_greed_index() -> dict[str, Any]:
-    """글로벌 가상자산 크립토 공포 & 탐욕 지수 실시간 조회"""
+_FNG_CACHE: dict[str, Any] = {}
+_FNG_CACHE_TS: float = 0.0
+
+
+def get_fear_and_greed_index(ttl_seconds: float = 600.0) -> dict[str, Any]:
+    """글로벌 가상자산 크립토 공포 & 탐욕 지수 실시간 조회 (10분 캐싱으로 대시보드 지연 및 Rate Limit 방지)"""
+    global _FNG_CACHE, _FNG_CACHE_TS
+    now = time.time()
+    if _FNG_CACHE and (now - _FNG_CACHE_TS < ttl_seconds):
+        return _FNG_CACHE
+
     try:
-        res = requests.get("https://api.alternative.me/fng/?limit=1", timeout=5)
+        res = requests.get("https://api.alternative.me/fng/?limit=1", timeout=3)
         if res.status_code == 200:
             data = res.json().get("data", [{}])[0]
             val = int(data.get("value", 50))
@@ -44,15 +53,22 @@ def get_fear_and_greed_index() -> dict[str, Any]:
                 "Extreme Greed": "🚀 극단적 탐욕 (과열/익절권)",
             }
             desc = korean_map.get(classification, classification)
-            return {
+            result = {
                 "value": val,
                 "classification": classification,
                 "desc": f"{val}점 ({desc})",
                 "is_extreme_fear": val <= 25,
                 "is_extreme_greed": val >= 75,
             }
+            _FNG_CACHE = result
+            _FNG_CACHE_TS = now
+            return result
     except (requests.exceptions.RequestException, KeyError, ValueError):
         pass
+
+    if _FNG_CACHE:
+        return _FNG_CACHE
+
     return {
         "value": 50,
         "classification": "Neutral",
