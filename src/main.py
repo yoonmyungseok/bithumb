@@ -608,6 +608,8 @@ def run_cycle():
                 if not completed_candles_5m or not completed_candles_1h:
                     logger.warning("[%s] 5분/1시간 확정봉 데이터가 부족하거나 불일치하여 신규 매수 차단", market)
                     continue
+                # 동일 스캔 주기에는 일반·반등 진입 경로가 같은 심야 판정값을 사용한다.
+                night_session_active = is_night_session()
                 local_entry = entry_signal(
                     candles=completed_candles_5m,
                     candles_1h=completed_candles_1h,
@@ -616,6 +618,7 @@ def run_cycle():
                     market=market,
                     exchange="bithumb",
                     entry_type=candidate_type,
+                    is_night=night_session_active,
                 )
                 reentry_allowed, reentry_reason = cooldown_manager.check_reentry_allowed(market, current_price)
                 is_holding = (coin_value >= MIN_ORDER_KRW and avg_buy_price > 0)
@@ -627,6 +630,7 @@ def run_cycle():
                     btc_regime=btc_regime, orderbook=orderbook, market=market, exchange="bithumb",
                     relative_strength=float(candidate_metadata.get("relative_strength", 0.0) or 0.0),
                     candidate_trade_value=float(candidate_metadata.get("acc_trade_price_24h", 0.0) or 0.0),
+                    is_night=night_session_active,
                 )
                 recovery_window_start = max(0.0, float(risk_manager.cooldown_until_ts) - 1800.0)
                 recovery_slot_available = not decision_db.has_recovery_entry_since("bithumb", recovery_window_start)

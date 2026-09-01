@@ -141,6 +141,25 @@ class StrategyPolicy:
     NIGHT_TRADE_VALUE_MULTIPLIER: float = 1.5     # 심야 최소 거래대금 1.5배 상향
 
 
+def get_alpha_buy_threshold(btc_regime: str = "NORMAL", is_night: bool | None = None) -> int:
+    """BTC 레짐과 심야 여부에 따른 신규 진입 알파 기준을 단일 기준으로 반환한다."""
+    regime_upper = str(btc_regime or "NORMAL").upper()
+    night_active = is_night if is_night is not None else is_night_session()
+
+    # 점수 표시, 일반 진입, 반등 전용 진입이 같은 심야 보수 기준을 사용해야 한다.
+    if night_active:
+        return (
+            StrategyPolicy.ALPHA_BUY_THRESHOLD_NIGHT_RISK_OFF
+            if regime_upper == "RISK_OFF"
+            else StrategyPolicy.ALPHA_BUY_THRESHOLD_NIGHT
+        )
+    return (
+        StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF
+        if regime_upper == "RISK_OFF"
+        else StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL
+    )
+
+
 class OrderbookFlowTracker:
     """
     호가창 단일 스냅샷 왜곡 방지 및 최근 N회 호가 잔량비 롤링 평균 추적기 (과제 E)
@@ -644,18 +663,8 @@ def calculate_composite_alpha_score(
 
     regime_upper = btc_regime.upper()
     night_active = is_night if is_night is not None else is_night_session()
-    if night_active:
-        buy_threshold = (
-            StrategyPolicy.ALPHA_BUY_THRESHOLD_NIGHT_RISK_OFF
-            if regime_upper == "RISK_OFF"
-            else StrategyPolicy.ALPHA_BUY_THRESHOLD_NIGHT
-        )
-    else:
-        buy_threshold = (
-            StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF
-            if regime_upper == "RISK_OFF"
-            else StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL
-        )
+    # 알파 계산 결과와 최종 진입 판정이 동일한 정책 기준을 참조한다.
+    buy_threshold = get_alpha_buy_threshold(btc_regime, night_active)
     total_score = score_mtf + score_vwap + score_macd + score_rsi + score_bb + score_orderflow + score_vol
     allow_buy = (total_score >= buy_threshold) and (regime_upper not in ("CRASH", "BEAR_VOLATILE"))
 
@@ -718,6 +727,8 @@ def entry_signal(
     if regime_upper in ("CRASH", "BEAR_VOLATILE"):
         return {"allow_buy": False, "reason": f"BTC 시장 레짐 경보 ({btc_regime})"}
 
+    # 한 번 확정한 심야 상태를 점수 계산과 최종 주문 게이트에 함께 전달한다.
+    night_active = is_night if is_night is not None else is_night_session()
     alpha_res = calculate_composite_alpha_score(
         candles=candles,
         candles_1h=candles_1h,
@@ -725,7 +736,7 @@ def entry_signal(
         btc_regime=btc_regime,
         market=market,
         exchange=exchange,
-        is_night=is_night,
+        is_night=night_active,
     )
 
 
@@ -852,11 +863,9 @@ def entry_signal(
         early_breakout_reason = "고점 돌파 신규 매수 정책 비활성"
     else:
         # 알파 점수는 후보 품질 확인용이며, 저점권 반등 하드 게이트를 우회할 수 없다.
-        allowed = hard_gates_passed and signal_5m and total_score >= (
-            StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF
-            if regime_upper == "RISK_OFF"
-            else StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL
-        )
+        # 심야 기준도 점수 계산과 같은 단일 함수에서 가져와 주문 경로 불일치를 막는다.
+        alpha_threshold = get_alpha_buy_threshold(btc_regime, night_active)
+        allowed = hard_gates_passed and signal_5m and total_score >= alpha_threshold
 
     # 4. [과제 A] StrategyPolicy SSOT 기반 동적 손익비 산출
     atr_data = calculate_atr(candles, period=14)
@@ -875,6 +884,8 @@ def entry_signal(
 
     checklist_details = {
         "alpha_score": alpha_res["total_score"],
+        "alpha_threshold": get_alpha_buy_threshold(btc_regime, night_active),
+        "is_night": night_active,
         "entry_type": normalized_entry_type,
         "early_breakout": {
             "pass": early_breakout_passed,
@@ -976,6 +987,7 @@ def recovery_rebound_signal(
     exchange: str,
     relative_strength: float,
     candidate_trade_value: float,
+    is_night: bool | None = None,
 ) -> dict[str, Any]:
     """급락 뒤 반등 후보를 위한 별도 진입 신호를 계산한다.
 
@@ -990,6 +1002,7 @@ def recovery_rebound_signal(
         orderbook=orderbook,
         market=market,
         exchange=exchange,
+        is_night=is_night,
     )
     checklist = dict(base.get("checklist_details", {}))
     hard_gates = dict(checklist.get("hard_gates", {}))
@@ -1016,10 +1029,16 @@ def recovery_rebound_signal(
     rs_passed = float(relative_strength) >= StrategyPolicy.RECOVERY_REBOUND_RS_MIN
     liquidity_passed = float(candidate_trade_value) >= StrategyPolicy.MIN_TRADE_VALUE_RISK_OFF
 
-    allow_buy = core_gates_passed and pullback_passed and mtf_recovery_pass and rs_passed and liquidity_passed and alpha_score >= StrategyPolicy.RECOVERY_REBOUND_ALPHA_THRESHOLD
+    # 반등 전용의 기본 엄선 기준과 현 세션의 일반 알파 기준 중 더 높은 값을 적용한다.
+    # 이로써 심야 RISK_OFF에서 75점 반등 신호가 80점 일반 심야 기준을 우회하지 못한다.
+    alpha_threshold = max(
+        StrategyPolicy.RECOVERY_REBOUND_ALPHA_THRESHOLD,
+        get_alpha_buy_threshold(btc_regime, is_night),
+    )
+    allow_buy = core_gates_passed and pullback_passed and mtf_recovery_pass and rs_passed and liquidity_passed and alpha_score >= alpha_threshold
     reasons = [
         f"반등 전용 {'승인' if allow_buy else '차단'}",
-        f"알파 {alpha_score}점(기준 {StrategyPolicy.RECOVERY_REBOUND_ALPHA_THRESHOLD}점)",
+        f"알파 {alpha_score}점(기준 {alpha_threshold}점)",
         f"RS {relative_strength * 100:+.2f}%",
         f"1H {current_1h:.2f} {'>=' if mtf_recovery_pass else '<'} EMA20 {ema20_1h:.2f} × {StrategyPolicy.RECOVERY_REBOUND_MTF_EMA20_RATIO:.3f}",
         f"기존 핵심게이트 {'통과' if core_gates_passed else '차단'}",
@@ -1033,7 +1052,7 @@ def recovery_rebound_signal(
             "relative_strength": float(relative_strength),
             "candidate_trade_value": float(candidate_trade_value),
             "mtf_recovery_pass": mtf_recovery_pass,
-            "alpha_threshold": StrategyPolicy.RECOVERY_REBOUND_ALPHA_THRESHOLD,
+            "alpha_threshold": alpha_threshold,
         },
     })
     return {
@@ -1048,6 +1067,6 @@ def recovery_rebound_signal(
             "mtf_recovery_pass": mtf_recovery_pass,
             "rs_passed": rs_passed,
             "liquidity_passed": liquidity_passed,
-            "alpha_passed": alpha_score >= StrategyPolicy.RECOVERY_REBOUND_ALPHA_THRESHOLD,
+            "alpha_passed": alpha_score >= alpha_threshold,
         },
     }

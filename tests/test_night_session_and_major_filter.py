@@ -2,7 +2,7 @@ import os
 import sys
 import unittest
 from datetime import datetime, timezone, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -12,6 +12,7 @@ from strategy_engine import (
     is_night_session,
     calculate_composite_alpha_score,
     entry_signal,
+    get_alpha_buy_threshold,
     KST,
 )
 from market_screener import (
@@ -22,6 +23,21 @@ from market_screener import (
 
 
 class TestNightSessionAndMajorFilter(unittest.TestCase):
+    @staticmethod
+    def _make_confirmed_pullback_candles():
+        """하드 게이트를 통과하는 저점권 확정 반등 캔들을 만든다."""
+        chronological_prices = [97.0, 98.0, 97.0, 96.0, 97.0] * 5 + [95.0, 96.0, 96.3]
+        return [
+            {
+                "trade_price": price,
+                "opening_price": price - 0.5,
+                "high_price": price + 1.0,
+                "low_price": price - 1.0,
+                "candle_acc_trade_volume": 100.0,
+            }
+            for price in reversed(chronological_prices)
+        ]
+
     def test_night_session_detection(self):
         """Test KST night session time detection (00:00 ~ 07:00)."""
         # 03:30 KST (Night)
@@ -83,6 +99,38 @@ class TestNightSessionAndMajorFilter(unittest.TestCase):
         if 60 <= res_day["total_score"] < 75:
             self.assertTrue(res_day["allow_buy"])
             self.assertFalse(res_night["allow_buy"])
+
+    def test_alpha_threshold_ssot_has_four_session_boundaries(self):
+        """주간·심야와 NORMAL·RISK_OFF 조합은 단일 알파 기준을 반환해야 한다."""
+        self.assertEqual(get_alpha_buy_threshold("NORMAL", is_night=False), 60)
+        self.assertEqual(get_alpha_buy_threshold("RISK_OFF", is_night=False), 70)
+        self.assertEqual(get_alpha_buy_threshold("NORMAL", is_night=True), 75)
+        self.assertEqual(get_alpha_buy_threshold("RISK_OFF", is_night=True), 80)
+
+    def test_entry_signal_enforces_night_alpha_boundaries(self):
+        """최종 진입 게이트도 심야 74/75점과 79/80점 경계값을 그대로 적용해야 한다."""
+        candles = self._make_confirmed_pullback_candles()
+
+        for btc_regime, blocked_score, approved_score in (
+            ("NORMAL", 74, 75),
+            ("RISK_OFF", 79, 80),
+        ):
+            with self.subTest(btc_regime=btc_regime, alpha_score=blocked_score):
+                with patch(
+                    "strategy_engine.calculate_composite_alpha_score",
+                    return_value={"total_score": blocked_score, "allow_buy": False, "factor_breakdown": {}},
+                ):
+                    blocked = entry_signal(candles, btc_regime=btc_regime, is_night=True)
+                self.assertFalse(blocked["allow_buy"])
+                self.assertEqual(blocked["checklist_details"]["alpha_threshold"], approved_score)
+
+            with self.subTest(btc_regime=btc_regime, alpha_score=approved_score):
+                with patch(
+                    "strategy_engine.calculate_composite_alpha_score",
+                    return_value={"total_score": approved_score, "allow_buy": True, "factor_breakdown": {}},
+                ):
+                    approved = entry_signal(candles, btc_regime=btc_regime, is_night=True)
+                self.assertTrue(approved["allow_buy"])
 
     def test_market_screener_excludes_major_scalping(self):
         """Test that MarketScreener excludes BTC, ETH, SOL, XRP from new candidates unless held."""

@@ -662,6 +662,8 @@ def run_cycle():
                 if not completed_candles_5m or not completed_candles_1h:
                     logger.warning("[%s] 5분/1시간 확정봉 데이터가 부족하거나 불일치하여 신규 매수 차단", market)
                     continue
+                # 동일 스캔 주기에는 일반·반등 진입 경로가 같은 심야 판정값을 사용한다.
+                night_session_active = is_night_session()
                 local_entry = entry_signal(
                     candles=completed_candles_5m,
                     candles_1h=completed_candles_1h,
@@ -669,6 +671,7 @@ def run_cycle():
                     orderbook=orderbook,
                     market=market,
                     exchange="upbit",
+                    is_night=night_session_active,
                 )
                 # 일반 진입이 실패한 경우에만, 연속손실 회복 구간의 반등 전용 조건을 독립 평가한다.
                 recovery_entry = recovery_rebound_signal(
@@ -676,6 +679,7 @@ def run_cycle():
                     btc_regime=btc_regime, orderbook=orderbook, market=market, exchange="upbit",
                     relative_strength=float(candidate_metadata.get("relative_strength", 0.0) or 0.0),
                     candidate_trade_value=float(candidate_metadata.get("acc_trade_price_24h", 0.0) or 0.0),
+                    is_night=night_session_active,
                 )
                 recovery_window_start = max(0.0, float(risk_manager.cooldown_until_ts) - 1800.0)
                 recovery_slot_available = not decision_db.has_recovery_entry_since("upbit", recovery_window_start)

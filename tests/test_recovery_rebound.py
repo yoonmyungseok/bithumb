@@ -74,6 +74,27 @@ class RecoveryReboundTests(unittest.TestCase):
         self.assertFalse(result["recovery_checklist"]["rs_passed"])
 
     @patch("strategy_engine.entry_signal")
+    def test_recovery_rebound_cannot_bypass_night_risk_off_alpha_threshold(self, mocked_entry):
+        """심야 RISK_OFF 반등 경로는 75점이 아니라 80점 이상에서만 승인되어야 한다."""
+        mocked_entry.return_value = _base_signal(alpha_score=79)
+
+        blocked = recovery_rebound_signal(
+            self.candles, self.candles_1h, "RISK_OFF", {}, "KRW-TEST", "upbit",
+            relative_strength=0.02, candidate_trade_value=3_000_000_000.0, is_night=True,
+        )
+
+        self.assertFalse(blocked["allow_buy"])
+        self.assertEqual(blocked["strategy_snapshot"]["recovery_rebound"]["alpha_threshold"], 80)
+
+        mocked_entry.return_value = _base_signal(alpha_score=80)
+        approved = recovery_rebound_signal(
+            self.candles, self.candles_1h, "RISK_OFF", {}, "KRW-TEST", "upbit",
+            relative_strength=0.02, candidate_trade_value=3_000_000_000.0, is_night=True,
+        )
+
+        self.assertTrue(approved["allow_buy"])
+
+    @patch("strategy_engine.entry_signal")
     def test_recovery_rebound_never_bypasses_crash(self, mocked_entry):
         """CRASH 레짐은 반등 전용 정책으로 우회할 수 없다."""
         mocked_entry.return_value = _base_signal()
