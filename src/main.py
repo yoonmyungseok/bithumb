@@ -113,7 +113,8 @@ MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.35"))
 MAX_TOTAL_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_EXPOSURE_PCT", "0.90"))
 MAX_ORDER_KRW = float(os.getenv("MAX_ORDER_KRW", "20000000"))
 # 초기 돌파 경로는 빗썸에서만 활성화하며, 기존 확인형 안전 게이트와 주문 안전 검증을 함께 사용한다.
-EARLY_BREAKOUT_ENABLED = os.getenv("EARLY_BREAKOUT_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+# 저점권 반등 우선 정책에서는 고점 돌파 후보를 기본적으로 생성하지 않는다.
+EARLY_BREAKOUT_ENABLED = os.getenv("EARLY_BREAKOUT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
 EARLY_BREAKOUT_MIN_CHANGE_RATE = float(os.getenv("EARLY_BREAKOUT_MIN_CHANGE_RATE", "0.003"))
 EARLY_BREAKOUT_MAX_CANDIDATES = int(os.getenv("EARLY_BREAKOUT_MAX_CANDIDATES", "2"))
 # 비율 설정은 소수(0.05)와 기존 퍼센트 표기(5, -5)를 모두 지원한다.

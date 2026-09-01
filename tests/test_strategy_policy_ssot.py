@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
@@ -92,6 +93,54 @@ class StrategyPolicySSOTTests(unittest.TestCase):
         self.assertIn("early_breakout", signal["strategy_snapshot"])
         self.assertFalse(signal["early_breakout_passed"])
         self.assertFalse(signal["allow_buy"])
+
+    def test_high_alpha_cannot_bypass_upper_zone_chase_block(self):
+        """높은 알파 점수도 볼린저 상단권 추격 매수를 우회하지 못해야 한다."""
+        candles = self._generate_mock_candles(count=30, base_price=1000.0, trend=1.0)
+        # 최신가를 밴드 상단권으로 올려 고점 추격 상황을 만든다.
+        candles[0].update({"trade_price": 1200.0, "opening_price": 1180.0, "high_price": 1205.0, "low_price": 1175.0})
+        high_alpha = {"total_score": 95, "allow_buy": True, "factor_breakdown": {"orderflow_score": 10}}
+
+        with patch("strategy_engine.calculate_composite_alpha_score", return_value=high_alpha):
+            signal = entry_signal(candles, btc_regime="NORMAL")
+
+        self.assertGreater(signal["pct_b"], StrategyPolicy.PCT_B_MAX)
+        self.assertFalse(signal["allow_buy"])
+        self.assertFalse(signal["checklist_details"]["hard_gates"]["bb_guard"]["pass"])
+
+    def test_pullback_bounce_is_approved_only_after_recovery_confirmation(self):
+        """최근 저점 인근의 확정 양봉 반등만 신규 매수 후보가 될 수 있어야 한다."""
+        chronological_prices = [97.0, 98.0, 97.0, 96.0, 97.0] * 5 + [95.0, 96.0, 97.0]
+        candles = []
+        for price in reversed(chronological_prices):
+            candles.append({
+                "trade_price": price,
+                "opening_price": price - 0.5,
+                "high_price": price + 1.0,
+                "low_price": price - 1.0,
+                "candle_acc_trade_volume": 100.0,
+            })
+        high_alpha = {"total_score": 80, "allow_buy": True, "factor_breakdown": {"orderflow_score": 10}}
+
+        with patch("strategy_engine.calculate_composite_alpha_score", return_value=high_alpha):
+            signal = entry_signal(candles, btc_regime="NORMAL")
+
+        self.assertTrue(signal["checklist_details"]["hard_gates"]["pullback_zone"]["pass"])
+        self.assertTrue(signal["checklist_details"]["hard_gates"]["near_recent_low"]["pass"])
+        self.assertTrue(signal["checklist_details"]["hard_gates"]["rebound_confirmation"]["pass"])
+        self.assertTrue(signal["allow_buy"])
+
+    def test_early_breakout_is_disabled_even_when_breakout_conditions_pass(self):
+        """고점 돌파 유형은 사용자 저점 매수 정책에 따라 신규 매수로 승인되지 않아야 한다."""
+        candles = self._generate_mock_candles(count=30, base_price=1000.0, trend=1.0)
+        candles[0].update({"trade_price": 1070.0, "opening_price": 1050.0, "high_price": 1072.0, "low_price": 1048.0, "candle_acc_trade_volume": 5000.0})
+        high_alpha = {"total_score": 95, "allow_buy": True, "factor_breakdown": {"orderflow_score": 10}}
+
+        with patch("strategy_engine.calculate_composite_alpha_score", return_value=high_alpha):
+            signal = entry_signal(candles, btc_regime="NORMAL", entry_type="EARLY_BREAKOUT")
+
+        self.assertFalse(signal["allow_buy"])
+        self.assertIn("정책 비활성", signal["strategy_snapshot"]["early_breakout"]["detail"])
 
     def test_orderbook_flow_tracker_rolling_smoothing(self):
         """OrderbookFlowTracker가 단일 스냅샷 왜곡을 완충하고 롤링 평균을 정상 계산하는지 검증 (과제 E)"""

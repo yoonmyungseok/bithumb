@@ -82,18 +82,26 @@ class StrategyPolicy:
     RS_MIN_RISK_OFF: float = 0.012       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+1.2% 초과 상승)
     MIN_TRADE_VALUE_RISK_OFF: float = 2_000_000_000.0  # 약세장 최소 24시간 거래대금 20억 원
     MIN_ASSET_PRICE_KRW: float = 10.0    # 10원 미만 극초저가 코인 차단
-    RSI_MIN_NORMAL: float = 38.0         # 정상장 RSI 최소치
-    RSI_MAX_NORMAL: float = 70.0         # 정상장 RSI 최대치 (상향하여 강한 상승 추세 진입 허용)
-    RSI_MIN_RISK_OFF: float = 40.0       # RISK_OFF RSI 최소치
-    RSI_MAX_RISK_OFF: float = 68.0       # RISK_OFF RSI 최대치
+    RSI_MIN_NORMAL: float = 42.0         # 정상장 저점 반등 확인용 RSI 최소치
+    RSI_MAX_NORMAL: float = 60.0         # 정상장 고점 추격 방지용 RSI 최대치
+    RSI_MIN_RISK_OFF: float = 42.0       # RISK_OFF 저점 반등 확인용 RSI 최소치
+    RSI_MAX_RISK_OFF: float = 58.0       # RISK_OFF 고점 추격 방지용 RSI 최대치
     PCT_B_MIN: float = 0.20              # 볼린저 밴드 %B 최소치
-    PCT_B_MAX: float = 0.85              # 볼린저 밴드 %B 최대치 (강한 모멘텀 돌파 진입 허용)
-    MAX_MA20_DISPARITY: float = 1.035    # MA20 대비 최대 이격도 +3.5%
+    PCT_B_MAX: float = 0.65              # 상단권 모멘텀 추격을 차단하는 절대 상한
+    PULLBACK_PCT_B_MIN_NORMAL: float = 0.25  # 정상장 저점권 반등 후보 하한
+    PULLBACK_PCT_B_MAX_NORMAL: float = 0.60  # 정상장 저점권 반등 후보 상한
+    PULLBACK_PCT_B_MIN_RISK_OFF: float = 0.28  # RISK_OFF 반등 후보 하한
+    PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.55  # RISK_OFF 반등 후보 상한
+    PULLBACK_LOOKBACK_BARS: int = 12      # 최근 지지 저점 산정에 사용하는 5분봉 수
+    PULLBACK_MAX_DISTANCE_NORMAL: float = 0.035  # 정상장 최근 저점 대비 최대 허용 거리
+    PULLBACK_MAX_DISTANCE_RISK_OFF: float = 0.025  # RISK_OFF 최근 저점 대비 최대 허용 거리
+    MAX_MA20_DISPARITY: float = 1.025    # MA20 대비 최대 이격도 +2.5%
     MAX_UPPER_SHADOW_RATIO: float = 0.55 # 캔들 윗꼬리 최대 허용 비율 (55%)
     MA_ALIGNMENT_RATIO: float = 0.995    # MA5 >= MA20 * 0.995
+    PULLBACK_MA_ALIGNMENT_RATIO: float = 0.990  # 저점 반등은 MA20 아래 1% 이내 회복까지 허용
     RISK_OFF_ALLOC_RATIO: float = 0.6    # RISK_OFF 진입 비중 (60%로 확대하여 알트 불장 수익 확보)
 
-    # 4-1. 초기 돌파 소액 진입 정책: 확인형 진입보다 이른 구간만 허용하되 핵심 안전 게이트는 유지한다.
+    # 4-1. 초기 돌파는 고점 추격 위험이 있어 신규 매수 경로에서 비활성화한다.
     EARLY_BREAKOUT_ALPHA_THRESHOLD_NORMAL: int = 55
     EARLY_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF: int = 65
     EARLY_BREAKOUT_VOLUME_RATIO_MIN: float = 1.5
@@ -723,13 +731,13 @@ def entry_signal(
     # 1. 1시간봉 MTF 추세 필터
     mtf_allowed = True
     mtf_reason = "1H MTF 미제공"
-    is_high_alpha = (alpha_res.get("total_score", 0) >= 70)
     if candles_1h and len(candles_1h) >= 20:
         prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
         ema20_1h = calculate_ema(prices_1h, 20)
         current_1h = prices_1h[0]
         if regime_upper == "RISK_OFF":
-            mtf_ratio = 0.990 if is_high_alpha else 0.998
+            # 약세장에서는 높은 점수보다 상위 시간봉 지지 확인을 우선한다.
+            mtf_ratio = 0.998
         else:
             mtf_ratio = 0.980
         mtf_allowed = current_1h >= (ema20_1h * mtf_ratio)
@@ -739,15 +747,15 @@ def entry_signal(
     hard_gate_btc = regime_upper not in ("CRASH", "BEAR_VOLATILE")
     hard_gate_mtf = mtf_allowed
     if regime_upper == "RISK_OFF":
-        rsi_hard_min = 35.0 if is_high_alpha else StrategyPolicy.RSI_MIN_RISK_OFF
-        rsi_hard_max = 68.0 if is_high_alpha else StrategyPolicy.RSI_MAX_RISK_OFF
+        rsi_hard_min = StrategyPolicy.RSI_MIN_RISK_OFF
+        rsi_hard_max = StrategyPolicy.RSI_MAX_RISK_OFF
     else:
         rsi_hard_min = StrategyPolicy.RSI_MIN_NORMAL
         rsi_hard_max = StrategyPolicy.RSI_MAX_NORMAL
     hard_gate_rsi = (rsi_hard_min <= rsi <= rsi_hard_max)
     hard_gate_bb = (StrategyPolicy.PCT_B_MIN <= pct_b <= StrategyPolicy.PCT_B_MAX)
-    ma_align_ratio = 0.995 if (regime_upper == "RISK_OFF" and is_high_alpha) else StrategyPolicy.MA_ALIGNMENT_RATIO
-    hard_gate_ma = ma5 >= ma20 * ma_align_ratio
+    # 저점 반등은 단기 이평이 중심선에 완전히 복귀하기 전의 회복 구간도 허용한다.
+    hard_gate_ma = ma5 >= ma20 * StrategyPolicy.PULLBACK_MA_ALIGNMENT_RATIO
 
     # 2-1. MA20 단기 이격 과열 차단 (이격도 +2.5% 이하)
     hard_gate_disparity = current <= (ma20 * StrategyPolicy.MAX_MA20_DISPARITY)
@@ -766,13 +774,47 @@ def entry_signal(
         and hard_gate_ma and hard_gate_disparity and hard_gate_shadow
     )
 
-    # 3. 5분봉 정량 조건 및 소프트 알파 스코어 결합
-    rsi_min, rsi_max = (40.0, 62.0) if regime_upper == "RISK_OFF" else (38.0, 64.0)
-    pct_b_min, pct_b_max = (0.28, 0.70) if regime_upper == "RISK_OFF" else (0.25, 0.75)
-    signal_5m = (ma5 > ma20) and (rsi_min <= rsi <= rsi_max) and (pct_b_min <= pct_b <= pct_b_max)
+    # 3. 저점권 반등 정량 게이트: 점수가 높아도 상단권 추격을 허용하지 않는다.
+    rsi_min, rsi_max = (
+        (StrategyPolicy.RSI_MIN_RISK_OFF, StrategyPolicy.RSI_MAX_RISK_OFF)
+        if regime_upper == "RISK_OFF"
+        else (StrategyPolicy.RSI_MIN_NORMAL, StrategyPolicy.RSI_MAX_NORMAL)
+    )
+    pct_b_min, pct_b_max = (
+        (StrategyPolicy.PULLBACK_PCT_B_MIN_RISK_OFF, StrategyPolicy.PULLBACK_PCT_B_MAX_RISK_OFF)
+        if regime_upper == "RISK_OFF"
+        else (StrategyPolicy.PULLBACK_PCT_B_MIN_NORMAL, StrategyPolicy.PULLBACK_PCT_B_MAX_NORMAL)
+    )
+    pullback_max_distance = (
+        StrategyPolicy.PULLBACK_MAX_DISTANCE_RISK_OFF
+        if regime_upper == "RISK_OFF"
+        else StrategyPolicy.PULLBACK_MAX_DISTANCE_NORMAL
+    )
+    pullback_candles = candles[:StrategyPolicy.PULLBACK_LOOKBACK_BARS]
+    recent_low = min(
+        (float(c.get("low_price", c.get("trade_price", current)) or current) for c in pullback_candles),
+        default=current,
+    )
+    recent_high = max(
+        (float(c.get("high_price", c.get("trade_price", current)) or current) for c in pullback_candles),
+        default=current,
+    )
+    distance_from_recent_low = ((current / recent_low) - 1.0) if recent_low > 0 else float("inf")
+    distance_below_recent_high = ((recent_high / current) - 1.0) if current > 0 else 0.0
+    previous_close = float(candles[1].get("trade_price", current) or current)
+    # 확정봉의 양봉 전환과 직전 종가 회복을 함께 요구해 하락 중 무계획 물타기를 막는다.
+    rebound_confirmed = current >= open_0 and current > previous_close
+    pullback_zone = pct_b_min <= pct_b <= pct_b_max
+    near_recent_low = 0.0 <= distance_from_recent_low <= pullback_max_distance
+    signal_5m = (
+        ma5 >= ma20 * StrategyPolicy.PULLBACK_MA_ALIGNMENT_RATIO
+        and rsi_min <= rsi <= rsi_max
+        and pullback_zone
+        and near_recent_low
+        and rebound_confirmed
+    )
 
     total_score = int(alpha_res.get("total_score", 0) or 0)
-    alpha_score_passed = alpha_res["allow_buy"] or (regime_upper == "RISK_OFF" and is_high_alpha and total_score >= 70)
     normalized_entry_type = (entry_type or "CONFIRMED").upper()
 
     # 초기 돌파는 확정된 직전 5분봉의 거래량·고점 돌파·양봉을 모두 만족해야 한다.
@@ -795,19 +837,17 @@ def entry_signal(
             f"거래량배수={(current_volume / average_volume) if average_volume > 0 else 0.0:.2f}, "
             f"양봉={'통과' if bullish_candle else '차단'}"
         )
-    # RISK_OFF 약세장에서는 단순 5분봉 지표만으로 우회 불가하며, 반드시 알파 엄선 조건(alpha_score_passed)을 충족해야 함
+    # 고점 돌파 진입은 사용자 의도와 반대이므로, 점수와 거래량이 높아도 매수 경로로 사용하지 않는다.
     if normalized_entry_type == "EARLY_BREAKOUT":
-        early_threshold = (
-            StrategyPolicy.EARLY_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF
-            if regime_upper == "RISK_OFF"
-            else StrategyPolicy.EARLY_BREAKOUT_ALPHA_THRESHOLD_NORMAL
-        )
-        # 초기 진입도 동일한 하드 안전 게이트를 우회하지 않으며, 알파 기준만 별도 소액 진입 기준을 적용한다.
-        allowed = hard_gates_passed and early_breakout_passed and total_score >= early_threshold
-    elif regime_upper == "RISK_OFF":
-        allowed = hard_gates_passed and alpha_score_passed
+        allowed = False
+        early_breakout_reason = "고점 돌파 신규 매수 정책 비활성"
     else:
-        allowed = hard_gates_passed and (signal_5m or alpha_score_passed)
+        # 알파 점수는 후보 품질 확인용이며, 저점권 반등 하드 게이트를 우회할 수 없다.
+        allowed = hard_gates_passed and signal_5m and total_score >= (
+            StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF
+            if regime_upper == "RISK_OFF"
+            else StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL
+        )
 
     # 4. [과제 A] StrategyPolicy SSOT 기반 동적 손익비 산출
     atr_data = calculate_atr(candles, period=14)
@@ -841,8 +881,11 @@ def entry_signal(
             "ma_alignment": {"pass": hard_gate_ma, "ma5": round(ma5, 2), "ma20": round(ma20, 2)},
             "disparity_guard": {"pass": hard_gate_disparity, "current": round(current, 2), "limit": round(ma20 * StrategyPolicy.MAX_MA20_DISPARITY, 2)},
             "shadow_guard": {"pass": hard_gate_shadow, "ratio": round(upper_shadow_ratio, 3), "max": StrategyPolicy.MAX_UPPER_SHADOW_RATIO},
+            "pullback_zone": {"pass": pullback_zone, "value": round(pct_b, 3), "min": pct_b_min, "max": pct_b_max},
+            "near_recent_low": {"pass": near_recent_low, "recent_low": round(recent_low, 2), "distance_pct": round(distance_from_recent_low * 100, 2), "max_distance_pct": round(pullback_max_distance * 100, 2)},
+            "rebound_confirmation": {"pass": rebound_confirmed, "current": round(current, 2), "previous_close": round(previous_close, 2), "open": round(open_0, 2)},
         },
-        "ma_alignment": {"pass": ma5 > ma20, "ma5": round(ma5, 2), "ma20": round(ma20, 2)},
+        "ma_alignment": {"pass": hard_gate_ma, "ma5": round(ma5, 2), "ma20": round(ma20, 2)},
         "rsi_range": {"pass": (rsi_min <= rsi <= rsi_max), "value": rsi, "min": rsi_min, "max": rsi_max},
         "bollinger_pct_b": {"pass": (pct_b_min <= pct_b <= pct_b_max), "value": round(pct_b, 3), "min": pct_b_min, "max": pct_b_max},
         "mtf_1h_trend": {"pass": mtf_allowed, "detail": mtf_reason},
@@ -855,6 +898,9 @@ def entry_signal(
         f"MA5 {'>' if ma5 > ma20 else '<='} MA20",
         f"RSI {rsi:.1f}",
         f"%B {pct_b:.2f}",
+        f"저점거리 {distance_from_recent_low * 100:.2f}%",
+        f"최근고점대비 {distance_below_recent_high * 100:.2f}%",
+        f"반등확인 {'통과' if rebound_confirmed else '차단'}",
         f"이격 {'안정' if hard_gate_disparity else '과열차단'}",
         mtf_reason,
     ]
@@ -887,6 +933,12 @@ def entry_signal(
             "indicators": {
                 "rsi": rsi,
                 "pct_b": pct_b,
+                "recent_low": recent_low,
+                "recent_high": recent_high,
+                "distance_from_recent_low_pct": distance_from_recent_low * 100,
+                "distance_below_recent_high_pct": distance_below_recent_high * 100,
+                "pullback_zone": pullback_zone,
+                "rebound_confirmed": rebound_confirmed,
                 "atr": volatility,
                 "atr_pct": atr_pct,
                 "mtf_state": mtf_reason,
