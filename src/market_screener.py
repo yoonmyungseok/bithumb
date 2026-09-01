@@ -7,7 +7,7 @@ import requests
 
 from bithumb_api import BithumbAPI
 from market_policy import get_excluded_markets
-from strategy_engine import StrategyPolicy
+from strategy_engine import StrategyPolicy, is_night_session
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,15 @@ EXCLUDED_STABLE_MARKETS: set[str] = {
     "KRW-FDUSD",
     "KRW-USDE",
 }
+
+# 대형 메이저 코인은 단타 급등주 발굴 풀에서 제외하고 시장 레짐 및 상대강도(RS) 지표로 전담 활용
+EXCLUDED_MAJOR_SCALPING_MARKETS: set[str] = {
+    "KRW-BTC",
+    "KRW-ETH",
+    "KRW-SOL",
+    "KRW-XRP",
+}
+
 
 
 def get_excluded_manual_holdings() -> set[str]:
@@ -118,6 +127,8 @@ class MarketScreener:
                 if is_risk_off
                 else self.min_trade_value_krw
             )
+            if is_night_session():
+                min_trade_val = min_trade_val * StrategyPolicy.NIGHT_TRADE_VALUE_MULTIPLIER
 
             for t in all_tickers:
                 market = t.get("market", "")
@@ -144,6 +155,11 @@ class MarketScreener:
                     ticker_info["is_held"] = True
                     held_candidates.append(ticker_info)
                     continue
+
+                # 대형 메이저 코인(BTC/ETH/SOL/XRP)은 신규 단타 발굴에서 배제
+                if market in EXCLUDED_MAJOR_SCALPING_MARKETS:
+                    continue
+
 
                 if trade_price < StrategyPolicy.MIN_ASSET_PRICE_KRW:
                     continue
@@ -248,11 +264,13 @@ class MarketScreener:
                     t for t in all_tickers
                     if t.get("market", "") not in held_set
                     and t.get("market", "") not in EXCLUDED_STABLE_MARKETS
+                    and t.get("market", "") not in EXCLUDED_MAJOR_SCALPING_MARKETS
                     and t.get("market", "") not in excluded_manual
                     and t.get("market", "").replace("KRW-", "") not in excluded_manual
                     and _safe_float(t.get("trade_price")) >= StrategyPolicy.MIN_ASSET_PRICE_KRW
                     and _safe_float(t.get("acc_trade_price_24h", t.get("acc_trade_value_24h", 0.0))) >= min_fb_trade_val
                 ]
+
                 fallback_tickers.sort(
                     key=lambda x: _safe_float(x.get("acc_trade_price_24h", x.get("acc_trade_value_24h", 0.0))), reverse=True
                 )

@@ -1,7 +1,27 @@
 import math
 import os
 import threading
+from datetime import datetime, timezone, timedelta
 from typing import Any
+
+KST = timezone(timedelta(hours=9))
+
+
+def get_kst_now() -> datetime:
+    """Get current datetime in Korea Standard Time (UTC+9)."""
+    return datetime.now(timezone.utc).astimezone(KST)
+
+
+def is_night_session(dt: datetime | None = None) -> bool:
+    """Check if current or provided time is within KST Night Session (00:00 ~ 07:00)."""
+    if dt is None:
+        kst_dt = get_kst_now()
+    else:
+        if getattr(dt, "tzinfo", None) is not None:
+            kst_dt = dt.astimezone(KST)
+        else:
+            kst_dt = dt
+    return StrategyPolicy.NIGHT_SESSION_START_HOUR <= kst_dt.hour < StrategyPolicy.NIGHT_SESSION_END_HOUR
 
 
 class StrategyPolicy:
@@ -92,6 +112,16 @@ class StrategyPolicy:
     RISK_OFF_POLICY_MODE: str = "reduced_size"
     RISK_OFF_BLOCK_ENABLED: bool = False
     RISK_OFF_MIN_SAMPLE_CANDIDATE: int = 30
+
+    # 6. 심야 세션 (00:00 ~ 07:00 KST) 동적 필터 및 비중 정책
+    NIGHT_SESSION_START_HOUR: int = 0
+    NIGHT_SESSION_END_HOUR: int = 7
+    ALPHA_BUY_THRESHOLD_NIGHT: int = 75           # 심야 정상장 알파 승인 점수 (60 -> 75 상향)
+    ALPHA_BUY_THRESHOLD_NIGHT_RISK_OFF: int = 80  # 심야 약세장 알파 승인 점수 (70 -> 80 상향)
+    NIGHT_SESSION_ALLOC_RATIO: float = 0.50       # 심야 진입 자금 비중 50% 축소
+    NIGHT_PARTIAL_TP_1_PCT: float = 0.015         # 심야 1차 분할 익절 +1.5% (조기 수익 확정)
+    NIGHT_TIME_STOP_SECONDS: int = 5400           # 심야 90분 단축 타임스탑
+    NIGHT_TRADE_VALUE_MULTIPLIER: float = 1.5     # 심야 최소 거래대금 1.5배 상향
 
 
 class OrderbookFlowTracker:
@@ -491,6 +521,7 @@ def calculate_composite_alpha_score(
     btc_regime: str = "NORMAL",
     market: str = "",
     exchange: str = "",
+    is_night: bool | None = None,
 ) -> dict[str, Any]:
     """Calculate 7-Factor Composite Quantitative Alpha Score (0 ~ 100 points)."""
     if not candles or len(candles) < 20:
@@ -595,11 +626,19 @@ def calculate_composite_alpha_score(
         score_vol = 4
 
     regime_upper = btc_regime.upper()
-    buy_threshold = (
-        StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF
-        if regime_upper == "RISK_OFF"
-        else StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL
-    )
+    night_active = is_night if is_night is not None else is_night_session()
+    if night_active:
+        buy_threshold = (
+            StrategyPolicy.ALPHA_BUY_THRESHOLD_NIGHT_RISK_OFF
+            if regime_upper == "RISK_OFF"
+            else StrategyPolicy.ALPHA_BUY_THRESHOLD_NIGHT
+        )
+    else:
+        buy_threshold = (
+            StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF
+            if regime_upper == "RISK_OFF"
+            else StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL
+        )
     total_score = score_mtf + score_vwap + score_macd + score_rsi + score_bb + score_orderflow + score_vol
     allow_buy = (total_score >= buy_threshold) and (regime_upper not in ("CRASH", "BEAR_VOLATILE"))
 
@@ -614,8 +653,10 @@ def calculate_composite_alpha_score(
         "orderbook_raw_ratio": round(raw_ratio, 6),
         "orderbook_smoothed_ratio": round(smoothed_ratio, 6),
         "orderbook_sample_count": orderbook_sample_count,
+        "is_night": night_active,
     }
 
+    night_tag = " [🌙심야세션]" if night_active else ""
     return {
         "total_score": total_score,
         "allow_buy": allow_buy,
@@ -624,7 +665,7 @@ def calculate_composite_alpha_score(
         "macd_state": macd_acc["momentum_state"],
         "rsi": rsi_val,
         "pct_b": bb["pct_b"],
-        "reason": f"알파 스코어 {total_score}/100점 ({'🟢 승인' if allow_buy else '⚪ 미달'}) | MTF:{score_mtf} VWAP:{score_vwap} MACD:{score_macd} RSI:{score_rsi} BB:{score_bb}",
+        "reason": f"알파 스코어 {total_score}/100점 ({'🟢 승인' if allow_buy else '⚪ 미달'}{night_tag}, 기준 {buy_threshold}점) | MTF:{score_mtf} VWAP:{score_vwap} MACD:{score_macd} RSI:{score_rsi} BB:{score_bb}",
     }
 
 
@@ -636,6 +677,7 @@ def entry_signal(
     market: str = "",
     exchange: str = "",
     entry_type: str = "CONFIRMED",
+    is_night: bool | None = None,
 ) -> dict[str, Any]:
     """
     결정론적 퀀트 진입 신호 생성기 (Deterministic Entry Engine)
@@ -666,7 +708,9 @@ def entry_signal(
         btc_regime=btc_regime,
         market=market,
         exchange=exchange,
+        is_night=is_night,
     )
+
 
     prices = [float(c.get("trade_price", 0.0)) for c in candles]
     current = prices[0]

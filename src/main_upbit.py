@@ -57,6 +57,7 @@ from strategy_engine import (
     calculate_vwap,
     classify_btc_regime,
     entry_signal,
+    is_night_session,
     select_completed_candles,
 )
 from telegram_alert import TelegramAlert
@@ -515,11 +516,12 @@ def run_cycle():
 
                     hold_duration_sec = time.time() - entry_ts
                     pnl_pct_current = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
-                    effective_time_stop = (
-                        StrategyPolicy.TIME_STOP_SECONDS_RISK_OFF
-                        if btc_regime == "RISK_OFF"
-                        else StrategyPolicy.TIME_STOP_SECONDS_NORMAL
-                    )
+                    if btc_regime == "RISK_OFF":
+                        effective_time_stop = StrategyPolicy.TIME_STOP_SECONDS_RISK_OFF
+                    elif is_night_session():
+                        effective_time_stop = StrategyPolicy.NIGHT_TIME_STOP_SECONDS
+                    else:
+                        effective_time_stop = StrategyPolicy.TIME_STOP_SECONDS_NORMAL
 
                     # 1. 5분봉 지지선 및 추세 붕괴 여부 정밀 판정
                     is_holding_support = False
@@ -554,13 +556,14 @@ def run_cycle():
                         and (pnl_pct_current < be_threshold_pct)
                     )
 
-                    # 4. [모멘텀 조기 본전 탈출]: 30분 경과 후 실질 본전권(0.0% ~ +0.3%)에서 모멘텀 소멸(VWAP 하회) 시 수수료 세이브 탈출
+                    # 4. [모멘텀 조기 본전/최소손실 탈출]: 30분 경과 후 박스권 횡보/미세손실(-0.5% ~ +0.3%)에서 모멘텀 소멸(VWAP 하회 및 단기 이평 역배열) 시 수수료 및 원금 방어 조기 탈출
                     is_early_momentum_exit = (
                         hold_duration_sec >= StrategyPolicy.MOMENTUM_EARLY_EXIT_SECONDS
-                        and (0.0 <= pnl_pct_current <= 0.3)
+                        and (-0.50 <= pnl_pct_current <= 0.30)
                         and (not is_above_vwap)
                         and is_trend_broken
                     )
+
 
                     is_time_stop_trigger = (
                         (is_time_stop_profit_trigger or is_time_stop_loss_trigger or is_early_momentum_exit)
@@ -741,6 +744,11 @@ def run_cycle():
 
                 if fng.get("is_extreme_fear", False) and action == "BUY":
                     alloc_pct = min(alloc_pct, 0.4)
+
+                if is_night_session() and action == "BUY":
+                    alloc_pct = alloc_pct * StrategyPolicy.NIGHT_SESSION_ALLOC_RATIO
+                    reason = f"[🌙심야 세션 비중 {int(StrategyPolicy.NIGHT_SESSION_ALLOC_RATIO*100)}% 적용] {reason}"
+
 
                 alpha_score_val = int(strategy.get("alpha_score") or local_entry.get("alpha_score", 0) or 0)
                 factor_breakdown = (
