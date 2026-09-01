@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 
 from bot_controller import BotController
 from chart_renderer import ChartRenderer
-from db_manager import migrate_legacy_json_to_sqlite
+from db_manager import get_db_manager, get_exchange_db_path, migrate_legacy_json_to_sqlite
 from exchange_adapter import ExchangeAdapter, UpbitAdapter
 from gemini_analyzer import GeminiAnalyzer
 from market_screener import MarketScreener
@@ -58,6 +58,7 @@ from strategy_engine import (
     classify_btc_regime,
     entry_signal,
     is_night_session,
+    recovery_rebound_signal,
     select_completed_candles,
 )
 from telegram_alert import TelegramAlert
@@ -183,6 +184,8 @@ trailing_tracker = TrailingStopTracker(
     data_dir=DATA_DIR,
 )
 risk_manager = DailyRiskManager(max_loss_pct=MAX_DAILY_LOSS_PCT, data_dir=DATA_DIR)
+# 최신 캐시와 분리된 판단 이력은 업비트 전용 SQLite에만 기록한다.
+decision_db = get_db_manager(get_exchange_db_path(DATA_DIR))
 telegram = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
 
 fill_processor = OrderFillProcessor(
@@ -401,7 +404,16 @@ def run_cycle():
         # 대시보드 데이터 동기화
         bot_controller.get_dashboard_data()
 
+        # 이번 스크리닝의 상대강도·거래대금은 반등 전용 정책과 판단 이력에 함께 보존한다.
+        screened_candidate_metadata: dict[str, dict[str, Any]] = {}
 
+        def capture_screened_candidates(candidates: list[dict[str, Any]]) -> None:
+            """현 사이클 후보 메타데이터를 주문 전 판단에만 사용한다."""
+            screened_candidate_metadata.clear()
+            for candidate in candidates:
+                market_code = str(candidate.get("market", "")).upper()
+                if market_code:
+                    screened_candidate_metadata[market_code] = dict(candidate)
 
         excluded_markets = get_upbit_excluded_markets()
         target_markets = cycle_orchestrator.select_target_markets(
@@ -410,6 +422,7 @@ def run_cycle():
             create_screener=lambda: MarketScreener(upbit, min_trade_value_krw=min_trade_val,
                                                     min_change_rate=min_change, max_change_rate=max_change),
             btc_regime=btc_regime,
+            on_screened_candidates=capture_screened_candidates,
         )
 
         logger.info(f"업비트 이번 사이클 최종 분석 대상 마켓 ({len(target_markets)}개): {target_markets}")
@@ -419,6 +432,20 @@ def run_cycle():
         # 업비트 실시간 웹소켓 구독 갱신 (HOLO 제외)
         ws_client.update_subscriptions(list(dict.fromkeys(target_markets + held_markets + ["KRW-BTC"])))
 
+        # 판단 이력은 30일을 넘긴 행만 정리하며 주문·체결 원장은 건드리지 않는다.
+        decision_db.purge_strategy_decisions("upbit", time.time() - 30 * 24 * 60 * 60)
+        cycle_id = now_dt.strftime("%Y%m%d%H%M%S")
+
+        def audit_decision(market: str, action: str, policy_mode: str, reasons: list[str], payload: dict[str, Any]) -> None:
+            """감사 저장 실패가 실거래 보호·청산 흐름을 중단시키지 않도록 격리한다."""
+            try:
+                decision_db.record_strategy_decision(
+                    exchange="upbit", cycle_id=cycle_id, market=market, action=action,
+                    policy_mode=policy_mode, block_reasons=reasons, payload=payload,
+                )
+            except Exception as exc:
+                logger.warning("[%s] 전략 판단 이력 저장 실패: %s", market, exc)
+
         # 5. 마켓별 순회 분석 및 매매 실행
         for market in target_markets:
             if market in excluded_markets or market.replace("KRW-", "") in excluded_markets:
@@ -426,6 +453,7 @@ def run_cycle():
                 continue
 
             try:
+                candidate_metadata = screened_candidate_metadata.get(market, {})
                 market_snapshot = cycle_orchestrator.load_market_snapshot(upbit, market, INTERVAL_MINUTES)
                 currency, korean_name = market_snapshot.currency, market_snapshot.korean_name
                 logger.info(f"--- [{korean_name} / {market} 업비트 AI 퀀트 분석 시작] ---")
@@ -612,11 +640,13 @@ def run_cycle():
                     if not order_journal.is_entry_ready():
                         logger.warning("[%s] REST 주문 대사 미완료로 신규 매수를 차단합니다.", market)
                     logger.info(f"[{market}] 봇 일시정지 또는 킬스위치 상태로 신규 매수 생략")
+                    audit_decision(market, "BLOCKED", "SAFETY", ["봇 일시정지, 킬스위치 또는 REST 주문 대사 미완료"], {"btc_regime": btc_regime})
                     continue
 
                 reentry_allowed, reentry_reason = cooldown_manager.check_reentry_allowed(market, current_price)
                 if not reentry_allowed:
                     logger.info(f"[{market}] {reentry_reason}으로 신규 매수 생략")
+                    audit_decision(market, "BLOCKED", "MARKET_COOLDOWN", [reentry_reason], {"btc_regime": btc_regime, "current_price": current_price})
                     continue
 
                 if not candles_5m or len(candles_5m) < 20:
@@ -640,20 +670,47 @@ def run_cycle():
                     market=market,
                     exchange="upbit",
                 )
+                # 일반 진입이 실패한 경우에만, 연속손실 회복 구간의 반등 전용 조건을 독립 평가한다.
+                recovery_entry = recovery_rebound_signal(
+                    candles=completed_candles_5m, candles_1h=completed_candles_1h,
+                    btc_regime=btc_regime, orderbook=orderbook, market=market, exchange="upbit",
+                    relative_strength=float(candidate_metadata.get("relative_strength", 0.0) or 0.0),
+                    candidate_trade_value=float(candidate_metadata.get("acc_trade_price_24h", 0.0) or 0.0),
+                )
+                recovery_window_start = max(0.0, float(risk_manager.cooldown_until_ts) - 1800.0)
+                recovery_slot_available = not decision_db.has_recovery_entry_since("upbit", recovery_window_start)
                 is_holding = (coin_value >= MIN_ORDER_KRW and avg_buy_price > 0)
                 ws_health = ws_client.get_health_status(market=market) if hasattr(ws_client, "get_health_status") else {"is_healthy": True, "status": "OK"}
                 ws_healthy = ws_health.get("is_healthy", True)
+                # 반등 예외도 BTC 급락·시세 스트림 불안정을 절대로 우회하지 않는다.
+                use_recovery_rebound = (
+                    StrategyPolicy.RECOVERY_REBOUND_LIVE_ENABLED
+                    and is_cooldown and not is_btc_crashing and ws_healthy
+                    and not local_entry.get("allow_buy", False)
+                    and recovery_entry.get("allow_buy", False) and recovery_slot_available
+                )
+                selected_entry = recovery_entry if use_recovery_rebound else local_entry
 
                 should_call_ai = (
                     analyzer is not None
                     and not is_holding
                     and reentry_allowed
-                    and local_entry.get("allow_buy", False)
+                    and selected_entry.get("allow_buy", False)
                     and not is_btc_crashing
                     and ws_healthy
                 )
 
-                if should_call_ai and analyzer is not None:
+                if use_recovery_rebound:
+                    # 반등 전용은 모든 확정봉 조건을 충족한 경우에만 축소 비중으로 주문한다.
+                    strategy = {
+                        "status": "ACTIVE", "action": "BUY",
+                        "entry_price": selected_entry.get("entry_price", current_price),
+                        "target_price": selected_entry.get("target_price", current_price * 1.03),
+                        "stop_loss": selected_entry.get("stop_loss", current_price * 0.98),
+                        "alloc_pct": dyn_max_pos_pct * StrategyPolicy.RECOVERY_REBOUND_ALLOC_RATIO,
+                        "reason": f"[급락 후 반등 전용·축소 비중] {selected_entry.get('reason', '')}",
+                    }
+                elif should_call_ai and analyzer is not None:
                     feedback_context = trade_memory.get_feedback_context()
                     whale_flow_context = ws_client.get_whale_flow_summary(market) if hasattr(ws_client, "get_whale_flow_summary") else ""
                     btc_candles_5m = upbit.get_candles(unit=INTERVAL_MINUTES, count=30, market="KRW-BTC")
@@ -675,7 +732,7 @@ def run_cycle():
                 else:
                     # 1차 퀀트 관망 또는 기보유 포지션 기준선 산출 (Zero API Quota)
                     quant_reason = (
-                        f"기보유 포지션 퀀트 감시 ({local_entry.get('reason', '')})"
+                        f"기보유 포지션 퀀트 감시 ({selected_entry.get('reason', '')})"
                         if is_holding
                         else (
                             f"{reentry_reason}"
@@ -686,7 +743,7 @@ def run_cycle():
                                 else (
                                     f"업비트 웹소켓 데이터 불안정 ({ws_health.get('status', 'UNHEALTHY')}) 진입 차단"
                                     if not ws_healthy
-                                    else f"1차 퀀트 관망 대기: {local_entry.get('reason', '조건 미충족')}"
+                                    else f"1차 퀀트 관망 대기: {selected_entry.get('reason', '조건 미충족')}"
                                 )
                             )
                         )
@@ -694,9 +751,9 @@ def run_cycle():
                     strategy = {
                         "status": "ACTIVE",
                         "action": "HOLD",
-                        "entry_price": local_entry.get("entry_price", current_price),
-                        "target_price": local_entry.get("target_price", current_price * 1.03),
-                        "stop_loss": local_entry.get("stop_loss", current_price * 0.98),
+                        "entry_price": selected_entry.get("entry_price", current_price),
+                        "target_price": selected_entry.get("target_price", current_price * 1.03),
+                        "stop_loss": selected_entry.get("stop_loss", current_price * 0.98),
                         "alloc_pct": 0.0,
                         "reason": quant_reason,
                     }
@@ -704,8 +761,8 @@ def run_cycle():
                 status = strategy.get("status", "ACTIVE")
                 action = strategy.get("action", "HOLD")
                 entry_price = strategy.get("entry_price", current_price)
-                target_price = strategy.get("target_price", local_entry.get("target_price", current_price * 1.03))
-                stop_loss = strategy.get("stop_loss", local_entry.get("stop_loss", current_price * 0.98))
+                target_price = strategy.get("target_price", selected_entry.get("target_price", current_price * 1.03))
+                stop_loss = strategy.get("stop_loss", selected_entry.get("stop_loss", current_price * 0.98))
                 alloc_pct = strategy.get("alloc_pct", dyn_max_pos_pct)
                 reason = strategy.get("reason", "자동 분석")
 
@@ -713,12 +770,12 @@ def run_cycle():
                     action = "HOLD"
                     reason = f"{reentry_reason} | {reason}"
 
-                if action == "BUY" and not local_entry.get("allow_buy", False):
+                if action == "BUY" and not selected_entry.get("allow_buy", False):
                     action = "HOLD"
-                    reason = f"정량 공통 진입 게이트 차단: {local_entry.get('reason', '')} | {reason}"
-                elif action == "BUY" and local_entry.get("allow_buy", False):
-                    target_price = local_entry.get("target_price", target_price)
-                    stop_loss = local_entry.get("stop_loss", stop_loss)
+                    reason = f"정량 공통 진입 게이트 차단: {selected_entry.get('reason', '')} | {reason}"
+                elif action == "BUY" and selected_entry.get("allow_buy", False):
+                    target_price = selected_entry.get("target_price", target_price)
+                    stop_loss = selected_entry.get("stop_loss", stop_loss)
 
                 if is_holding:
                     entry_price = avg_buy_price
@@ -728,7 +785,7 @@ def run_cycle():
                     target_price = avg_buy_price * (1.0 + getattr(StrategyPolicy, "PROFIT_TARGET_PCT", StrategyPolicy.PARTIAL_TP_1_PCT))
 
                 # 알파 스코어 연동 가변 사이징 (A+ 85점 이상 비중 확대)
-                alpha_val = local_entry.get("alpha_score", 70)
+                alpha_val = selected_entry.get("alpha_score", 70)
                 if alpha_val >= 85 and btc_regime != "RISK_OFF" and action == "BUY":
                     alloc_pct = min(dyn_max_pos_pct * 1.3, 0.65)
                     reason = f"[🔥알파 {alpha_val}점 A+ 특급 셋업 비중 확대(65%)] {reason}"
@@ -750,15 +807,15 @@ def run_cycle():
                     reason = f"[🌙심야 세션 비중 {int(StrategyPolicy.NIGHT_SESSION_ALLOC_RATIO*100)}% 적용] {reason}"
 
 
-                alpha_score_val = int(strategy.get("alpha_score") or local_entry.get("alpha_score", 0) or 0)
+                alpha_score_val = int(strategy.get("alpha_score") or selected_entry.get("alpha_score", 0) or 0)
                 factor_breakdown = (
-                    local_entry.get("factor_breakdown")
-                    or local_entry.get("checklist_details", {}).get("factor_breakdown")
-                    or local_entry.get("checklist", {}).get("factor_breakdown")
-                    or local_entry.get("checklist", {})
+                    selected_entry.get("factor_breakdown")
+                    or selected_entry.get("checklist_details", {}).get("factor_breakdown")
+                    or selected_entry.get("checklist", {}).get("factor_breakdown")
+                    or selected_entry.get("checklist", {})
                     or {}
                 )
-                allow_buy_val = bool(local_entry.get("allow_buy", False))
+                allow_buy_val = bool(selected_entry.get("allow_buy", False))
 
                 target_pct_val = (((target_price - current_price) / current_price * 100) if current_price > 0 and target_price > 0 else 0.0)
                 stop_pct_val = (((stop_loss - current_price) / current_price * 100) if current_price > 0 and stop_loss > 0 else 0.0)
@@ -777,6 +834,7 @@ def run_cycle():
                     "alloc_pct": alloc_pct,
                     "reason": reason,
                     "alpha_score": alpha_score_val,
+                    "policy_mode": "RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD",
                     "allow_buy": allow_buy_val,
                     "factor_breakdown": factor_breakdown,
                     "target_pct": round(target_pct_val, 2),
@@ -788,6 +846,21 @@ def run_cycle():
                     "STOP_LOSS": stop_loss,
                     "REASON": reason,
                 }
+
+                audit_decision(
+                    market,
+                    "BUY_APPROVED" if action == "BUY" else "HOLD",
+                    "RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD",
+                    [] if action == "BUY" else [reason],
+                    {
+                        "current_price": current_price,
+                        "btc_regime": btc_regime,
+                        "is_loss_recovery_mode": is_cooldown,
+                        "candidate": candidate_metadata,
+                        "local_checklist": selected_entry.get("checklist_details", {}),
+                        "recovery_checklist": recovery_entry.get("recovery_checklist", {}),
+                    },
+                )
 
 
 
@@ -814,6 +887,7 @@ def run_cycle():
                         logger.warning(
                             f"[{korean_name} / {market}] 매수 예산 부족: 요청 {trade_budget:,.0f}원 < 최소 {SAFE_ORDER_KRW:,.0f}원"
                         )
+                        audit_decision(market, "BLOCKED", "BUDGET", ["매수 예산 부족"], {"trade_budget": trade_budget})
                         continue
 
                     is_safe, rejection_reason = risk_guard.validate_buy(
@@ -825,6 +899,7 @@ def run_cycle():
                     )
                     if not is_safe:
                         logger.warning(f"[{market}] 리스크 가드로 매수 차단: {rejection_reason}")
+                        audit_decision(market, "BLOCKED", "RISK_GUARD", [rejection_reason], {"trade_budget": trade_budget})
                         continue
 
                     order_volume = (trade_budget * 0.995) / order_price
@@ -832,6 +907,7 @@ def run_cycle():
 
                     if formatted_volume <= 0:
                         logger.warning(f"[{market}] 주문 수량 오류: {formatted_volume}")
+                        audit_decision(market, "BLOCKED", "ORDER_VALIDATION", ["주문 수량 오류"], {"volume": formatted_volume})
                         continue
 
                     logger.info(
@@ -841,7 +917,7 @@ def run_cycle():
                     cancel_bot_open_orders(upbit, market)
 
                     # 승인 시점 값만 주문 원장에 저장해, 미래 체결 시점 정보와 혼동하지 않는다.
-                    entry_snapshot = dict(local_entry.get("strategy_snapshot", {}))
+                    entry_snapshot = dict(selected_entry.get("strategy_snapshot", {}))
                     entry_snapshot.update({
                         "exchange": "upbit",
                         "market": market,
@@ -862,6 +938,10 @@ def run_cycle():
                         expected_price=order_price,
                         entry_strategy_snapshot=entry_snapshot,
                         exchange_name="upbit",
+                    )
+                    audit_decision(
+                        market, "BUY_SUBMITTED", "RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD", [],
+                        {"order_price": order_price, "volume": formatted_volume, "trade_budget": trade_budget},
                     )
                     order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
                     client_order_id = order_res.get("client_order_id", "")

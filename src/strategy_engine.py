@@ -101,6 +101,15 @@ class StrategyPolicy:
     PULLBACK_MA_ALIGNMENT_RATIO: float = 0.990  # 저점 반등은 MA20 아래 1% 이내 회복까지 허용
     RISK_OFF_ALLOC_RATIO: float = 0.6    # RISK_OFF 진입 비중 (60%로 확대하여 알트 불장 수익 확보)
 
+    # 4-2. 급락 후 반등 전용 정책: 일반 RISK_OFF 기준을 낮추지 않고, 별도·축소 비중으로만 사용한다.
+    RECOVERY_REBOUND_ENABLED: bool = True
+    # 반등 전용 조건을 통과한 경우에만 실제 주문 경로를 허용한다.
+    RECOVERY_REBOUND_LIVE_ENABLED: bool = True
+    RECOVERY_REBOUND_ALPHA_THRESHOLD: int = 75
+    RECOVERY_REBOUND_RS_MIN: float = 0.015
+    RECOVERY_REBOUND_MTF_EMA20_RATIO: float = 0.990
+    RECOVERY_REBOUND_ALLOC_RATIO: float = 0.35
+
     # 4-1. 초기 돌파는 고점 추격 위험이 있어 신규 매수 경로에서 비활성화한다.
     EARLY_BREAKOUT_ALPHA_THRESHOLD_NORMAL: int = 55
     EARLY_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF: int = 65
@@ -955,4 +964,90 @@ def entry_signal(
         "checklist": checklist_details,
         "risk_reward_ratio": round(target_offset / stop_offset, 2) if stop_offset > 0 else 1.5,
         "checklist_details": checklist_details,
+    }
+
+
+def recovery_rebound_signal(
+    candles: list[dict[str, Any]],
+    candles_1h: list[dict[str, Any]] | None,
+    btc_regime: str,
+    orderbook: dict[str, Any] | None,
+    market: str,
+    exchange: str,
+    relative_strength: float,
+    candidate_trade_value: float,
+) -> dict[str, Any]:
+    """급락 뒤 반등 후보를 위한 별도 진입 신호를 계산한다.
+
+    일반 RISK_OFF 신호의 기준을 완화하지 않는다. 일반 신호가 상위 시간봉 EMA20을
+    엄격히 요구해 반등 초입을 놓친 경우에만, 충분한 독자 강도와 확정봉 반등을 갖춘
+    후보를 축소 비중으로 승인하기 위한 보수적 보조 경로다.
+    """
+    base = entry_signal(
+        candles=candles,
+        candles_1h=candles_1h,
+        btc_regime=btc_regime,
+        orderbook=orderbook,
+        market=market,
+        exchange=exchange,
+    )
+    checklist = dict(base.get("checklist_details", {}))
+    hard_gates = dict(checklist.get("hard_gates", {}))
+    regime_upper = str(btc_regime).upper()
+
+    # 반등 경로는 CRASH/데이터 부족을 절대로 우회하지 않는다.
+    if not StrategyPolicy.RECOVERY_REBOUND_ENABLED:
+        return {**base, "allow_buy": False, "policy_mode": "RECOVERY_REBOUND", "reason": "반등 전용 정책 비활성"}
+    if regime_upper != "RISK_OFF":
+        return {**base, "allow_buy": False, "policy_mode": "RECOVERY_REBOUND", "reason": f"반등 전용 정책 대상 아님 (레짐: {btc_regime})"}
+    if not candles_1h or len(candles_1h) < 20:
+        return {**base, "allow_buy": False, "policy_mode": "RECOVERY_REBOUND", "reason": "1시간봉 데이터 부족으로 반등 진입 차단"}
+
+    prices_1h = [float(c.get("trade_price", 0.0) or 0.0) for c in candles_1h]
+    current_1h = prices_1h[0]
+    ema20_1h = calculate_ema(prices_1h, 20)
+    mtf_recovery_pass = current_1h >= ema20_1h * StrategyPolicy.RECOVERY_REBOUND_MTF_EMA20_RATIO
+
+    # 기존 하드게이트 중 MTF만 반등용 허용 폭으로 대체한다. 나머지 안전 조건은 동일하다.
+    core_gate_names = ("btc_regime", "rsi_guard", "bb_guard", "ma_alignment", "disparity_guard", "shadow_guard")
+    core_gates_passed = all(bool(hard_gates.get(name, {}).get("pass", False)) for name in core_gate_names)
+    pullback_passed = all(bool(hard_gates.get(name, {}).get("pass", False)) for name in ("pullback_zone", "near_recent_low", "rebound_confirmation"))
+    alpha_score = int(base.get("alpha_score", 0) or 0)
+    rs_passed = float(relative_strength) >= StrategyPolicy.RECOVERY_REBOUND_RS_MIN
+    liquidity_passed = float(candidate_trade_value) >= StrategyPolicy.MIN_TRADE_VALUE_RISK_OFF
+
+    allow_buy = core_gates_passed and pullback_passed and mtf_recovery_pass and rs_passed and liquidity_passed and alpha_score >= StrategyPolicy.RECOVERY_REBOUND_ALPHA_THRESHOLD
+    reasons = [
+        f"반등 전용 {'승인' if allow_buy else '차단'}",
+        f"알파 {alpha_score}점(기준 {StrategyPolicy.RECOVERY_REBOUND_ALPHA_THRESHOLD}점)",
+        f"RS {relative_strength * 100:+.2f}%",
+        f"1H {current_1h:.2f} {'>=' if mtf_recovery_pass else '<'} EMA20 {ema20_1h:.2f} × {StrategyPolicy.RECOVERY_REBOUND_MTF_EMA20_RATIO:.3f}",
+        f"기존 핵심게이트 {'통과' if core_gates_passed else '차단'}",
+        f"확정봉 반등 {'통과' if pullback_passed else '차단'}",
+    ]
+    snapshot = dict(base.get("strategy_snapshot", {}))
+    snapshot.update({
+        "entry_type": "RECOVERY_REBOUND",
+        "recovery_rebound": {
+            "allow_buy": allow_buy,
+            "relative_strength": float(relative_strength),
+            "candidate_trade_value": float(candidate_trade_value),
+            "mtf_recovery_pass": mtf_recovery_pass,
+            "alpha_threshold": StrategyPolicy.RECOVERY_REBOUND_ALPHA_THRESHOLD,
+        },
+    })
+    return {
+        **base,
+        "allow_buy": allow_buy,
+        "policy_mode": "RECOVERY_REBOUND",
+        "reason": ", ".join(reasons),
+        "strategy_snapshot": snapshot,
+        "recovery_checklist": {
+            "core_gates_passed": core_gates_passed,
+            "pullback_passed": pullback_passed,
+            "mtf_recovery_pass": mtf_recovery_pass,
+            "rs_passed": rs_passed,
+            "liquidity_passed": liquidity_passed,
+            "alpha_passed": alpha_score >= StrategyPolicy.RECOVERY_REBOUND_ALPHA_THRESHOLD,
+        },
     }

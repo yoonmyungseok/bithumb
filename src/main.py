@@ -11,7 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 
 from bithumb_api import BithumbAPI
-from db_manager import migrate_legacy_json_to_sqlite
+from db_manager import get_db_manager, get_exchange_db_path, migrate_legacy_json_to_sqlite
 from exchange_adapter import BithumbAdapter, ExchangeAdapter
 from bot_controller import BotController
 from chart_renderer import ChartRenderer
@@ -48,6 +48,7 @@ from strategy_engine import (
     calculate_vwap,
     entry_signal,
     is_night_session,
+    recovery_rebound_signal,
     select_completed_candles,
 )
 from telegram_alert import TelegramAlert
@@ -160,6 +161,8 @@ trailing_tracker = TrailingStopTracker(
     start_profit_pct=TRAILING_START_PCT, trailing_drop_pct=TRAILING_STOP_PCT
 )
 risk_manager = DailyRiskManager(max_loss_pct=MAX_DAILY_LOSS_PCT)
+# 빗썸 판단 이력은 data/trading.db에만 기록해 업비트 DB와 분리한다.
+decision_db = get_db_manager(get_exchange_db_path(DATA_DIR))
 telegram = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
 fill_processor = OrderFillProcessor(
     order_journal=order_journal,
@@ -386,6 +389,19 @@ def run_cycle():
         # ⚡ 빗썸 실시간 웹소켓(WebSocket) 구독 갱신
         ws_client.update_subscriptions(list(dict.fromkeys(target_markets + held_markets + ["KRW-BTC"])))
 
+        decision_db.purge_strategy_decisions("bithumb", time.time() - 30 * 24 * 60 * 60)
+        cycle_id = now_dt.strftime("%Y%m%d%H%M%S")
+
+        def audit_decision(market: str, action: str, policy_mode: str, reasons: list[str], payload: dict[str, Any]) -> None:
+            """감사 저장 오류가 매수·청산 안전 경로를 중단시키지 않도록 격리한다."""
+            try:
+                decision_db.record_strategy_decision(
+                    exchange="bithumb", cycle_id=cycle_id, market=market, action=action,
+                    policy_mode=policy_mode, block_reasons=reasons, payload=payload,
+                )
+            except Exception as exc:
+                logger.warning("[%s] 전략 판단 이력 저장 실패: %s", market, exc)
+
         # 5. 마켓별 순회 분석 및 매매 실행
         for market in target_markets:
             try:
@@ -605,17 +621,44 @@ def run_cycle():
                 is_holding = (coin_value >= MIN_ORDER_KRW and avg_buy_price > 0)
                 ws_health = ws_client.get_health_status(market=market) if hasattr(ws_client, "get_health_status") else {"is_healthy": True, "status": "OK"}
                 ws_healthy = ws_health.get("is_healthy", True)
+                # 일반 신호가 미달한 반등 후보만 별도 정량 정책으로 확인하며, 초기 돌파 추격은 허용하지 않는다.
+                recovery_entry = recovery_rebound_signal(
+                    candles=completed_candles_5m, candles_1h=completed_candles_1h,
+                    btc_regime=btc_regime, orderbook=orderbook, market=market, exchange="bithumb",
+                    relative_strength=float(candidate_metadata.get("relative_strength", 0.0) or 0.0),
+                    candidate_trade_value=float(candidate_metadata.get("acc_trade_price_24h", 0.0) or 0.0),
+                )
+                recovery_window_start = max(0.0, float(risk_manager.cooldown_until_ts) - 1800.0)
+                recovery_slot_available = not decision_db.has_recovery_entry_since("bithumb", recovery_window_start)
+                use_recovery_rebound = (
+                    StrategyPolicy.RECOVERY_REBOUND_LIVE_ENABLED
+                    and is_cooldown and not is_btc_crashing and ws_healthy
+                    and candidate_type != "EARLY_BREAKOUT"
+                    and not local_entry.get("allow_buy", False)
+                    and recovery_entry.get("allow_buy", False) and recovery_slot_available
+                )
+                selected_entry = recovery_entry if use_recovery_rebound else local_entry
 
                 should_call_ai = (
                     analyzer is not None
                     and not is_holding
                     and reentry_allowed
-                    and local_entry["allow_buy"]
+                    and selected_entry["allow_buy"]
                     and not is_btc_crashing
                     and ws_healthy
                 )
 
-                if should_call_ai and analyzer is not None:
+                if use_recovery_rebound:
+                    # 반등 전용 주문도 기존 손절·리스크가드·체결 대사 경로를 그대로 사용한다.
+                    strategy = {
+                        "status": "ACTIVE", "action": "BUY",
+                        "entry_price": selected_entry.get("entry_price", current_price),
+                        "target_price": selected_entry.get("target_price", current_price * 1.03),
+                        "stop_loss": selected_entry.get("stop_loss", current_price * 0.98),
+                        "alloc_pct": dyn_max_pos_pct * StrategyPolicy.RECOVERY_REBOUND_ALLOC_RATIO,
+                        "reason": f"[급락 후 반등 전용·축소 비중] {selected_entry.get('reason', '')}",
+                    }
+                elif should_call_ai and analyzer is not None:
                     feedback_context = trade_memory.get_feedback_context()
                     whale_flow_context = ws_client.get_whale_flow_summary(market)
                     btc_candles_5m = bithumb.get_candles(unit=INTERVAL_MINUTES, count=30, market="KRW-BTC")
@@ -637,7 +680,7 @@ def run_cycle():
                 else:
                     # 1차 퀀트 관망 또는 기보유 포지션 기준선 산출 (Zero API Quota)
                     quant_reason = (
-                        f"기보유 포지션 퀀트 감시 ({local_entry['reason']})"
+                        f"기보유 포지션 퀀트 감시 ({selected_entry['reason']})"
                         if is_holding
                         else (
                             f"{reentry_reason}"
@@ -648,7 +691,7 @@ def run_cycle():
                                 else (
                                     f"웹소켓 데이터 불안정 ({ws_health.get('status', 'UNHEALTHY')}) 진입 차단"
                                     if not ws_healthy
-                                    else f"1차 퀀트 관망 대기: {local_entry['reason']}"
+                                    else f"1차 퀀트 관망 대기: {selected_entry['reason']}"
                                 )
                             )
                         )
@@ -656,9 +699,9 @@ def run_cycle():
                     strategy = {
                         "status": "ACTIVE",
                         "action": "HOLD",
-                        "entry_price": local_entry["entry_price"],
-                        "target_price": local_entry["target_price"],
-                        "stop_loss": local_entry["stop_loss"],
+                        "entry_price": selected_entry["entry_price"],
+                        "target_price": selected_entry["target_price"],
+                        "stop_loss": selected_entry["stop_loss"],
                         "alloc_pct": 0.0,
                         "reason": quant_reason,
                     }
@@ -666,8 +709,8 @@ def run_cycle():
                 status = strategy.get("status", "ACTIVE")
                 action = strategy.get("action", "HOLD")
                 entry_price = strategy.get("entry_price", current_price)
-                target_price = strategy.get("target_price", local_entry["target_price"])
-                stop_loss = strategy.get("stop_loss", local_entry["stop_loss"])
+                target_price = strategy.get("target_price", selected_entry["target_price"])
+                stop_loss = strategy.get("stop_loss", selected_entry["stop_loss"])
                 alloc_pct = strategy.get("alloc_pct", 0.3)
                 reason = strategy.get("reason", "자동 분석")
 
@@ -675,12 +718,12 @@ def run_cycle():
                     action = "HOLD"
                     reason = f"{reentry_reason} | {reason}"
 
-                if action == "BUY" and not local_entry["allow_buy"]:
+                if action == "BUY" and not selected_entry["allow_buy"]:
                     action = "HOLD"
-                    reason = f"정량 공통 진입 게이트 차단: {local_entry['reason']} | {reason}"
-                elif action == "BUY" and local_entry["allow_buy"]:
-                    target_price = local_entry["target_price"]
-                    stop_loss = local_entry["stop_loss"]
+                    reason = f"정량 공통 진입 게이트 차단: {selected_entry['reason']} | {reason}"
+                elif action == "BUY" and selected_entry["allow_buy"]:
+                    target_price = selected_entry["target_price"]
+                    stop_loss = selected_entry["stop_loss"]
 
                 if coin_value >= MIN_ORDER_KRW and avg_buy_price > 0:
                     entry_price = avg_buy_price
@@ -690,7 +733,7 @@ def run_cycle():
                     target_price = avg_buy_price * (1.0 + getattr(StrategyPolicy, "PROFIT_TARGET_PCT", StrategyPolicy.PARTIAL_TP_1_PCT))
 
                 # 알파 스코어 연동 가변 사이징 (A+ 85점 이상 비중 확대)
-                alpha_val = local_entry.get("alpha_score", 70)
+                alpha_val = selected_entry.get("alpha_score", 70)
                 if alpha_val >= 85 and btc_regime != "RISK_OFF" and action == "BUY":
                     alloc_pct = min(dyn_max_pos_pct * 1.3, 0.65)
                     reason = f"[🔥알파 {alpha_val}점 A+ 특급 셋업 비중 확대(65%)] {reason}"
@@ -720,15 +763,15 @@ def run_cycle():
                 logger.info(f"[{market}] 전략: ACTION={action}, 진입가={entry_price:,.2f}, 목표가={target_price:,.2f}, 손절가={stop_loss:,.2f}, 비중={alloc_pct*100:.0f}%")
                 logger.info(f"[{market}] 근거: {reason}")
 
-                alpha_score_val = int(strategy.get("alpha_score") or local_entry.get("alpha_score", 0) or 0)
+                alpha_score_val = int(strategy.get("alpha_score") or selected_entry.get("alpha_score", 0) or 0)
                 factor_breakdown = (
-                    local_entry.get("factor_breakdown")
-                    or local_entry.get("checklist_details", {}).get("factor_breakdown")
-                    or local_entry.get("checklist", {}).get("factor_breakdown")
-                    or local_entry.get("checklist", {})
+                    selected_entry.get("factor_breakdown")
+                    or selected_entry.get("checklist_details", {}).get("factor_breakdown")
+                    or selected_entry.get("checklist", {}).get("factor_breakdown")
+                    or selected_entry.get("checklist", {})
                     or {}
                 )
-                allow_buy_val = bool(local_entry.get("allow_buy", False))
+                allow_buy_val = bool(selected_entry.get("allow_buy", False))
 
                 target_pct_val = (((target_price - current_price) / current_price * 100) if current_price > 0 and target_price > 0 else 0.0)
                 stop_pct_val = (((stop_loss - current_price) / current_price * 100) if current_price > 0 and stop_loss > 0 else 0.0)
@@ -748,7 +791,8 @@ def run_cycle():
                     "reason": reason,
                     "alpha_score": alpha_score_val,
                     "candidate_type": candidate_type,
-                    "early_breakout": local_entry.get("early_breakout", {}),
+                    "early_breakout": selected_entry.get("early_breakout", {}),
+                    "policy_mode": "RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD",
                     "allow_buy": allow_buy_val,
                     "factor_breakdown": factor_breakdown,
                     "target_pct": round(target_pct_val, 2),
@@ -760,6 +804,18 @@ def run_cycle():
                     "STOP_LOSS": stop_loss,
                     "REASON": reason,
                 }
+
+                audit_decision(
+                    market, "BUY_APPROVED" if action == "BUY" else "HOLD",
+                    "RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD",
+                    [] if action == "BUY" else [reason],
+                    {
+                        "current_price": current_price, "btc_regime": btc_regime,
+                        "is_loss_recovery_mode": is_cooldown, "candidate": candidate_metadata,
+                        "local_checklist": selected_entry.get("checklist_details", {}),
+                        "recovery_checklist": recovery_entry.get("recovery_checklist", {}),
+                    },
+                )
 
                 if status != "ACTIVE":
                     continue
@@ -879,6 +935,7 @@ def run_cycle():
                         logger.warning(
                             f"[{korean_name} / {market}] 매수 예산 부족: 요청금액 {trade_budget:,.0f}원 < 안전최소주문금액 {SAFE_ORDER_KRW:,.0f}원"
                         )
+                        audit_decision(market, "BLOCKED", "BUDGET", ["매수 예산 부족"], {"trade_budget": trade_budget})
                         continue
 
                     is_safe, rejection_reason = risk_guard.validate_buy(
@@ -890,6 +947,7 @@ def run_cycle():
                     )
                     if not is_safe:
                         logger.warning("[%s] 통합 리스크 검증으로 매수 차단: %s", market, rejection_reason)
+                        audit_decision(market, "BLOCKED", "RISK_GUARD", [rejection_reason], {"trade_budget": trade_budget})
                         continue
 
                     order_volume = (trade_budget * 0.995) / order_price
@@ -897,9 +955,10 @@ def run_cycle():
 
                     if formatted_volume <= 0:
                         logger.warning(f"[{market}] 계산된 수량이 너무 작아 주문 취소: {formatted_volume}")
+                        audit_decision(market, "BLOCKED", "ORDER_VALIDATION", ["주문 수량 오류"], {"volume": formatted_volume})
                         continue
 
-                    entry_label = "초기 돌파 소액" if candidate_type == "EARLY_BREAKOUT" else "AI 승인"
+                    entry_label = "반등 전용 축소" if use_recovery_rebound else ("초기 돌파 소액" if candidate_type == "EARLY_BREAKOUT" else "AI 승인")
                     logger.info(
                         f"🛒 [{korean_name} / {market} {entry_label} 매수 실행] 주문가={order_price:,.2f}원, 수량={formatted_volume:.6f}, 투입금액={int(trade_budget):,d}원"
                     )
@@ -907,7 +966,7 @@ def run_cycle():
                     cancel_bot_open_orders(bithumb, market)
 
                     # 승인 시점 값만 주문 원장에 저장해, 미래 체결 시점 정보와 혼동하지 않는다.
-                    entry_snapshot = dict(local_entry.get("strategy_snapshot", {}))
+                    entry_snapshot = dict(selected_entry.get("strategy_snapshot", {}))
                     entry_snapshot.update({
                         "exchange": "bithumb",
                         "market": market,
@@ -928,6 +987,10 @@ def run_cycle():
                         expected_price=order_price,
                         entry_strategy_snapshot=entry_snapshot,
                         exchange_name="bithumb",
+                    )
+                    audit_decision(
+                        market, "BUY_SUBMITTED", "RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD", [],
+                        {"order_price": order_price, "volume": formatted_volume, "trade_budget": trade_budget},
                     )
                     order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
                     client_order_id = order_res.get("client_order_id", "")

@@ -152,6 +152,24 @@ class DatabaseManager:
                 );
             """)
 
+            # 전략 캐시는 최신 화면 표시용이므로, 매 사이클의 차단·승인 근거는 별도 이력으로 보존한다.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS strategy_decisions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    decision_ts REAL NOT NULL,
+                    exchange TEXT NOT NULL,
+                    cycle_id TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    policy_mode TEXT NOT NULL,
+                    block_reasons_json TEXT NOT NULL DEFAULT '[]',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_sd_ex_ts ON strategy_decisions(exchange, decision_ts DESC);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_sd_ex_mkt_ts ON strategy_decisions(exchange, market, decision_ts DESC);")
+
             conn.commit()
 
     # =========================================================================
@@ -482,6 +500,67 @@ class DatabaseManager:
                 return json.loads(row["value_json"])
             except Exception:
                 return default
+
+    # =========================================================================
+    # Strategy Decision Audit Operations
+    # =========================================================================
+    def record_strategy_decision(
+        self,
+        *,
+        exchange: str,
+        cycle_id: str,
+        market: str,
+        action: str,
+        policy_mode: str,
+        block_reasons: list[str],
+        payload: dict[str, Any],
+        decision_ts: float | None = None,
+    ) -> None:
+        """한 사이클의 매수·관망·차단 근거를 거래소별 SQLite에 감사용으로 저장한다."""
+        with _DB_LOCK, self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO strategy_decisions (
+                    decision_ts, exchange, cycle_id, market, action, policy_mode,
+                    block_reasons_json, payload_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    float(decision_ts if decision_ts is not None else time.time()),
+                    exchange.strip().lower(),
+                    str(cycle_id),
+                    market.strip().upper(),
+                    str(action).upper(),
+                    str(policy_mode).upper(),
+                    json.dumps(block_reasons, ensure_ascii=False),
+                    json.dumps(payload, ensure_ascii=False, default=str),
+                ),
+            )
+            conn.commit()
+
+    def has_recovery_entry_since(self, exchange: str, since_ts: float) -> bool:
+        """같은 연속손실 회복 구간에서 반등 전용 주문을 하나로 제한한다."""
+        with _DB_LOCK, self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM strategy_decisions
+                WHERE exchange = ? AND policy_mode = 'RECOVERY_REBOUND'
+                  AND action = 'BUY_SUBMITTED' AND decision_ts >= ?
+                LIMIT 1
+                """,
+                (exchange.strip().lower(), float(since_ts)),
+            ).fetchone()
+            return row is not None
+
+    def purge_strategy_decisions(self, exchange: str, older_than_ts: float) -> int:
+        """주문·체결 원장은 보존하고, 기한이 지난 판단 이력만 정리한다."""
+        with _DB_LOCK, self._get_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM strategy_decisions WHERE exchange = ? AND decision_ts < ?",
+                (exchange.strip().lower(), float(older_than_ts)),
+            )
+            conn.commit()
+            return int(cursor.rowcount)
 
 
 def get_db_manager(db_path: str | None = None) -> DatabaseManager:
