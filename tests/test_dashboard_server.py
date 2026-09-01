@@ -72,6 +72,38 @@ class UnifiedDashboardServerTests(unittest.TestCase):
         self.assertTrue(combined["bithumb_online"])
         self.assertTrue(combined["upbit_online"])
 
+    def test_combined_watchlist_sorts_by_alpha_score_across_exchanges(self):
+        """통합 Watchlist는 거래소 수집 순서와 무관하게 7대 알파 점수 내림차순이어야 한다."""
+        def mock_fetch(_url, exchange_name):
+            candidates = (
+                [
+                    {"market": "KRW-BTC", "alpha_score": 68},
+                    {"market": "KRW-ETH", "alpha_score": 91},
+                ]
+                if exchange_name == "bithumb"
+                else [
+                    {"market": "KRW-SOL", "alpha_score": 84},
+                    # 점수가 없거나 비수치인 후보도 화면에서 안전하게 최하위로 정렬한다.
+                    {"market": "KRW-XRP", "alpha_score": "invalid"},
+                ]
+            )
+            return {
+                "online": True,
+                "exchange": exchange_name,
+                "candidates": candidates,
+                "positions": [],
+                "recent_trades": [],
+                "recent_orders": [],
+                "safety": {"entry_ready": True, "entry_block_reasons": [], "order_status_counts": {}},
+            }
+
+        self.server.fetch_exchange_status = MagicMock(side_effect=mock_fetch)
+
+        candidates = self.server.get_aggregated_status()["combined"]["candidates"]
+
+        self.assertEqual([item["market"] for item in candidates], ["KRW-ETH", "KRW-SOL", "KRW-BTC", "KRW-XRP"])
+        self.assertEqual([item["exchange"] for item in candidates], ["bithumb", "upbit", "bithumb", "upbit"])
+
     def test_single_exchange_offline_graceful_handling(self):
         """한쪽 거래소가 오프라인일 때도 크래시 없이 정상 거래소 데이터와 오프라인 상태가 표시되는지 검증"""
         def mock_fetch(url, exchange_name):

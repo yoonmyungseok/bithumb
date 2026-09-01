@@ -10,6 +10,7 @@ import argparse
 import hmac
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -321,6 +322,18 @@ class UnifiedDashboardServer:
                 item["exchange"] = "upbit"
                 item["exchange_label"] = "업비트"
                 combined_candidates.append(item)
+
+        def candidate_alpha_score(candidate: dict[str, Any]) -> float:
+            """통합 Watchlist 정렬에 사용할 유효한 7대 알파 점수를 반환한다."""
+            try:
+                score = float(candidate.get("alpha_score", 0) or 0)
+                # 누락·비수치·무한대 점수는 최하위 기본값으로 처리해 화면 정렬을 안정화한다.
+                return score if math.isfinite(score) else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+
+        # 통합 탭은 거래소별 수집 순서가 아닌 7대 알파 점수 높은 순으로 후보를 보여준다.
+        combined_candidates.sort(key=candidate_alpha_score, reverse=True)
 
         # 통합 최근 완료 거래 내역 (최신순 정렬)
         combined_recent_trades = []
