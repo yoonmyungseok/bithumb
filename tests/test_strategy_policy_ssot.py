@@ -84,14 +84,14 @@ class StrategyPolicySSOTTests(unittest.TestCase):
             self.assertFalse(signal["allow_buy"])
             self.assertFalse(signal["checklist_details"]["hard_gates"]["bb_guard"]["pass"])
 
-    def test_early_breakout_requires_a_confirmed_breakout_condition(self):
-        """초기 돌파 유형도 고점 돌파·거래량 급증·양봉 중 하나라도 빠지면 매수하지 않는다."""
+    def test_momentum_breakout_requires_a_confirmed_breakout_condition(self):
+        """모멘텀 돌파도 고점·거래량·양봉·RSI 중 하나라도 빠지면 매수하지 않는다."""
         candles = self._generate_mock_candles(count=30, base_price=1000.0, trend=1.0)
-        signal = entry_signal(candles, btc_regime="NORMAL", entry_type="EARLY_BREAKOUT")
+        signal = entry_signal(candles, btc_regime="NORMAL", entry_type="MOMENTUM_BREAKOUT")
 
-        self.assertEqual(signal["entry_type"], "EARLY_BREAKOUT")
-        self.assertIn("early_breakout", signal["strategy_snapshot"])
-        self.assertFalse(signal["early_breakout_passed"])
+        self.assertEqual(signal["entry_type"], "MOMENTUM_BREAKOUT")
+        self.assertIn("momentum_breakout", signal["strategy_snapshot"])
+        self.assertFalse(signal["momentum_breakout_passed"])
         self.assertFalse(signal["allow_buy"])
 
     def test_high_alpha_cannot_bypass_upper_zone_chase_block(self):
@@ -130,17 +130,17 @@ class StrategyPolicySSOTTests(unittest.TestCase):
         self.assertTrue(signal["checklist_details"]["hard_gates"]["rebound_confirmation"]["pass"])
         self.assertTrue(signal["allow_buy"])
 
-    def test_early_breakout_is_disabled_even_when_breakout_conditions_pass(self):
-        """고점 돌파 유형은 사용자 저점 매수 정책에 따라 신규 매수로 승인되지 않아야 한다."""
+    def test_momentum_breakout_approves_confirmed_breakout_with_safety_gates(self):
+        """확정봉 모멘텀 돌파는 별도 안전 게이트와 알파 기준을 만족할 때만 승인한다."""
         candles = self._generate_mock_candles(count=30, base_price=1000.0, trend=1.0)
-        candles[0].update({"trade_price": 1070.0, "opening_price": 1050.0, "high_price": 1072.0, "low_price": 1048.0, "candle_acc_trade_volume": 5000.0})
+        candles[0].update({"trade_price": 1060.0, "opening_price": 1050.0, "high_price": 1062.0, "low_price": 1048.0, "candle_acc_trade_volume": 5000.0})
         high_alpha = {"total_score": 95, "allow_buy": True, "factor_breakdown": {"orderflow_score": 10}}
 
-        with patch("strategy_engine.calculate_composite_alpha_score", return_value=high_alpha):
-            signal = entry_signal(candles, btc_regime="NORMAL", entry_type="EARLY_BREAKOUT")
+        with patch("strategy_engine.calculate_composite_alpha_score", return_value=high_alpha), patch("strategy_engine.calculate_rsi", return_value=60.0):
+            signal = entry_signal(candles, btc_regime="NORMAL", entry_type="MOMENTUM_BREAKOUT")
 
-        self.assertFalse(signal["allow_buy"])
-        self.assertIn("정책 비활성", signal["strategy_snapshot"]["early_breakout"]["detail"])
+        self.assertTrue(signal["allow_buy"])
+        self.assertTrue(signal["momentum_breakout_passed"])
 
     def test_orderbook_flow_tracker_rolling_smoothing(self):
         """OrderbookFlowTracker가 단일 스냅샷 왜곡을 완충하고 롤링 평균을 정상 계산하는지 검증 (과제 E)"""

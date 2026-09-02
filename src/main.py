@@ -116,11 +116,11 @@ MAX_TOTAL_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_EXPOSURE_PCT", "0.90"))
 MAX_ORDER_KRW = float(os.getenv("MAX_ORDER_KRW", "20000000"))
 # 관찰 기간에는 차단 후보만 기록하고, 검증 후 환경 변수로 신규 매수 차단을 활성화한다.
 ORDERBOOK_SLIPPAGE_ENFORCEMENT = os.getenv("ORDERBOOK_SLIPPAGE_ENFORCEMENT", "false").strip().lower() in {"1", "true", "yes", "on"}
-# 초기 돌파 경로는 빗썸에서만 활성화하며, 기존 확인형 안전 게이트와 주문 안전 검증을 함께 사용한다.
-# 저점권 반등 우선 정책에서는 고점 돌파 후보를 기본적으로 생성하지 않는다.
-EARLY_BREAKOUT_ENABLED = os.getenv("EARLY_BREAKOUT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-EARLY_BREAKOUT_MIN_CHANGE_RATE = float(os.getenv("EARLY_BREAKOUT_MIN_CHANGE_RATE", "0.003"))
-EARLY_BREAKOUT_MAX_CANDIDATES = int(os.getenv("EARLY_BREAKOUT_MAX_CANDIDATES", "2"))
+# 모멘텀 돌파는 확정봉·호가·주문 안전 검증을 모두 통과한 소수 후보만 직접 진입한다.
+# 기존 EARLY_BREAKOUT 환경 변수도 읽어 기존 운영 설정과의 호환성을 유지한다.
+MOMENTUM_BREAKOUT_ENABLED = os.getenv("MOMENTUM_BREAKOUT_ENABLED", os.getenv("EARLY_BREAKOUT_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
+MOMENTUM_BREAKOUT_MIN_CHANGE_RATE = float(os.getenv("MOMENTUM_BREAKOUT_MIN_CHANGE_RATE", os.getenv("EARLY_BREAKOUT_MIN_CHANGE_RATE", "0.003")))
+MOMENTUM_BREAKOUT_MAX_CANDIDATES = int(os.getenv("MOMENTUM_BREAKOUT_MAX_CANDIDATES", os.getenv("EARLY_BREAKOUT_MAX_CANDIDATES", "2")))
 # 비율 설정은 소수(0.05)와 기존 퍼센트 표기(5, -5)를 모두 지원한다.
 # 모든 실행 경로에서 동일한 정규화 함수를 사용해 200% 등의 오입력을 막는다.
 _risk_settings = load_runtime_risk_settings()
@@ -379,9 +379,9 @@ def run_cycle():
             max_positions=dyn_max_positions, top_count=dyn_top_count,
             create_screener=lambda: MarketScreener(bithumb, min_trade_value_krw=min_trade_val,
                                                     min_change_rate=min_change, max_change_rate=max_change,
-                                                    enable_early_breakout=EARLY_BREAKOUT_ENABLED,
-                                                    early_breakout_min_change_rate=EARLY_BREAKOUT_MIN_CHANGE_RATE,
-                                                    early_breakout_max_candidates=EARLY_BREAKOUT_MAX_CANDIDATES),
+                                                    enable_early_breakout=MOMENTUM_BREAKOUT_ENABLED,
+                                                    early_breakout_min_change_rate=MOMENTUM_BREAKOUT_MIN_CHANGE_RATE,
+                                                    early_breakout_max_candidates=MOMENTUM_BREAKOUT_MAX_CANDIDATES),
             btc_regime=btc_regime,
             on_screened_candidates=capture_screened_candidates,
         )
@@ -627,7 +627,7 @@ def run_cycle():
                 is_holding = (coin_value >= MIN_ORDER_KRW and avg_buy_price > 0)
                 ws_health = ws_client.get_health_status(market=market) if hasattr(ws_client, "get_health_status") else {"is_healthy": True, "status": "OK"}
                 ws_healthy = ws_health.get("is_healthy", True)
-                # 일반 신호가 미달한 반등 후보만 별도 정량 정책으로 확인하며, 초기 돌파 추격은 허용하지 않는다.
+                # 일반 신호가 미달한 반등 후보만 별도 정량 정책으로 확인하며, 모멘텀 돌파와 중복 주문하지 않는다.
                 recovery_entry = recovery_rebound_signal(
                     candles=completed_candles_5m, candles_1h=completed_candles_1h,
                     btc_regime=btc_regime, orderbook=orderbook, market=market, exchange="bithumb",
@@ -640,11 +640,17 @@ def run_cycle():
                 use_recovery_rebound = (
                     StrategyPolicy.RECOVERY_REBOUND_LIVE_ENABLED
                     and is_cooldown and not is_btc_crashing and ws_healthy
-                    and candidate_type != "EARLY_BREAKOUT"
+                    and candidate_type != "MOMENTUM_BREAKOUT"
                     and not local_entry.get("allow_buy", False)
                     and recovery_entry.get("allow_buy", False) and recovery_slot_available
                 )
                 selected_entry = recovery_entry if use_recovery_rebound else local_entry
+                # 모멘텀 돌파는 AI 재판단 지연 없이 확정봉 정량 조건을 통과한 경우에만 직접 주문 경로로 연결한다.
+                use_momentum_breakout = (
+                    candidate_type == "MOMENTUM_BREAKOUT"
+                    and not is_holding and reentry_allowed and not is_btc_crashing and ws_healthy
+                    and local_entry.get("allow_buy", False)
+                )
 
                 should_call_ai = (
                     analyzer is not None
@@ -664,6 +670,16 @@ def run_cycle():
                         "stop_loss": selected_entry.get("stop_loss", current_price * 0.98),
                         "alloc_pct": dyn_max_pos_pct * StrategyPolicy.RECOVERY_REBOUND_ALLOC_RATIO,
                         "reason": f"[급락 후 반등 전용·축소 비중] {selected_entry.get('reason', '')}",
+                    }
+                elif use_momentum_breakout:
+                    # 공격형 진입도 주문 안전 경계 밖으로 나가지 않도록 작은 최초 비중만 부여한다.
+                    strategy = {
+                        "status": "ACTIVE", "action": "BUY",
+                        "entry_price": local_entry.get("entry_price", current_price),
+                        "target_price": local_entry.get("target_price", current_price * 1.03),
+                        "stop_loss": local_entry.get("stop_loss", current_price * 0.98),
+                        "alloc_pct": dyn_max_pos_pct * StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO,
+                        "reason": f"[확정봉 모멘텀 돌파·최초 소액] {local_entry.get('reason', '')}",
                     }
                 elif should_call_ai and analyzer is not None:
                     feedback_context = trade_memory.get_feedback_context()
@@ -757,10 +773,10 @@ def run_cycle():
                 if fng["is_extreme_fear"] and action == "BUY":
                     alloc_pct = min(alloc_pct, 0.4)
 
-                if candidate_type == "EARLY_BREAKOUT" and action == "BUY":
-                    # 초기 돌파는 확인형 진입의 일부 비중만 사용하고, 추가 매수는 기존 확인형 신호에 맡긴다.
-                    alloc_pct = min(alloc_pct, dyn_max_pos_pct * StrategyPolicy.EARLY_BREAKOUT_ALLOC_RATIO)
-                    reason = f"[🌱초기 돌파 소액 진입] {reason}"
+                if candidate_type == "MOMENTUM_BREAKOUT" and action == "BUY":
+                    # 모멘텀 돌파는 최대 포지션 한도의 25%를 넘지 않아 급등 추격의 손실 확대를 제한한다.
+                    alloc_pct = min(alloc_pct, dyn_max_pos_pct * StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO)
+                    reason = f"[⚡모멘텀 돌파 최초 소액] {reason}"
 
                 if is_night_session() and action == "BUY":
                     alloc_pct = alloc_pct * StrategyPolicy.NIGHT_SESSION_ALLOC_RATIO
@@ -798,7 +814,7 @@ def run_cycle():
                     "reason": reason,
                     "alpha_score": alpha_score_val,
                     "candidate_type": candidate_type,
-                    "early_breakout": selected_entry.get("early_breakout", {}),
+                    "momentum_breakout": selected_entry.get("momentum_breakout", {}),
                     "policy_mode": "RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD",
                     "allow_buy": allow_buy_val,
                     "factor_breakdown": factor_breakdown,
@@ -980,7 +996,7 @@ def run_cycle():
                         audit_decision(market, "BLOCKED", "ORDER_VALIDATION", ["주문 수량 오류"], {"volume": formatted_volume})
                         continue
 
-                    entry_label = "반등 전용 축소" if use_recovery_rebound else ("초기 돌파 소액" if candidate_type == "EARLY_BREAKOUT" else "AI 승인")
+                    entry_label = "반등 전용 축소" if use_recovery_rebound else ("모멘텀 돌파 소액" if candidate_type == "MOMENTUM_BREAKOUT" else "AI 승인")
                     logger.info(
                         f"🛒 [{korean_name} / {market} {entry_label} 매수 실행] 주문가={order_price:,.2f}원, 수량={formatted_volume:.6f}, 투입금액={int(trade_budget):,d}원"
                     )

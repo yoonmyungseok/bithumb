@@ -41,7 +41,7 @@ class TestRelativeStrengthAndMomentumExit(unittest.TestCase):
         self.assertEqual(StrategyPolicy.PARTIAL_TP_1_RATIO, 0.30)
         self.assertEqual(StrategyPolicy.STOP_LOSS_PCT, 0.022)
         self.assertEqual(StrategyPolicy.MOMENTUM_EARLY_EXIT_SECONDS, 1800)
-        self.assertEqual(StrategyPolicy.RS_MIN_RISK_OFF, 0.012)
+        self.assertEqual(StrategyPolicy.RS_MIN_RISK_OFF, 0.008)
 
 
 if __name__ == "__main__":

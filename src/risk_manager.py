@@ -239,7 +239,7 @@ def build_candidates_data(
             factor_breakdown = strat.get("factor_breakdown", {})
             updated_at = strat.get("updated_at", "")
             candidate_type = str(strat.get("candidate_type", "CONFIRMED") or "CONFIRMED")
-            early_breakout = strat.get("early_breakout", {})
+            momentum_breakout = strat.get("momentum_breakout", {})
 
             target_pct = float(strat.get("target_pct") or (((target_price - curr_price) / curr_price * 100) if curr_price > 0 and target_price > 0 else 0.0))
             stop_pct = float(strat.get("stop_pct") or (((stop_loss - curr_price) / curr_price * 100) if curr_price > 0 and stop_loss > 0 else 0.0))
@@ -262,7 +262,7 @@ def build_candidates_data(
                 "allow_buy": allow_buy,
                 "factor_breakdown": factor_breakdown,
                 "candidate_type": candidate_type,
-                "early_breakout": early_breakout,
+                "momentum_breakout": momentum_breakout,
                 "target_pct": round(target_pct, 2),
                 "stop_pct": round(stop_pct, 2),
                 "risk_reward_ratio": round(rr_ratio, 2),

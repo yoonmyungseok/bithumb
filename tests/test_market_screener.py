@@ -68,15 +68,15 @@ class MarketScreenerTests(unittest.TestCase):
         self.assertNotIn("KRW-WIDE", selected_markets)
         self.assertNotIn("KRW-THIN", selected_markets)
 
-    def test_early_breakout_candidate_is_selected_only_when_enabled(self):
-        """초기 돌파 후보는 명시적으로 활성화한 경우에만 확인형 후보와 분리되어 반환된다."""
+    def test_momentum_breakout_candidate_is_selected_only_when_enabled(self):
+        """모멘텀 돌파 후보는 명시적으로 활성화한 경우에만 확인형 후보와 분리되어 반환된다."""
         class EarlyBreakoutAPI(FakeAPI):
             def get_all_markets(self):
                 return [{"market": "KRW-BTC"}, {"market": "KRW-CONF"}, {"market": "KRW-EARLY"}]
 
             def get_tickers(self, markets):
                 return [
-                    {"market": "KRW-BTC", "trade_price": "100000", "signed_change_rate": "0.005", "acc_trade_price_24h": "0"},
+                    {"market": "KRW-BTC", "trade_price": "100000", "signed_change_rate": "-0.005", "acc_trade_price_24h": "0"},
                     {"market": "KRW-CONF", "trade_price": "2000", "signed_change_rate": "0.02", "acc_trade_price_24h": "5000000000"},
                     {"market": "KRW-EARLY", "trade_price": "1000", "signed_change_rate": "0.007", "acc_trade_price_24h": "5000000000"},
                 ]
@@ -94,7 +94,7 @@ class MarketScreenerTests(unittest.TestCase):
             enable_early_breakout=True, early_breakout_max_candidates=1,
         ).scan_markets(top_count=1)
         early = next(item for item in enabled if item["market"] == "KRW-EARLY")
-        self.assertEqual(early["candidate_type"], "EARLY_BREAKOUT")
+        self.assertEqual(early["candidate_type"], "MOMENTUM_BREAKOUT")
 
 
 if __name__ == "__main__":

@@ -48,7 +48,7 @@ class MarketScreener:
     """
     빗썸/업비트 실시간 거래대금 상위 + 급등 모멘텀 + BTC 대비 상대 강도(RS) 동적 탐색기 (Screener)
     - KRW 마켓 전체를 실시간 스캔하여 거래대금과 상승률이 우수한 유망 단타 종목 자동 선별
-    - RISK_OFF 약세장 시 비트코인 대비 초과 상승(RS >= +1.5%) 및 거래대금(30억↑) 검증 종목만 엄선
+    - RISK_OFF 약세장 시 BTC 대비 초과 상승(RS >= +0.8%)과 거래대금을 확인해 공격형 후보를 선별
     - 기보유 중인 코인은 매도/손절 완료 전까지 최우선으로 목록에 유지
     - USDT, USDC 등 무변동 스테이블코인은 자금 잠김 방지를 위해 원천 배제
     """
@@ -69,7 +69,7 @@ class MarketScreener:
         self.min_change_rate = min_change_rate
         self.max_change_rate = max_change_rate
         self.max_spread_pct = max_spread_pct
-        # 초기 돌파는 확인형 후보와 분리하며, 기본값은 기존 동작 보존을 위해 비활성화한다.
+        # 모멘텀 돌파는 확인형 후보와 분리해 소수 슬롯에서만 평가한다.
         self.enable_early_breakout = enable_early_breakout
         self.early_breakout_min_change_rate = max(0.0, early_breakout_min_change_rate)
         self.early_breakout_max_candidates = max(0, early_breakout_max_candidates)
@@ -196,12 +196,12 @@ class MarketScreener:
                 if (
                     self.enable_early_breakout
                     and self.early_breakout_min_change_rate <= change_rate < self.min_change_rate
-                    and relative_strength >= 0.0
+                    and relative_strength >= StrategyPolicy.MOMENTUM_BREAKOUT_RS_MIN
                 ):
                     # 상대강도와 거래대금은 이미 위에서 검증했으므로, 초입 변동과 유동성을 함께 점수화한다.
                     early_score = (change_rate * 100.0 * math.log10(max(1.0, acc_price_24h))) + max(0.0, relative_strength * 80.0)
                     ticker_info["score"] = early_score
-                    ticker_info["candidate_type"] = "EARLY_BREAKOUT"
+                    ticker_info["candidate_type"] = "MOMENTUM_BREAKOUT"
                     ticker_info["is_held"] = False
                     early_breakout_candidates.append(ticker_info)
 
@@ -255,8 +255,8 @@ class MarketScreener:
                 except Exception:
                     continue
 
-            qualified_candidates = [c for c in screened_by_spread if c.get("candidate_type") != "EARLY_BREAKOUT"]
-            screened_early_breakouts = [c for c in screened_by_spread if c.get("candidate_type") == "EARLY_BREAKOUT"]
+            qualified_candidates = [c for c in screened_by_spread if c.get("candidate_type") != "MOMENTUM_BREAKOUT"]
+            screened_early_breakouts = [c for c in screened_by_spread if c.get("candidate_type") == "MOMENTUM_BREAKOUT"]
 
             if not is_risk_off and len(qualified_candidates) < top_count:
                 min_fb_trade_val = min(self.min_trade_value_krw, 1_000_000_000.0)
@@ -349,8 +349,8 @@ class MarketScreener:
             for rank, item in enumerate(final_selection, 1):
                 if item.get("is_held"):
                     held_tag = " [🔒보유중 포지션]"
-                elif item.get("candidate_type") == "EARLY_BREAKOUT":
-                    held_tag = " [🌱초기 돌파 후보]"
+                elif item.get("candidate_type") == "MOMENTUM_BREAKOUT":
+                    held_tag = " [⚡모멘텀 돌파 후보]"
                 else:
                     held_tag = " [🔥신규 급등 포착]"
                 trade_b_krw = item.get("acc_trade_price_24h", 0.0) / 100_000_000.0

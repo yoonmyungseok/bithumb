@@ -78,8 +78,8 @@ class StrategyPolicy:
     # 4. 하드 안전 게이트 (Hard Safety Gates) & 상대 강도(RS) 임계값
     ALPHA_BUY_THRESHOLD: int = 60        # 7대 팩터 복합 알파 승인 점수 (100점 만점)
     ALPHA_BUY_THRESHOLD_NORMAL: int = 60 # 정상장 7대 팩터 복합 알파 승인 점수
-    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 70 # RISK_OFF 약세장 엄선 승인 점수 (70점 완화)
-    RS_MIN_RISK_OFF: float = 0.012       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+1.2% 초과 상승)
+    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 60 # RISK_OFF 약세장 공격형 승인 점수
+    RS_MIN_RISK_OFF: float = 0.008       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+0.8% 초과 상승)
     MIN_TRADE_VALUE_RISK_OFF: float = 2_000_000_000.0  # 약세장 최소 24시간 거래대금 20억 원
     MIN_ASSET_PRICE_KRW: float = 10.0    # 10원 미만 극초저가 코인 차단
     RSI_MIN_NORMAL: float = 42.0         # 정상장 저점 반등 확인용 RSI 최소치
@@ -110,12 +110,18 @@ class StrategyPolicy:
     RECOVERY_REBOUND_MTF_EMA20_RATIO: float = 0.990
     RECOVERY_REBOUND_ALLOC_RATIO: float = 0.35
 
-    # 4-1. 초기 돌파는 고점 추격 위험이 있어 신규 매수 경로에서 비활성화한다.
-    EARLY_BREAKOUT_ALPHA_THRESHOLD_NORMAL: int = 55
-    EARLY_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF: int = 65
-    EARLY_BREAKOUT_VOLUME_RATIO_MIN: float = 1.5
-    EARLY_BREAKOUT_LOOKBACK_BARS: int = 4
-    EARLY_BREAKOUT_ALLOC_RATIO: float = 0.35
+    # 4-1. 공격형 모멘텀 돌파는 미완성 봉이 아닌 최신 확정봉만으로 평가한다.
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NORMAL: int = 55
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF: int = 60
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT: int = 65
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF: int = 70
+    MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN: float = 1.3
+    MOMENTUM_BREAKOUT_LOOKBACK_BARS: int = 4
+    MOMENTUM_BREAKOUT_RSI_MIN: float = 52.0
+    MOMENTUM_BREAKOUT_RSI_MAX: float = 70.0
+    MOMENTUM_BREAKOUT_RS_MIN: float = 0.008
+    MOMENTUM_BREAKOUT_MTF_EMA20_RATIO: float = 0.990
+    MOMENTUM_BREAKOUT_ALLOC_RATIO: float = 0.25
 
     # 5. 거시 시장 리스크 및 거래소 비용
     BTC_CRASH_THRESHOLD_PCT: float = 0.015  # BTC 15분 -1.5% 급락 시 차단
@@ -134,7 +140,7 @@ class StrategyPolicy:
     NIGHT_SESSION_START_HOUR: int = 0
     NIGHT_SESSION_END_HOUR: int = 7
     ALPHA_BUY_THRESHOLD_NIGHT: int = 75           # 심야 정상장 알파 승인 점수 (60 -> 75 상향)
-    ALPHA_BUY_THRESHOLD_NIGHT_RISK_OFF: int = 80  # 심야 약세장 알파 승인 점수 (70 -> 80 상향)
+    ALPHA_BUY_THRESHOLD_NIGHT_RISK_OFF: int = 70  # 심야 약세장 공격형 알파 승인 점수
     NIGHT_SESSION_ALLOC_RATIO: float = 0.50       # 심야 진입 자금 비중 50% 축소
     NIGHT_PARTIAL_TP_1_PCT: float = 0.015         # 심야 1차 분할 익절 +1.5% (조기 수익 확정)
     NIGHT_TIME_STOP_SECONDS: int = 5400           # 심야 90분 단축 타임스탑
@@ -157,6 +163,23 @@ def get_alpha_buy_threshold(btc_regime: str = "NORMAL", is_night: bool | None = 
         StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF
         if regime_upper == "RISK_OFF"
         else StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL
+    )
+
+
+def get_momentum_breakout_alpha_threshold(btc_regime: str = "NORMAL", is_night: bool | None = None) -> int:
+    """확정봉 모멘텀 돌파 전용 알파 기준을 세션과 BTC 레짐별로 반환한다."""
+    regime_upper = str(btc_regime or "NORMAL").upper()
+    night_active = is_night if is_night is not None else is_night_session()
+    if night_active:
+        return (
+            StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF
+            if regime_upper == "RISK_OFF"
+            else StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT
+        )
+    return (
+        StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF
+        if regime_upper == "RISK_OFF"
+        else StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NORMAL
     )
 
 
@@ -837,35 +860,47 @@ def entry_signal(
     total_score = int(alpha_res.get("total_score", 0) or 0)
     normalized_entry_type = (entry_type or "CONFIRMED").upper()
 
-    # 초기 돌파는 확정된 직전 5분봉의 거래량·고점 돌파·양봉을 모두 만족해야 한다.
-    early_breakout_passed = False
-    early_breakout_reason = "확인형 후보"
-    if normalized_entry_type == "EARLY_BREAKOUT":
-        lookback = StrategyPolicy.EARLY_BREAKOUT_LOOKBACK_BARS
+    # 모멘텀 돌파는 최신 확정 5분봉의 고점·거래량·양봉·RSI를 함께 확인한다.
+    momentum_breakout_passed = False
+    momentum_breakout_reason = "확인형 후보"
+    momentum_mtf_allowed = mtf_allowed
+    momentum_mtf_reason = mtf_reason
+    if normalized_entry_type == "MOMENTUM_BREAKOUT":
+        lookback = StrategyPolicy.MOMENTUM_BREAKOUT_LOOKBACK_BARS
         previous_candles = candles[1:lookback + 1]
         previous_high = max((float(c.get("high_price", c.get("trade_price", 0.0)) or 0.0) for c in previous_candles), default=0.0)
         previous_volumes = [float(c.get("candle_acc_trade_volume", 0.0) or 0.0) for c in candles[1:21]]
         average_volume = (sum(previous_volumes) / len(previous_volumes)) if previous_volumes else 0.0
         current_volume = float(candles[0].get("candle_acc_trade_volume", 0.0) or 0.0)
         current_open = float(candles[0].get("opening_price", current) or current)
-        volume_confirmed = average_volume > 0 and current_volume >= average_volume * StrategyPolicy.EARLY_BREAKOUT_VOLUME_RATIO_MIN
+        volume_confirmed = average_volume > 0 and current_volume >= average_volume * StrategyPolicy.MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN
         price_breakout = previous_high > 0 and current > previous_high
         bullish_candle = current >= current_open
-        early_breakout_passed = price_breakout and volume_confirmed and bullish_candle
-        early_breakout_reason = (
+        momentum_rsi_passed = StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MIN <= rsi <= StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MAX
+        if candles_1h and len(candles_1h) >= 20:
+            momentum_ema20 = calculate_ema([float(c.get("trade_price", 0.0)) for c in candles_1h], 20)
+            momentum_mtf_allowed = current_1h >= momentum_ema20 * StrategyPolicy.MOMENTUM_BREAKOUT_MTF_EMA20_RATIO
+            momentum_mtf_reason = (
+                f"1H {current_1h:.1f} {'>=' if momentum_mtf_allowed else '<'} "
+                f"EMA20 {momentum_ema20:.1f} (모멘텀 기준 {StrategyPolicy.MOMENTUM_BREAKOUT_MTF_EMA20_RATIO:.3f})"
+            )
+        momentum_breakout_passed = price_breakout and volume_confirmed and bullish_candle and momentum_rsi_passed
+        momentum_breakout_reason = (
             f"직전 {lookback}봉 고점 돌파={'통과' if price_breakout else '차단'}, "
             f"거래량배수={(current_volume / average_volume) if average_volume > 0 else 0.0:.2f}, "
-            f"양봉={'통과' if bullish_candle else '차단'}"
+            f"양봉={'통과' if bullish_candle else '차단'}, RSI={'통과' if momentum_rsi_passed else '차단'}, "
+            f"1H MTF={'통과' if momentum_mtf_allowed else '차단'}"
         )
-    # 고점 돌파 진입은 사용자 의도와 반대이므로, 점수와 거래량이 높아도 매수 경로로 사용하지 않는다.
-    if normalized_entry_type == "EARLY_BREAKOUT":
-        allowed = False
-        early_breakout_reason = "고점 돌파 신규 매수 정책 비활성"
+    if normalized_entry_type == "MOMENTUM_BREAKOUT":
+        # 반등형의 저점 근접 조건은 적용하지 않되, 급락·상위 추세·이격·윗꼬리 안전 게이트는 유지한다.
+        entry_alpha_threshold = get_momentum_breakout_alpha_threshold(btc_regime, night_active)
+        momentum_safety_passed = hard_gate_btc and momentum_mtf_allowed and hard_gate_disparity and hard_gate_shadow
+        allowed = momentum_safety_passed and momentum_breakout_passed and total_score >= entry_alpha_threshold
     else:
         # 알파 점수는 후보 품질 확인용이며, 저점권 반등 하드 게이트를 우회할 수 없다.
         # 심야 기준도 점수 계산과 같은 단일 함수에서 가져와 주문 경로 불일치를 막는다.
-        alpha_threshold = get_alpha_buy_threshold(btc_regime, night_active)
-        allowed = hard_gates_passed and signal_5m and total_score >= alpha_threshold
+        entry_alpha_threshold = get_alpha_buy_threshold(btc_regime, night_active)
+        allowed = hard_gates_passed and signal_5m and total_score >= entry_alpha_threshold
 
     # 4. [과제 A] StrategyPolicy SSOT 기반 동적 손익비 산출
     atr_data = calculate_atr(candles, period=14)
@@ -884,12 +919,12 @@ def entry_signal(
 
     checklist_details = {
         "alpha_score": alpha_res["total_score"],
-        "alpha_threshold": get_alpha_buy_threshold(btc_regime, night_active),
+        "alpha_threshold": entry_alpha_threshold,
         "is_night": night_active,
         "entry_type": normalized_entry_type,
-        "early_breakout": {
-            "pass": early_breakout_passed,
-            "detail": early_breakout_reason,
+        "momentum_breakout": {
+            "pass": momentum_breakout_passed,
+            "detail": momentum_breakout_reason,
         },
         "factor_breakdown": alpha_res["factor_breakdown"],
         "hard_gates": {
@@ -909,6 +944,12 @@ def entry_signal(
         "rsi_range": {"pass": (rsi_min <= rsi <= rsi_max), "value": rsi, "min": rsi_min, "max": rsi_max},
         "bollinger_pct_b": {"pass": (pct_b_min <= pct_b <= pct_b_max), "value": round(pct_b, 3), "min": pct_b_min, "max": pct_b_max},
         "mtf_1h_trend": {"pass": mtf_allowed, "detail": mtf_reason},
+        "momentum_breakout": {
+            "pass": momentum_breakout_passed,
+            "detail": momentum_breakout_reason,
+            "mtf_pass": momentum_mtf_allowed,
+            "mtf_detail": momentum_mtf_reason,
+        },
         "btc_regime": {"pass": regime_upper not in ("CRASH", "BEAR_VOLATILE"), "regime": btc_regime},
     }
 
@@ -924,8 +965,8 @@ def entry_signal(
         f"이격 {'안정' if hard_gate_disparity else '과열차단'}",
         mtf_reason,
     ]
-    if normalized_entry_type == "EARLY_BREAKOUT":
-        reasons.append(f"초기 돌파 {early_breakout_reason}")
+    if normalized_entry_type == "MOMENTUM_BREAKOUT":
+        reasons.append(f"모멘텀 돌파 {momentum_breakout_reason}")
 
     return {
         "allow_buy": allowed,
@@ -939,14 +980,18 @@ def entry_signal(
         "pct_b": pct_b,
         "alpha_score": alpha_res["total_score"],
         "entry_type": normalized_entry_type,
-        "early_breakout_passed": early_breakout_passed,
+        "momentum_breakout_passed": momentum_breakout_passed,
+        "momentum_breakout": {
+            "pass": momentum_breakout_passed,
+            "detail": momentum_breakout_reason,
+        },
         # 주문 원장에 그대로 보관할 수 있는 진입 시점의 결정론적 지표 스냅샷이다.
         "strategy_snapshot": {
             "entry_btc_regime": btc_regime,
             "entry_type": normalized_entry_type,
-            "early_breakout": {
-                "pass": early_breakout_passed,
-                "detail": early_breakout_reason,
+            "momentum_breakout": {
+                "pass": momentum_breakout_passed,
+                "detail": momentum_breakout_reason,
             },
             "alpha_score": alpha_res["total_score"],
             "factor_breakdown": dict(alpha_res["factor_breakdown"]),

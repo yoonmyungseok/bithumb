@@ -129,6 +129,10 @@ TOP_COUNT = int(os.getenv("TOP_COUNT", "3"))
 MIN_TRADE_VALUE = float(os.getenv("MIN_TRADE_VALUE", "1000000000"))  # 최소 10억 원
 MIN_CHANGE_RATE = float(os.getenv("MIN_CHANGE_RATE", "0.005"))        # 최소 +0.5%
 MAX_CHANGE_RATE = float(os.getenv("MAX_CHANGE_RATE", "0.25"))        # 최대 +25.0%
+# 업비트도 빗썸과 같은 확정봉 모멘텀 돌파 정책을 사용하되, 기존 환경 변수는 호환한다.
+MOMENTUM_BREAKOUT_ENABLED = os.getenv("UPBIT_MOMENTUM_BREAKOUT_ENABLED", os.getenv("MOMENTUM_BREAKOUT_ENABLED", os.getenv("EARLY_BREAKOUT_ENABLED", "true"))).strip().lower() in {"1", "true", "yes", "on"}
+MOMENTUM_BREAKOUT_MIN_CHANGE_RATE = float(os.getenv("UPBIT_MOMENTUM_BREAKOUT_MIN_CHANGE_RATE", os.getenv("MOMENTUM_BREAKOUT_MIN_CHANGE_RATE", os.getenv("EARLY_BREAKOUT_MIN_CHANGE_RATE", "0.003"))))
+MOMENTUM_BREAKOUT_MAX_CANDIDATES = int(os.getenv("UPBIT_MOMENTUM_BREAKOUT_MAX_CANDIDATES", os.getenv("MOMENTUM_BREAKOUT_MAX_CANDIDATES", os.getenv("EARLY_BREAKOUT_MAX_CANDIDATES", "2"))))
 
 INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "5"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
@@ -423,7 +427,10 @@ def run_cycle():
             upbit, held_markets=held_markets, is_auto_mode=is_auto_mode, raw_markets=raw_markets,
             max_positions=dyn_max_positions, top_count=dyn_top_count,
             create_screener=lambda: MarketScreener(upbit, min_trade_value_krw=min_trade_val,
-                                                    min_change_rate=min_change, max_change_rate=max_change),
+                                                    min_change_rate=min_change, max_change_rate=max_change,
+                                                    enable_early_breakout=MOMENTUM_BREAKOUT_ENABLED,
+                                                    early_breakout_min_change_rate=MOMENTUM_BREAKOUT_MIN_CHANGE_RATE,
+                                                    early_breakout_max_candidates=MOMENTUM_BREAKOUT_MAX_CANDIDATES),
             btc_regime=btc_regime,
             on_screened_candidates=capture_screened_candidates,
         )
@@ -457,6 +464,7 @@ def run_cycle():
 
             try:
                 candidate_metadata = screened_candidate_metadata.get(market, {})
+                candidate_type = str(candidate_metadata.get("candidate_type", "CONFIRMED")).upper()
                 market_snapshot = cycle_orchestrator.load_market_snapshot(upbit, market, INTERVAL_MINUTES)
                 currency, korean_name = market_snapshot.currency, market_snapshot.korean_name
                 logger.info(f"--- [{korean_name} / {market} 업비트 AI 퀀트 분석 시작] ---")
@@ -674,6 +682,7 @@ def run_cycle():
                     orderbook=orderbook,
                     market=market,
                     exchange="upbit",
+                    entry_type=candidate_type,
                     is_night=night_session_active,
                 )
                 # 일반 진입이 실패한 경우에만, 연속손실 회복 구간의 반등 전용 조건을 독립 평가한다.
@@ -693,10 +702,17 @@ def run_cycle():
                 use_recovery_rebound = (
                     StrategyPolicy.RECOVERY_REBOUND_LIVE_ENABLED
                     and is_cooldown and not is_btc_crashing and ws_healthy
+                    and candidate_type != "MOMENTUM_BREAKOUT"
                     and not local_entry.get("allow_buy", False)
                     and recovery_entry.get("allow_buy", False) and recovery_slot_available
                 )
                 selected_entry = recovery_entry if use_recovery_rebound else local_entry
+                # AI 호출 지연 없이도 확정봉 모멘텀 안전 조건을 만족한 경우에만 직접 주문을 허용한다.
+                use_momentum_breakout = (
+                    candidate_type == "MOMENTUM_BREAKOUT"
+                    and not is_holding and reentry_allowed and not is_btc_crashing and ws_healthy
+                    and local_entry.get("allow_buy", False)
+                )
 
                 should_call_ai = (
                     analyzer is not None
@@ -716,6 +732,16 @@ def run_cycle():
                         "stop_loss": selected_entry.get("stop_loss", current_price * 0.98),
                         "alloc_pct": dyn_max_pos_pct * StrategyPolicy.RECOVERY_REBOUND_ALLOC_RATIO,
                         "reason": f"[급락 후 반등 전용·축소 비중] {selected_entry.get('reason', '')}",
+                    }
+                elif use_momentum_breakout:
+                    # 최초 진입만 허용해 모멘텀 추격이 평균단가 물타기로 변질되지 않게 한다.
+                    strategy = {
+                        "status": "ACTIVE", "action": "BUY",
+                        "entry_price": local_entry.get("entry_price", current_price),
+                        "target_price": local_entry.get("target_price", current_price * 1.03),
+                        "stop_loss": local_entry.get("stop_loss", current_price * 0.98),
+                        "alloc_pct": dyn_max_pos_pct * StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO,
+                        "reason": f"[확정봉 모멘텀 돌파·최초 소액] {local_entry.get('reason', '')}",
                     }
                 elif should_call_ai and analyzer is not None:
                     feedback_context = trade_memory.get_feedback_context()
@@ -808,6 +834,11 @@ def run_cycle():
 
                 if fng.get("is_extreme_fear", False) and action == "BUY":
                     alloc_pct = min(alloc_pct, 0.4)
+
+                if candidate_type == "MOMENTUM_BREAKOUT" and action == "BUY":
+                    # 모멘텀 돌파는 거래소별 최대 포지션 한도의 25%를 초과하지 않는다.
+                    alloc_pct = min(alloc_pct, dyn_max_pos_pct * StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO)
+                    reason = f"[⚡모멘텀 돌파 최초 소액] {reason}"
 
                 if is_night_session() and action == "BUY":
                     alloc_pct = alloc_pct * StrategyPolicy.NIGHT_SESSION_ALLOC_RATIO
