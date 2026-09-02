@@ -1,17 +1,14 @@
-from datetime import datetime, timedelta
 import logging
 import os
-import signal
 import sys
 import time
 from logging.handlers import TimedRotatingFileHandler
 from typing import Any
 
-from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 
 from bithumb_api import BithumbAPI
-from db_manager import get_db_manager, get_exchange_db_path, migrate_legacy_json_to_sqlite
+from db_manager import get_db_manager, get_exchange_db_path
 from exchange_adapter import BithumbAdapter, ExchangeAdapter
 from bot_controller import BotController
 from chart_renderer import ChartRenderer
@@ -24,8 +21,6 @@ from order_safety import (
     OrderStatus,
     RiskGuard,
     SafeOrderExecutor,
-    calculate_risk_position_size,
-    evaluate_buy_orderbook_impact,
     get_dynamic_portfolio_tiers,
     write_json_atomically,
 )
@@ -53,9 +48,22 @@ from strategy_engine import (
     select_completed_candles,
 )
 from telegram_alert import TelegramAlert
-from trading_orchestrator import TradingOrchestrator
 from trade_memory import TradeMemoryManager
-from web_server import DashboardWebServer
+from trading_bot_bootstrap import (
+    ExchangeBootstrapProfile,
+    TradingBootstrapContext,
+    TradingBotBootstrap,
+)
+from trading_orchestrator import TradingOrchestrator
+from trading_runtime import (
+    ExchangeBuyProfile,
+    ExchangeCycleProfile,
+    ExchangeEntryProfile,
+    ExchangeExitProfile,
+    TradingCycleEngine,
+    TradingRuntimeConfig,
+    TradingRuntimeContext,
+)
 from websocket_manager import BithumbWebSocketClient
 
 # 윈도우 cp949 인코딩 에러 방지 (이모지 및 한글 UTF-8 표준화)
@@ -240,9 +248,112 @@ private_ws = BithumbPrivateWebSocketClient(
 )
 
 
+def _create_bithumb_screener(exchange: ExchangeAdapter) -> MarketScreener:
+    """사이클마다 최신 env를 반영한 빗썸 스크리너를 생성한다."""
+    return MarketScreener(
+        exchange,
+        min_trade_value_krw=float(os.getenv("MIN_TRADE_VALUE", "1000000000")),
+        min_change_rate=float(os.getenv("MIN_CHANGE_RATE", "0.005")),
+        max_change_rate=float(os.getenv("MAX_CHANGE_RATE", "0.25")),
+        enable_early_breakout=MOMENTUM_BREAKOUT_ENABLED,
+        early_breakout_min_change_rate=MOMENTUM_BREAKOUT_MIN_CHANGE_RATE,
+        early_breakout_max_candidates=MOMENTUM_BREAKOUT_MAX_CANDIDATES,
+    )
+
+
+BITHUMB_CYCLE_PROFILE = ExchangeCycleProfile(
+    exchange_key="bithumb",
+    reconcile_label="",
+    decision_exchange="bithumb",
+    log_prefix="",
+    extra_excluded_markets=frozenset(),
+    create_screener=_create_bithumb_screener,
+    cycle_start_label="5분 AI 퀀트 트레이딩",
+    tier_label="스마트 자산 티어",
+    tier_top_wording="스크리닝 상위",
+    summary_label="자산 요약",
+    btc_crash_label="비트코인 급락 위험 감지",
+)
+
+BITHUMB_EXIT_PROFILE = ExchangeExitProfile()
+
+BITHUMB_ENTRY_PROFILE = ExchangeEntryProfile(
+    signal_exchange="bithumb",
+    recovery_db_exchange="bithumb",
+    continue_on_inactive_status=True,
+)
+
+
+def _send_btc_crash_buy_block_alert(market: str, korean_name: str, btc_status_msg: str) -> None:
+    """BTC 급락 시 알트코인 매수 차단 알림."""
+    telegram.send_debounced_message(
+        category_key=f"btc_crash_{market}",
+        text=(
+            f"⚠️ <b>[{korean_name}({market}) 매수 차단 - BTC 급락 방어]</b>\n"
+            f"• 사유: <i>{btc_status_msg}</i>\n"
+            f"• 대장주(BTC) 급락으로 인한 알트코인 동반 폭락 위험 방지"
+        ),
+        min_interval_sec=900.0,
+    )
+
+
+BITHUMB_BUY_PROFILE = ExchangeBuyProfile(
+    exchange_name="bithumb",
+    enable_cycle_stop_loss=True,
+    enforce_pre_buy_safety_gates=True,
+    block_unresolved_market=True,
+    block_duplicate_position=True,
+    block_alt_on_btc_crash=True,
+    use_slot_based_budget=True,
+    use_entry_price_guard=True,
+    risk_guard_log_label="통합 리스크 검증",
+    send_btc_crash_block_alert=_send_btc_crash_buy_block_alert,
+)
+
+
 def cancel_bot_open_orders(bithumb: BithumbAPI, market: str | None = None) -> int:
     """봇이 발행한 미체결 주문만 선별 취소하여 외부/수동 주문 보호"""
     return realtime_engine.cancel_bot_open_orders(market=market)
+
+
+cycle_engine = TradingCycleEngine(
+    TradingRuntimeConfig(
+        profile=BITHUMB_CYCLE_PROFILE,
+        exit_profile=BITHUMB_EXIT_PROFILE,
+        entry_profile=BITHUMB_ENTRY_PROFILE,
+        buy_profile=BITHUMB_BUY_PROFILE,
+        env_file=None,
+        interval_minutes=INTERVAL_MINUTES,
+        gemini_api_key=GEMINI_API_KEY,
+        is_bot_paused=get_is_bot_paused,
+        min_order_krw=MIN_ORDER_KRW,
+        orderbook_slippage_enforcement=ORDERBOOK_SLIPPAGE_ENFORCEMENT,
+    ),
+    TradingRuntimeContext(
+        logger=logger,
+        orchestrator=cycle_orchestrator,
+        create_exchange_client=create_exchange_client,
+        order_journal=order_journal,
+        fill_processor=fill_processor,
+        trailing_tracker=trailing_tracker,
+        realtime_engine=realtime_engine,
+        risk_manager=risk_manager,
+        risk_guard=risk_guard,
+        bot_controller=bot_controller,
+        ws_client=ws_client,
+        decision_db=decision_db,
+        calculate_total_equity=calculate_total_equity,
+        get_held_markets=get_held_markets,
+        get_portfolio_tiers=get_dynamic_portfolio_tiers,
+        order_executor=order_executor,
+        chart_renderer=chart_renderer,
+        cancel_bot_open_orders=cancel_bot_open_orders,
+        cooldown_manager=cooldown_manager,
+        trade_memory=trade_memory,
+        latest_strategies=LATEST_STRATEGIES,
+        strategy_cache_manager=strategy_cache_mgr,
+    ),
+)
 
 
 def check_btc_market_crash(bithumb: BithumbAPI, threshold_pct: float = BTC_CRASH_THRESHOLD_PCT) -> tuple[bool, str, str]:
@@ -293,774 +404,7 @@ def run_cycle():
     """
     [MTF + 호가창 수급 + ATR 변동성 + 자가학습 메모리 + 차트 이미지 + 복리 자금관리] 5분 오케스트레이션 사이클
     """
-    load_dotenv(override=True)
-
-    raw_markets = os.getenv("MARKETS", "AUTO").strip()
-    is_auto_mode = raw_markets.upper() == "AUTO"
-    top_count = int(os.getenv("TOP_COUNT", "3"))
-    min_trade_val = float(os.getenv("MIN_TRADE_VALUE", "1000000000"))
-    min_change = float(os.getenv("MIN_CHANGE_RATE", "0.005"))
-    max_change = float(os.getenv("MAX_CHANGE_RATE", "0.25"))
-    risk_settings = load_runtime_risk_settings()
-    btc_crash_pct = risk_settings.btc_crash_threshold_pct
-    max_daily_loss = risk_settings.max_daily_loss_pct
-    trailing_start = risk_settings.trailing_start_pct
-    trailing_stop = risk_settings.trailing_stop_pct
-
-    trailing_tracker.start_profit_pct = trailing_start
-    trailing_tracker.trailing_drop_pct = trailing_stop
-    risk_manager.max_loss_pct = max_daily_loss
-
-    now_dt = get_kst_now()
-    now_str = get_kst_now_str()
-    logger.info(f"============================================================")
-    logger.info(f"🚀 [5분 AI 퀀트 트레이딩 사이클 가동: {now_str}]")
-    logger.info(f"============================================================")
-
-    try:
-        bithumb = create_exchange_client()
-        analyzer = GeminiAnalyzer(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-
-        # 0. REST 기반 미완료 주문 체결 상태 자동 재조정 (공통 오케스트레이터)
-        cycle_orchestrator.reconcile_orders(bithumb, order_journal, fill_processor)
-
-        snapshot = cycle_orchestrator.refresh_portfolio(
-            bithumb, calculate_total_equity=calculate_total_equity, get_held_markets=get_held_markets,
-            trailing_tracker=trailing_tracker, realtime_engine=realtime_engine, risk_manager=risk_manager,
-            risk_guard=risk_guard, get_portfolio_tiers=get_dynamic_portfolio_tiers, now=now_dt,
-        )
-        balances, krw_available = snapshot.balances, snapshot.krw_available
-        current_total_equity, held_markets = snapshot.total_equity, snapshot.held_markets
-        stale_state_count = snapshot.stale_states
-        if stale_state_count:
-            logger.info("보유 잔고와 불일치하는 과거 트레일링 상태 %d건 자동 정리", stale_state_count)
-        canceled_stale, requoted = snapshot.canceled_stale, snapshot.requoted
-        if canceled_stale > 0 or requoted > 0:
-            logger.info("미체결 주문 정리/정정: 취소 %d건, 정정 %d건", canceled_stale, requoted)
-        is_kill_switch, daily_pnl = snapshot.is_kill_switch, snapshot.daily_pnl
-        is_cooldown, cd_minutes = snapshot.is_cooldown, snapshot.cooldown_minutes
-        dyn_max_positions, dyn_max_pos_pct, dyn_top_count = snapshot.max_positions, snapshot.max_position_pct, snapshot.top_count
-        tot_disp = f"{current_total_equity:,.2f}원" if (0 < current_total_equity < 100 or current_total_equity % 1 != 0 and current_total_equity < 1000) else f"{current_total_equity:,.0f}원"
-        krw_disp = f"{krw_available:,.2f}원" if (0 < krw_available < 100 or krw_available % 1 != 0 and krw_available < 1000) else f"{krw_available:,.0f}원"
-        logger.info(
-            f"📊 [스마트 자산 티어] 총 자산 {tot_disp} ➜ 최대 {dyn_max_positions}종목 분할 (종목당 {dyn_max_pos_pct*100:.0f}% 한도, 스크리닝 상위 {dyn_top_count}개)"
-        )
-
-        # 3-3. 비트코인 급락 및 시장 레짐 감시
-        is_btc_crashing, btc_regime, btc_status_msg = check_btc_market_crash(bithumb, threshold_pct=btc_crash_pct)
-        trailing_tracker.set_macro_defensive_mode(is_btc_crashing)
-        if is_btc_crashing:
-            logger.warning(f"⚠️ [비트코인 급락 위험 감지] 레짐: {btc_regime} ({btc_status_msg}) ➜ 보유 알트코인 비상 방어 모드 가동")
-
-        fng = get_fear_and_greed_index()
-        tot_disp = f"{current_total_equity:,.2f}원" if (0 < current_total_equity < 100 or current_total_equity % 1 != 0 and current_total_equity < 1000) else f"{current_total_equity:,.0f}원"
-        krw_disp = f"{krw_available:,.2f}원" if (0 < krw_available < 100 or krw_available % 1 != 0 and krw_available < 1000) else f"{krw_available:,.0f}원"
-        logger.info(f"📊 [자산 요약] 총 자산: {tot_disp} | 원화: {krw_disp} | 당일 손익: {daily_pnl*100:+.2f}% | 공포탐욕: {fng['desc']}")
-
-        bot_state_badge = "⏸️ 일시정지 중" if IS_BOT_PAUSED else ("🛑 킬스위치 발동" if is_kill_switch else ("❄️ 쿨다운 대기" if is_cooldown else "🟢 정상 가동 중"))
-
-        # 대시보드 및 구글 시트 동기화
-        bot_controller.get_dashboard_data()
-
-
-
-        screened_candidate_metadata: dict[str, dict[str, Any]] = {}
-
-        def capture_screened_candidates(candidates: list[dict[str, Any]]) -> None:
-            """이번 사이클의 후보 유형을 주문 기록까지 전달하기 위한 로컬 저장소다."""
-            screened_candidate_metadata.clear()
-            for candidate in candidates:
-                market_code = str(candidate.get("market", "")).upper()
-                if market_code:
-                    screened_candidate_metadata[market_code] = dict(candidate)
-
-        target_markets = cycle_orchestrator.select_target_markets(
-            bithumb, held_markets=held_markets, is_auto_mode=is_auto_mode, raw_markets=raw_markets,
-            max_positions=dyn_max_positions, top_count=dyn_top_count,
-            create_screener=lambda: MarketScreener(bithumb, min_trade_value_krw=min_trade_val,
-                                                    min_change_rate=min_change, max_change_rate=max_change,
-                                                    enable_early_breakout=MOMENTUM_BREAKOUT_ENABLED,
-                                                    early_breakout_min_change_rate=MOMENTUM_BREAKOUT_MIN_CHANGE_RATE,
-                                                    early_breakout_max_candidates=MOMENTUM_BREAKOUT_MAX_CANDIDATES),
-            btc_regime=btc_regime,
-            on_screened_candidates=capture_screened_candidates,
-        )
-        logger.info(f"이번 사이클 최종 분석 대상 마켓 ({len(target_markets)}개): {target_markets}")
-
-
-
-        # ⚡ 빗썸 실시간 웹소켓(WebSocket) 구독 갱신
-        ws_client.update_subscriptions(list(dict.fromkeys(target_markets + held_markets + ["KRW-BTC"])))
-
-        decision_db.purge_strategy_decisions("bithumb", time.time() - 30 * 24 * 60 * 60)
-        cycle_id = now_dt.strftime("%Y%m%d%H%M%S")
-
-        def audit_decision(market: str, action: str, policy_mode: str, reasons: list[str], payload: dict[str, Any]) -> None:
-            """감사 저장 오류가 매수·청산 안전 경로를 중단시키지 않도록 격리한다."""
-            try:
-                decision_db.record_strategy_decision(
-                    exchange="bithumb", cycle_id=cycle_id, market=market, action=action,
-                    policy_mode=policy_mode, block_reasons=reasons, payload=payload,
-                )
-            except Exception as exc:
-                logger.warning("[%s] 전략 판단 이력 저장 실패: %s", market, exc)
-
-        # 5. 마켓별 순회 분석 및 매매 실행
-        for market in target_markets:
-            try:
-                candidate_metadata = screened_candidate_metadata.get(market, {})
-                candidate_type = str(candidate_metadata.get("candidate_type", "CONFIRMED")).upper()
-                market_snapshot = cycle_orchestrator.load_market_snapshot(bithumb, market, INTERVAL_MINUTES)
-                currency, korean_name = market_snapshot.currency, market_snapshot.korean_name
-                logger.info(f"--- [{korean_name} / {market} AI 퀀트 분석 시작] ---")
-                balances, krw_available = market_snapshot.balances, market_snapshot.krw_available
-                coin_available, avg_buy_price = market_snapshot.coin_available, market_snapshot.avg_buy_price
-                current_price = market_snapshot.current_price
-                coin_value = coin_available * current_price
-                candles_5m, candles_1h, orderbook = market_snapshot.candles_5m, market_snapshot.candles_1h, market_snapshot.orderbook
-
-                # =========================================================================
-                # 🎯 [최우선 1: 50% 분할 익절 & 가속 트레일링 스탑 즉시 청산]
-                # =========================================================================
-                if coin_value >= MIN_ORDER_KRW and avg_buy_price > 0 and not order_journal.has_active_exit_order(market):
-                    action_type, peak_p, _trigger_p, peak_profit_pct, realized_profit_pct = (
-                        trailing_tracker.check_position(market, current_price, avg_buy_price)
-                    )
-
-                    if action_type in ("PARTIAL_TP", "PARTIAL_TP_1", "PARTIAL_TP_2"):
-                        is_stage2 = (action_type == "PARTIAL_TP_2")
-                        sell_ratio = (30.0 / 70.0) if is_stage2 else StrategyPolicy.PARTIAL_TP_1_RATIO
-                        sell_vol = coin_available * sell_ratio
-                        sell_val = sell_vol * current_price
-                        stage_name = "2차 30%" if is_stage2 else "1차 30%"
-                        if sell_val >= MIN_ORDER_KRW and trailing_tracker.acquire_exit_lock(market):
-                            try:
-                                logger.info(
-                                    f"🎉 [{korean_name} / {market} {stage_name} 분할익절 발동] 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). {stage_name} 시장가 익절!"
-                                )
-                                cancel_bot_open_orders(bithumb, market)
-
-                                order_res = order_executor.submit(
-                                    bithumb,
-                                    market=market,
-                                    side="ask",
-                                    volume=sell_vol,
-                                    ord_type="market",
-                                    position_id=market,
-                                    exit_reason=f"PARTIAL_TP_{2 if is_stage2 else 1}",
-                                    avg_buy_price=avg_buy_price,
-                                )
-                                order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
-                                client_order_id = order_res.get("client_order_id", "")
-
-                                # ACK 뒤 50ms 단건 조회는 제거한다. 다음 REST 대사에서만 체결을 확정한다.
-
-                                # [알림 최적화] 분할익절 접수 알림 제거 (실체결 완료 시 OrderFillProcessor에서 발송)
-                                pass
-                            finally:
-                                trailing_tracker.release_exit_lock(market)
-
-                    elif action_type == "TRAILING_STOP":
-                        if trailing_tracker.acquire_exit_lock(market):
-                            try:
-                                logger.info(
-                                    f"🎯 [{korean_name} / {market} 트레일링 스탑 익절 발동] 최고점 {peak_p:,.2f}원(+{peak_profit_pct:.2f}%) ➜ 현재 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 잔여 전량 시장가 익절!"
-                                )
-                                cancel_bot_open_orders(bithumb, market)
-
-                                order_res = order_executor.submit(
-                                    bithumb,
-                                    market=market,
-                                    side="ask",
-                                    volume=coin_available,
-                                    ord_type="market",
-                                    position_id=market,
-                                    exit_reason="TRAILING_STOP",
-                                    avg_buy_price=avg_buy_price,
-                                )
-                                order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
-                                client_order_id = order_res.get("client_order_id", "")
-
-                                # ACK 뒤 단건 조회 대신 주기적 REST 대사로 체결과 손익을 확정한다.
-
-                                pnl_krw = (current_price - avg_buy_price) * coin_available
-                                chart_img = chart_renderer.render_trade_chart(
-                                    market=market,
-                                    korean_name=korean_name,
-                                    candles=candles_5m,
-                                    entry_price=avg_buy_price,
-                                    target_price=peak_p,
-                                    stop_loss=avg_buy_price,
-                                    action="SELL",
-                                )
-
-                                # [알림 최적화] 트레일링 스탑 접수 알림 제거 (실제 체결 완료 시 OrderFillProcessor에서 발송)
-                                pass
-
-
-                                # 쿨다운은 확인 체결 증가분에서 OrderFillProcessor가 기록한다.
-                            finally:
-                                trailing_tracker.release_exit_lock(market)
-                            continue
-
-                # =========================================================================
-                # ⏳ [최우선 2: 15분 모멘텀 소멸 조기 탈출 & 60분 횡보 방지 타임스탑]
-                # =========================================================================
-                if coin_value >= MIN_ORDER_KRW and avg_buy_price > 0 and not order_journal.has_active_exit_order(market):
-                    entry_ts = trailing_tracker.get_entry_time(market)
-                    if entry_ts <= 0:
-                        # 진입 시점이 미등록된 포지션은 즉시 타임스탑 오발동을 방지하기 위해 현재 시각으로 보정 등록
-                        entry_ts = time.time()
-                        trailing_tracker.set_entry_time(market, entry_ts)
-                        logger.info(f"⏱️ [{market}] 진입 시점 미등록 포지션 감지 ➜ 현재 시간으로 보정 등록 ({now_str})")
-
-                    hold_duration_sec = time.time() - entry_ts
-                    pnl_pct_current = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
-                    if btc_regime == "RISK_OFF":
-                        effective_time_stop = StrategyPolicy.TIME_STOP_SECONDS_RISK_OFF
-                    elif is_night_session():
-                        effective_time_stop = StrategyPolicy.NIGHT_TIME_STOP_SECONDS
-                    else:
-                        effective_time_stop = StrategyPolicy.TIME_STOP_SECONDS_NORMAL
-
-                    # 1. 5분봉 지지선 및 추세 붕괴 여부 정밀 판정
-                    is_holding_support = False
-                    is_trend_broken = False
-                    is_above_vwap = True
-                    if candles_5m:
-                        vwap_data = calculate_vwap(candles_5m)
-                        is_above_vwap = vwap_data.get("is_above", True)
-                        if len(candles_5m) >= 20:
-                            prices_5m = [float(c.get("trade_price", 0.0)) for c in candles_5m]
-                            ma20_5m = sum(prices_5m[:20]) / 20.0
-                            ma5_5m = sum(prices_5m[:5]) / 5.0
-                            is_holding_support = (current_price >= ma20_5m) or is_above_vwap
-                            is_trend_broken = (ma5_5m < ma20_5m * 0.995) and (not is_above_vwap)
-
-                    # 2. [본전 보장 타임스탑 - Case A]: 실질 본전 이상(+0.05% 이상) 구간
-                    #    - 5분봉 지지선(MA20/VWAP) 유지 시 최대 180분까지 추세 상승을 대기
-                    #    - 지지선 이탈 시에만 타임스탑 경과 후 안전하게 분할/본전 청산
-                    be_threshold_pct = StrategyPolicy.TIME_STOP_BREAKEVEN_MIN_PNL_PCT * 100.0  # +0.05%
-                    is_breakeven_or_profit = pnl_pct_current >= be_threshold_pct
-                    is_time_stop_profit_trigger = (
-                        hold_duration_sec >= effective_time_stop
-                        and is_breakeven_or_profit
-                        and (not is_holding_support or hold_duration_sec >= StrategyPolicy.TIME_STOP_MAX_HOLD_SECONDS)
-                    )
-
-                    # 3. [본전 보장 타임스탑 - Case B]: 마이너스 손실 구간에서는 성급한 투매를 차단하고 반등 대기
-                    #    - 지지선 유지 시 최대 180분까지 손절선(-2.2%)을 지키며 반등 기회 보장
-                    #    - 추세가 명백히 붕괴되었거나 최대 유예 시간(180분) 초과 시에만 방어적 청산
-                    is_time_stop_loss_trigger = (
-                        (hold_duration_sec >= StrategyPolicy.TIME_STOP_MAX_HOLD_SECONDS or (hold_duration_sec >= effective_time_stop and is_trend_broken))
-                        and (pnl_pct_current < be_threshold_pct)
-                    )
-
-                    # 4. [모멘텀 조기 본전/최소손실 탈출]: 30분 경과 후 박스권 횡보/미세손실(-0.5% ~ +0.3%)에서 모멘텀 소멸(VWAP 하회 및 단기 이평 역배열) 시 수수료 및 원금 방어 조기 탈출
-                    is_early_momentum_exit = (
-                        hold_duration_sec >= StrategyPolicy.MOMENTUM_EARLY_EXIT_SECONDS
-                        and (-0.50 <= pnl_pct_current <= 0.30)
-                        and (not is_above_vwap)
-                        and is_trend_broken
-                    )
-
-
-                    is_time_stop_trigger = is_time_stop_profit_trigger or is_time_stop_loss_trigger or is_early_momentum_exit
-
-                    if is_time_stop_trigger:
-                        exit_reason_label = "MOMENTUM_EARLY_EXIT" if is_early_momentum_exit else "TIME_STOP"
-                        if trailing_tracker.acquire_exit_lock(market):
-                            try:
-                                exit_desc = (
-                                    f"15분 모멘텀 소멸 조기 본전 탈출"
-                                    if is_early_momentum_exit
-                                    else f"{effective_time_stop/60:.0f}분 횡보 타임스탑"
-                                )
-                                logger.info(
-                                    f"⏳ [{korean_name} / {market}] {exit_desc} 발동! (레짐: {btc_regime}, 손익률: {pnl_pct_current:+.2f}%, 보유시간: {hold_duration_sec/60:.0f}분) ➜ 신규 기회를 위해 시장가 전량 청산"
-                                )
-                                cancel_bot_open_orders(bithumb, market)
-
-                                order_res = order_executor.submit(
-                                    bithumb,
-                                    market=market,
-                                    side="ask",
-                                    volume=coin_available,
-                                    ord_type="market",
-                                    position_id=market,
-                                    exit_reason=exit_reason_label,
-                                    avg_buy_price=avg_buy_price,
-                                )
-                                order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
-                                client_order_id = order_res.get("client_order_id", "")
-
-                                # ACK 뒤 단건 조회 대신 주기적 REST 대사로 체결과 손익을 확정한다.
-
-                                # [알림 최적화] 타임스탑 접수 알림 제거 (실제 체결 완료 시 OrderFillProcessor에서 발송)
-                                # 쿨다운은 확인 체결 증가분에서 OrderFillProcessor가 기록한다.
-                            finally:
-                                trailing_tracker.release_exit_lock(market)
-                            continue
-
-                # =========================================================================
-                # 🧠 [하이브리드 2단계 게이팅: 1차 퀀트 사전 필터 ➜ 2차 AI 최종 승인]
-                # ※ 확정 완료봉(candles_5m[1:]) 기준으로 지표를 연산하여 백테스트와 100% 동일한 진입 정책 보장 (과제 C)
-                # =========================================================================
-                completed_candles_5m = select_completed_candles(candles_5m, minimum_count=25)
-                completed_candles_1h = select_completed_candles(candles_1h, minimum_count=20)
-                if not completed_candles_5m or not completed_candles_1h:
-                    logger.warning("[%s] 5분/1시간 확정봉 데이터가 부족하거나 불일치하여 신규 매수 차단", market)
-                    continue
-                # 동일 스캔 주기에는 일반·반등 진입 경로가 같은 심야 판정값을 사용한다.
-                night_session_active = is_night_session()
-                local_entry = entry_signal(
-                    candles=completed_candles_5m,
-                    candles_1h=completed_candles_1h,
-                    btc_regime=btc_regime,
-                    orderbook=orderbook,
-                    market=market,
-                    exchange="bithumb",
-                    entry_type=candidate_type,
-                    is_night=night_session_active,
-                )
-                reentry_allowed, reentry_reason = cooldown_manager.check_reentry_allowed(market, current_price)
-                is_holding = (coin_value >= MIN_ORDER_KRW and avg_buy_price > 0)
-                ws_health = ws_client.get_health_status(market=market) if hasattr(ws_client, "get_health_status") else {"is_healthy": True, "status": "OK"}
-                ws_healthy = ws_health.get("is_healthy", True)
-                # 일반 신호가 미달한 반등 후보만 별도 정량 정책으로 확인하며, 모멘텀 돌파와 중복 주문하지 않는다.
-                recovery_entry = recovery_rebound_signal(
-                    candles=completed_candles_5m, candles_1h=completed_candles_1h,
-                    btc_regime=btc_regime, orderbook=orderbook, market=market, exchange="bithumb",
-                    relative_strength=float(candidate_metadata.get("relative_strength", 0.0) or 0.0),
-                    candidate_trade_value=float(candidate_metadata.get("acc_trade_price_24h", 0.0) or 0.0),
-                    is_night=night_session_active,
-                )
-                recovery_window_start = max(0.0, float(risk_manager.cooldown_until_ts) - 1800.0)
-                recovery_slot_available = not decision_db.has_recovery_entry_since("bithumb", recovery_window_start)
-                use_recovery_rebound = (
-                    StrategyPolicy.RECOVERY_REBOUND_LIVE_ENABLED
-                    and is_cooldown and not is_btc_crashing and ws_healthy
-                    and candidate_type != "MOMENTUM_BREAKOUT"
-                    and not local_entry.get("allow_buy", False)
-                    and recovery_entry.get("allow_buy", False) and recovery_slot_available
-                )
-                selected_entry = recovery_entry if use_recovery_rebound else local_entry
-                # 모멘텀 돌파는 AI 재판단 지연 없이 확정봉 정량 조건을 통과한 경우에만 직접 주문 경로로 연결한다.
-                use_momentum_breakout = (
-                    candidate_type == "MOMENTUM_BREAKOUT"
-                    and not is_holding and reentry_allowed and not is_btc_crashing and ws_healthy
-                    and local_entry.get("allow_buy", False)
-                )
-
-                should_call_ai = (
-                    analyzer is not None
-                    and not is_holding
-                    and reentry_allowed
-                    and selected_entry["allow_buy"]
-                    and not is_btc_crashing
-                    and ws_healthy
-                )
-
-                if use_recovery_rebound:
-                    # 반등 전용 주문도 기존 손절·리스크가드·체결 대사 경로를 그대로 사용한다.
-                    strategy = {
-                        "status": "ACTIVE", "action": "BUY",
-                        "entry_price": selected_entry.get("entry_price", current_price),
-                        "target_price": selected_entry.get("target_price", current_price * 1.03),
-                        "stop_loss": selected_entry.get("stop_loss", current_price * 0.98),
-                        "alloc_pct": dyn_max_pos_pct * StrategyPolicy.RECOVERY_REBOUND_ALLOC_RATIO,
-                        "reason": f"[급락 후 반등 전용·축소 비중] {selected_entry.get('reason', '')}",
-                    }
-                elif use_momentum_breakout:
-                    # 공격형 진입도 주문 안전 경계 밖으로 나가지 않도록 작은 최초 비중만 부여한다.
-                    strategy = {
-                        "status": "ACTIVE", "action": "BUY",
-                        "entry_price": local_entry.get("entry_price", current_price),
-                        "target_price": local_entry.get("target_price", current_price * 1.03),
-                        "stop_loss": local_entry.get("stop_loss", current_price * 0.98),
-                        "alloc_pct": dyn_max_pos_pct * StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO,
-                        "reason": f"[확정봉 모멘텀 돌파·최초 소액] {local_entry.get('reason', '')}",
-                    }
-                elif should_call_ai and analyzer is not None:
-                    feedback_context = trade_memory.get_feedback_context()
-                    whale_flow_context = ws_client.get_whale_flow_summary(market)
-                    btc_candles_5m = bithumb.get_candles(unit=INTERVAL_MINUTES, count=30, market="KRW-BTC")
-                    rs_info = calculate_relative_strength(candles_5m, btc_candles_5m)
-                    strategy = analyzer.analyze(
-                        market=market,
-                        current_price=current_price,
-                        candles=candles_5m,
-                        krw_balance=krw_available,
-                        coin_balance=coin_available,
-                        avg_buy_price=avg_buy_price,
-                        candles_1h=candles_1h,
-                        orderbook=orderbook,
-                        trade_memory_context=feedback_context,
-                        btc_context=f"{btc_status_msg} ({'급락 위험 감지' if is_btc_crashing else '정상 안정세'})",
-                        whale_context=whale_flow_context,
-                        rs_context=rs_info.get("desc", ""),
-                    )
-                else:
-                    # 1차 퀀트 관망 또는 기보유 포지션 기준선 산출 (Zero API Quota)
-                    quant_reason = (
-                        f"기보유 포지션 퀀트 감시 ({selected_entry['reason']})"
-                        if is_holding
-                        else (
-                            f"{reentry_reason}"
-                            if not reentry_allowed
-                            else (
-                                f"BTC 레짐 경보 ({btc_status_msg})"
-                                if is_btc_crashing
-                                else (
-                                    f"웹소켓 데이터 불안정 ({ws_health.get('status', 'UNHEALTHY')}) 진입 차단"
-                                    if not ws_healthy
-                                    else f"1차 퀀트 관망 대기: {selected_entry['reason']}"
-                                )
-                            )
-                        )
-                    )
-                    strategy = {
-                        "status": "ACTIVE",
-                        "action": "HOLD",
-                        "entry_price": selected_entry["entry_price"],
-                        "target_price": selected_entry["target_price"],
-                        "stop_loss": selected_entry["stop_loss"],
-                        "alloc_pct": 0.0,
-                        "reason": quant_reason,
-                    }
-
-                status = strategy.get("status", "ACTIVE")
-                action = strategy.get("action", "HOLD")
-                entry_price = strategy.get("entry_price", current_price)
-                target_price = strategy.get("target_price", selected_entry["target_price"])
-                stop_loss = strategy.get("stop_loss", selected_entry["stop_loss"])
-                alloc_pct = strategy.get("alloc_pct", 0.3)
-                reason = strategy.get("reason", "자동 분석")
-
-                if not reentry_allowed and action == "BUY":
-                    action = "HOLD"
-                    reason = f"{reentry_reason} | {reason}"
-
-                if action == "BUY" and not selected_entry["allow_buy"]:
-                    action = "HOLD"
-                    reason = f"정량 공통 진입 게이트 차단: {selected_entry['reason']} | {reason}"
-                elif action == "BUY" and selected_entry["allow_buy"]:
-                    target_price = selected_entry["target_price"]
-                    stop_loss = selected_entry["stop_loss"]
-
-                if coin_value >= MIN_ORDER_KRW and avg_buy_price > 0:
-                    entry_price = avg_buy_price
-                    stop_loss = avg_buy_price * (1.0 - StrategyPolicy.STOP_LOSS_PCT)
-                    if trailing_tracker.is_breakeven_active(market):
-                        stop_loss = max(stop_loss, avg_buy_price * (1.0 + StrategyPolicy.BREAKEVEN_STOP_PCT))
-                    target_price = avg_buy_price * (1.0 + getattr(StrategyPolicy, "PROFIT_TARGET_PCT", StrategyPolicy.PARTIAL_TP_1_PCT))
-
-                # 알파 스코어 연동 가변 사이징 (A+ 85점 이상 비중 확대)
-                alpha_val = selected_entry.get("alpha_score", 70)
-                if alpha_val >= 85 and btc_regime != "RISK_OFF" and action == "BUY":
-                    alloc_pct = min(dyn_max_pos_pct * 1.3, 0.65)
-                    reason = f"[🔥알파 {alpha_val}점 A+ 특급 셋업 비중 확대(65%)] {reason}"
-                elif alpha_val < 75 and btc_regime != "RISK_OFF" and action == "BUY":
-                    alloc_pct = dyn_max_pos_pct * 0.7
-
-                if btc_regime == "RISK_OFF" and action == "BUY":
-                    alloc_ratio = StrategyPolicy.RISK_OFF_ALLOC_RATIO
-                    if alpha_val >= 80:
-                        alloc_ratio = min(0.8, alloc_ratio * 1.3)
-                    alloc_pct = alloc_pct * alloc_ratio
-                    reason = f"[BTC 약세 레짐 비중 {int(alloc_ratio*100)}% 적용 & 알파 {alpha_val}점 엄선] {reason}"
-
-                if fng["is_extreme_fear"] and action == "BUY":
-                    alloc_pct = min(alloc_pct, 0.4)
-
-                if candidate_type == "MOMENTUM_BREAKOUT" and action == "BUY":
-                    # 모멘텀 돌파는 최대 포지션 한도의 25%를 넘지 않아 급등 추격의 손실 확대를 제한한다.
-                    alloc_pct = min(alloc_pct, dyn_max_pos_pct * StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO)
-                    reason = f"[⚡모멘텀 돌파 최초 소액] {reason}"
-
-                if is_night_session() and action == "BUY":
-                    alloc_pct = alloc_pct * StrategyPolicy.NIGHT_SESSION_ALLOC_RATIO
-                    reason = f"[🌙심야 세션 비중 {int(StrategyPolicy.NIGHT_SESSION_ALLOC_RATIO*100)}% 적용] {reason}"
-
-
-                logger.info(f"[{market}] 전략: ACTION={action}, 진입가={entry_price:,.2f}, 목표가={target_price:,.2f}, 손절가={stop_loss:,.2f}, 비중={alloc_pct*100:.0f}%")
-                logger.info(f"[{market}] 근거: {reason}")
-
-                alpha_score_val = int(strategy.get("alpha_score") or selected_entry.get("alpha_score", 0) or 0)
-                factor_breakdown = (
-                    selected_entry.get("factor_breakdown")
-                    or selected_entry.get("checklist_details", {}).get("factor_breakdown")
-                    or selected_entry.get("checklist", {}).get("factor_breakdown")
-                    or selected_entry.get("checklist", {})
-                    or {}
-                )
-                allow_buy_val = bool(selected_entry.get("allow_buy", False))
-
-                target_pct_val = (((target_price - current_price) / current_price * 100) if current_price > 0 and target_price > 0 else 0.0)
-                stop_pct_val = (((stop_loss - current_price) / current_price * 100) if current_price > 0 and stop_loss > 0 else 0.0)
-                rr_denom_val = max(1e-6, current_price - stop_loss)
-                rr_ratio_val = (((target_price - current_price) / rr_denom_val) if current_price > stop_loss > 0 and target_price > current_price else 0.0)
-
-                LATEST_STRATEGIES[market] = {
-                    "market": market,
-                    "korean_name": korean_name,
-                    "status": status,
-                    "action": action,
-                    "current_price": current_price,
-                    "entry_price": entry_price,
-                    "target_price": target_price,
-                    "stop_loss": stop_loss,
-                    "alloc_pct": alloc_pct,
-                    "reason": reason,
-                    "alpha_score": alpha_score_val,
-                    "candidate_type": candidate_type,
-                    "momentum_breakout": selected_entry.get("momentum_breakout", {}),
-                    "policy_mode": "RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD",
-                    "allow_buy": allow_buy_val,
-                    "factor_breakdown": factor_breakdown,
-                    "target_pct": round(target_pct_val, 2),
-                    "stop_pct": round(stop_pct_val, 2),
-                    "risk_reward_ratio": round(rr_ratio_val, 2),
-                    "updated_at": now_str,
-                    "ACTION": action,
-                    "TARGET_PRICE": target_price,
-                    "STOP_LOSS": stop_loss,
-                    "REASON": reason,
-                }
-
-                audit_decision(
-                    market, "BUY_APPROVED" if action == "BUY" else "HOLD",
-                    "RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD",
-                    [] if action == "BUY" else [reason],
-                    {
-                        "current_price": current_price, "btc_regime": btc_regime,
-                        "is_loss_recovery_mode": is_cooldown, "candidate": candidate_metadata,
-                        "local_checklist": selected_entry.get("checklist_details", {}),
-                        "recovery_checklist": recovery_entry.get("recovery_checklist", {}),
-                    },
-                )
-
-                if status != "ACTIVE":
-                    continue
-
-                # 5. [손절 검사]
-                if (
-                    coin_value >= MIN_ORDER_KRW
-                    and stop_loss > 0
-                    and current_price <= stop_loss
-                    and not order_journal.has_active_exit_order(market)
-                ):
-                    if trailing_tracker.acquire_exit_lock(market):
-                        try:
-                            logger.warning(
-                                f"🚨 [{market} 손절 발생] 현재가({current_price:,.2f}원) <= 손절가({stop_loss:,.2f}원). 전량 시장가 매도!"
-                            )
-                            trailing_tracker.clear(market)
-                            cancel_bot_open_orders(bithumb, market)
-
-                            order_res = order_executor.submit(
-                                bithumb,
-                                market=market,
-                                side="ask",
-                                volume=coin_available,
-                                ord_type="market",
-                                position_id=market,
-                                exit_reason="STOP_LOSS",
-                                avg_buy_price=avg_buy_price,
-                                expected_price=current_price,
-                            )
-                            order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
-                            client_order_id = order_res.get("client_order_id", "")
-                            # 손절 주문도 REST 대사 전에는 쿨다운·손익을 기록하지 않는다.
-                        finally:
-                            trailing_tracker.release_exit_lock(market)
-
-                    chart_img = chart_renderer.render_trade_chart(
-                        market=market,
-                        korean_name=korean_name,
-                        candles=candles_5m,
-                        entry_price=avg_buy_price,
-                        target_price=target_price,
-                        stop_loss=stop_loss,
-                        action="SELL",
-                        reason=reason,
-                    )
-
-                    # [알림 최적화] 손절 주문 접수 알림 제거 (실제 체결 완료 시 OrderFillProcessor에서 발송)
-                    pass
-                    continue
-
-                # 6. [신규 주문 실행 - 동적 복리 자금 관리 적용]
-                if action == "BUY":
-                    if order_journal.has_unresolved_market(market):
-                        logger.warning(
-                            "[%s] 이전 주문의 거래소 결과가 확정되지 않아 신규 매수를 차단합니다. data/order_journal.json을 확인하세요.",
-                            market,
-                        )
-                        continue
-
-                    if IS_BOT_PAUSED or not order_journal.is_entry_ready():
-                        if not order_journal.is_entry_ready():
-                            logger.warning("[%s] REST 주문 대사 미완료로 신규 매수를 차단합니다.", market)
-                        logger.info(f"[{korean_name} / {market}] 봇이 일시정지 상태이므로 신규 매수를 건너뜁니다.")
-                        continue
-
-                    if is_kill_switch:
-                        logger.info(f"[{korean_name} / {market}] 킬 스위치 발동 상태이므로 신규 매수를 건너뜁니다.")
-                        continue
-
-                    if coin_value >= MIN_ORDER_KRW:
-                        logger.info(f"[{korean_name} / {market}] 이미 보유 중인 포지션({coin_value:,.0f}원)이므로 중복 매수를 건너뜁니다 (보유 유지).")
-                        continue
-
-                    if market != "KRW-BTC" and is_btc_crashing:
-                        logger.warning(f"[{korean_name} / {market}] 비트코인 급락세({btc_status_msg})로 인해 알트코인 매수를 방어적으로 차단합니다.")
-                        telegram.send_debounced_message(
-                            category_key=f"btc_crash_{market}",
-                            text=(
-                                f"⚠️ <b>[{korean_name}({market}) 매수 차단 - BTC 급락 방어]</b>\n"
-                                f"• 사유: <i>{btc_status_msg}</i>\n"
-                                f"• 대장주(BTC) 급락으로 인한 알트코인 동반 폭락 위험 방지"
-                            ),
-                            min_interval_sec=900.0,
-                        )
-                        continue
-
-                    # 💰 자산 규모별 동적 슬롯(2~4개) 예산 및 1% 리스크 관리 결합 (Auto-Scaling)
-                    effective_capital = current_total_equity if current_total_equity > 0 else (krw_available + max(0.0, risk_manager.realized_pnl_krw))
-                    max_slot_budget = (effective_capital / max(1, dyn_max_positions))
-                    slot_budget = min(krw_available, max_slot_budget * (alloc_pct / dyn_max_pos_pct if alloc_pct < dyn_max_pos_pct else 1.0))
-
-                    order_price = entry_price if (0 < entry_price <= current_price * 1.002) else current_price
-                    order_price = bithumb.adjust_price_to_tick(order_price, side="bid")
-
-                    risk_scale = risk_manager.get_risk_scale_factor()
-                    risk_based_budget = calculate_risk_position_size(
-                        total_equity=effective_capital,
-                        entry_price=order_price,
-                        stop_loss=stop_loss,
-                        risk_fraction=0.01,
-                        fee_rate=0.0004,
-                        slippage_rate=0.001,
-                        max_position_pct=dyn_max_pos_pct,
-                        min_order_krw=MIN_ORDER_KRW,
-                        risk_scale_factor=risk_scale,
-                    )
-
-                    effective_risk_budget = risk_based_budget if risk_based_budget > 0 else slot_budget
-                    trade_budget = min(krw_available, slot_budget, effective_risk_budget)
-
-                    SAFE_ORDER_KRW = 5500.0
-                    if trade_budget < SAFE_ORDER_KRW and krw_available >= SAFE_ORDER_KRW:
-                        trade_budget = min(krw_available, max(max_slot_budget, SAFE_ORDER_KRW))
-
-                    if trade_budget < SAFE_ORDER_KRW or (trade_budget * 0.995) < MIN_ORDER_KRW:
-                        logger.warning(
-                            f"[{korean_name} / {market}] 매수 예산 부족: 요청금액 {trade_budget:,.0f}원 < 안전최소주문금액 {SAFE_ORDER_KRW:,.0f}원"
-                        )
-                        audit_decision(market, "BLOCKED", "BUDGET", ["매수 예산 부족"], {"trade_budget": trade_budget})
-                        continue
-
-                    # 신규 매수만 호가 기반 가격 충격을 사전 차단하며, 보유 포지션 보호 매도에는 적용하지 않는다.
-                    impact_ok, impact_reason, impact_details = evaluate_buy_orderbook_impact(
-                        orderbook=orderbook,
-                        order_krw=trade_budget,
-                        reference_price=current_price,
-                    )
-                    if not impact_ok:
-                        if ORDERBOOK_SLIPPAGE_ENFORCEMENT:
-                            logger.warning("[%s] %s", market, impact_reason)
-                            audit_decision(market, "BLOCKED", "ORDERBOOK_SLIPPAGE", [impact_reason], impact_details)
-                            continue
-                        # 관찰 모드에서는 실제 주문을 바꾸지 않고, 향후 차단 효과를 검증할 근거만 남긴다.
-                        logger.info("[%s] [관찰] %s", market, impact_reason)
-                        audit_decision(market, "OBSERVED", "ORDERBOOK_SLIPPAGE", [impact_reason], impact_details)
-
-                    is_safe, rejection_reason = risk_guard.validate_buy(
-                        market=market,
-                        order_krw=trade_budget,
-                        available_krw=krw_available,
-                        total_equity=current_total_equity,
-                        held_markets=held_markets,
-                    )
-                    if not is_safe:
-                        logger.warning("[%s] 통합 리스크 검증으로 매수 차단: %s", market, rejection_reason)
-                        audit_decision(market, "BLOCKED", "RISK_GUARD", [rejection_reason], {"trade_budget": trade_budget})
-                        continue
-
-                    order_volume = (trade_budget * 0.995) / order_price
-                    formatted_volume = bithumb.round_volume(market, order_volume)
-
-                    if formatted_volume <= 0:
-                        logger.warning(f"[{market}] 계산된 수량이 너무 작아 주문 취소: {formatted_volume}")
-                        audit_decision(market, "BLOCKED", "ORDER_VALIDATION", ["주문 수량 오류"], {"volume": formatted_volume})
-                        continue
-
-                    entry_label = "반등 전용 축소" if use_recovery_rebound else ("모멘텀 돌파 소액" if candidate_type == "MOMENTUM_BREAKOUT" else "AI 승인")
-                    logger.info(
-                        f"🛒 [{korean_name} / {market} {entry_label} 매수 실행] 주문가={order_price:,.2f}원, 수량={formatted_volume:.6f}, 투입금액={int(trade_budget):,d}원"
-                    )
-
-                    cancel_bot_open_orders(bithumb, market)
-
-                    # 승인 시점 값만 주문 원장에 저장해, 미래 체결 시점 정보와 혼동하지 않는다.
-                    entry_snapshot = dict(selected_entry.get("strategy_snapshot", {}))
-                    entry_snapshot.update({
-                        "exchange": "bithumb",
-                        "market": market,
-                        "entry_decision_at": now_str,
-                        "entry_reason": reason,
-                        "target_price": target_price,
-                        "stop_loss": stop_loss,
-                    })
-                    position_id = f"bithumb:{market}:{int(time.time() * 1000)}"
-                    order_res = order_executor.submit(
-                        bithumb,
-                        market=market,
-                        side="bid",
-                        price=order_price,
-                        volume=formatted_volume,
-                        ord_type="limit",
-                        position_id=position_id,
-                        expected_price=order_price,
-                        entry_strategy_snapshot=entry_snapshot,
-                        exchange_name="bithumb",
-                    )
-                    audit_decision(
-                        market, "BUY_SUBMITTED", "RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD", [],
-                        {"order_price": order_price, "volume": formatted_volume, "trade_budget": trade_budget},
-                    )
-                    order_uuid = order_res.get("uuid") or order_res.get("order_id", "UNKNOWN")
-                    client_order_id = order_res.get("client_order_id", "")
-
-                    # 매수 ACK는 체결이 아니다. 진입 시각은 REST 대사에서만 생성한다.
-
-                    chart_img = chart_renderer.render_trade_chart(
-                        market=market,
-                        korean_name=korean_name,
-                        candles=candles_5m,
-                        entry_price=order_price,
-                        target_price=target_price,
-                        stop_loss=stop_loss,
-                        action="BUY",
-                        reason=reason,
-                    )
-
-                    # [알림 최적화] 매수 주문 접수 알림 제거 (실제 체결 완료 시 OrderFillProcessor에서 발송)
-
-            except Exception as e:
-                logger.error(f"[{market}] 매매 사이클 오류 발생: {e}", exc_info=True)
-
-        # 6. 이번 사이클 대상(기보유 + 신규 스크리닝 후보) 외의 과거 종목 정리 후 디스크 캐시 저장
-        current_valid_markets = set(target_markets).union(held_markets)
-        for old_m in list(LATEST_STRATEGIES.keys()):
-            if old_m not in current_valid_markets:
-                LATEST_STRATEGIES.pop(old_m, None)
-
-        strategy_cache_mgr.save_cache(LATEST_STRATEGIES)
-
-    except Exception as e:
-        logger.error(f"전체 트레이딩 사이클 예외 발생: {e}", exc_info=True)
+    cycle_engine.run_cycle()
 
 
 def update_heartbeat() -> None:
@@ -1078,154 +422,43 @@ def update_heartbeat() -> None:
         logger.debug(f"하트비트 기록 예외: {e}")
 
 
+BITHUMB_BOOTSTRAP_PROFILE = ExchangeBootstrapProfile(
+    exchange_key="bithumb",
+    migration_base_dir=DATA_DIR,
+    data_dir=DATA_DIR,
+    heartbeat_bot_name="bithumb",
+    internal_port_env_key="BITHUMB_INTERNAL_PORT",
+    internal_port_default=17979,
+    internal_api_title="Bithumb Trading Core API",
+    scheduler_cycle_job_id="run_trading_cycle",
+    scheduler_morning_job_id="morning_daily_report",
+    startup_banner_lines=("  Bithumb AI Pro Quant Trading Bot v5.0 가동 시작",),
+    shutdown_start_message="🛑 프로세스 종료 시그널 감지. 자원을 안전하게 해제합니다...",
+    shutdown_complete_message="✅ 빗썸 봇 모든 자원 정상 해제 완료",
+    catch_main_loop_exceptions=True,
+)
+
+
 def main():
-    logger.info("============================================================")
-    logger.info("  Bithumb AI Pro Quant Trading Bot v5.0 가동 시작")
-    logger.info("============================================================")
-
-    # 0. SQLite 자동 마이그레이션 및 첫 하트비트 기록
-    try:
-        migrate_legacy_json_to_sqlite(DATA_DIR)
-    except Exception as e:
-        logger.warning("SQLite 초기 마이그레이션 건너뜀: %s", e)
-    update_heartbeat()
-
-    # 1. 텔레그램 명령어 리스너 가동
-    telegram.start_command_listener(
-        status_callback=bot_controller.get_status_message,
-        balance_callback=bot_controller.get_balance_message,
-        panic_callback=bot_controller.execute_panic_sell,
-        pause_callback=bot_controller.pause_bot,
-        resume_callback=bot_controller.resume_bot,
-        diag_callback=bot_controller.get_diagnostics_message,
-        trades_callback=bot_controller.get_trades_summary_message,
+    bootstrap = TradingBotBootstrap(
+        BITHUMB_BOOTSTRAP_PROFILE,
+        TradingBootstrapContext(
+            logger=logger,
+            telegram=telegram,
+            bot_controller=bot_controller,
+            ws_client=ws_client,
+            private_ws=private_ws,
+            strategy_cache_manager=strategy_cache_mgr,
+            latest_strategies=LATEST_STRATEGIES,
+            interval_minutes=INTERVAL_MINUTES,
+            create_exchange_client=create_exchange_client,
+            get_held_markets=get_held_markets,
+            run_cycle=run_cycle,
+            send_daily_morning_report=send_daily_morning_report,
+            update_heartbeat=update_heartbeat,
+        ),
     )
-
-    # 2. 로컬 전용 초경량 API 서버 가동 (127.0.0.1:17979 - 통합 대시보드 연동용)
-    bithumb_internal_port = int(os.getenv("BITHUMB_INTERNAL_PORT", "17979"))
-    web_server = DashboardWebServer(
-        host="0.0.0.0",
-        port=bithumb_internal_port,
-        data_provider=bot_controller.get_dashboard_data,
-        action_handler=bot_controller.handle_web_action,
-        title="Bithumb Trading Core API",
-        is_api_only=True,
-    )
-    web_server.start()
-
-    # 3. 실시간 웹소켓(WebSocket) 스트리밍 가동
-    ws_client.start()
-    if private_ws:
-        private_ws.start()
-
-    # 4. 전략 캐시 복원 및 스마트 스케줄러 등록 (5분 캔들 주기 내 재시작 시 중복 분석/AI 호출 방지)
-    cycle_ttl = INTERVAL_MINUTES * 60 - 30
-    cached_strats, elapsed_sec, is_cache_valid = strategy_cache_mgr.get_valid_strategies(ttl=cycle_ttl)
-    if cached_strats:
-        LATEST_STRATEGIES.update(cached_strats)
-        try:
-            exchange = create_exchange_client()
-            held_markets = get_held_markets(exchange.get_balances(), exchange)
-            bot_controller.restore_missing_position_strategies(held_markets)
-        except Exception as e:
-            logger.debug(f"포지션 전략 복원 예외: {e}")
-        logger.info(f"📂 [전략 캐시 복원] 디스크에서 {len(cached_strats)}개 종목의 직전 분석 데이터를 대시보드에 즉시 복원했습니다.")
-
-    should_run_immediate = not is_cache_valid
-    if is_cache_valid:
-        remaining_sec = max(15, int(INTERVAL_MINUTES * 60 - elapsed_sec))
-        first_run_time = datetime.now() + timedelta(seconds=remaining_sec)
-        logger.info(
-            f"⚡ [스마트 캐시 유지] 직전 분석 후 {elapsed_sec:.0f}초 경과 (5분 캔들 유효). "
-            f"중복 AI/REST 호출을 생략하고 {remaining_sec}초 후 다음 정기 분석을 시작합니다."
-        )
-    else:
-        first_run_time = datetime.now() + timedelta(minutes=INTERVAL_MINUTES)
-
-    scheduler = BackgroundScheduler(timezone="Asia/Seoul")
-    scheduler.add_job(
-        run_cycle,
-        "interval",
-        minutes=INTERVAL_MINUTES,
-        next_run_time=first_run_time,
-        id="run_trading_cycle",
-        max_instances=1,
-        coalesce=True,
-    )
-    scheduler.add_job(
-        send_daily_morning_report,
-        "cron",
-        hour=9,
-        minute=0,
-        id="morning_daily_report",
-        max_instances=1,
-    )
-    scheduler.start()
-    logger.info(f"⏰ APScheduler 가동 완료 ({INTERVAL_MINUTES}분 주기 매매 및 매일 09:00 모닝 리포트)")
-
-    # 5. 초기 사이클 실행 (캐시 만료 또는 첫 실행 시에만 즉시 분석 실행)
-    if should_run_immediate:
-        try:
-            run_cycle()
-        except Exception as e:
-            logger.error(f"초기 사이클 실행 중 오류: {e}")
-
-    # 6. 프로세스 종료 시그널 핸들러 등록
-    is_exiting = False
-
-    def _handle_exit(sig=None, frame=None):
-        nonlocal is_exiting
-        if is_exiting:
-            return
-        is_exiting = True
-        logger.info("🛑 프로세스 종료 시그널 감지. 자원을 안전하게 해제합니다...")
-        try:
-            telegram.stop()
-        except Exception as e:
-            logger.debug(f"텔레그램 종료 예외: {e}")
-        try:
-            ws_client.stop()
-        except Exception as e:
-            logger.debug(f"WebSocket 종료 예외: {e}")
-        if private_ws:
-            try:
-                private_ws.stop()
-            except Exception as e:
-                logger.debug(f"Private WS 종료 예외: {e}")
-        try:
-            web_server.stop()
-        except Exception as e:
-            logger.debug(f"웹 대시보드 종료 예외: {e}")
-        try:
-            scheduler.shutdown(wait=False)
-        except Exception as e:
-            logger.debug(f"스케줄러 종료 예외: {e}")
-        logger.info("✅ 빗썸 봇 모든 자원 정상 해제 완료")
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, _handle_exit)
-    signal.signal(signal.SIGTERM, _handle_exit)
-    if hasattr(signal, "SIGBREAK"):
-        signal.signal(signal.SIGBREAK, signal.SIG_IGN)
-
-    # 7. 메인 스레드 유지 및 주기적 하트비트 루프
-    last_hb_ts = 0.0
-    while True:
-        try:
-            now_ts = time.time()
-            # 네트워크 수신 콜백은 큐 적재만 하며 주문·파일 작업은 메인 스레드에서 직렬화한다.
-            ws_client.drain_callbacks()
-            if private_ws is not None:
-                private_ws.drain_order_events()
-            if now_ts - last_hb_ts >= 15.0:
-                update_heartbeat()
-                last_hb_ts = now_ts
-            time.sleep(1)
-        except (KeyboardInterrupt, SystemExit):
-            _handle_exit(None, None)
-        except Exception as e:
-            logger.error(f"메인 루프 예외 발생: {e}", exc_info=True)
-            time.sleep(1)
+    bootstrap.run()
 
 
 if __name__ == "__main__":

@@ -622,6 +622,41 @@ class DatabaseManager:
             conn.commit()
             return int(cursor.rowcount)
 
+    def get_orderbook_slippage_decisions(self, exchange: str, since_ts: float) -> list[dict[str, Any]]:
+        """호가 슬리피지 관찰/차단 감사 이력을 조회한다."""
+        with _DB_LOCK, self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT decision_ts, market, action, block_reasons_json, payload_json
+                FROM strategy_decisions
+                WHERE exchange = ? AND policy_mode = 'ORDERBOOK_SLIPPAGE' AND decision_ts >= ?
+                ORDER BY decision_ts ASC
+                """,
+                (exchange.strip().lower(), float(since_ts)),
+            ).fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                block_reasons = json.loads(row["block_reasons_json"] or "[]")
+            except json.JSONDecodeError:
+                block_reasons = []
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(block_reasons, list):
+                block_reasons = []
+            if not isinstance(payload, dict):
+                payload = {}
+            results.append({
+                "decision_ts": float(row["decision_ts"]),
+                "market": str(row["market"]),
+                "action": str(row["action"]),
+                "block_reasons": block_reasons,
+                "payload": payload,
+            })
+        return results
+
 
 def reset_db_manager_cache() -> None:
     """테스트 tearDown 등에서 경로별 싱글톤과 WAL 잠금을 해제한다."""

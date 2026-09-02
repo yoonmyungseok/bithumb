@@ -5,6 +5,8 @@ import time
 from typing import Any, Callable
 
 from bithumb_api import BithumbAPI
+from gemini_telemetry import GeminiTelemetry
+from operational_quality import build_slippage_enforcement_readiness
 from order_safety import OrderJournal, SafeOrderExecutor
 from risk_manager import (
     DailyRiskManager,
@@ -535,6 +537,16 @@ class BotController:
         excluded = get_excluded_manual_holdings()
         active_threads = threading.active_count()
         unknown_orders = sum(1 for o in self.order_journal.orders if o.get("status") == "UNKNOWN")
+        exchange_key = (getattr(self.order_journal, "exchange_scope", "") or "bithumb").lower()
+        if "업비트" in self.exchange_name:
+            exchange_key = "upbit"
+        data_dir = os.path.dirname(self.order_journal.path)
+        slippage_readiness = build_slippage_enforcement_readiness(
+            self.order_journal.db,
+            exchange=exchange_key,
+            data_dir=data_dir,
+        )
+        gemini_stats = GeminiTelemetry.snapshot().to_dict()
 
         return {
             "exchange": self.exchange_name,
@@ -553,6 +565,8 @@ class BotController:
             "unknown_orders_count": unknown_orders,
             "excluded_holdings": sorted(list(excluded)),
             "web_port": self.web_port,
+            "gemini_telemetry": gemini_stats,
+            "slippage_enforcement": slippage_readiness.to_dict(),
         }
 
     def get_diagnostics_message(self) -> str:
@@ -572,6 +586,15 @@ class BotController:
             f"• <b>일일 킬스위치:</b> {ks_icon}\n"
             f"• <b>연속 손실 횟수:</b> {diag['consecutive_losses']}회 (자본 배율: {diag['risk_scale_factor']*100:.0f}%)\n"
             f"• <b>최근 평균 슬리피지:</b> {diag['avg_slippage_bps']:.1f} bps\n"
+            f"• <b>Gemini 호출:</b> {diag['gemini_telemetry']['api_calls']}회 "
+            f"(성공 {diag['gemini_telemetry']['api_success']} / 429 {diag['gemini_telemetry']['rate_limited']} / "
+            f"로컬폴백 {diag['gemini_telemetry']['local_fallback']} / 캐시 {diag['gemini_telemetry']['cache_hits']})\n"
+            f"• <b>호가 슬리피지 관찰:</b> {diag['slippage_enforcement']['trading_days_observed']}"
+            f"/{diag['slippage_enforcement']['min_trading_days_required']}거래일, "
+            f"관찰 {diag['slippage_enforcement']['observed_count']}건, "
+            f"차단 {diag['slippage_enforcement']['blocked_count']}건\n"
+            f"• <b>슬리피지 차단 모드:</b> "
+            f"{'활성' if diag['slippage_enforcement']['enforcement_enabled'] else '관찰 전용'}\n"
             f"• <b>미해결(UNKNOWN) 주문:</b> {diag['unknown_orders_count']}건\n"
             f"• <b>수동 격리 보호 종목:</b> {excl_str}\n"
             f"• <b>웹 대시보드 포트:</b> <code>http://localhost:{diag['web_port']}</code>\n"

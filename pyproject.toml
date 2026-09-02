@@ -1,0 +1,33 @@
+[project]
+name = "bithumb-upbit-trading-bot"
+version = "8.4.0"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I001"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "bithumb_api",
+    "bot_controller",
+    "db_manager",
+    "exchange_adapter",
+    "gemini_analyzer",
+    "gemini_telemetry",
+    "market_policy",
+    "operational_quality",
+    "order_safety",
+    "risk_controls",
+    "state_store",
+    "strategy_engine",
+    "trading_bot_bootstrap",
+    "trading_runtime",
+    "trading_watchdog",
+    "upbit_api",
+]

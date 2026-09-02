@@ -1,4 +1,4 @@
-# Bithumb & Upbit AI Pro Quant Trading Bot (v7.5)
+# Bithumb & Upbit AI Pro Quant Trading Bot (v8.4)
 
 본 문서는 `c:\AI\bithumb` 디렉토리에 위치한 빗썸(Bithumb) 및 업비트(Upbit) 듀얼 거래소 지원 AI 퀀트 트레이딩 봇의 프로젝트 설명 및 아키텍처 설계서입니다. 이 문서는 다른 AI 에이전트 또는 개발자가 프로젝트의 전반적인 구조와 핵심 로직을 빠르고 명확하게 파악할 수 있도록 작성되었습니다.
 
@@ -70,18 +70,26 @@ c:\AI\bithumb\
 │   ├── risk_manager.py             # 일일 손익/입출금보정/킬스위치(`DailyRiskManager`), 포지션추적(`TrailingStopTracker`), 자산평가
 │   ├── realtime_engine.py          # 0.1초 실시간 웹소켓 체결 틱 손절/익절 청산 엔진 (`RealtimeRiskEngine`), 미체결 정정/취소
 │   ├── bot_controller.py           # 텔레그램 양방향 제어, 웹 대시보드 API 공급자 (거래소별 독립 인스턴스)
-│   ├── order_safety.py             # 주문 저널·멱등성 집행·리스크 검증·체결 처리 및 매수 호가 영향 사전 검증
+│   ├── order_safety/               # 주문 저널·멱등성 집행·체결 처리 패키지 (`journal`, `executor`, `fill_processor`, `cooldown`, `orderbook`)
+│   ├── gemini_telemetry.py           # Gemini API 호출·429·로컬 폴백·캐시 적중 관측
+│   ├── operational_quality.py        # 호가 슬리피지 5거래일 관찰 준비도 리포트
+│   ├── risk_controls.py            # 매수 리스크 가드·포지션 사이징·동적 티어 (`RiskGuard`, `calculate_risk_position_size`)
+│   ├── state_store.py              # 원자적 JSON 영속 저장 (`write_json_atomically`, `load_json_with_backup_recovery`)
 │   ├── strategy_engine.py          # 표준 기술지표(RSI, BB, ATR, MACD, EMA) 계산, 확인형·초기 돌파 결정론적 진입 게이트, StrategyPolicy SSOT
 │   ├── gemini_analyzer.py          # Gemini AI 퀀트 분석 및 시그널 생성 엔진
 │   ├── market_screener.py          # 확인형·초기 돌파 후보와 조건(거래대금, 상승률, 스프레드, 호가깊이) 시장 동적 탐색 (Fail-Closed, HOLO 제외)
+│   ├── trading_runtime.py          # 5분 사이클 공통 오케스트레이션 (`TradingCycleEngine`, profile 기반)
+│   ├── trading_bot_bootstrap.py    # 진입점 부트스트랩 공통화 (`TradingBotBootstrap`, 텔레그램·내부 API·WS·스케줄러·shutdown)
 │   ├── paper_broker.py             # 모의투자 어댑터 (거래소별 원장 격리 지원)
 │   ├── trade_memory.py             # 트레이딩 기록, 통계 및 AI 자가학습 메모리 관리
 │   ├── telegram_alert.py           # 텔레그램 양방향 원격 제어, 디바운싱 알림, 차트 전송
 │   ├── chart_renderer.py           # matplotlib 기반 매매 시점 캔들 차트 이미지 렌더링 (다크 테마)
 │   ├── web_server.py               # 로컬 경량 웹 API 서버 모듈 (is_api_only 지원)
 │   ├── process_manager.py          # 빗썸/업비트/대시보드/전체 독립 프로세스 탐색, 종료, 상태, 로그 관리 CLI
-│   ├── watchdog.py                 # 빗썸 워치독 프로세스
-│   └── watchdog_upbit.py           # 업비트 워치독 프로세스
+│   ├── trading_bot_bootstrap.py    # 진입점 부트스트랩 공통화 (`TradingBotBootstrap`, 텔레그램·내부 API·WS·스케줄러·shutdown)
+│   ├── trading_watchdog.py         # 워치독 공통 엔진 (`TradingBotWatchdog`, 하트비트 감시·자동 재시작·crash-loop 방어)
+│   ├── watchdog.py                 # 빗썸 워치독 진입점 (profile wiring)
+│   └── watchdog_upbit.py           # 업비트 워치독 진입점 (profile wiring)
 ├── tests/                # 단위 테스트 디렉토리 (총 50개 테스트 스위트, 209개 테스트)
 │   ├── test_dashboard_server.py    # 통합 대시보드 게이트웨이 및 멀티 거래소 집계/라우팅 검증
 │   ├── test_upbit_api.py           # 업비트 API JWT 인증, SHA-512 query_hash, 호가단위, identifier 검증
@@ -172,6 +180,15 @@ c:\AI\bithumb\
 
 | 버전 | 일자 | 주요 변경 및 최적화 내역 |
 | :---: | :---: | :--- |
+| **v8.4** | 2026-09-02 | • **PR-3D~3H Phase 3 잔여 완료**: `requirements.txt` 버전 고정, `pyproject.toml`+`requirements-dev.txt`로 ruff 도입, CI lint 단계 추가<br>• **PR-3G 슬리피지 관찰 자동화**: `operational_quality.build_slippage_enforcement_readiness()`로 5거래일 `ORDERBOOK_SLIPPAGE` 관찰 충족 여부 산출, `/diag`·대시보드 진단에 노출<br>• **PR-3H Gemini 관측**: `gemini_telemetry.py`로 API 성공·429·로컬 폴백·캐시 적중 집계, `GeminiAnalyzer` 및 `BotController` 진단 연동<br>• **PR-3F 예외 정리(부분)**: 신규 품질 모듈과 `CooldownManager` 저장 경로에 구체 예외 적용<br>• **회귀 검증**: `test_operational_quality.py` 추가 및 order_safety/진단 관련 테스트 통과 |
+| **v8.3** | 2026-09-02 | • **PR-3C `order_safety` 패키지 분리**: 단일 `order_safety.py`를 `order_safety/` 패키지로 분리 (`types`, `journal`, `executor`, `fill_processor`, `cooldown`, `orderbook`, `markets`)<br>• **책임 경계 정리**: 리스크 가드·사이징은 `risk_controls.py`, JSON 영속 저장은 `state_store.py`로 이미 분리된 경계를 `order_safety.__init__`에서 re-export해 기존 import 경로 유지<br>• **거래 안전 보존**: 주문 저널·REST 대사·체결 증가분 멱등성·HOLO 차단·쿨다운 로직 변경 없음<br>• **회귀 검증**: `test_order_safety`, `test_execution_safety`, `test_storage_and_fill_boundaries` 통과 |
+| **v8.2** | 2026-09-02 | • **PR-3B 워치독 통합**: `TradingBotWatchdog`로 하트비트 감시·프로세스 재시작·crash-loop 방어·텔레그램 알림을 `src/trading_watchdog.py`로 공통화<br>• **`ExchangeWatchdogProfile`**: 거래소별 data 경로·main 스크립트·로그/알림 문구·중복 잠금 대기 시간 분리<br>• **entry point 슬림화**: `watchdog.py`·`watchdog_upbit.py`는 로깅·env·profile wiring + `watchdog.run()`만 유지<br>• **거래 안전 보존**: `data/` vs `data/upbit/` 하트비트·lock·pid 경로, 120초 grace / 600초 stale 임계값, 5회 crash-loop 방어 동작 변경 없음<br>• **회귀 검증**: `tests/test_trading_watchdog.py` 추가 |
+| **v8.1** | 2026-09-02 | • **PR-3A `TradingBotBootstrap` 도입**: `main()` 부트스트랩(텔레그램·내부 API·WS·전략 캐시 복원·APScheduler·graceful shutdown·하트비트 루프)을 `src/trading_bot_bootstrap.py`로 추출<br>• **`ExchangeBootstrapProfile`**: 거래소별 포트·경로·job ID·로그 문구·메인 루프 예외 처리 플래그 분리<br>• **entry point 슬림화**: `main.py`·`main_upbit.py`는 profile + `cycle_engine` wiring + `bootstrap.run()`만 유지<br>• **거래 안전 보존**: data/ 경로·내부 API 포트·HOLO·REST 대사·WS drain 직렬화 동작 변경 없음<br>• **회귀 검증**: `tests/test_trading_bot_bootstrap.py` 추가 및 startup/isolation 테스트 통과 |
+| **v8.0** | 2026-09-02 | • **PR-2E `run_cycle()` 완결**: `TradingCycleEngine.run_cycle()`로 prefix·마켓 루프·suffix(전략 캐시 정리)를 일원화하고 entry point는 `cycle_engine.run_cycle()`만 호출<br>• **`ExchangeCycleProfile` 확장**: 마켓 분석 로그 문구, HOLO 루프 스킵, 사이클 오류 로그 접두사를 profile로 분리<br>• **거래 안전 보존**: 업비트 제외 종목 스킵·거래소별 strategy cache 경로·fail-closed 동작 변경 없음<br>• **회귀 검증**: suffix 정리·제외 종목 스킵 테스트 추가 |
+| **v7.9** | 2026-09-02 | • **PR-2D 손절·신규 매수 실행 공통화**: `process_cycle_stop_loss()`·`process_buy_execution()`으로 5분 사이클 손절 검사와 매수 주문 제출을 빗썸·업비트 공통 처리<br>• **`ExchangeBuyProfile` 도입**: 슬롯/비중 예산, 선행 safety 재검증, BTC 급락 알트 차단, 로그 문구 등 거래소별 차이를 profile로 분리<br>• **거래 안전 보존**: exit lock·REST 대사 전 손익 미반영·호가 슬리피지 관찰/차단·업비트 기존 매수 경로 동작 유지(업비트는 5분 사이클 손절 비활성)<br>• **회귀 검증**: `tests/test_trading_runtime.py` 손절·미해결 주문 차단 테스트 추가 |
+| **v7.8** | 2026-09-02 | • **PR-2C 진입/AI 게이팅 공통화**: `TradingCycleEngine.process_entry_gating()`로 확정봉·entry_signal·반등/모멘텀·AI 전략·사이징·`LATEST_STRATEGIES`·audit을 빗썸·업비트 공통 처리<br>• **`ExchangeEntryProfile` 도입**: 업비트 선행 safety/reentry/candles 검사, hold 가격 fallback, whale flow capability, 빗썸 inactive status continue 등 거래소별 차이를 profile로 분리<br>• **버그 수정**: prefix에서 `is_extreme_fear`를 전달해 업비트 `fng` 미정의 참조 제거<br>• **회귀 검증**: `tests/test_trading_runtime.py` 진입 게이트 경계 테스트 추가 |
+| **v7.7** | 2026-09-02 | • **PR-2B 최우선 청산 공통화**: `TradingCycleEngine.process_priority_exits()`로 분할익절·트레일링 스탑·타임스탑·모멘텀 조기 탈출을 빗썸·업비트 공통 처리<br>• **`ExchangeExitProfile` 도입**: 거래소별 분할익절 비율·로그 문구·트레일링 차트 렌더·타임스탑 재검증 차이를 profile로 분리<br>• **거래 안전 보존**: exit lock·REST 대사 전 손익 미반영·업비트 HOLO 제외·빗썸 2차 분할(30/70) 비율 유지<br>• **회귀 검증**: `tests/test_trading_runtime.py` 청산 경계 테스트 추가 |
+| **v7.6** | 2026-09-02 | • **PR-2A `TradingRuntime` 골격 도입**: `src/trading_runtime.py`에 `TradingCycleEngine.run_cycle_prefix()`를 추가해 환경 로드·REST 대사·포트폴리오 갱신·BTC 레짐·스크리닝·WS 구독·audit 설정을 빗썸·업비트 공통화<br>• **entry point 슬림화**: `main.py`·`main_upbit.py`의 `run_cycle()` 전반부만 공통 엔진 호출로 교체하고, 청산·진입 루프는 기존 위치 유지<br>• **거래 안전 보존**: 거래소별 env·DB·제외 종목·로그 문구는 `ExchangeCycleProfile`로 분리, HOLO 제외·REST 대사·fail-closed BTC 레짐 동작 변경 없음<br>• **회귀 검증**: `tests/test_trading_runtime.py` 추가 및 startup/isolation/adapter 계약 테스트 통과 |
 | **v7.5** | 2026-09-02 | • **`TRAILING_STOP` 재진입 분기 수정**: `CooldownManager.check_reentry_allowed()`에서 `TRAILING` 분기를 `STOP`보다 먼저 평가해 트레일링 청산 후 회복 조건이 손절 로직에 흡수되지 않도록 보완<br>• **Windows 테스트 SQLite 잠금 해소**: 임시 DB는 `DELETE` 저널 모드, `DatabaseManager.dispose()`·`reset_db_manager_cache()` 및 `tests/db_test_cleanup.py` 훅으로 tearDown 시 파일 잠금 방지<br>• **HOLO 스크리너 테스트 정합화**: 메이저 제외 풀 반영 후 `KRW-DOGE` 후보 기준으로 HOLO 제외만 검증<br>• **CI 추가**: `.github/workflows/test.yml`에서 `unittest discover` 자동 실행<br>• **회귀 검증**: 전체 209개 단위 테스트 통과 |
 | **v7.4** | 2026-09-02 | • **트레일링 청산 후 재진입 방어 강화**: `CooldownManager`가 트레일링 청산가보다 낮거나 회복폭 +1.5% 미만인 가격의 재진입을 차단하도록 보완<br>• **매수 전 호가 영향 검증 추가**: 양 거래소 신규 매수 직전에 매도 호가 잔량 기반 예상 VWAP·슬리피지를 계산하고, 잔량 부족 또는 100bps 초과를 `ORDERBOOK_SLIPPAGE` 감사 기록으로 남김<br>• **공격형 확정봉 모멘텀 돌파**: 빗썸·업비트에 최신 확정 5분봉 고점 돌파·거래량 1.3배·양봉·RSI 52~70·RS +0.8%를 함께 확인하는 `MOMENTUM_BREAKOUT` 경로를 추가하고, 최초 비중을 최대 포지션의 25%로 제한<br>• **RISK_OFF 진입 완화**: 일반 알파 기준을 주간 60점·심야 70점으로 조정하되, BTC `CRASH`, 호가·시세 스트림 이상, 주문 대사 미완료, 쿨다운 차단은 유지<br>• **회귀 검증**: 트레일링 청산 후 하락 재진입 차단, 호가 잔량·예상 슬리피지 경계, 모멘텀 돌파 승인·차단 경계 테스트 추가 |
 | **v7.3** | 2026-09-01 | • **심야 알파 진입 기준 SSOT 정합화**: `get_alpha_buy_threshold()`로 주간 NORMAL 60점·주간 `RISK_OFF` 70점·심야 NORMAL 75점·심야 `RISK_OFF` 80점을 단일화하고, 7대 알파 점수 표시와 최종 `entry_signal()` 주문 게이트가 같은 기준을 사용하도록 수정<br>• **반등 전용 경로 심야 우회 차단**: `recovery_rebound_signal()`은 반등 기본 75점과 현재 세션 기준 중 높은 점수를 적용해, 심야 `RISK_OFF`에서 75~79점 신호가 80점 기준을 우회하지 못하도록 보강<br>• **회귀 검증**: 심야 NORMAL 74/75점 및 심야 `RISK_OFF` 79/80점 경계값의 최종 진입 차단·승인 테스트 추가 |

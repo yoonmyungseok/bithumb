@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 
 import requests
 
+from gemini_telemetry import GeminiTelemetry
 from strategy_engine import (
     calculate_atr as se_calculate_atr,
     calculate_bollinger_bands as se_calculate_bollinger_bands,
@@ -405,6 +406,7 @@ class GeminiAnalyzer:
             cached_entry = self._analysis_cache[cache_key]
             if (time.time() - float(cached_entry.get("cached_at", 0))) < 270.0:
                 logger.info(f"⚡ [{market}] 동일 5분봉 AI 분석 캐시 재사용 (Gemini 중복 호출 생략, 쿼터 보존)")
+                GeminiTelemetry.record_cache_hit(market)
                 return dict(cached_entry["result"])
 
         currency = market.split("-")[-1] if "-" in market else market
@@ -467,6 +469,7 @@ class GeminiAnalyzer:
 
         if not available_models:
             logger.warning(f"[{market}] 모든 Gemini AI 모델이 429 쿨다운 상태입니다 ➜ [로컬 퀀트 알고리즘 엔진]으로 즉시 자동 전환")
+            GeminiTelemetry.record_local_fallback(market, "all models cooling down")
             return self._run_local_quant_engine(
                 current_price, mtf_1h, disparity_ma20, rsi_val, bb, vol_info, candle_pattern,
                 trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct,
@@ -617,10 +620,12 @@ class GeminiAnalyzer:
                     }
                     if hasattr(self, "_analysis_cache") and cache_key:
                         self._analysis_cache[cache_key] = {"cached_at": time.time(), "result": res}
+                    GeminiTelemetry.record_api_success(model, market)
                     return res
                 elif response.status_code == 429:
                     self._MODEL_COOLDOWNS[model] = time.time() + 900.0  # 15분 쿨다운
                     last_error = f"[{model}] 429 Quota Exceeded (15분 쿨다운 등록)"
+                    GeminiTelemetry.record_rate_limited(model, market)
                     logger.warning(f"⚠️ 모델 '{model}' 429 Quota Exceeded 발생 ➜ 15분간 재호출 차단 쿨다운 등록")
                 else:
                     last_error = f"[{model}] HTTP {response.status_code}: {response.text[:100]}"
@@ -630,6 +635,7 @@ class GeminiAnalyzer:
                 logger.warning(f"모델 '{model}' 요청 예외: {e}")
 
         logger.warning(f"Gemini API 호출 제한({last_error}) ➜ [로컬 퀀트 알고리즘 엔진]으로 즉시 자동 전환합니다.")
+        GeminiTelemetry.record_local_fallback(market, last_error or "api failure")
         local_res = self._run_local_quant_engine(
             current_price, mtf_1h, disparity_ma20, rsi_val, bb, vol_info, candle_pattern,
             trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct

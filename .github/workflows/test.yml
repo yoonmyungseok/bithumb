@@ -19,7 +19,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Ruff lint (quality modules)
+        run: |
+          ruff check src/operational_quality.py src/gemini_telemetry.py src/order_safety src/trading_bot_bootstrap.py src/trading_watchdog.py
 
       - name: Run unit tests
         env:
