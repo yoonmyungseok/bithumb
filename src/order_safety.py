@@ -1207,19 +1207,20 @@ class CooldownManager:
                             False,
                             f"직전 타임스탑 청산가({exit_price:,.2f}원) 대비 박스권 횡보 구간(현재 {current_price:,.2f}원, 갭 {gap_pct*100:+.2f}%)으로 휩쏘 재진입 방지",
                         )
-                elif "STOP" in exit_type and "TIME" not in exit_type:
-                    if gap_pct < min_gap_pct:
-                        return (
-                            False,
-                            f"직전 손절가({exit_price:,.2f}원) 대비 유의미한 상방 돌파(+{min_gap_pct*100:.1f}%) 미도달(현재 {current_price:,.2f}원, 갭 {gap_pct*100:+.2f}%)",
-                        )
                 elif "TRAILING" in exit_type or "TP" in exit_type:
+                    # TRAILING_STOP은 STOP보다 먼저 평가해야 손절 분기에 흡수되지 않는다.
                     # 트레일링 청산가 아래에서의 재진입은 하락 재개 구간을 다시 추격할 수 있다.
                     # 따라서 청산가보다 명확히 회복한 경우에만 다음 진입을 허용한다.
                     if gap_pct < min_gap_pct:
                         return (
                             False,
                             f"직전 트레일링 청산가({exit_price:,.2f}원) 대비 유의미한 회복(+{min_gap_pct*100:.1f}%) 미도달(현재 {current_price:,.2f}원, 갭 {gap_pct*100:+.2f}%)으로 재진입 방지",
+                        )
+                elif "STOP" in exit_type and "TIME" not in exit_type:
+                    if gap_pct < min_gap_pct:
+                        return (
+                            False,
+                            f"직전 손절가({exit_price:,.2f}원) 대비 유의미한 상방 돌파(+{min_gap_pct*100:.1f}%) 미도달(현재 {current_price:,.2f}원, 갭 {gap_pct*100:+.2f}%)",
                         )
 
             if now - ts >= expiry_sec:

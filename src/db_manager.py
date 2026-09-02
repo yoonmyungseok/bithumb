@@ -11,8 +11,11 @@ import json
 import logging
 import os
 import sqlite3
+import sys
+import tempfile
 import threading
 import time
+import gc
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -35,6 +38,15 @@ def get_exchange_db_path(data_dir: str | None = None) -> str:
     return os.path.abspath(os.path.normpath(os.path.join(directory, "trading.db")))
 
 
+def _is_ephemeral_db_path(db_path: str) -> bool:
+    """Windows 테스트 임시 폴더 DB는 WAL 대신 DELETE 모드를 사용한다."""
+    try:
+        temp_root = os.path.abspath(tempfile.gettempdir()).lower()
+        return os.path.abspath(db_path).lower().startswith(temp_root)
+    except Exception:
+        return False
+
+
 class DatabaseManager:
     """Thread-safe SQLite Database Manager with connection pooling & WAL mode."""
 
@@ -43,11 +55,29 @@ class DatabaseManager:
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._init_db()
 
+    def dispose(self) -> None:
+        """WAL 체크포인트 후 Windows 테스트 환경의 파일 잠금을 줄인다."""
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=15.0)
+            try:
+                if _is_ephemeral_db_path(self.db_path):
+                    conn.execute("PRAGMA journal_mode=DELETE;")
+                else:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.debug("DatabaseManager dispose skipped for %s: %s", self.db_path, exc)
+
     def _get_connection(self) -> sqlite3.Connection:
         """Create a configured SQLite connection with row factory and timeout."""
         conn = sqlite3.connect(self.db_path, timeout=15.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
+        if _is_ephemeral_db_path(self.db_path):
+            conn.execute("PRAGMA journal_mode=DELETE;")
+        else:
+            conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=5000;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         return conn
@@ -593,6 +623,25 @@ class DatabaseManager:
             return int(cursor.rowcount)
 
 
+def reset_db_manager_cache() -> None:
+    """테스트 tearDown 등에서 경로별 싱글톤과 WAL 잠금을 해제한다."""
+    with _DB_LOCK:
+        managers = list(_DB_MANAGER_BY_PATH.values())
+        _DB_MANAGER_BY_PATH.clear()
+    for manager in managers:
+        manager.dispose()
+    gc.collect()
+
+
+def reset_db_manager_for_path(db_path: str) -> None:
+    """특정 DB 경로의 캐시된 DatabaseManager만 해제한다."""
+    resolved_path = os.path.abspath(os.path.normpath(db_path))
+    with _DB_LOCK:
+        manager = _DB_MANAGER_BY_PATH.pop(resolved_path, None)
+    if manager is not None:
+        manager.dispose()
+
+
 def get_db_manager(db_path: str | None = None) -> DatabaseManager:
     """정규화된 DB 경로별 DatabaseManager를 반환해 거래소 상태를 격리한다."""
     resolved_path = os.path.abspath(os.path.normpath(db_path or get_default_db_path()))
@@ -746,3 +795,19 @@ def migrate_legacy_json_to_sqlite(data_dir: str | None = None) -> dict[str, int]
             logger.warning("[%s] SQLite 마이그레이션 감사/완료 표식 기록 실패: %s", ex.upper(), exc)
 
     return migration_stats
+
+
+def _maybe_install_test_db_cleanup() -> None:
+    """unittest 실행 중 TemporaryDirectory 삭제 전 SQLite 잠금을 해제한다."""
+    if "unittest" not in sys.modules:
+        return
+    try:
+        tests_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tests")
+        if tests_dir not in sys.path:
+            sys.path.insert(0, tests_dir)
+        import db_test_cleanup  # noqa: F401
+    except Exception:
+        pass
+
+
+_maybe_install_test_db_cleanup()

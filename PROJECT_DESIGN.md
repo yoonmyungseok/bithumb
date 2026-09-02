@@ -1,4 +1,4 @@
-# Bithumb & Upbit AI Pro Quant Trading Bot (v7.4)
+# Bithumb & Upbit AI Pro Quant Trading Bot (v7.5)
 
 본 문서는 `c:\AI\bithumb` 디렉토리에 위치한 빗썸(Bithumb) 및 업비트(Upbit) 듀얼 거래소 지원 AI 퀀트 트레이딩 봇의 프로젝트 설명 및 아키텍처 설계서입니다. 이 문서는 다른 AI 에이전트 또는 개발자가 프로젝트의 전반적인 구조와 핵심 로직을 빠르고 명확하게 파악할 수 있도록 작성되었습니다.
 
@@ -82,7 +82,7 @@ c:\AI\bithumb\
 │   ├── process_manager.py          # 빗썸/업비트/대시보드/전체 독립 프로세스 탐색, 종료, 상태, 로그 관리 CLI
 │   ├── watchdog.py                 # 빗썸 워치독 프로세스
 │   └── watchdog_upbit.py           # 업비트 워치독 프로세스
-├── tests/                # 단위 테스트 디렉토리 (총 50개 테스트 스위트, 178개 테스트)
+├── tests/                # 단위 테스트 디렉토리 (총 50개 테스트 스위트, 209개 테스트)
 │   ├── test_dashboard_server.py    # 통합 대시보드 게이트웨이 및 멀티 거래소 집계/라우팅 검증
 │   ├── test_upbit_api.py           # 업비트 API JWT 인증, SHA-512 query_hash, 호가단위, identifier 검증
 │   ├── test_upbit_holo_guard.py    # KRW-HOLO 7중 방어선 (자산평가, 주문, 청산, 긴급매도, 시트 배제) 검증
@@ -172,6 +172,7 @@ c:\AI\bithumb\
 
 | 버전 | 일자 | 주요 변경 및 최적화 내역 |
 | :---: | :---: | :--- |
+| **v7.5** | 2026-09-02 | • **`TRAILING_STOP` 재진입 분기 수정**: `CooldownManager.check_reentry_allowed()`에서 `TRAILING` 분기를 `STOP`보다 먼저 평가해 트레일링 청산 후 회복 조건이 손절 로직에 흡수되지 않도록 보완<br>• **Windows 테스트 SQLite 잠금 해소**: 임시 DB는 `DELETE` 저널 모드, `DatabaseManager.dispose()`·`reset_db_manager_cache()` 및 `tests/db_test_cleanup.py` 훅으로 tearDown 시 파일 잠금 방지<br>• **HOLO 스크리너 테스트 정합화**: 메이저 제외 풀 반영 후 `KRW-DOGE` 후보 기준으로 HOLO 제외만 검증<br>• **CI 추가**: `.github/workflows/test.yml`에서 `unittest discover` 자동 실행<br>• **회귀 검증**: 전체 209개 단위 테스트 통과 |
 | **v7.4** | 2026-09-02 | • **트레일링 청산 후 재진입 방어 강화**: `CooldownManager`가 트레일링 청산가보다 낮거나 회복폭 +1.5% 미만인 가격의 재진입을 차단하도록 보완<br>• **매수 전 호가 영향 검증 추가**: 양 거래소 신규 매수 직전에 매도 호가 잔량 기반 예상 VWAP·슬리피지를 계산하고, 잔량 부족 또는 100bps 초과를 `ORDERBOOK_SLIPPAGE` 감사 기록으로 남김<br>• **공격형 확정봉 모멘텀 돌파**: 빗썸·업비트에 최신 확정 5분봉 고점 돌파·거래량 1.3배·양봉·RSI 52~70·RS +0.8%를 함께 확인하는 `MOMENTUM_BREAKOUT` 경로를 추가하고, 최초 비중을 최대 포지션의 25%로 제한<br>• **RISK_OFF 진입 완화**: 일반 알파 기준을 주간 60점·심야 70점으로 조정하되, BTC `CRASH`, 호가·시세 스트림 이상, 주문 대사 미완료, 쿨다운 차단은 유지<br>• **회귀 검증**: 트레일링 청산 후 하락 재진입 차단, 호가 잔량·예상 슬리피지 경계, 모멘텀 돌파 승인·차단 경계 테스트 추가 |
 | **v7.3** | 2026-09-01 | • **심야 알파 진입 기준 SSOT 정합화**: `get_alpha_buy_threshold()`로 주간 NORMAL 60점·주간 `RISK_OFF` 70점·심야 NORMAL 75점·심야 `RISK_OFF` 80점을 단일화하고, 7대 알파 점수 표시와 최종 `entry_signal()` 주문 게이트가 같은 기준을 사용하도록 수정<br>• **반등 전용 경로 심야 우회 차단**: `recovery_rebound_signal()`은 반등 기본 75점과 현재 세션 기준 중 높은 점수를 적용해, 심야 `RISK_OFF`에서 75~79점 신호가 80점 기준을 우회하지 못하도록 보강<br>• **회귀 검증**: 심야 NORMAL 74/75점 및 심야 `RISK_OFF` 79/80점 경계값의 최종 진입 차단·승인 테스트 추가 |
 | **v7.2** | 2026-09-01 | • **급락 후 반등 전용 실거래 경로**: 빗썸·업비트 공통 `recovery_rebound_signal()`을 추가해 일반 `RISK_OFF` 신호가 미달한 회복 후보를 확정봉·알파·RS·유동성·MTF 조건으로 엄격히 재평가하고, 통과 시 일반 슬롯의 35% 축소 비중으로 실제 주문 경로에 연결<br>• **쿨다운 의미 명확화**: 연속 2회 손절은 30분 회복 모드와 리스크 규모 축소를 적용하며, 종목별 재진입 차단과 분리됨을 명시. 반등 전용 경로도 BTC 급락·시세 불안정·주문 대사 미완료·종목별 쿨다운을 우회하지 않음<br>• **전략 판단 이력**: 거래소별 SQLite `strategy_decisions`에 매수·관망·차단·주문 제출과 정량 근거를 30일 보존하고, 주문 원장·체결 이력과 분리<br>• **회귀 검증**: 반등 승인·차단, CRASH 우회 금지, 거래소별 회복 주문 제한 검증 추가 |

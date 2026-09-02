@@ -44,15 +44,19 @@ class UpbitHoloGuardTests(unittest.TestCase):
             },
             get_current_price=lambda m: 100_000_000.0 if m == "KRW-BTC" else (600.0 if m == "KRW-HOLO" else 1000.0),
             get_korean_name=lambda m: "홀로월드에이아이" if m == "KRW-HOLO" else ("비트코인" if m == "KRW-BTC" else m),
-            get_all_markets=lambda: [{"market": "KRW-BTC"}, {"market": "KRW-HOLO"}, {"market": "KRW-ETH"}],
+            get_all_markets=lambda: [{"market": "KRW-BTC"}, {"market": "KRW-HOLO"}, {"market": "KRW-DOGE"}],
             get_tickers=lambda markets: [
                 {"market": "KRW-BTC", "trade_price": "100000000", "signed_change_rate": "0.03", "acc_trade_price_24h": "50000000000"},
                 {"market": "KRW-HOLO", "trade_price": "600", "signed_change_rate": "0.15", "acc_trade_price_24h": "90000000000"},  # 대량 거래대금 급등
-                {"market": "KRW-ETH", "trade_price": "4000000", "signed_change_rate": "0.02", "acc_trade_price_24h": "30000000000"},
+                {"market": "KRW-DOGE", "trade_price": "200", "signed_change_rate": "0.03", "acc_trade_price_24h": "50000000000"},
             ],
             get_orderbook=lambda m: {
                 "orderbook_units": [
-                    {"ask_price": 601.0 if m == "KRW-HOLO" else 100100.0, "bid_price": 600.0 if m == "KRW-HOLO" else 100000.0, "bid_size": 100000.0}
+                    {
+                        "ask_price": 200.5 if m == "KRW-DOGE" else (601.0 if m == "KRW-HOLO" else 100100.0),
+                        "bid_price": 200.0 if m == "KRW-DOGE" else (600.0 if m == "KRW-HOLO" else 100000.0),
+                        "bid_size": 100000.0,
+                    }
                 ]
             },
             get_open_orders=lambda market=None: [],
@@ -97,7 +101,8 @@ class UpbitHoloGuardTests(unittest.TestCase):
         screener = MarketScreener(self.mock_upbit, min_trade_value_krw=1_000_000_000.0)
         candidates = screener.scan_markets(top_count=5)
         candidate_markets = [c["market"] for c in candidates]
-        self.assertIn("KRW-BTC", candidate_markets)
+        # 메이저(BTC/ETH)는 스캘핑 풀에서 제외되므로 DOGE 후보만 검증한다.
+        self.assertIn("KRW-DOGE", candidate_markets)
         self.assertNotIn("KRW-HOLO", candidate_markets)
 
     def test_risk_guard_validate_buy_rejects_holo(self):
