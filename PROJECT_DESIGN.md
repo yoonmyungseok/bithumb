@@ -128,23 +128,6 @@ c:\AI\bithumb\
 4. **안전 주문 집행기**: `SafeOrderExecutor.submit` 및 `UpbitAPI.create_order`에서 HOLO 주문 시 즉각 `ValueError` 발생.
 5. **총 자산 및 보유목록 평가**: `calculate_total_equity`, `get_held_markets`, `build_positions_data`에서 계좌에 HOLO가 존재해도 평가금액을 0원으로 처리하고 목록에서 100% 제외.
 6. **실시간 청산 및 긴급 전량매도 (Panic Sell)**: `RealtimeRiskEngine`의 틱 청산 및 `BotController.execute_panic_sell` 실행 시 HOLO는 매도 대상에서 영구 제외되어 사용자 수동 물량을 완벽히 보존.
-7. **구글 시트 및 웹 대시보드**: Dashboard, Performance, Strategy, Trade_Log 및 웹 UI 어디에도 HOLO가 노출되거나 기록되지 않음.
-
-### 3.4. 시스템 안정성 & 자가 복구 메커니즘 (Self-Healing & Lifecycle)
-- **원자적 파일 쓰기 및 .bak 자동 백업 (`write_json_atomically`)**: 주문 저널, 일일 통계, 포지션 상태 등 모든 중요 데이터 저장 시 임시 파일(`mkstemp`) -> `os.replace` 원자적 교체 및 `.bak` 백업본을 상시 동기화합니다.
-- **자가 치유 JSON 로더 (`load_json_with_backup_recovery`)**: 비정상 프로세스 강제 종료나 정전으로 파일이 손상(`JSONDecodeError`)되어도 `.bak` 백업 파일에서 자동으로 감지 복구하고 원본 파일을 자가 치유합니다.
-- **완전한 Graceful Shutdown 라이프사이클**: SIGINT, SIGTERM, SIGBREAK(Windows) 수신 시 텔레그램 리스너, 웹 대시보드 서버, Public/Private 웹소켓, APScheduler 스케줄러를 순차적으로 안전 종료합니다.
-- **워치독 하트비트(Heartbeat) 기반 무응답(Hang) 감지**: 봇이 매 사이클 및 웹소켓 틱마다 `.heartbeat` 파일을 갱신하며, 워치독(`watchdog.py`/`watchdog_upbit.py`)은 프로세스가 살아있더라도 10분 이상 타임스탬프가 갱신되지 않는 데드락/무응답 상태를 감지하여 프로세스를 안전하게 강제 재시작합니다.
-- **저장 우선순위**: 주문 의도·확정 체결·청산·킬스위치는 즉시 원자 저장합니다. 반면 포지션 최고가 같은 고빈도 상태는 0.1% 이상 변화 또는 5초 경과 시에만 저장해 파일/SQLite 쓰기 경합을 제한합니다.
-
-### 3.5. 거시 시장 리스크 및 동적 자본 보호 엔진 (Macro & Capital Guard)
-- **거시 BTC 급락 시 포지션 비상 방어 모드 (`set_macro_defensive_mode`)**: 비트코인 급락 감지 시 전 알트코인 포지션의 트레일링 익절 시작선을 `+0.8%`로 낮추고 `0.4%` 초밀착 드롭폭으로 전환하여 알트코인 동반 폭락 충격을 선제적으로 방어합니다.
-- **단일 종목 절대 손실 하드 스탑 (`Hard-Stop Guard`)**: 급격한 악재/상폐 등 폭락 시 틱 카운트 지연 없이 `-4.5%` 도달 즉시 0.1초 내 최우선 시장가 청산을 단행합니다.
-- **연속 손실 기반 동적 자본 디스케일링**: 연속 손실 횟수에 따라 100% ➜ 80% ➜ 50% 순으로 배팅 규모를 자동 축소하여 드로다운을 방어합니다.
-
-### 3.6. 7대 복합 팩터 앙상블 알파 엔진 (Composite Alpha Engine)
-- **VWAP(거래량 가중 평균가) 기관 수급 팩터 (`calculate_vwap`)**: 스마트 머니의 실질 평균 매집 단가를 추적하여 주가가 VWAP 상단에 안착 및 상향 돌파 시 강력한 모멘텀 가점을 부여합니다.
-- **MACD 히스토그램 모멘텀 가속도 (`calculate_macd_acceleration`)**: 단순 지행성 골든크로스를 넘어 히스토그램의 기울기(Slope)가 양의 방향으로 가속 확장되는 초입 변곡점을 포착합니다.
 - **7대 팩터 앙상블 스코어러 (`calculate_composite_alpha_score`)**: MTF 1H(15점) + VWAP(15점) + MACD 가속도(15점) + RSI 골든존(15점) + 볼린저 밴드(15점) + 수급/호가잔량비(15점) + 볼륨 스파이크(10점)의 100점 만점 중 **65점 이상** 시에만 매수를 승인하며, AI 모델 및 로컬 퀀트 엔진에 100% 일원화되어 무중단 고승률 타점을 생성합니다.
 
 ### 3.7. 체결 및 마이크로스트럭처 제어 엔진 (Execution & Microstructure Engine)

@@ -418,6 +418,36 @@ class DatabaseManager:
             res["kill_switch_active"] = bool(res.get("kill_switch_active"))
             return res
 
+    def get_daily_stats_history(self, exchange: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        """과거 일별 자산 및 손익 통계 이력을 최신순으로 조회한다."""
+        query = "SELECT * FROM daily_stats WHERE 1=1"
+        params: list[Any] = []
+        if exchange:
+            query += " AND exchange = ?"
+            params.append(exchange.strip().lower())
+        query += " ORDER BY date DESC LIMIT ?"
+        params.append(limit)
+
+        with _DB_LOCK, self._get_connection() as conn:
+            cursor = conn.cursor()
+            rows = cursor.execute(query, params).fetchall()
+            results: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                try:
+                    item["history"] = json.loads(item.get("history_json", "[]"))
+                except Exception:
+                    item["history"] = []
+                item["kill_switch_active"] = bool(item.get("kill_switch_active"))
+                start_eq = float(item.get("start_equity", 0.0) or 0.0)
+                pnl_krw = float(item.get("realized_pnl_krw", 0.0) or 0.0)
+                tot_trades = int(item.get("total_trades", 0) or 0)
+                w_trades = int(item.get("win_trades", 0) or 0)
+                item["pnl_pct"] = round((pnl_krw / start_eq * 100.0), 2) if start_eq > 0 else 0.0
+                item["win_rate"] = round((w_trades / tot_trades * 100.0), 1) if tot_trades > 0 else 0.0
+                results.append(item)
+            return results
+
     # =========================================================================
     # Position State Operations
     # =========================================================================

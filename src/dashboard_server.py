@@ -222,6 +222,7 @@ class UnifiedDashboardServer:
                 fallback_data["bot_state"] = "⏳ 데이터 동기화 중"
             return fallback_data
 
+        # 오프라인은 신규 매수 가능으로 해석될 여지가 없도록 명시적으로 차단한다.
         return {
             "online": False,
             "status": "OFFLINE",
@@ -240,8 +241,8 @@ class UnifiedDashboardServer:
             "candidates": [],
             "recent_trades": [],
             "recent_orders": [],
+            "daily_stats_history": [],
             "message": "봇 프로세스 미구동 또는 응답 없음",
-            # 오프라인은 신규 매수 가능으로 해석될 여지가 없도록 명시적으로 차단한다.
             "safety": {
                 "entry_ready": False,
                 "entry_block_reasons": ["봇 프로세스 미구동 또는 응답 없음"],
@@ -290,6 +291,53 @@ class UnifiedDashboardServer:
         up_wins = int(upbit_data.get("win_trades", 0) or 0)
         total_wins = bt_wins + up_wins
         win_rate = (total_wins / total_trades * 100.0) if total_trades > 0 else 0.0
+
+        # 통합 일일 자산 변동 및 성과 이력 (날짜별 집계)
+        daily_map: dict[str, dict[str, Any]] = {}
+        for row in bithumb_data.get("daily_stats_history", []):
+            if isinstance(row, dict) and row.get("date"):
+                d = str(row["date"])
+                daily_map[d] = {
+                    "date": d,
+                    "exchange": "combined",
+                    "start_equity": float(row.get("start_equity", 0.0) or 0.0),
+                    "realized_pnl_krw": float(row.get("realized_pnl_krw", 0.0) or 0.0),
+                    "total_trades": int(row.get("total_trades", 0) or 0),
+                    "win_trades": int(row.get("win_trades", 0) or 0),
+                    "kill_switch_active": bool(row.get("kill_switch_active")),
+                }
+
+        for row in upbit_data.get("daily_stats_history", []):
+            if isinstance(row, dict) and row.get("date"):
+                d = str(row["date"])
+                if d in daily_map:
+                    daily_map[d]["start_equity"] += float(row.get("start_equity", 0.0) or 0.0)
+                    daily_map[d]["realized_pnl_krw"] += float(row.get("realized_pnl_krw", 0.0) or 0.0)
+                    daily_map[d]["total_trades"] += int(row.get("total_trades", 0) or 0)
+                    daily_map[d]["win_trades"] += int(row.get("win_trades", 0) or 0)
+                    daily_map[d]["kill_switch_active"] = daily_map[d]["kill_switch_active"] or bool(row.get("kill_switch_active"))
+                else:
+                    daily_map[d] = {
+                        "date": d,
+                        "exchange": "combined",
+                        "start_equity": float(row.get("start_equity", 0.0) or 0.0),
+                        "realized_pnl_krw": float(row.get("realized_pnl_krw", 0.0) or 0.0),
+                        "total_trades": int(row.get("total_trades", 0) or 0),
+                        "win_trades": int(row.get("win_trades", 0) or 0),
+                        "kill_switch_active": bool(row.get("kill_switch_active")),
+                    }
+
+        combined_daily_history: list[dict[str, Any]] = []
+        for d, item in sorted(daily_map.items(), key=lambda x: x[0], reverse=True):
+            st_eq = item["start_equity"]
+            pnl_k = item["realized_pnl_krw"]
+            t_tr = item["total_trades"]
+            w_tr = item["win_trades"]
+            item["start_equity"] = int(st_eq)
+            item["realized_pnl_krw"] = int(pnl_k)
+            item["pnl_pct"] = round((pnl_k / st_eq * 100.0), 2) if st_eq > 0 else 0.0
+            item["win_rate"] = round((w_tr / t_tr * 100.0), 1) if t_tr > 0 else 0.0
+            combined_daily_history.append(item)
 
         # 통합 포지션 목록 (거래소 태깅)
         combined_positions = []
@@ -440,6 +488,7 @@ class UnifiedDashboardServer:
             "candidates": combined_candidates,
             "recent_trades": combined_recent_trades,
             "recent_orders": combined_orders,
+            "daily_stats_history": combined_daily_history,
             "fear_and_greed": fng,
             "bithumb_online": bithumb_data.get("online", False),
             "upbit_online": upbit_data.get("online", False),
@@ -801,6 +850,36 @@ class UnifiedDashboardServer:
             </div>
         </div>
 
+        <!-- Daily Asset Performance History Card -->
+        <div class="card p-5 shadow-md space-y-4">
+            <div class="flex justify-between items-center">
+                <h2 class="text-lg font-bold text-white flex items-center gap-2">
+                    <span>📅</span> 일일 자산 변동 및 성과 이력 (Daily Performance History)
+                </h2>
+                <span class="text-xs text-slate-400">최근 14일 기록</span>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-slate-800/60 text-slate-400 uppercase text-xs">
+                        <tr>
+                            <th class="p-3">일자</th>
+                            <th class="p-3">시작 자산</th>
+                            <th class="p-3">실현 손익</th>
+                            <th class="p-3">수익률</th>
+                            <th class="p-3">체결 수 (승/총)</th>
+                            <th class="p-3">승률</th>
+                            <th class="p-3">리스크 상태</th>
+                        </tr>
+                    </thead>
+                    <tbody id="daily_history_table_body" class="divide-y divide-slate-800">
+                        <tr>
+                            <td colspan="7" class="p-6 text-center text-slate-500">일일 성과 이력 데이터가 없습니다.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
         <!-- Recent Orders Card -->
         <div class="card p-5 shadow-md space-y-4">
             <h2 class="text-lg font-bold text-white flex items-center gap-2">
@@ -935,6 +1014,40 @@ class UnifiedDashboardServer:
                         </tr>
                     `;
                 }).join('');
+            }
+
+            // 2.5 Daily Stats History Table
+            const dailyHistory = target.daily_stats_history || [];
+            const dhTbody = document.getElementById('daily_history_table_body');
+            if (dhTbody) {
+                if (dailyHistory.length === 0) {
+                    dhTbody.innerHTML = '<tr><td colspan="7" class="p-6 text-center text-slate-500">일일 성과 이력 데이터가 없습니다.</td></tr>';
+                } else {
+                    dhTbody.innerHTML = dailyHistory.map(item => {
+                        const pnl = item.realized_pnl_krw || 0;
+                        const pnlClass = pnl > 0 ? 'text-emerald-400 font-bold' : (pnl < 0 ? 'text-rose-400 font-bold' : 'text-slate-300');
+                        const pnlSign = pnl > 0 ? '+' : '';
+                        const pnlPct = item.pnl_pct || 0;
+                        const pnlPctClass = pnlPct > 0 ? 'text-emerald-400' : (pnlPct < 0 ? 'text-rose-400' : 'text-slate-400');
+                        const isKill = Boolean(item.kill_switch_active);
+                        const statusBadge = isKill
+                            ? '<span class="badge bg-rose-900/80 text-rose-300 border border-rose-700">🛑 킬스위치</span>'
+                            : (item.total_trades > 0
+                                ? '<span class="badge bg-emerald-900/80 text-emerald-300 border border-emerald-700">🟢 정상 운용</span>'
+                                : '<span class="badge bg-slate-800 text-slate-400 border border-slate-700">⚪ 대기</span>');
+                        return `
+                            <tr class="hover:bg-slate-800/30">
+                                <td class="p-3 font-mono text-slate-200 font-semibold">${item.date || '-'}</td>
+                                <td class="p-3 text-slate-300">${formatKrw(item.start_equity)}</td>
+                                <td class="p-3 ${pnlClass}">${pnlSign}${formatKrw(pnl)}</td>
+                                <td class="p-3 font-mono ${pnlPctClass}">${formatPct(pnlPct)}</td>
+                                <td class="p-3 text-slate-300"><span class="text-emerald-400 font-semibold">${item.win_trades || 0}</span> / ${item.total_trades || 0} 회</td>
+                                <td class="p-3 font-mono text-slate-300">${(item.total_trades > 0) ? (item.win_rate || 0).toFixed(1) + '%' : '-'}</td>
+                                <td class="p-3">${statusBadge}</td>
+                            </tr>
+                        `;
+                    }).join('');
+                }
             }
 
             // 3. Orders Table

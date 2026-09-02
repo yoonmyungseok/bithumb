@@ -426,12 +426,47 @@ class BotController:
             except Exception as e:
                 logger.debug(f"대시보드 주문 저널 로드 예외: {e}")
 
-            # 4. 포지션 단위 통합 통계 및 UNKNOWN 주문 수
+            # 4. 일일 자산 변동 및 성과 이력 (Daily Stats History)
+            daily_history_data: list[dict[str, Any]] = []
+            try:
+                db_history = self.risk_manager.db.get_daily_stats_history(self.risk_manager.exchange, limit=14)
+                today_str = self.risk_manager.current_date_str or get_kst_now_str()[:10]
+                found_today = False
+                for row in db_history:
+                    item = dict(row)
+                    # 오늘 날짜는 실시간 최신 값으로 동기화
+                    if item.get("date") == today_str:
+                        item["start_equity"] = int(self.risk_manager.daily_start_equity)
+                        item["realized_pnl_krw"] = int(self.risk_manager.realized_pnl_krw)
+                        item["total_trades"] = total_t
+                        item["win_trades"] = win_t
+                        item["win_rate"] = round(win_rate, 1)
+                        item["pnl_pct"] = round(daily_pnl_pct, 2)
+                        item["kill_switch_active"] = bool(self.risk_manager.kill_switch_active)
+                        found_today = True
+                    daily_history_data.append(item)
+
+                if not found_today and self.risk_manager.daily_start_equity > 0:
+                    daily_history_data.insert(0, {
+                        "exchange": self.risk_manager.exchange,
+                        "date": today_str,
+                        "start_equity": int(self.risk_manager.daily_start_equity),
+                        "realized_pnl_krw": int(self.risk_manager.realized_pnl_krw),
+                        "total_trades": total_t,
+                        "win_trades": win_t,
+                        "win_rate": round(win_rate, 1),
+                        "pnl_pct": round(daily_pnl_pct, 2),
+                        "kill_switch_active": bool(self.risk_manager.kill_switch_active),
+                    })
+            except Exception as e:
+                logger.debug(f"대시보드 일일 통계 이력 로드 예외: {e}")
+
+            # 5. 포지션 단위 통합 통계 및 UNKNOWN 주문 수
             pos_stats = self.trade_memory.get_position_level_stats() if hasattr(self.trade_memory, "get_position_level_stats") else {}
             unknown_count = sum(1 for o in self.order_journal.orders if o.get("status") == "UNKNOWN")
             safety_data = self._build_safety_data(self.order_journal.orders)
 
-            # 5. BTC 시장 레짐 정보
+            # 6. BTC 시장 레짐 정보
             btc_regime = "NORMAL"
             btc_regime_desc = f"🟢 정상장 (진입 {StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL}점+)"
             btc_reason = "BTC 정상 안정세"
@@ -464,6 +499,7 @@ class BotController:
                 "candidates": candidates_data,
                 "recent_trades": recent_trades_data,
                 "recent_orders": recent_orders_data,
+                "daily_stats_history": daily_history_data,
             }
             self._last_dashboard_fetch_ts = time.time()
         except Exception as e:

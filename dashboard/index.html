@@ -230,6 +230,39 @@
       </div>
     </div>
 
+    <!-- Section: Daily Asset & Performance History -->
+    <div id="section_daily_history" class="card-glass p-5 sm:p-6">
+      <div class="flex flex-wrap justify-between items-center mb-4">
+        <div>
+          <h2 class="text-base sm:text-lg font-bold text-white flex items-center">
+            <span class="mr-2">📅</span> 일일 자산 변동 및 성과 이력 (Daily Performance History)
+          </h2>
+          <p class="text-xs text-slate-400 mt-0.5">DB에 영구 기록된 일자별 기준 자산, 실현 손익, 수익률 및 당일 승률 추이</p>
+        </div>
+        <div class="text-xs text-slate-400 mt-2 sm:mt-0">
+          <span class="px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[11px]">최근 14일 기록</span>
+        </div>
+      </div>
+      <div class="overflow-x-auto rounded-xl border border-slate-800/80">
+        <table class="w-full text-left text-sm text-slate-300">
+          <thead class="bg-slate-800/80 text-slate-400 uppercase text-xs">
+            <tr>
+              <th class="p-3 whitespace-nowrap">일자 (Date)</th>
+              <th class="p-3 whitespace-nowrap">시작 기준자산</th>
+              <th class="p-3 whitespace-nowrap">당일 실현 손익</th>
+              <th class="p-3 whitespace-nowrap">당일 수익률</th>
+              <th class="p-3 whitespace-nowrap">체결 횟수 (승 / 총)</th>
+              <th class="p-3 whitespace-nowrap">승률 (Win Rate)</th>
+              <th class="p-3 whitespace-nowrap">리스크 상태</th>
+            </tr>
+          </thead>
+          <tbody id="daily_history_tbody" class="divide-y divide-slate-800 bg-slate-900/30">
+            <tr><td colspan="7" class="p-4 text-center text-slate-500">일일 성과 이력 로딩 중...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Dual Column: Recent Completed Trades & Order Journal -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <!-- Recent Completed Trades -->

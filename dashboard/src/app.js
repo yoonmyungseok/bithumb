@@ -608,6 +608,7 @@
     // Render Tables
     renderPositionsTable(positions);
     renderCandidatesTable(candidates);
+    renderDailyHistoryTable(d.daily_stats_history || []);
     renderRecentTradesTable(d.recent_trades || []);
     renderOrderJournalTable(d.recent_orders || []);
   }
@@ -739,6 +740,70 @@
           </td>
           <td class="p-3 text-xs text-slate-300 max-w-xs break-words">
             ${formatReason(cand.reason)}
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  // Render Daily Asset & Performance History Table
+  function renderDailyHistoryTable(history) {
+    const tbody = document.getElementById('daily_history_tbody');
+    if (!tbody) return;
+
+    if (!history || history.length === 0) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="7" class="p-6 text-center text-slate-500">
+            <div class="text-2xl mb-1">📅</div>
+            <div class="text-xs font-medium">기록된 일일 자산 변동 데이터가 없습니다.</div>
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    tbody.innerHTML = history.map(item => {
+      const pnlKrw = Number(item.realized_pnl_krw || 0);
+      const pnlPct = Number(item.pnl_pct || 0);
+      const isProfit = pnlKrw >= 0;
+      const pnlCls = isProfit ? (pnlKrw > 0 ? 'text-emerald-400 font-bold' : 'text-slate-300') : 'text-rose-400 font-bold';
+      const pnlSign = pnlKrw > 0 ? '+' : '';
+      const pnlPctCls = isProfit ? (pnlPct > 0 ? 'text-emerald-400' : 'text-slate-400') : 'text-rose-400';
+      
+      const totalTrades = Number(item.total_trades || 0);
+      const winTrades = Number(item.win_trades || 0);
+      const winRate = Number(item.win_rate || (totalTrades > 0 ? (winTrades / totalTrades * 100) : 0));
+      
+      const isKillSwitch = Boolean(item.kill_switch_active);
+      const riskStatusBadge = isKillSwitch
+        ? '<span class="px-2 py-0.5 rounded text-[11px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40">🛑 킬스위치</span>'
+        : (totalTrades > 0
+          ? '<span class="px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">🟢 정상 운용</span>'
+          : '<span class="px-2 py-0.5 rounded text-[11px] font-medium bg-slate-800 text-slate-400 border border-slate-700">⚪ 대기</span>');
+
+      return `
+        <tr class="hover:bg-slate-800/40 transition-colors border-b border-slate-800/80">
+          <td class="p-3 whitespace-nowrap font-mono text-xs text-slate-300 font-semibold">
+            ${item.date || '-'}
+          </td>
+          <td class="p-3 whitespace-nowrap font-medium text-slate-200 text-xs">
+            ${formatKrw(item.start_equity || 0)}
+          </td>
+          <td class="p-3 whitespace-nowrap text-xs ${pnlCls}">
+            ${pnlSign}${formatKrw(pnlKrw)}
+          </td>
+          <td class="p-3 whitespace-nowrap text-xs font-mono font-bold ${pnlPctCls}">
+            ${formatPct(pnlPct)}
+          </td>
+          <td class="p-3 whitespace-nowrap text-xs text-slate-300">
+            <span class="font-bold ${winTrades > 0 ? 'text-emerald-400' : 'text-slate-300'}">${winTrades}</span> / <span class="text-slate-400">${totalTrades} 회</span>
+          </td>
+          <td class="p-3 whitespace-nowrap text-xs font-mono">
+            ${totalTrades > 0 ? `<span class="font-bold ${winRate >= 60 ? 'text-emerald-400' : (winRate >= 50 ? 'text-blue-400' : 'text-amber-400')}">${winRate.toFixed(1)}%</span>` : '<span class="text-slate-500">-</span>'}
+          </td>
+          <td class="p-3 whitespace-nowrap text-xs">
+            ${riskStatusBadge}
           </td>
         </tr>
       `;
