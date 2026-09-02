@@ -34,6 +34,7 @@ from order_safety import (
     RiskGuard,
     SafeOrderExecutor,
     calculate_risk_position_size,
+    evaluate_buy_orderbook_impact,
     get_dynamic_portfolio_tiers,
 )
 
@@ -163,6 +164,52 @@ class OrderSafetyTests(unittest.TestCase):
         # 322원 (+1.9% 돌파) 시도 -> 승인
         allowed_sl_ok, _ = cd.check_reentry_allowed("KRW-DOGE", 322.0, min_gap_pct=0.015)
         self.assertTrue(allowed_sl_ok)
+
+    def test_trailing_exit_requires_price_recovery_before_reentry(self):
+        """트레일링 청산 뒤 하락한 가격에서의 재진입은 추가 하락 추격을 막아야 한다."""
+        cd = CooldownManager(
+            default_sl_cooldown=0.0,
+            default_tp_cooldown=0.0,
+            default_time_stop_cooldown=0.0,
+            data_dir=self.temp_dir.name,
+        )
+        cd.record_exit("KRW-0G", "TRAILING_STOP", exit_price=341.0)
+
+        blocked, reason = cd.check_reentry_allowed("KRW-0G", 335.0, min_gap_pct=0.015)
+        self.assertFalse(blocked)
+        self.assertIn("유의미한 회복", reason)
+
+        allowed, _ = cd.check_reentry_allowed("KRW-0G", 347.0, min_gap_pct=0.015)
+        self.assertTrue(allowed)
+
+    def test_buy_orderbook_impact_blocks_insufficient_depth_and_high_slippage(self):
+        """사전 호가 검증은 잔량 부족과 임계치 초과 가격 충격을 모두 차단해야 한다."""
+        insufficient, _, insufficient_details = evaluate_buy_orderbook_impact(
+            {"orderbook_units": [{"ask_price": 100.0, "ask_size": 10.0}]},
+            order_krw=2_000.0,
+            reference_price=100.0,
+        )
+        self.assertFalse(insufficient)
+        self.assertEqual(insufficient_details["available_ask_krw"], 1_000.0)
+
+        high_slippage, _, high_details = evaluate_buy_orderbook_impact(
+            {"orderbook_units": [{"ask_price": 102.0, "ask_size": 100.0}]},
+            order_krw=5_000.0,
+            reference_price=100.0,
+            max_slippage_bps=100.0,
+        )
+        self.assertFalse(high_slippage)
+        self.assertGreater(high_details["estimated_slippage_bps"], 100.0)
+
+        allowed, reason, details = evaluate_buy_orderbook_impact(
+            {"orderbook_units": [{"ask_price": 100.5, "ask_size": 100.0}]},
+            order_krw=5_000.0,
+            reference_price=100.0,
+            max_slippage_bps=100.0,
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "OK")
+        self.assertEqual(details["estimated_slippage_bps"], 50.0)
 
     def test_calculate_risk_position_size(self):
         # 1,000,000 total equity, entry=100,000, SL=98,000 (2% stop), risk 1% = 10,000 max loss

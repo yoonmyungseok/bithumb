@@ -25,6 +25,7 @@ from order_safety import (
     RiskGuard,
     SafeOrderExecutor,
     calculate_risk_position_size,
+    evaluate_buy_orderbook_impact,
     get_dynamic_portfolio_tiers,
     write_json_atomically,
 )
@@ -113,6 +114,8 @@ MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
 MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.35"))
 MAX_TOTAL_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_EXPOSURE_PCT", "0.90"))
 MAX_ORDER_KRW = float(os.getenv("MAX_ORDER_KRW", "20000000"))
+# 관찰 기간에는 차단 후보만 기록하고, 검증 후 환경 변수로 신규 매수 차단을 활성화한다.
+ORDERBOOK_SLIPPAGE_ENFORCEMENT = os.getenv("ORDERBOOK_SLIPPAGE_ENFORCEMENT", "false").strip().lower() in {"1", "true", "yes", "on"}
 # 초기 돌파 경로는 빗썸에서만 활성화하며, 기존 확인형 안전 게이트와 주문 안전 검증을 함께 사용한다.
 # 저점권 반등 우선 정책에서는 고점 돌파 후보를 기본적으로 생성하지 않는다.
 EARLY_BREAKOUT_ENABLED = os.getenv("EARLY_BREAKOUT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
@@ -941,6 +944,21 @@ def run_cycle():
                         )
                         audit_decision(market, "BLOCKED", "BUDGET", ["매수 예산 부족"], {"trade_budget": trade_budget})
                         continue
+
+                    # 신규 매수만 호가 기반 가격 충격을 사전 차단하며, 보유 포지션 보호 매도에는 적용하지 않는다.
+                    impact_ok, impact_reason, impact_details = evaluate_buy_orderbook_impact(
+                        orderbook=orderbook,
+                        order_krw=trade_budget,
+                        reference_price=current_price,
+                    )
+                    if not impact_ok:
+                        if ORDERBOOK_SLIPPAGE_ENFORCEMENT:
+                            logger.warning("[%s] %s", market, impact_reason)
+                            audit_decision(market, "BLOCKED", "ORDERBOOK_SLIPPAGE", [impact_reason], impact_details)
+                            continue
+                        # 관찰 모드에서는 실제 주문을 바꾸지 않고, 향후 차단 효과를 검증할 근거만 남긴다.
+                        logger.info("[%s] [관찰] %s", market, impact_reason)
+                        audit_decision(market, "OBSERVED", "ORDERBOOK_SLIPPAGE", [impact_reason], impact_details)
 
                     is_safe, rejection_reason = risk_guard.validate_buy(
                         market=market,
