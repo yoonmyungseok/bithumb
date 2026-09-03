@@ -96,6 +96,11 @@ class ExchangeAdapter:
         method = getattr(self.client, "get_order_by_client_id", None)
         return method(client_order_id) if callable(method) else {}
 
+    def get_telemetry(self) -> dict[str, Any]:
+        """REST API 일일 호출량 및 쿼터 텔레메트리 반환"""
+        method = getattr(self.client, "get_telemetry", None)
+        return method() if callable(method) else {}
+
     def get_korean_name(self, market: str) -> str:
         """Presentation metadata is explicit instead of escaping via __getattr__."""
         method = getattr(self.client, "get_korean_name", None)

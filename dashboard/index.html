@@ -146,6 +146,121 @@
       </div>
     </section>
 
+    <!-- API 일일 사용량 & 쿼터 모니터링 영역 -->
+    <section id="api_usage_panel" class="card-glass p-5 sm:p-6 border border-slate-700/80">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+          <h2 class="text-base font-bold text-white flex items-center">
+            <span class="mr-2">⚡</span>API 일일 사용량 & 쿼터 모니터링
+          </h2>
+          <p class="text-xs text-slate-400 mt-1">
+            KST 자정 리셋 기준 실시간 REST 및 AI API 누적 호출 현황
+          </p>
+        </div>
+        <span id="api_usage_date" class="px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 text-slate-300 border border-slate-700">
+          오늘 기준
+        </span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+        <!-- 빗썸 API 카드 -->
+        <div id="api_card_bithumb" class="rounded-xl border border-slate-800 bg-slate-900/60 p-4 flex flex-col justify-between space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-amber-400 flex items-center gap-1.5">
+              <span>🟡</span>빗썸 Open API
+            </span>
+            <span id="bithumb_api_badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+              정상
+            </span>
+          </div>
+          <div>
+            <div class="text-slate-400 text-[11px]">오늘 누적 호출</div>
+            <div id="bithumb_api_calls" class="text-2xl font-bold text-white mt-0.5">0<span class="text-xs font-normal text-slate-400 ml-1">회</span></div>
+          </div>
+          <div class="space-y-1.5 pt-2 border-t border-slate-800/80 text-slate-300 text-[11px]">
+            <div class="flex justify-between">
+              <span class="text-slate-400">조회 / 주문:</span>
+              <span id="bithumb_api_methods" class="font-medium">GET 0 / POST 0</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-400">오류 / 429 제한:</span>
+              <span id="bithumb_api_errors" class="font-medium text-slate-300">0 / 0회</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-400">최근 요청:</span>
+              <span id="bithumb_api_last" class="font-medium truncate max-w-[140px] text-slate-400">-</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 업비트 API 카드 -->
+        <div id="api_card_upbit" class="rounded-xl border border-slate-800 bg-slate-900/60 p-4 flex flex-col justify-between space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-blue-400 flex items-center gap-1.5">
+              <span>🔵</span>업비트 Open API
+            </span>
+            <span id="upbit_api_badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+              정상
+            </span>
+          </div>
+          <div>
+            <div class="text-slate-400 text-[11px]">오늘 누적 호출</div>
+            <div id="upbit_api_calls" class="text-2xl font-bold text-white mt-0.5">0<span class="text-xs font-normal text-slate-400 ml-1">회</span></div>
+          </div>
+          <div class="space-y-1.5 pt-2 border-t border-slate-800/80 text-slate-300 text-[11px]">
+            <div class="flex justify-between">
+              <span class="text-slate-400">실시간 잔여 쿼터:</span>
+              <span id="upbit_api_quota" class="font-medium text-emerald-400">초당: - / 분당: -</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-400">오류 / 429 제한:</span>
+              <span id="upbit_api_errors" class="font-medium text-slate-300">0 / 0회</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-400">최근 요청:</span>
+              <span id="upbit_api_last" class="font-medium truncate max-w-[140px] text-slate-400">-</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Gemini AI API 카드 -->
+        <div id="api_card_gemini" class="rounded-xl border border-slate-800 bg-slate-900/60 p-4 flex flex-col justify-between space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-purple-400 flex items-center gap-1.5">
+              <span>🟣</span>Gemini 퀀트 AI
+            </span>
+            <span id="gemini_api_badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
+              0.0% 소진
+            </span>
+          </div>
+          <div>
+            <div class="flex justify-between items-baseline text-[11px]">
+              <span class="text-slate-400">일일 사용량 (한도 대비)</span>
+              <span id="gemini_api_calls_ratio" class="text-slate-300 font-bold">0 / 1,500회</span>
+            </div>
+            <!-- Progress bar -->
+            <div class="w-full bg-slate-800 h-2 rounded-full mt-1.5 overflow-hidden">
+              <div id="gemini_quota_bar" class="bg-gradient-to-r from-purple-500 to-indigo-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+            </div>
+          </div>
+          <div class="space-y-1.5 pt-2 border-t border-slate-800/80 text-slate-300 text-[11px]">
+            <div class="flex justify-between">
+              <span class="text-slate-400">⚡ AI 캐시 절감 (쿼터 방어):</span>
+              <span id="gemini_api_cache" class="font-medium text-emerald-400">0회</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-400">로컬 알고리즘 폴백:</span>
+              <span id="gemini_api_fallback" class="font-medium text-slate-300">0회</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-400">최근 이벤트:</span>
+              <span id="gemini_api_last" class="font-medium truncate max-w-[140px] text-slate-400">-</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- Strategy View Switcher Tabs -->
     <div class="flex items-center justify-between bg-slate-900/60 p-2 rounded-2xl border border-slate-800 shadow-sm">
       <div class="flex space-x-2">

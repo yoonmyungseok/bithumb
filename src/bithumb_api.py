@@ -18,6 +18,8 @@ try:
 except ImportError:
     pass
 
+from api_telemetry import ExchangeApiTelemetry
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +40,7 @@ class BithumbAPI:
         adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=1)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
+        self.telemetry = ExchangeApiTelemetry("bithumb")
 
     def _generate_jwt_token(self, params: dict[str, Any] | None = None) -> str:
         """
@@ -98,6 +101,13 @@ class BithumbAPI:
                 else:
                     raise ValueError(f"지원하지 않는 HTTP 메서드: {method}")
 
+                # 텔레메트리 계측 기록
+                self.telemetry.record_call(
+                    method=method,
+                    endpoint=endpoint,
+                    status_code=response.status_code,
+                )
+
                 # 429(Rate Limit) 또는 5xx 서버 일시 에러 시 재시도
                 if response.status_code in (429, 500, 502, 503, 504):
                     if retryable and attempt < attempts:
@@ -117,6 +127,7 @@ class BithumbAPI:
                 return response.json()
 
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                self.telemetry.record_call(method=method, endpoint=endpoint, status_code=0, is_error=True)
                 last_exception = e
                 if retryable and attempt < attempts:
                     sleep_sec = 2 ** (attempt - 1)
@@ -128,11 +139,16 @@ class BithumbAPI:
                     logger.error(f"HTTP Request Failed after {attempts} attempts: {e}")
                     raise
             except requests.exceptions.RequestException as e:
+                self.telemetry.record_call(method=method, endpoint=endpoint, status_code=0, is_error=True)
                 logger.error(f"HTTP Request Failed: {e}")
                 raise
 
         if last_exception:
             raise last_exception
+
+    def get_telemetry(self) -> dict[str, Any]:
+        """REST API 일일 호출량 및 상태 텔레메트리 반환"""
+        return self.telemetry.to_dict()
 
     def get_balances(self) -> dict[str, dict[str, float]]:
         """

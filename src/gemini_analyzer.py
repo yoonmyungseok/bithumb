@@ -35,18 +35,137 @@ class GeminiAnalyzer:
     - [안정형 모델 라우터 & 무중단 로컬 퀀트 폴백]: Rate Limit 429 시 100% 로컬 앙상블 자율 전환
     """
 
-    # 1. 안정적인 프로덕션 공식 Flash-Lite 모델 최우선 배치 (쿼터 효율 및 반응속도 극대화)
-    STABLE_MODELS: ClassVar[list[str]] = [
+    # 1. Fallback 기본 안정 모델 (Flash-Lite 최우선 배치)
+    FALLBACK_MODELS: ClassVar[list[str]] = [
+        "gemini-3.8-flash-lite",
         "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
         "gemini-flash-lite-latest",
+        "gemini-2.5-flash-lite",
+        "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
         "gemini-3.5-flash",
         "gemini-flash-latest",
     ]
+    # 하위 호환성을 위한 참조
+    STABLE_MODELS = FALLBACK_MODELS
 
-    # 모델별 429 쿨다운 만료 시점 캐시 (전역 공유)
+    # 동적 감지된 모델 캐시 및 TTL (6시간)
+    _CACHED_MODELS: ClassVar[list[str]] = []
+    _MODELS_CACHED_AT: ClassVar[float] = 0.0
+    _MODELS_CACHE_TTL: ClassVar[float] = 21600.0
+
+    # 모델별 쿨다운(429/타임아웃) 및 블랙리스트(404/지원종료) 만료 시점 캐시 (전역 공유)
     _MODEL_COOLDOWNS: ClassVar[dict[str, float]] = {}
+    _MODEL_BLACKLIST: ClassVar[dict[str, float]] = {}
+
+    @classmethod
+    def _model_priority_key(cls, name: str) -> tuple[int, float, int, int, str]:
+        """
+        Gemini 모델 우선순위 점수 산출 함수 (내림차순 정렬용)
+        1순위(Tier 2): flash-lite 계열 (초고속, 최고 쿼터 효율)
+        2순위(Tier 1): 일반 flash 계열
+        3순위(Tier 0): 기타 계열
+        세부 정렬: 최신 버전 번호(예: 3.8 > 3.7 > 3.5 > 3.1 > 2.5), latest 별칭, 정식 릴리스 우선
+        """
+        lower_name = name.lower()
+
+        # 1. Tier 판별: flash-lite = 2, flash = 1, 기타 = 0
+        if "flash-lite" in lower_name:
+            tier = 2
+        elif "flash" in lower_name:
+            tier = 1
+        else:
+            tier = 0
+
+        # 2. 버전 번호 파싱 (예: gemini-3.8-flash -> 3.8, gemini-3.1-flash -> 3.1)
+        version_match = re.search(r"(\d+(?:\.\d+)?)", lower_name)
+        version = float(version_match.group(1)) if version_match else 0.0
+
+        # 'latest' 별칭 처리 (버전 명시 없는 latest는 안정적 최신으로 취급)
+        is_latest = 1 if "latest" in lower_name else 0
+        if is_latest and version == 0.0:
+            version = 2.99
+
+        # preview/experimental 모델 패널티 (안정 릴리스 우선)
+        is_preview = 1 if ("preview" in lower_name or "exp" in lower_name) else 0
+        stable_flag = 0 if is_preview else 1
+
+        return (tier, version, stable_flag, is_latest, lower_name)
+
+    @classmethod
+    def fetch_available_models(cls, api_key: str = "") -> list[str]:
+        """
+        Google Generative Language API(ListModels)로부터 실시간 지원 모델 목록을 조회하여
+        flash-lite 최우선 및 최신 버전 순으로 자동 정렬합니다.
+        (이미지·오디오·TTS 등 미디어 전용 모델은 엄격히 배제하고 순수 텍스트/추론 모델만 선별)
+        """
+        key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
+        if not key:
+            return list(cls.FALLBACK_MODELS)
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_models = data.get("models", [])
+                valid_models = []
+                for item in raw_models:
+                    m_name = item.get("name", "").replace("models/", "").strip()
+                    methods = item.get("supportedGenerationMethods", [])
+
+                    # generateContent 지원 및 Flash 계열(flash 또는 flash-lite) 선별
+                    if "generateContent" in methods and "flash" in m_name.lower():
+                        # 트레이딩 부적합 모델(이미지/오디오/음성/임베딩/특수 목적) 엄격 배제
+                        bad_keywords = [
+                            "embedding", "aqa", "imagen", "image", "audio",
+                            "tts", "stt", "omni", "vision", "high-res"
+                        ]
+                        if any(bad in m_name.lower() for bad in bad_keywords):
+                            continue
+                        valid_models.append(m_name)
+
+                if valid_models:
+                    sorted_models = sorted(valid_models, key=cls._model_priority_key, reverse=True)
+                    logger.info(
+                        f"✨ [Gemini Dynamic Router] 지원 모델 {len(sorted_models)}개 자동 감지 및 정렬 완료 "
+                        f"(1위: {sorted_models[0]}): {sorted_models[:5]}"
+                    )
+                    return sorted_models
+                else:
+                    logger.warning("Gemini ListModels 응답에 적합한 Flash 모델이 없어 기본 Fallback 목록을 사용합니다.")
+            else:
+                logger.warning(f"Gemini ListModels 조회 실패 (HTTP {resp.status_code}) ➜ 기본 Fallback 목록 사용")
+        except Exception as e:
+            logger.warning(f"Gemini ListModels 조회 중 예외 발생: {e} ➜ 기본 Fallback 목록 사용")
+
+        return list(cls.FALLBACK_MODELS)
+
+    @classmethod
+    def get_available_models(cls, api_key: str = "", force_refresh: bool = False) -> list[str]:
+        """
+        6시간 TTL 캐시를 적용하여 가용 모델 목록을 반환합니다. (영구/장기 블랙리스트 제외)
+        """
+        now = time.time()
+        if force_refresh or not cls._CACHED_MODELS or (now - cls._MODELS_CACHED_AT > cls._MODELS_CACHE_TTL):
+            models = cls.fetch_available_models(api_key)
+            cls._CACHED_MODELS = models
+            cls._MODELS_CACHED_AT = now
+
+        # 블랙리스트 제외된 활성 모델만 반환
+        active_models = [m for m in cls._CACHED_MODELS if cls._MODEL_BLACKLIST.get(m, 0.0) <= now]
+        return active_models if active_models else list(cls.FALLBACK_MODELS)
+
+    def get_candidate_models(self, limit: int = 2) -> list[str]:
+        """
+        현재 시점에 쿨다운이나 블랙리스트가 아닌 최우선 순위 모델 목록을 최대 limit개 반환합니다.
+        """
+        now_ts = time.time()
+        all_models = self.get_available_models(self.api_key)
+        usable = [m for m in all_models if self._MODEL_COOLDOWNS.get(m, 0.0) <= now_ts]
+        return usable[:limit]
 
     def __init__(self, api_key: str = ""):
         self.api_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
@@ -463,20 +582,17 @@ class GeminiAnalyzer:
         atr_sl = current_price - sl_delta
         dynamic_sl = min(support_sl, atr_sl, current_price * 0.985)
 
-        # 5. 모델 라우터 및 429 쿨다운 검사 (최대 2개 모델만 시도)
-        now_ts = time.time()
-        available_models = [m for m in self.STABLE_MODELS if self._MODEL_COOLDOWNS.get(m, 0.0) <= now_ts]
+        # 5. 동적 모델 라우터 및 쿨다운/블랙리스트 검사 (Flash-Lite 최우선 후보 3개 선정)
+        candidate_models = self.get_candidate_models(limit=3)
 
-        if not available_models:
-            logger.warning(f"[{market}] 모든 Gemini AI 모델이 429 쿨다운 상태입니다 ➜ [로컬 퀀트 알고리즘 엔진]으로 즉시 자동 전환")
+        if not candidate_models:
+            logger.warning(f"[{market}] 모든 Gemini AI 모델이 쿨다운/블랙리스트 상태입니다 ➜ [로컬 퀀트 알고리즘 엔진]으로 즉시 자동 전환")
             GeminiTelemetry.record_local_fallback(market, "all models cooling down")
             return self._run_local_quant_engine(
                 current_price, mtf_1h, disparity_ma20, rsi_val, bb, vol_info, candle_pattern,
                 trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct,
                 vwap_info=vwap_info, macd_acc=macd_acc
             )
-
-        candidate_models = available_models[:2]
 
         # 6. 기관 퀀트 헤지펀드 시스템 프롬프트 v5.1
         memory_section = f"\n{trade_memory_context}\n" if trade_memory_context else ""
@@ -557,7 +673,7 @@ class GeminiAnalyzer:
         for model in candidate_models:
             endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
             try:
-                response = requests.post(endpoint, json=payload, timeout=20)
+                response = requests.post(endpoint, json=payload, timeout=25)
                 if response.status_code == 200:
                     res_json = response.json()
                     raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -627,9 +743,19 @@ class GeminiAnalyzer:
                     last_error = f"[{model}] 429 Quota Exceeded (15분 쿨다운 등록)"
                     GeminiTelemetry.record_rate_limited(model, market)
                     logger.warning(f"⚠️ 모델 '{model}' 429 Quota Exceeded 발생 ➜ 15분간 재호출 차단 쿨다운 등록")
+                elif response.status_code in (404, 400):
+                    # 모델 지원 종료(Deprecated) 또는 부존재 ➜ 24시간 블랙리스트 등록 (자기 치유)
+                    self._MODEL_BLACKLIST[model] = time.time() + 86400.0
+                    last_error = f"[{model}] HTTP {response.status_code} Unsupported/Deprecated (24시간 블랙리스트 격리)"
+                    logger.warning(f"⛔ 모델 '{model}' 지원 종료 또는 부존재 감지(HTTP {response.status_code}) ➜ 24시간 블랙리스트 격리")
                 else:
                     last_error = f"[{model}] HTTP {response.status_code}: {response.text[:100]}"
                     logger.warning(f"모델 '{model}' 호출 실패 ({response.status_code})")
+            except requests.exceptions.Timeout as e:
+                # 일시적인 구글 서버 읽기 타임아웃 ➜ 3분 단기 쿨다운 후 차순위 모델 전환
+                self._MODEL_COOLDOWNS[model] = time.time() + 180.0
+                last_error = f"[{model}] Timeout: {e}"
+                logger.warning(f"⏳ 모델 '{model}' 응답 타임아웃 ➜ 3분 쿨다운 등록 후 차순위 모델 전환")
             except (requests.exceptions.RequestException, KeyError, ValueError, IndexError) as e:
                 last_error = f"[{model}] Exception: {e}"
                 logger.warning(f"모델 '{model}' 요청 예외: {e}")

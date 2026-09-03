@@ -24,6 +24,7 @@ import jwt
 import requests
 
 from market_policy import get_excluded_markets
+from api_telemetry import ExchangeApiTelemetry
 
 try:
     from jwt.warnings import InsecureKeyLengthWarning
@@ -58,6 +59,8 @@ class UpbitAPI:
         adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=1)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
+        self.telemetry = ExchangeApiTelemetry("upbit")
+        self._last_remaining_min: int | None = None
         self._market_name_map: dict[str, str] = {}
         self._lock = threading.RLock()
         # 업비트 응답 헤더의 Rate Limit 그룹별 예약 시각과 차단 시각을 관리한다.
@@ -130,18 +133,28 @@ class UpbitAPI:
                 parts[key.strip()] = value.strip()
 
         group = parts.get("group", fallback_group)
+        remaining_sec = None
         try:
             remaining_sec = int(parts["sec"])
         except (KeyError, TypeError, ValueError):
-            return group, None
+            pass
+
+        remaining_min = None
+        if "min" in parts:
+            try:
+                remaining_min = int(parts["min"])
+            except (TypeError, ValueError):
+                pass
 
         with self._lock:
-            self._rate_limit_remaining[group] = remaining_sec
-            if remaining_sec <= 0:
-                blocked_until = time.monotonic() + self._seconds_until_next_boundary()
-                self._rate_limit_blocked_until[group] = max(
-                    self._rate_limit_blocked_until.get(group, 0.0), blocked_until
-                )
+            self._last_remaining_min = remaining_min
+            if remaining_sec is not None:
+                self._rate_limit_remaining[group] = remaining_sec
+                if remaining_sec <= 0:
+                    blocked_until = time.monotonic() + self._seconds_until_next_boundary()
+                    self._rate_limit_blocked_until[group] = max(
+                        self._rate_limit_blocked_until.get(group, 0.0), blocked_until
+                    )
         return group, remaining_sec
 
     def _block_rate_limit_group(self, group: str) -> float:
@@ -221,6 +234,16 @@ class UpbitAPI:
                     response, request_group
                 )
 
+                # 텔레메트리 계측 기록
+                self.telemetry.record_call(
+                    method=method_upper,
+                    endpoint=endpoint,
+                    status_code=response.status_code,
+                    group=response_group,
+                    remaining_sec=remaining_sec,
+                    remaining_min=self._last_remaining_min,
+                )
+
                 # Rate Limit (429) 또는 서버 일시 장애 (5xx) 시 지수 백오프 재시도
                 if response.status_code in (429, 500, 502, 503, 504):
                     if retryable and attempt < attempts:
@@ -251,6 +274,13 @@ class UpbitAPI:
                 return response.json()
 
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                self.telemetry.record_call(
+                    method=method_upper,
+                    endpoint=endpoint,
+                    status_code=0,
+                    group=request_group,
+                    is_error=True,
+                )
                 last_exception = e
                 if retryable and attempt < attempts:
                     sleep_sec = 2 ** (attempt - 1)
@@ -262,11 +292,22 @@ class UpbitAPI:
                     logger.error(f"HTTP Request Failed after {attempts} attempts: {e}")
                     raise
             except requests.exceptions.RequestException as e:
+                self.telemetry.record_call(
+                    method=method_upper,
+                    endpoint=endpoint,
+                    status_code=0,
+                    group=request_group,
+                    is_error=True,
+                )
                 logger.error(f"HTTP Request Failed: {e}")
                 raise
 
         if last_exception:
             raise last_exception
+
+    def get_telemetry(self) -> dict[str, Any]:
+        """REST API 일일 호출량 및 쿼터 텔레메트리 반환"""
+        return self.telemetry.to_dict()
 
     def get_balances(self) -> dict[str, dict[str, float]]:
         """

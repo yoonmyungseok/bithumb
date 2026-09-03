@@ -466,6 +466,175 @@
     }
   }
 
+  // API 일일 사용량 & 쿼터 패널 렌더링
+  function renderApiUsagePanel(apiUsage, activeExchange) {
+    if (!apiUsage) return;
+
+    // 날짜 표시
+    const dateEl = document.getElementById('api_usage_date');
+    const todayStr = (apiUsage.gemini && apiUsage.gemini.date) || 
+                     (apiUsage.bithumb && apiUsage.bithumb.date) ||
+                     (apiUsage.upbit && apiUsage.upbit.date) ||
+                     (apiUsage.exchange && apiUsage.exchange.date) || '오늘';
+    if (dateEl) {
+      dateEl.innerText = `${todayStr} 기준`;
+    }
+
+    const cardBithumb = document.getElementById('api_card_bithumb');
+    const cardUpbit = document.getElementById('api_card_upbit');
+
+    // 탭별 카드 시각적 강조/흐리게 처리
+    if (cardBithumb) {
+      if (activeExchange === 'upbit') {
+        cardBithumb.classList.add('opacity-30');
+      } else {
+        cardBithumb.classList.remove('opacity-30');
+      }
+    }
+    if (cardUpbit) {
+      if (activeExchange === 'bithumb') {
+        cardUpbit.classList.add('opacity-30');
+      } else {
+        cardUpbit.classList.remove('opacity-30');
+      }
+    }
+
+    // 1. 빗썸 API
+    let btData = apiUsage.bithumb;
+    if (!btData && apiUsage.exchange && activeExchange === 'bithumb') {
+      btData = apiUsage.exchange;
+    }
+    btData = btData || {};
+
+    const btCallsEl = document.getElementById('bithumb_api_calls');
+    if (btCallsEl) {
+      btCallsEl.innerHTML = `${(btData.total_calls || 0).toLocaleString()}<span class="text-xs font-normal text-slate-400 ml-1">회</span>`;
+    }
+    const btMethodsEl = document.getElementById('bithumb_api_methods');
+    if (btMethodsEl) {
+      const getC = (btData.by_method && btData.by_method.GET) || 0;
+      const postC = (btData.by_method && btData.by_method.POST) || 0;
+      btMethodsEl.innerText = `GET ${getC.toLocaleString()} / POST ${postC.toLocaleString()}`;
+    }
+    const btErrorsEl = document.getElementById('bithumb_api_errors');
+    if (btErrorsEl) {
+      const errC = btData.errors || 0;
+      const r429 = btData.rate_limited_429 || 0;
+      btErrorsEl.innerText = `${errC} / 429: ${r429}회`;
+      btErrorsEl.className = r429 > 0 ? 'font-medium text-rose-400' : 'font-medium text-slate-300';
+    }
+    const btBadgeEl = document.getElementById('bithumb_api_badge');
+    if (btBadgeEl) {
+      if ((btData.rate_limited_429 || 0) > 0) {
+        btBadgeEl.innerText = '429 발생';
+        btBadgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30';
+      } else if ((btData.total_calls || 0) > 0) {
+        btBadgeEl.innerText = '정상';
+        btBadgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+      } else {
+        btBadgeEl.innerText = '대기';
+        btBadgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-slate-700 text-slate-400 border border-slate-600';
+      }
+    }
+    const btLastEl = document.getElementById('bithumb_api_last');
+    if (btLastEl) {
+      btLastEl.innerText = btData.last_endpoint ? `${btData.last_endpoint} (${btData.last_status || '-'})` : '-';
+    }
+
+    // 2. 업비트 API
+    let upData = apiUsage.upbit;
+    if (!upData && apiUsage.exchange && activeExchange === 'upbit') {
+      upData = apiUsage.exchange;
+    }
+    upData = upData || {};
+
+    const upCallsEl = document.getElementById('upbit_api_calls');
+    if (upCallsEl) {
+      upCallsEl.innerHTML = `${(upData.total_calls || 0).toLocaleString()}<span class="text-xs font-normal text-slate-400 ml-1">회</span>`;
+    }
+    const upQuotaEl = document.getElementById('upbit_api_quota');
+    if (upQuotaEl) {
+      const sec = upData.remaining_sec !== null && upData.remaining_sec !== undefined ? `${upData.remaining_sec}/10` : '-';
+      const min = upData.remaining_min !== null && upData.remaining_min !== undefined ? `${upData.remaining_min}/600` : '-';
+      upQuotaEl.innerText = `초당: ${sec} / 분당: ${min}`;
+      if (upData.remaining_sec !== null && upData.remaining_sec <= 2) {
+        upQuotaEl.className = 'font-medium text-amber-400';
+      } else {
+        upQuotaEl.className = 'font-medium text-emerald-400';
+      }
+    }
+    const upErrorsEl = document.getElementById('upbit_api_errors');
+    if (upErrorsEl) {
+      const errC = upData.errors || 0;
+      const r429 = upData.rate_limited_429 || 0;
+      upErrorsEl.innerText = `${errC} / 429: ${r429}회`;
+      upErrorsEl.className = r429 > 0 ? 'font-medium text-rose-400' : 'font-medium text-slate-300';
+    }
+    const upBadgeEl = document.getElementById('upbit_api_badge');
+    if (upBadgeEl) {
+      if ((upData.rate_limited_429 || 0) > 0) {
+        upBadgeEl.innerText = '429 발생';
+        upBadgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30';
+      } else if ((upData.total_calls || 0) > 0) {
+        upBadgeEl.innerText = '정상';
+        upBadgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+      } else {
+        upBadgeEl.innerText = '대기';
+        upBadgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-slate-700 text-slate-400 border border-slate-600';
+      }
+    }
+    const upLastEl = document.getElementById('upbit_api_last');
+    if (upLastEl) {
+      upLastEl.innerText = upData.last_endpoint ? `${upData.last_endpoint} (${upData.last_status || '-'})` : '-';
+    }
+
+    // 3. Gemini AI API
+    const geminiData = apiUsage.gemini || {};
+    const geminiCalls = geminiData.api_calls || 0;
+    const geminiLimit = geminiData.quota_limit || 1500;
+    const geminiPct = geminiData.quota_used_pct !== undefined ? geminiData.quota_used_pct : (geminiLimit > 0 ? Math.round((geminiCalls / geminiLimit) * 1000) / 10 : 0);
+
+    const geminiCallsRatioEl = document.getElementById('gemini_api_calls_ratio');
+    if (geminiCallsRatioEl) {
+      geminiCallsRatioEl.innerText = `${geminiCalls.toLocaleString()} / ${geminiLimit.toLocaleString()}회`;
+    }
+    const geminiBarEl = document.getElementById('gemini_quota_bar');
+    if (geminiBarEl) {
+      const clampPct = Math.min(100, Math.max(0, geminiPct));
+      geminiBarEl.style.width = `${clampPct}%`;
+      if (clampPct >= 90) {
+        geminiBarEl.className = 'bg-rose-500 h-2 rounded-full transition-all duration-500';
+      } else if (clampPct >= 70) {
+        geminiBarEl.className = 'bg-amber-500 h-2 rounded-full transition-all duration-500';
+      } else {
+        geminiBarEl.className = 'bg-gradient-to-r from-purple-500 to-indigo-500 h-2 rounded-full transition-all duration-500';
+      }
+    }
+    const geminiBadgeEl = document.getElementById('gemini_api_badge');
+    if (geminiBadgeEl) {
+      geminiBadgeEl.innerText = `${geminiPct}% 소진`;
+      if (geminiPct >= 90) {
+        geminiBadgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30';
+      } else if (geminiPct >= 70) {
+        geminiBadgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30';
+      } else {
+        geminiBadgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30';
+      }
+    }
+    const geminiCacheEl = document.getElementById('gemini_api_cache');
+    if (geminiCacheEl) {
+      geminiCacheEl.innerText = `${(geminiData.cache_hits || 0).toLocaleString()}회`;
+    }
+    const geminiFallbackEl = document.getElementById('gemini_api_fallback');
+    if (geminiFallbackEl) {
+      geminiFallbackEl.innerText = `${(geminiData.local_fallback || 0).toLocaleString()}회`;
+    }
+    const geminiLastEl = document.getElementById('gemini_api_last');
+    if (geminiLastEl) {
+      geminiLastEl.innerText = geminiData.last_event || '-';
+    }
+  }
+
   // 표시 문구가 코드의 StrategyPolicy와 달라지지 않도록 API 값을 사용한다.
   function renderPolicyGuide(policy) {
     if (!policy || typeof policy !== 'object') return;
@@ -596,6 +765,7 @@
 
     renderSafetyPanel(d.safety);
     renderPolicyGuide(d.policy);
+    renderApiUsagePanel(d.api_usage, state.activeExchange);
 
     // Tab Counts
     const positions = d.positions || [];

@@ -85,17 +85,17 @@ class StrategyPolicy:
     RSI_MIN_NORMAL: float = 42.0         # 정상장 저점 반등 확인용 RSI 최소치
     RSI_MAX_NORMAL: float = 60.0         # 정상장 고점 추격 방지용 RSI 최대치
     RSI_MIN_RISK_OFF: float = 42.0       # RISK_OFF 저점 반등 확인용 RSI 최소치
-    RSI_MAX_RISK_OFF: float = 58.0       # RISK_OFF 고점 추격 방지용 RSI 최대치
+    RSI_MAX_RISK_OFF: float = 65.0       # RISK_OFF 고점 추격 방지용 RSI 최대치 (약세장 독자 수급 수용을 위해 65.0으로 현실화)
     PCT_B_MIN: float = 0.20              # 볼린저 밴드 %B 최소치
     PCT_B_MAX: float = 0.65              # 상단권 모멘텀 추격을 차단하는 절대 상한
     PULLBACK_PCT_B_MIN_NORMAL: float = 0.25  # 정상장 저점권 반등 후보 하한
     PULLBACK_PCT_B_MAX_NORMAL: float = 0.60  # 정상장 저점권 반등 후보 상한
     PULLBACK_PCT_B_MIN_RISK_OFF: float = 0.28  # RISK_OFF 반등 후보 하한
-    PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.55  # RISK_OFF 반등 후보 상한
+    PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.70  # RISK_OFF 반등 후보 상한 (볼린저밴드 0.70까지 수용)
     PULLBACK_LOOKBACK_BARS: int = 12      # 최근 지지 저점 산정에 사용하는 5분봉 수
     PULLBACK_MAX_DISTANCE_NORMAL: float = 0.035  # 정상장 최근 저점 대비 최대 허용 거리
-    PULLBACK_MAX_DISTANCE_RISK_OFF: float = 0.025  # RISK_OFF 최근 저점 대비 최대 허용 거리
-    MAX_MA20_DISPARITY: float = 1.025    # MA20 대비 최대 이격도 +2.5%
+    PULLBACK_MAX_DISTANCE_RISK_OFF: float = 0.035  # RISK_OFF 최근 저점 대비 최대 허용 거리 (3.5%로 현실화)
+    MAX_MA20_DISPARITY: float = 1.035    # MA20 대비 최대 이격도 +3.5% (강한 돌파 캔들 수용)
     MAX_UPPER_SHADOW_RATIO: float = 0.55 # 캔들 윗꼬리 최대 허용 비율 (55%)
     MA_ALIGNMENT_RATIO: float = 0.995    # MA5 >= MA20 * 0.995
     PULLBACK_MA_ALIGNMENT_RATIO: float = 0.990  # 저점 반등은 MA20 아래 1% 이내 회복까지 허용
@@ -118,7 +118,7 @@ class StrategyPolicy:
     MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN: float = 1.3
     MOMENTUM_BREAKOUT_LOOKBACK_BARS: int = 4
     MOMENTUM_BREAKOUT_RSI_MIN: float = 52.0
-    MOMENTUM_BREAKOUT_RSI_MAX: float = 70.0
+    MOMENTUM_BREAKOUT_RSI_MAX: float = 75.0
     MOMENTUM_BREAKOUT_RS_MIN: float = 0.008
     MOMENTUM_BREAKOUT_MTF_EMA20_RATIO: float = 0.990
     MOMENTUM_BREAKOUT_ALLOC_RATIO: float = 0.25
@@ -845,8 +845,13 @@ def entry_signal(
     distance_from_recent_low = ((current / recent_low) - 1.0) if recent_low > 0 else float("inf")
     distance_below_recent_high = ((recent_high / current) - 1.0) if current > 0 else 0.0
     previous_close = float(candles[1].get("trade_price", current) or current)
-    # 확정봉의 양봉 전환과 직전 종가 회복을 함께 요구해 하락 중 무계획 물타기를 막는다.
-    rebound_confirmed = current >= open_0 and current > previous_close
+    total_score = int(alpha_res.get("total_score", 0) or 0)
+    # 확정봉의 양봉 전환(current >= open_0)은 필수 유지하여 하락 중 무계획 물타기를 막는다.
+    # 직전 종가 회복은 0.2% 미세 버퍼를 허용하거나, 알파 점수가 우수한 종목(>= 60)은 양봉 전환만으로도 인정한다.
+    rebound_confirmed = current >= open_0 and (
+        current >= previous_close * 0.998
+        or total_score >= StrategyPolicy.ALPHA_BUY_THRESHOLD
+    )
     pullback_zone = pct_b_min <= pct_b <= pct_b_max
     near_recent_low = 0.0 <= distance_from_recent_low <= pullback_max_distance
     signal_5m = (
@@ -856,8 +861,6 @@ def entry_signal(
         and near_recent_low
         and rebound_confirmed
     )
-
-    total_score = int(alpha_res.get("total_score", 0) or 0)
     normalized_entry_type = (entry_type or "CONFIRMED").upper()
 
     # 모멘텀 돌파는 최신 확정 5분봉의 고점·거래량·양봉·RSI를 함께 확인한다.

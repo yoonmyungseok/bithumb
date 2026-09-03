@@ -474,6 +474,10 @@ class BotController:
             btc_reason = "BTC 정상 안정세"
             btc_threshold = StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL
 
+            # 7. API 일일 사용량 및 텔레메트리
+            exchange_telemetry = bithumb.get_telemetry() if hasattr(bithumb, "get_telemetry") else {}
+            gemini_telemetry = GeminiTelemetry.snapshot().to_dict()
+
             self.latest_dashboard_data = {
                 "total_equity": int(total_equity),
                 "krw_available": int(krw_avail),
@@ -502,6 +506,10 @@ class BotController:
                 "recent_trades": recent_trades_data,
                 "recent_orders": recent_orders_data,
                 "daily_stats_history": daily_history_data,
+                "api_usage": {
+                    "exchange": exchange_telemetry,
+                    "gemini": gemini_telemetry,
+                },
             }
             self._last_dashboard_fetch_ts = time.time()
         except Exception as e:
@@ -547,6 +555,8 @@ class BotController:
             data_dir=data_dir,
         )
         gemini_stats = GeminiTelemetry.snapshot().to_dict()
+        exchange_obj = self.get_exchange() if hasattr(self, "get_exchange") else None
+        exchange_stats = exchange_obj.get_telemetry() if hasattr(exchange_obj, "get_telemetry") else {}
 
         return {
             "exchange": self.exchange_name,
@@ -565,7 +575,12 @@ class BotController:
             "unknown_orders_count": unknown_orders,
             "excluded_holdings": sorted(list(excluded)),
             "web_port": self.web_port,
+            "exchange_telemetry": exchange_stats,
             "gemini_telemetry": gemini_stats,
+            "api_usage": {
+                "exchange": exchange_stats,
+                "gemini": gemini_stats,
+            },
             "slippage_enforcement": slippage_readiness.to_dict(),
         }
 
@@ -577,6 +592,11 @@ class BotController:
         ks_icon = "🛑 활성화 (매수 차단)" if diag["kill_switch_active"] else "🟢 비활성 (안전)"
 
         excl_str = ", ".join(diag["excluded_holdings"]) if diag["excluded_holdings"] else "없음"
+        ex_stats = diag.get("exchange_telemetry", {})
+        ex_calls = ex_stats.get("total_calls", 0)
+        ex_429 = ex_stats.get("rate_limited_429", 0)
+        ex_rem_sec = ex_stats.get("remaining_sec")
+        ex_rem_str = f" / 잔여초당 {ex_rem_sec}" if ex_rem_sec is not None else ""
 
         return (
             f"🩺 <b>[{self.exchange_name} AI 트레이딩 시스템 정밀 진단 리포트]</b>\n\n"
@@ -586,6 +606,7 @@ class BotController:
             f"• <b>일일 킬스위치:</b> {ks_icon}\n"
             f"• <b>연속 손실 횟수:</b> {diag['consecutive_losses']}회 (자본 배율: {diag['risk_scale_factor']*100:.0f}%)\n"
             f"• <b>최근 평균 슬리피지:</b> {diag['avg_slippage_bps']:.1f} bps\n"
+            f"• <b>거래소 API 호출:</b> {ex_calls}회 (429 {ex_429}회{ex_rem_str})\n"
             f"• <b>Gemini 호출:</b> {diag['gemini_telemetry']['api_calls']}회 "
             f"(성공 {diag['gemini_telemetry']['api_success']} / 429 {diag['gemini_telemetry']['rate_limited']} / "
             f"로컬폴백 {diag['gemini_telemetry']['local_fallback']} / 캐시 {diag['gemini_telemetry']['cache_hits']})\n"

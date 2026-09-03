@@ -172,6 +172,15 @@ class MarketScreener:
 
                 # 확인형 후보는 기존 상승률 조건을 그대로 사용한다.
                 if self.min_change_rate <= change_rate <= self.max_change_rate:
+                    # [모멘텀 주도주 돌파] 모멘텀 돌파가 활성화되어 있고, 당일 상승 탄력이 강하면서(+3% 이상)
+                    # 비트코인 대비 독자 랠리(상대강도 RS >= +1.5%)를 펼치는 주도주는
+                    # 눌림목 잣대(%B/저점거리)로 거르지 않고 고점 돌파 로직(MOMENTUM_BREAKOUT)으로 진입하도록 분류한다.
+                    is_momentum_leader = (
+                        self.enable_early_breakout
+                        and change_rate >= 0.030
+                        and relative_strength >= 0.015
+                    )
+
                     # 상승 초입(+1.5% ~ +6.0%) 종목에 최고 가중치를 부여하고, 이미 많이 오른(+8% 초과) 종목은 감점
                     if 0.015 <= change_rate <= 0.060:
                         momentum_multiplier = 2.0   # 상승 초입 골든존 최고 가중치
@@ -187,7 +196,7 @@ class MarketScreener:
                     effective_rate = min(change_rate, 0.08)  # 지나치게 높은 상승률이 점수를 과도하게 왜곡하지 않도록 상한 8% 캡 적용
                     score = ((effective_rate * 100.0) * momentum_multiplier * math.log10(max(1.0, acc_price_24h))) + rs_bonus
                     ticker_info["score"] = score
-                    ticker_info["candidate_type"] = "CONFIRMED"
+                    ticker_info["candidate_type"] = "MOMENTUM_BREAKOUT" if is_momentum_leader else "CONFIRMED"
                     ticker_info["is_held"] = False
                     qualified_candidates.append(ticker_info)
                     continue
@@ -255,8 +264,13 @@ class MarketScreener:
                 except Exception:
                     continue
 
-            qualified_candidates = [c for c in screened_by_spread if c.get("candidate_type") != "MOMENTUM_BREAKOUT"]
-            screened_early_breakouts = [c for c in screened_by_spread if c.get("candidate_type") == "MOMENTUM_BREAKOUT"]
+            # 초기 돌파(변동률 < min_change_rate)는 별도 소수 슬롯으로 격리 관리하고,
+            # 주도주 모멘텀(변동률 >= min_change_rate)은 일반 확인형과 함께 종합 순위 풀에서 경쟁한다.
+            screened_early_breakouts = [
+                c for c in screened_by_spread
+                if c.get("candidate_type") == "MOMENTUM_BREAKOUT" and c.get("change_rate", 0.0) < self.min_change_rate
+            ]
+            qualified_candidates = [c for c in screened_by_spread if c not in screened_early_breakouts]
 
             if not is_risk_off and len(qualified_candidates) < top_count:
                 min_fb_trade_val = min(self.min_trade_value_krw, 1_000_000_000.0)

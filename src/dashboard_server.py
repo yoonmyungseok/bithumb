@@ -249,6 +249,10 @@ class UnifiedDashboardServer:
                 "order_status_counts": {},
                 "feed": {"is_healthy": False, "status": "OFFLINE"},
             },
+            "api_usage": {
+                "exchange": {},
+                "gemini": {},
+            },
         }
 
     def get_aggregated_status(self) -> dict[str, Any]:
@@ -495,6 +499,47 @@ class UnifiedDashboardServer:
             "bithumb_status": bt_status,
             "upbit_status": up_status,
             "active_positions_count": len(combined_positions),
+            "api_usage": {
+                "bithumb": bithumb_data.get("api_usage", {}).get("exchange", {}),
+                "upbit": upbit_data.get("api_usage", {}).get("exchange", {}),
+                "gemini": {
+                    "date": bithumb_data.get("api_usage", {}).get("gemini", {}).get("date") or upbit_data.get("api_usage", {}).get("gemini", {}).get("date", ""),
+                    "api_calls": (
+                        bithumb_data.get("api_usage", {}).get("gemini", {}).get("api_calls", 0) +
+                        upbit_data.get("api_usage", {}).get("gemini", {}).get("api_calls", 0)
+                    ),
+                    "api_success": (
+                        bithumb_data.get("api_usage", {}).get("gemini", {}).get("api_success", 0) +
+                        upbit_data.get("api_usage", {}).get("gemini", {}).get("api_success", 0)
+                    ),
+                    "rate_limited": (
+                        bithumb_data.get("api_usage", {}).get("gemini", {}).get("rate_limited", 0) +
+                        upbit_data.get("api_usage", {}).get("gemini", {}).get("rate_limited", 0)
+                    ),
+                    "local_fallback": (
+                        bithumb_data.get("api_usage", {}).get("gemini", {}).get("local_fallback", 0) +
+                        upbit_data.get("api_usage", {}).get("gemini", {}).get("local_fallback", 0)
+                    ),
+                    "cache_hits": (
+                        bithumb_data.get("api_usage", {}).get("gemini", {}).get("cache_hits", 0) +
+                        upbit_data.get("api_usage", {}).get("gemini", {}).get("cache_hits", 0)
+                    ),
+                    "quota_limit": max(
+                        bithumb_data.get("api_usage", {}).get("gemini", {}).get("quota_limit", 1500),
+                        upbit_data.get("api_usage", {}).get("gemini", {}).get("quota_limit", 1500),
+                    ),
+                    "quota_used_pct": round(
+                        (
+                            (bithumb_data.get("api_usage", {}).get("gemini", {}).get("api_calls", 0) +
+                             upbit_data.get("api_usage", {}).get("gemini", {}).get("api_calls", 0)) /
+                            max(1, max(
+                                bithumb_data.get("api_usage", {}).get("gemini", {}).get("quota_limit", 1500),
+                                upbit_data.get("api_usage", {}).get("gemini", {}).get("quota_limit", 1500),
+                            )) * 100.0
+                        ), 1
+                    ),
+                },
+            },
         }
 
         return {

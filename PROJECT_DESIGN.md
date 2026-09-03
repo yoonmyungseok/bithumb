@@ -161,7 +161,7 @@ c:\AI\bithumb\
 - **영속 저장 및 메모리 동기화**: `cooldown_state.json`에 영구 기록되어 봇 재시작 시에도 쿨다운 상태를 지속 유지합니다.
 - **연속 손실 회복 모드**: 연속 2회 손절은 일일 리스크 관리자의 30분 회복 구간과 50% 리스크 규모 축소를 활성화합니다. 이는 종목별 `CooldownManager`의 재진입 금지와 별개이며, 일반 매수 경로를 일괄 중지하지 않습니다.
 - **급락 후 반등 전용 진입**: 회복 구간에서 일반 `RISK_OFF` 신호가 미달한 후보는 `recovery_rebound_signal()`로 한 번 더 평가합니다. BTC `CRASH`·주문 대사 미완료·시세 스트림 불안정·종목별 쿨다운은 절대 우회하지 않습니다. 확정 5분봉 반등, 핵심 하드게이트, 알파 75점 이상, BTC 대비 RS +1.5% 이상, 최소 거래대금, EMA20 대비 1% 이내의 1시간봉 회복을 모두 만족할 때만 양 거래소에서 실제 주문을 허용합니다. 반등 주문은 일반 슬롯의 35%를 기본 비중으로 하며, 동일 회복 구간에는 한 주문만 제출합니다.
-- **확정봉 모멘텀 돌파 진입**: 반등형과 별도로 최신 확정 5분봉이 직전 4개 확정봉 고점을 돌파하고, 거래량이 최근 20개 확정봉 평균의 1.3배 이상이며, 양봉·RSI 52~70·BTC 대비 RS +0.8%·1시간 EMA20 대비 1% 이내 조건을 동시에 만족할 때만 진입합니다. `RISK_OFF`는 주간 60점·심야 70점의 모멘텀 알파 기준을 적용합니다. 최초 진입은 거래소별 최대 포지션 한도의 25%로 제한하며, BTC `CRASH`, 시세 스트림 이상, 주문 대사 미완료, 쿨다운은 절대 우회하지 않습니다.
+- **확정봉 모멘텀 돌파 진입**: 반등형과 별도로 최신 확정 5분봉이 직전 4개 확정봉 고점을 돌파하고, 거래량이 최근 20개 확정봉 평균의 1.3배 이상이며, 양봉·RSI 52~75·BTC 대비 RS +0.8%·1시간 EMA20 대비 1% 이내 조건을 동시에 만족할 때만 진입합니다. 특히 당일 상승률 +3% 이상 및 BTC 대비 RS +1.5% 이상인 독자 랠리 주도주는 스크리너에서 `MOMENTUM_BREAKOUT`으로 자동 분류되어 눌림목 필터(%B/저점거리)에 걸리지 않고 돌파 진입 기회를 포착합니다. `RISK_OFF`는 주간 60점·심야 70점의 모멘텀 알파 기준을 적용합니다. 최초 진입은 거래소별 최대 포지션 한도의 25%로 제한하며, BTC `CRASH`, 시세 스트림 이상, 주문 대사 미완료, 쿨다운은 절대 우회하지 않습니다.
 
 ### 3.11. 알림 최적화 및 체결 이벤트 집중 파이프라인
 - **노이즈 억제**: 미체결 주문 접수(ACK/OPEN) 시점의 불필요한 중복 알림을 제거하고, 실제 거래소 체결(FILLED) 시점에만 체결가, 체결수량, 슬리피지, 실현손익 차트 정보를 집중 발송합니다.
@@ -174,12 +174,22 @@ c:\AI\bithumb\
 - **짧은 수명 캐시와 관측성**: 시장별 분석은 2초 잔고 스냅샷을 재사용하되, 포트폴리오 산정과 취소/재호가 뒤에는 강제 최신 조회합니다. 대시보드 안전 상태에는 WebSocket stale·재연결·큐 깊이, `RECONCILIATION_PENDING`, REST 대사 시작/완료 시각 및 갱신·실패 건수, 슬리피지·호가/VWAP 지표를 포함합니다.
 - **전략 판단 감사 이력**: 각 거래소의 `strategy_decisions` 테이블은 사이클·종목별 `HOLD`, 안전 차단, 종목별 쿨다운, 리스크 가드, 매수 승인 및 주문 제출을 기록합니다. 후보 상대강도·거래대금·BTC 레짐·하드게이트 결과·반등 전용 체크리스트를 JSON으로 보존하며, 판단 이력만 30일 뒤 정리합니다. 주문 원장과 체결 이력은 이 정리 대상이 아닙니다.
 
+### 3.13. API 일일 사용량 & 쿼터 텔레메트리 모니터링 체계 (`api_telemetry.py` & `gemini_telemetry.py`)
+- **거래소 REST API 호출 계측 (`ExchangeApiTelemetry`)**: 빗썸과 업비트의 모든 REST 호출(GET 조회, POST/DELETE 주문)의 호출수, 상태코드(200/429/5xx), Rate limit(429) 발생 건수, 최근 엔드포인트를 스레드 안전하게 실시간 집계합니다.
+- **업비트 실시간 잔여 쿼터 파싱**: 업비트 응답 헤더(`Remaining-Req`)의 `sec`(초당 잔여) 및 `min`(분당 잔여)을 자동 추출하여 Rate limit 임계 도달 여부를 실시간 추적합니다.
+- **KST 자정 기준 자동 롤오버**: 한국 표준시(KST) 매일 00:00:00 자정을 기준으로 일일 누적 카운터를 자동 초기화하여 일별 정밀 사용량을 보장합니다.
+- **Gemini AI 쿼터 및 캐시 절감 관측**: 일일 AI 분석 횟수 / 일일 권장치(1,500 RPD) 대비 사용률 프로그레스 바, 5분봉 캐시 적중(쿼터 절감 횟수), 429 감지 및 로컬 퀀트 알고리즘 폴백 횟수를 대시보드에 실시간 제공합니다.
+- **통합 대시보드 UI 연동**: SPA 대시보드(`index.html`, `app.js`)의 `api_usage_panel` 위젯에서 빗썸, 업비트, Gemini 카드를 3열 그리드로 시각화하며, 탭 전환(`combined`/`bithumb`/`upbit`)에 따라 해당 거래소 사용량을 동적으로 강조합니다.
+
 ---
 
 ## 4. 변경 이력 및 개선 히스토리 (Changelog)
 
 | 버전 | 일자 | 주요 변경 및 최적화 내역 |
 | :---: | :---: | :--- |
+| **v8.7** | 2026-09-03 | • **방어 필터 현실화 & 모멘텀 포착력 강화 (3대 개선안 통합)**<br>• **모멘텀 주도주 스크리닝 경로 확장**: `market_screener.py`에서 당일 상승률 +3% 이상 및 BTC 대비 RS +1.5% 이상인 독자 랠리 주도주를 `MOMENTUM_BREAKOUT`으로 분류하여 고점 돌파 로직으로 진입 허용<br>• **`StrategyPolicy` RISK_OFF 파라미터 현실화**: 약세장 RSI 상한선 완화(58.0 ➜ 65.0), 볼린저밴드 %B 상한선(0.55 ➜ 0.70), 저점 허용 거리(2.5% ➜ 3.5%), MA20 최대 이격도(+2.5% ➜ +3.5%), 돌파 RSI 상한(70.0 ➜ 75.0) 조정<br>• **반등확인(`rebound_confirmed`) 유연화**: 양봉 전환(현재가 >= 시가)은 fail-closed로 유지하되, 직전 종가 회복은 0.2% 미세 버퍼 허용 및 알파 점수 우수 종목(>= 60) 양봉 인정 연동<br>• **단위 및 회귀 검증**: `tests/test_strategy_improvements.py` 신규 작성(4개 테스트 통과) 및 전체 32개 전략/런타임 단위 테스트 100% 통과 |
+| **v8.6** | 2026-09-03 | • **Gemini 동적 모델 자동 감지 & 자율 수명주기(Self-Healing) 엔진 탑재**: `gemini_analyzer.py`에 Google Generative Language API(`ListModels`) 실시간 연동, 하드코딩 모델 목록 의존 탈피<br>• **Flash-Lite 절대적 최우선(Tier 1) 라우팅**: 초고속 레이턴시 및 높은 RPM/TPM 쿼터 효율을 위해 최신 `flash-lite` 계열(예: `3.8-flash-lite` > `3.7` > `3.5`)을 무조건 1순위로 선별하고 일반 `flash`는 차순위 비상망으로 배치<br>• **지원 종료 모델 24시간 블랙리스트 격리**: 404 Not Found 또는 지원 종료 에러 발생 시 동적 블랙리스트에 등록하여 재호출 원천 차단<br>• **타임아웃 단기 쿨다운(3분) & 타임아웃 25초 조정**: 일시적 구글 서버 응답 지연 발생 시 단기 쿨다운 후 차순위 모델로 즉시 전환<br>• **6시간 TTL 캐시 & 다중 안전망(Fail-Safe)**: ListModels API 실패 시 기본 Fallback 목록 및 100% 로컬 퀀트 알고리즘 엔진 무중단 전환 보장<br>• **단위 및 회귀 검증**: `tests/test_gemini_dynamic_models.py` 신규 작성(6개 테스트 통과) 및 기존 전략/리스크 회귀 테스트 통과 |
+| **v8.5** | 2026-09-03 | • **API 일일 사용량 & 쿼터 텔레메트리 탑재**: `src/api_telemetry.py` 신설, 빗썸/업비트 REST 호출량(조회/주문 구분, 429 횟수, 업비트 초/분당 잔여 쿼터) 스레드 안전 계측<br>• **KST 자정 자동 롤오버**: 한국 표준시 자정 기준 거래소 및 Gemini 일일 카운터 자동 롤오버<br>• **Gemini 관측 강화**: 일일 한도(1,500 RPD) 프로그레스 바, 캐시 방어 횟수, 429 및 로컬 폴백 횟수 대시보드 연동<br>• **대시보드 UI 카드 신설**: `dashboard/index.html` 및 `app.js`에 실시간 API 사용량 & 쿼터 위젯 탑재, 거래소 탭별 동적 강조 지원<br>• **회귀 검증**: `tests/test_api_telemetry.py` 신규 작성 및 전체 239개 테스트 100% 통과 |
 | **v8.4** | 2026-09-02 | • **PR-3D~3H Phase 3 잔여 완료**: `requirements.txt` 버전 고정, `pyproject.toml`+`requirements-dev.txt`로 ruff 도입, CI lint 단계 추가<br>• **PR-3G 슬리피지 관찰 자동화**: `operational_quality.build_slippage_enforcement_readiness()`로 5거래일 `ORDERBOOK_SLIPPAGE` 관찰 충족 여부 산출, `/diag`·대시보드 진단에 노출<br>• **PR-3H Gemini 관측**: `gemini_telemetry.py`로 API 성공·429·로컬 폴백·캐시 적중 집계, `GeminiAnalyzer` 및 `BotController` 진단 연동<br>• **PR-3F 예외 정리(부분)**: 신규 품질 모듈과 `CooldownManager` 저장 경로에 구체 예외 적용<br>• **회귀 검증**: `test_operational_quality.py` 추가 및 order_safety/진단 관련 테스트 통과 |
 | **v8.3** | 2026-09-02 | • **PR-3C `order_safety` 패키지 분리**: 단일 `order_safety.py`를 `order_safety/` 패키지로 분리 (`types`, `journal`, `executor`, `fill_processor`, `cooldown`, `orderbook`, `markets`)<br>• **책임 경계 정리**: 리스크 가드·사이징은 `risk_controls.py`, JSON 영속 저장은 `state_store.py`로 이미 분리된 경계를 `order_safety.__init__`에서 re-export해 기존 import 경로 유지<br>• **거래 안전 보존**: 주문 저널·REST 대사·체결 증가분 멱등성·HOLO 차단·쿨다운 로직 변경 없음<br>• **회귀 검증**: `test_order_safety`, `test_execution_safety`, `test_storage_and_fill_boundaries` 통과 |
 | **v8.2** | 2026-09-02 | • **PR-3B 워치독 통합**: `TradingBotWatchdog`로 하트비트 감시·프로세스 재시작·crash-loop 방어·텔레그램 알림을 `src/trading_watchdog.py`로 공통화<br>• **`ExchangeWatchdogProfile`**: 거래소별 data 경로·main 스크립트·로그/알림 문구·중복 잠금 대기 시간 분리<br>• **entry point 슬림화**: `watchdog.py`·`watchdog_upbit.py`는 로깅·env·profile wiring + `watchdog.run()`만 유지<br>• **거래 안전 보존**: `data/` vs `data/upbit/` 하트비트·lock·pid 경로, 120초 grace / 600초 stale 임계값, 5회 crash-loop 방어 동작 변경 없음<br>• **회귀 검증**: `tests/test_trading_watchdog.py` 추가 |

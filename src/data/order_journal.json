@@ -1,0 +1,88 @@
+{
+  "schema_version": 4,
+  "updated_at": 1788425172.5849326,
+  "exchange_scope": "bithumb",
+  "reconciliation_state": "READY",
+  "reconciliation_metrics": {
+    "last_started_at": 1788425172.5849175,
+    "last_completed_at": 1788425172.5849295,
+    "last_updated_count": 0,
+    "last_failed_count": 0
+  },
+  "orders": [
+    {
+      "client_order_id": "bot-1788424322169-3cd82da773",
+      "position_id": "bithumb:KRW-ONDO:1788424322155",
+      "market": "KRW-ONDO",
+      "side": "bid",
+      "volume": 83.7895,
+      "requested_volume": 83.7895,
+      "price": 483.0,
+      "expected_price": 483.0,
+      "slippage_bps": 0.0,
+      "ord_type": "limit",
+      "status": "FILLED",
+      "created_at": 1788424322.1698997,
+      "exchange_uuid": "C0907000000289506226",
+      "executed_volume": 83.7895,
+      "processed_executed_volume": 83.7895,
+      "remaining_volume": 0.0,
+      "avg_price": 483.0,
+      "fee": 0.0,
+      "processed_fee": 0.0,
+      "exit_reason": "",
+      "avg_buy_price": 0.0,
+      "entry_strategy_snapshot": {
+        "entry_btc_regime": "NORMAL",
+        "entry_type": "CONFIRMED",
+        "momentum_breakout": {
+          "pass": false,
+          "detail": "확인형 후보"
+        },
+        "alpha_score": 74,
+        "factor_breakdown": {
+          "mtf_score": 15,
+          "vwap_score": 15,
+          "macd_score": 0,
+          "rsi_score": 15,
+          "bollinger_score": 15,
+          "orderflow_score": 10,
+          "volume_score": 4,
+          "orderbook_raw_ratio": 1.433848,
+          "orderbook_smoothed_ratio": 1.305136,
+          "orderbook_sample_count": 5,
+          "is_night": false
+        },
+        "indicators": {
+          "rsi": 44.44,
+          "pct_b": 0.55,
+          "recent_low": 481.0,
+          "recent_high": 486.0,
+          "distance_from_recent_low_pct": 0.6237006237006293,
+          "distance_below_recent_high_pct": 0.4132231404958775,
+          "pullback_zone": true,
+          "rebound_confirmed": true,
+          "atr": 1.29,
+          "atr_pct": 0.27,
+          "mtf_state": "1H 482.0 >= EMA20 477.5 (기준 0.980)",
+          "orderbook_score": 10,
+          "orderbook_raw_ratio": 1.433848,
+          "orderbook_smoothed_ratio": 1.305136,
+          "orderbook_sample_count": 5
+        },
+        "entry_reason": "⚡ [로컬 퀀트 앙상블 BUY] 알파 스코어 65/100점: 1H 추세 양호(+15), VWAP 보통(+5), MACD 중립(+5)",
+        "target_price": 500.94,
+        "stop_loss": 475.29,
+        "exchange": "bithumb",
+        "market": "KRW-ONDO",
+        "entry_decision_at": "2026-09-03 17:31:29"
+      },
+      "exchange": "bithumb",
+      "updated_at": 1788424590.010551,
+      "exchange_order_id": "C0907000000289506226",
+      "exchange_state": "done",
+      "reconciliation_reason": "Private WebSocket 수신 후 REST 체결 대기",
+      "last_event_at": 1788424590.010538
+    }
+  ]
+}
