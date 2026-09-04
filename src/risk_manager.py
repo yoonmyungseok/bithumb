@@ -7,7 +7,6 @@ from typing import Any
 
 import requests
 
-from bithumb_api import BithumbAPI
 from db_manager import get_db_manager, get_exchange_db_path
 from market_policy import get_excluded_markets
 from state_store import load_json_with_backup_recovery, write_json_atomically
@@ -290,6 +289,9 @@ class TrailingStopTracker:
         self.peaks: dict[str, float] = {}
         self.partial_tp_done: dict[str, Any] = {}
         self.entry_times: dict[str, float] = {}
+        self.dynamic_stop_losses: dict[str, float] = {}
+        self.dynamic_targets: dict[str, float] = {}
+        self.runner_markets: set[str] = set()
         self._exiting_markets: set[str] = set()
         self._last_log_ts: dict[str, float] = {}
         self._last_logged_peak: dict[str, float] = {}
@@ -404,8 +406,13 @@ class TrailingStopTracker:
             "exit_in_progress": exiting,
         }
 
+    def set_btc_regime(self, regime: str) -> None:
+        """현재 거시 비트코인 시장 레짐 갱신 (BULL_TREND, NORMAL, RISK_OFF, CRASH)"""
+        with self._lock:
+            self.current_btc_regime = (regime or "NORMAL").upper()
+
     def check_position(
-        self, market: str, current_price: float, avg_buy_price: float
+        self, market: str, current_price: float, avg_buy_price: float, btc_regime: str | None = None
     ) -> tuple[str, float, float, float, float]:
         if avg_buy_price <= 0:
             return "NONE", 0.0, 0.0, 0.0, 0.0
@@ -415,21 +422,31 @@ class TrailingStopTracker:
 
         with self._lock:
             is_major = is_major_market(market)
-            tp_1_target = StrategyPolicy.MAJOR_PARTIAL_TP_1_PCT if is_major else StrategyPolicy.PARTIAL_TP_1_PCT
-            tp_2_target = StrategyPolicy.MAJOR_PARTIAL_TP_2_PCT if is_major else StrategyPolicy.PARTIAL_TP_2_PCT
+            regime = (btc_regime or getattr(self, "current_btc_regime", "NORMAL")).upper()
+            is_bull = (regime == "BULL_TREND")
+
+            if is_major:
+                tp_1_target = StrategyPolicy.MAJOR_PARTIAL_TP_1_PCT
+                tp_2_target = StrategyPolicy.MAJOR_PARTIAL_TP_2_PCT
+            elif is_bull:
+                tp_1_target = StrategyPolicy.BULL_PARTIAL_TP_1_PCT
+                tp_2_target = StrategyPolicy.BULL_PARTIAL_TP_2_PCT
+            else:
+                tp_1_target = StrategyPolicy.PARTIAL_TP_1_PCT
+                tp_2_target = StrategyPolicy.PARTIAL_TP_2_PCT
 
             # 1. [3단계 다단계 분할 익절: 1차(30%) / 2차(30%) / 3차 잔여(40%) 가속 트레일링]
             raw_stage = self.partial_tp_done.get(market, 0)
             cur_stage = 1 if raw_stage is True else int(raw_stage or 0)
 
-            # 1-A. 1차 30% 분할 익절 (메이저 +1.5% / 알트 +2.5% 도달 시)
+            # 1-A. 1차 30% 분할 익절 (메이저 +1.8% / 상승장 +4.5% / 일반 +3.5% 도달 시)
             if current_profit_rate >= tp_1_target and cur_stage < 1:
                 self.partial_tp_done[market] = 1
                 self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
                 self._save_state(force=True)
                 return "PARTIAL_TP_1", current_price, current_price, current_profit_pct, current_profit_pct
 
-            # 1-B. 2차 30% 추가 분할 익절 (메이저 +3.0% / 알트 +5.0% 도달 시)
+            # 1-B. 2차 30% 추가 분할 익절 (메이저 +3.5% / 상승장 +8.0% / 일반 +7.0% 도달 시)
             if current_profit_rate >= tp_2_target and cur_stage < 2:
                 self.partial_tp_done[market] = 2
                 self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
@@ -442,11 +459,14 @@ class TrailingStopTracker:
                 effective_start_pct = 0.008
                 base_drop_pct = 0.004
             elif is_major:
-                effective_start_pct = StrategyPolicy.MAJOR_TRAILING_START_PCT  # +1.2%
-                base_drop_pct = StrategyPolicy.MAJOR_TRAILING_DROP_PCT        # 0.8%
+                effective_start_pct = StrategyPolicy.MAJOR_TRAILING_START_PCT  # +1.5%
+                base_drop_pct = StrategyPolicy.MAJOR_TRAILING_DROP_PCT        # 1.0%
+            elif is_bull:
+                effective_start_pct = StrategyPolicy.BULL_TRAILING_START_PCT  # +4.0%
+                base_drop_pct = StrategyPolicy.BULL_TRAILING_DROP_PCT        # 2.5%
             else:
-                effective_start_pct = self.start_profit_pct                    # +2.0%
-                base_drop_pct = self.trailing_drop_pct                        # 1.2%
+                effective_start_pct = self.start_profit_pct                    # +3.0%
+                base_drop_pct = self.trailing_drop_pct                        # 2.0%
 
             has_peak_trailing = (market in self.peaks and self.peaks[market] >= avg_buy_price * (1.0 + effective_start_pct))
 
@@ -462,6 +482,8 @@ class TrailingStopTracker:
                     active_drop_pct = 0.004  # 비상 방어 모드: 0.4% 극초밀착
                 elif is_major:
                     active_drop_pct = min(base_drop_pct, 0.010)  # 메이저: 1.0% 밀착
+                elif is_bull:
+                    active_drop_pct = min(base_drop_pct, 0.025)  # 상승장: 2.5% 숨고르기 허용
                 elif peak_profit_pct >= 20.0:
                     active_drop_pct = 0.012  # +20% 이상 폭등 구간: 1.2% 고점 추적
                 elif peak_profit_pct >= 10.0:
@@ -509,21 +531,76 @@ class TrailingStopTracker:
 
     def clear(self, market: str):
         with self._lock:
+            m_upper = market.upper()
             self.peaks.pop(market, None)
+            self.peaks.pop(m_upper, None)
             self.partial_tp_done.pop(market, None)
+            self.partial_tp_done.pop(m_upper, None)
             self.entry_times.pop(market, None)
+            self.entry_times.pop(m_upper, None)
+            self.dynamic_stop_losses.pop(m_upper, None)
+            self.dynamic_targets.pop(m_upper, None)
+            self.runner_markets.discard(m_upper)
             self._last_log_ts.pop(market, None)
+            self._last_log_ts.pop(m_upper, None)
             self._last_logged_peak.pop(market, None)
+            self._last_logged_peak.pop(m_upper, None)
             self._save_state(force=True)
+
+    def update_dynamic_exit(
+        self,
+        market: str,
+        target_price: float | None = None,
+        stop_loss: float | None = None,
+        runner_mode: bool = False,
+    ) -> None:
+        """Gemini AI가 제안한 동적 목표가/손절가 및 러너 모드 반영"""
+        with self._lock:
+            m_upper = market.upper()
+            if target_price is not None and target_price > 0:
+                self.dynamic_targets[m_upper] = target_price
+            if stop_loss is not None and stop_loss > 0:
+                cur_sl = self.dynamic_stop_losses.get(m_upper, 0.0)
+                # 손절가는 오직 상향(Tighten)만 허용하여 기확보 수익/원금 방어
+                self.dynamic_stop_losses[m_upper] = max(cur_sl, stop_loss)
+            if runner_mode:
+                self.runner_markets.add(m_upper)
+
+    def is_runner_mode(self, market: str) -> bool:
+        with self._lock:
+            return market.upper() in self.runner_markets
+
+    def get_dynamic_stop_loss(self, market: str) -> float | None:
+        with self._lock:
+            return self.dynamic_stop_losses.get(market.upper())
+
+    def get_dynamic_target_price(self, market: str) -> float | None:
+        with self._lock:
+            return self.dynamic_targets.get(market.upper())
 
     def reconcile_markets(self, held_markets: list[str]) -> int:
         """Drop stale trailing state after a restart; exchange balances are authoritative."""
         with self._lock:
-            stale_markets = (set(self.peaks) | set(self.partial_tp_done) | set(self.entry_times)) - set(held_markets)
+            held_set = {m.upper() for m in held_markets}
+            stale_markets = (
+                set(self.peaks)
+                | set(self.partial_tp_done)
+                | set(self.entry_times)
+                | set(self.dynamic_stop_losses)
+                | set(self.dynamic_targets)
+                | set(self.runner_markets)
+            ) - held_set
             for market in stale_markets:
+                m_upper = market.upper()
                 self.peaks.pop(market, None)
+                self.peaks.pop(m_upper, None)
                 self.partial_tp_done.pop(market, None)
+                self.partial_tp_done.pop(m_upper, None)
                 self.entry_times.pop(market, None)
+                self.entry_times.pop(m_upper, None)
+                self.dynamic_stop_losses.pop(m_upper, None)
+                self.dynamic_targets.pop(m_upper, None)
+                self.runner_markets.discard(m_upper)
             if stale_markets:
                 self._save_state(force=True)
             return len(stale_markets)

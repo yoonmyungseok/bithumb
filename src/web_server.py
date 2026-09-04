@@ -578,6 +578,8 @@ class DashboardWebServer:
                         const s = String(side).toUpperCase();
                         if (s === 'BUY' || s === 'BID') return '매수';
                         if (s === 'SELL' || s === 'ASK') return '매도';
+                        if (s.includes('AI_EMERGENCY') || s.includes('EMERGENCY')) return 'AI 비상탈출';
+                        if (s.includes('AI_TIGHTENED') || s.includes('TIGHTEN')) return 'AI 손절상향';
                         if (s === 'MANUAL_EXIT') return '수동 청산';
                         if (s === 'PARTIAL_TP' || s.includes('TP') || s.includes('WIN')) return '1차 분할익절';
                         if (s === 'TRAILING_STOP') return '트레일링 익절';
@@ -609,14 +611,24 @@ class DashboardWebServer:
                     function formatReason(r) {{
                         if (!r) return '-';
                         return String(r)
+                            .replace(/AI_EMERGENCY_EXIT/g, 'AI 긴급 비상탈출')
+                            .replace(/AI_TIGHTENED_STOP/g, 'AI 손절선 상향 대응')
+                            .replace(/AI_EXIT/g, 'AI 청산')
+                            .replace(/EMERGENCY_EXIT/g, '긴급 비상탈출')
+                            .replace(/TIGHTENED_STOP/g, '손절선 상향 방어')
+                            .replace(/TIGHTEN_STOP/g, '손절선 상향 방어')
+                            .replace(/RUNNER_HOLD/g, '추세 추종 홀딩')
                             .replace(/MOMENTUM_EARLY_EXIT/g, '모멘텀 조기 본전탈출')
                             .replace(/MOMENTUM_EXIT/g, '모멘텀 조기탈출')
                             .replace(/MANUAL_EXIT/g, '수동 청산')
                             .replace(/TRAILING_STOP/g, '트레일링 익절')
                             .replace(/TIME_STOP/g, '타임스탑 청산')
                             .replace(/STOP_LOSS/g, '손절')
+                            .replace(/HARD_STOP/g, '비상 하드스탑 손절')
                             .replace(/PARTIAL_TP/g, '1차 분할익절')
-                            .replace(/PANIC_SELL/g, '긴급 전량매도');
+                            .replace(/PANIC_SELL/g, '긴급 전량매도')
+                            .replace(/REGIME_FILTER/g, '시장 급락 방어 청산')
+                            .replace(/REGIME_CRASH/g, 'BTC 급락 경보 청산');
                     }}
 
                     function renderAlphaBadge(score) {{

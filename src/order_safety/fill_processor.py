@@ -202,6 +202,22 @@ class OrderFillProcessor:
                         refined_exit_reason = "1차 분할익절"
                     elif "STOP_LOSS" in stored_upper or "HARD_STOP" in stored_upper or "손절" in str(stored_exit_reason):
                         refined_exit_reason = "손절 방어"
+                    elif "AI_EMERGENCY" in stored_upper or "EMERGENCY_EXIT" in stored_upper:
+                        if pnl_krw > 0:
+                            refined_exit_reason = "AI 긴급 익절탈출"
+                        elif pnl_pct >= -0.5:
+                            refined_exit_reason = "AI 긴급 본전탈출"
+                        else:
+                            refined_exit_reason = "AI 긴급 비상탈출"
+                    elif "AI_TIGHTENED" in stored_upper or "TIGHTENED_STOP" in stored_upper:
+                        if pnl_krw > 0:
+                            refined_exit_reason = "AI 손절선 상향 익절"
+                        else:
+                            refined_exit_reason = "AI 손절선 상향 방어"
+                    elif "PANIC" in stored_upper:
+                        refined_exit_reason = "긴급 전량매도"
+                    elif "MANUAL" in stored_upper:
+                        refined_exit_reason = "수동 청산"
                     if self.risk_manager:
                         self.risk_manager.add_realized_trade(pnl_krw, is_win=is_win)
 

@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import threading
@@ -312,8 +311,8 @@ class TradeMemoryManager:
             summary = [f"[최근 매매 학습 피드백: 총 {len(recent)}건 중 승리 {len(wins)}건, 손절 {len(losses)}건]"]
             if losses:
                 summary.append("⚠️ 최근 손절 사례 교훈:")
-                for l in losses[-2:]:
-                    summary.append(f"  - {l['market']}: {l.get('lesson', '손절 발생')}")
+                for loss_item in losses[-2:]:
+                    summary.append(f"  - {loss_item['market']}: {loss_item.get('lesson', '손절 발생')}")
             if wins:
                 summary.append("✅ 최근 성공 사례 패턴:")
                 for w in wins[-2:]:

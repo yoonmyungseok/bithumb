@@ -79,9 +79,11 @@ class MarketScreener:
         top_count: int = 3,
         held_markets: list[str] | None = None,
         btc_regime: str = "NORMAL",
+        analyzer: Any | None = None,
     ) -> list[dict[str, Any]]:
         held_set: set[str] = {m.upper() for m in (held_markets or [])}
         is_risk_off = (btc_regime or "NORMAL").upper() == "RISK_OFF"
+        is_bull_trend = (btc_regime or "NORMAL").upper() == "BULL_TREND"
 
         try:
             try:
@@ -156,9 +158,12 @@ class MarketScreener:
                     held_candidates.append(ticker_info)
                     continue
 
-                # 대형 메이저 코인(BTC/ETH/SOL/XRP)은 신규 단타 발굴에서 배제
+                # 대형 메이저 코인(BTC/ETH/SOL/XRP) 처리:
+                # - BULL_TREND(대세 상승장)일 때는 시장 주도 대형 메이저(BTC/ETH/SOL)를 단타 풀에 허용하여 추세 랠리 직접 참여
+                # - 그 외 레짐에서는 자금 잠김 방지를 위해 단타 급등주 발굴 풀에서 배제
                 if market in EXCLUDED_MAJOR_SCALPING_MARKETS:
-                    continue
+                    if not (is_bull_trend and market in ("KRW-BTC", "KRW-ETH", "KRW-SOL")):
+                        continue
 
 
                 if trade_price < StrategyPolicy.MIN_ASSET_PRICE_KRW:
@@ -271,6 +276,22 @@ class MarketScreener:
                 if c.get("candidate_type") == "MOMENTUM_BREAKOUT" and c.get("change_rate", 0.0) < self.min_change_rate
             ]
             qualified_candidates = [c for c in screened_by_spread if c not in screened_early_breakouts]
+
+            # [2순위] 1차 스프레드 통과 후보들에 대해 Gemini AI 1회 배치 랭킹 적용
+            active_analyzer = analyzer or getattr(self, "analyzer", None)
+            if active_analyzer is not None and hasattr(active_analyzer, "rank_candidate_markets"):
+                candidates_to_rank = [c for c in qualified_candidates if not c.get("is_held")]
+                if len(candidates_to_rank) >= 2:
+                    try:
+                        ranked = active_analyzer.rank_candidate_markets(
+                            candidates_to_rank,
+                            btc_regime=btc_regime,
+                            btc_change_rate=btc_change_rate,
+                        )
+                        if ranked:
+                            qualified_candidates = ranked
+                    except Exception as exc:
+                        logger.debug("AI 스크리너 랭킹 예외 폴백: %s", exc)
 
             if not is_risk_off and len(qualified_candidates) < top_count:
                 min_fb_trade_val = min(self.min_trade_value_krw, 1_000_000_000.0)

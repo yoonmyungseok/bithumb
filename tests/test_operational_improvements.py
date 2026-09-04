@@ -22,8 +22,9 @@ class TestOperationalImprovements(unittest.TestCase):
         self.assertTrue(is_major_market('BTC'))
         self.assertTrue(is_major_market('KRW-ETH'))
         self.assertTrue(is_major_market('ETH'))
+        self.assertTrue(is_major_market('KRW-SOL'))
+        self.assertTrue(is_major_market('SOL'))
         self.assertFalse(is_major_market('KRW-XRP'))
-        self.assertFalse(is_major_market('KRW-SOL'))
         self.assertFalse(is_major_market('KRW-GRVT'))
 
     def test_major_vs_alt_trailing_and_tp(self):

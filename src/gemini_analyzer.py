@@ -3,6 +3,7 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 from typing import Any, ClassVar
 
@@ -59,6 +60,7 @@ class GeminiAnalyzer:
     # 모델별 쿨다운(429/타임아웃) 및 블랙리스트(404/지원종료) 만료 시점 캐시 (전역 공유)
     _MODEL_COOLDOWNS: ClassVar[dict[str, float]] = {}
     _MODEL_BLACKLIST: ClassVar[dict[str, float]] = {}
+    _CLASS_LOCK: ClassVar[threading.RLock] = threading.RLock()
 
     @classmethod
     def _model_priority_key(cls, name: str) -> tuple[int, float, int, int, str]:
@@ -93,6 +95,18 @@ class GeminiAnalyzer:
         stable_flag = 0 if is_preview else 1
 
         return (tier, version, stable_flag, is_latest, lower_name)
+
+    @classmethod
+    def _set_model_cooldown(cls, model: str, duration_sec: float) -> None:
+        """스레드 안전하게 모델별 쿨다운을 등록합니다."""
+        with cls._CLASS_LOCK:
+            cls._MODEL_COOLDOWNS[model] = time.time() + duration_sec
+
+    @classmethod
+    def _set_model_blacklist(cls, model: str, duration_sec: float) -> None:
+        """스레드 안전하게 지원 종료 모델을 블랙리스트에 격리합니다."""
+        with cls._CLASS_LOCK:
+            cls._MODEL_BLACKLIST[model] = time.time() + duration_sec
 
     @classmethod
     def fetch_available_models(cls, api_key: str = "") -> list[str]:
@@ -149,27 +163,34 @@ class GeminiAnalyzer:
         6시간 TTL 캐시를 적용하여 가용 모델 목록을 반환합니다. (영구/장기 블랙리스트 제외)
         """
         now = time.time()
-        if force_refresh or not cls._CACHED_MODELS or (now - cls._MODELS_CACHED_AT > cls._MODELS_CACHE_TTL):
-            models = cls.fetch_available_models(api_key)
-            cls._CACHED_MODELS = models
-            cls._MODELS_CACHED_AT = now
+        with cls._CLASS_LOCK:
+            if force_refresh or not cls._CACHED_MODELS or (now - cls._MODELS_CACHED_AT > cls._MODELS_CACHE_TTL):
+                models = cls.fetch_available_models(api_key)
+                cls._CACHED_MODELS = models
+                cls._MODELS_CACHED_AT = now
 
-        # 블랙리스트 제외된 활성 모델만 반환
-        active_models = [m for m in cls._CACHED_MODELS if cls._MODEL_BLACKLIST.get(m, 0.0) <= now]
-        return active_models if active_models else list(cls.FALLBACK_MODELS)
+            # 블랙리스트 제외된 활성 모델만 반환
+            active_models = [m for m in cls._CACHED_MODELS if cls._MODEL_BLACKLIST.get(m, 0.0) <= now]
+            return active_models if active_models else list(cls.FALLBACK_MODELS)
 
     def get_candidate_models(self, limit: int = 2) -> list[str]:
         """
         현재 시점에 쿨다운이나 블랙리스트가 아닌 최우선 순위 모델 목록을 최대 limit개 반환합니다.
         """
         now_ts = time.time()
-        all_models = self.get_available_models(self.api_key)
-        usable = [m for m in all_models if self._MODEL_COOLDOWNS.get(m, 0.0) <= now_ts]
-        return usable[:limit]
+        with self._CLASS_LOCK:
+            all_models = self.get_available_models(self.api_key)
+            usable = [m for m in all_models if self._MODEL_COOLDOWNS.get(m, 0.0) <= now_ts]
+            return usable[:limit]
 
     def __init__(self, api_key: str = ""):
         self.api_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
         self._analysis_cache: dict[str, dict[str, Any]] = {}
+        self._holding_eval_cache: dict[str, dict[str, Any]] = {}
+        self._screener_rank_cache: dict[str, dict[str, Any]] = {}
+        self._macro_diag_cache: dict[str, Any] = {}
+        self._last_macro_diag_ts: float = 0.0
+        self._lock = threading.RLock()
 
     @staticmethod
     def calculate_rsi(prices: list[float], period: int = 14) -> float:
@@ -739,13 +760,13 @@ class GeminiAnalyzer:
                     GeminiTelemetry.record_api_success(model, market)
                     return res
                 elif response.status_code == 429:
-                    self._MODEL_COOLDOWNS[model] = time.time() + 900.0  # 15분 쿨다운
+                    self._set_model_cooldown(model, 900.0)  # 15분 쿨다운
                     last_error = f"[{model}] 429 Quota Exceeded (15분 쿨다운 등록)"
                     GeminiTelemetry.record_rate_limited(model, market)
                     logger.warning(f"⚠️ 모델 '{model}' 429 Quota Exceeded 발생 ➜ 15분간 재호출 차단 쿨다운 등록")
                 elif response.status_code in (404, 400):
                     # 모델 지원 종료(Deprecated) 또는 부존재 ➜ 24시간 블랙리스트 등록 (자기 치유)
-                    self._MODEL_BLACKLIST[model] = time.time() + 86400.0
+                    self._set_model_blacklist(model, 86400.0)
                     last_error = f"[{model}] HTTP {response.status_code} Unsupported/Deprecated (24시간 블랙리스트 격리)"
                     logger.warning(f"⛔ 모델 '{model}' 지원 종료 또는 부존재 감지(HTTP {response.status_code}) ➜ 24시간 블랙리스트 격리")
                 else:
@@ -753,7 +774,7 @@ class GeminiAnalyzer:
                     logger.warning(f"모델 '{model}' 호출 실패 ({response.status_code})")
             except requests.exceptions.Timeout as e:
                 # 일시적인 구글 서버 읽기 타임아웃 ➜ 3분 단기 쿨다운 후 차순위 모델 전환
-                self._MODEL_COOLDOWNS[model] = time.time() + 180.0
+                self._set_model_cooldown(model, 180.0)
                 last_error = f"[{model}] Timeout: {e}"
                 logger.warning(f"⏳ 모델 '{model}' 응답 타임아웃 ➜ 3분 쿨다운 등록 후 차순위 모델 전환")
             except (requests.exceptions.RequestException, KeyError, ValueError, IndexError) as e:
@@ -764,8 +785,426 @@ class GeminiAnalyzer:
         GeminiTelemetry.record_local_fallback(market, last_error or "api failure")
         local_res = self._run_local_quant_engine(
             current_price, mtf_1h, disparity_ma20, rsi_val, bb, vol_info, candle_pattern,
-            trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct
+            trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct,
+            vwap_info=vwap_info, macd_acc=macd_acc,
         )
         if hasattr(self, "_analysis_cache") and cache_key:
             self._analysis_cache[cache_key] = {"cached_at": time.time(), "result": local_res}
         return local_res
+
+    def _call_gemini_json(
+        self,
+        prompt: str,
+        candidate_models: list[str] | None = None,
+        timeout: float = 15.0,
+        max_tokens: int = 2000,
+    ) -> dict[str, Any] | list[Any] | None:
+        """Gemini 모델을 순차 호출하여 JSON 응답을 디코딩하는 공통 통신 엔진"""
+        if not self.api_key:
+            return None
+
+        models = candidate_models or self.get_candidate_models(limit=3)
+        if not models:
+            return None
+
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "topP": 0.8,
+                "maxOutputTokens": max_tokens,
+                "responseMimeType": "application/json",
+            },
+        }
+
+        for model in models:
+            endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
+            try:
+                response = requests.post(endpoint, json=payload, timeout=timeout)
+                if response.status_code == 200:
+                    res_json = response.json()
+                    raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    try:
+                        parsed = json.loads(raw_text)
+                    except json.JSONDecodeError:
+                        json_match = re.search(r"(\{.*\}|\[.*\])", raw_text, re.DOTALL)
+                        if json_match:
+                            parsed = json.loads(json_match.group(0))
+                        else:
+                            continue
+                    GeminiTelemetry.record_api_success(model, "macro_or_batch")
+                    return parsed
+                elif response.status_code == 429:
+                    self._set_model_cooldown(model, 900.0)
+                    GeminiTelemetry.record_rate_limited(model, "batch")
+                elif response.status_code in (404, 400):
+                    self._set_model_blacklist(model, 86400.0)
+            except requests.exceptions.Timeout:
+                self._set_model_cooldown(model, 180.0)
+            except Exception as e:
+                logger.debug(f"모델 '{model}' 호출 예외: {e}")
+        return None
+
+    def evaluate_holding_position(
+        self,
+        market: str,
+        current_price: float,
+        avg_buy_price: float,
+        candles: list[dict[str, Any]],
+        candles_1h: list[dict[str, Any]] | None = None,
+        orderbook: dict[str, Any] | None = None,
+        hold_duration_sec: float = 0.0,
+        btc_context: str = "",
+    ) -> dict[str, Any]:
+        """
+        [1순위] 기보유 포지션 동적 청산 및 러너(Runner) 추세 추종 평가
+        - EMERGENCY_EXIT: 세력 덤핑/대량 매도/윗꼬리 거래량 폭증 감지 시 조기 전량 탈출
+        - RUNNER_HOLD: 강력한 장대양봉 돌파 지속 시 기계적 익절 보류 및 목표가 상향
+        - TIGHTEN_STOP: 단기 지지선 안착 시 손절가 상향(수익 보존)
+        - HOLD: 정상 유지
+        """
+        fallback_res = {
+            "action": "HOLD",
+            "reason": "로컬 지표 감시 유지 (기본)",
+            "adjusted_target_price": None,
+            "adjusted_stop_loss": None,
+            "confidence": 50,
+        }
+        if not self.api_key or not candles or avg_buy_price <= 0:
+            return fallback_res
+
+        # 5분봉 기준 캐시 (240초)
+        latest_c_id = str(candles[0].get("candle_date_time_utc") or candles[0].get("trade_price"))
+        cache_key = f"HOLDING:{market}:{latest_c_id}"
+        if hasattr(self, "_holding_eval_cache") and cache_key in self._holding_eval_cache:
+            cached = self._holding_eval_cache[cache_key]
+            if (time.time() - float(cached.get("cached_at", 0))) < 240.0:
+                return dict(cached["result"])
+
+        try:
+            close_prices = [float(c.get("trade_price", 0)) for c in candles if "trade_price" in c]
+            pnl_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
+            hold_min = hold_duration_sec / 60.0
+
+            rsi_val = self.calculate_rsi(close_prices, 14) if close_prices else 50.0
+            bb = self.calculate_bollinger_bands(close_prices, 20, 2.0)
+            vwap_info = self.calculate_vwap(candles)
+            trade_strength = self.analyze_trade_strength(candles)
+            ob_info = self.analyze_orderbook(orderbook)
+            vol_info = self.analyze_volume_spike(candles)
+            candle_pattern = self.analyze_candle_patterns(candles)
+
+            prompt = f"""당신은 암호화폐 퀀트 펀드의 수석 포지션 관리자(Risk Manager)입니다.
+현재 보유 중인 포지션 [{market}]의 실시간 수급과 차트를 정밀 분석하여 다음 중 단 하나의 행동을 결정하세요:
+
+1. "EMERGENCY_EXIT": 거래량 실린 윗꼬리 장대음봉, 대량 매도벽 출회, VWAP 이탈, 체결강도 붕괴 등 세력 덤핑/급락 징후 시 기계적 손절 전에 "즉시 시장가 전량 탈출"
+2. "RUNNER_HOLD": 거래량 급증 장대양봉 돌파, 신고가 랠리 강력 지속 시 "기계적 소액 익절을 보류하고 목표가를 상향하여 추세 최대 향유"
+3. "TIGHTEN_STOP": 단기 지지선 구축 완료 및 안정적 수익권 시 손절가를 평단가(본전) 또는 지지선으로 끌어올림
+4. "HOLD": 정상적인 추세 유지/건강한 숨고르기 상태
+
+### [현재 포지션 상태]
+- 마켓: {market} | 보유 시간: {hold_min:.1f}분
+- 평단가: {avg_buy_price:,.2f} KRW | 현재가: {current_price:,.2f} KRW
+- 현재 손익률: {pnl_pct:+.2f}%
+- 대장주(BTC) 시황: {btc_context or '정상 안정세'}
+
+### [5분봉 실시간 퀀트 데이터]
+- 체결강도: {trade_strength['desc']}
+- VWAP: {vwap_info['vwap']:,.2f} KRW ({'🟢 VWAP 상단 지지' if vwap_info['is_above'] else '🔴 VWAP 하단 저항'})
+- RSI(14): {rsi_val:.1f} | 볼린저 위치(%B): {bb['pct_b']:.2f}
+- 거래량: {vol_info['vol_ratio']}배 ({'🚨 거래량 급증' if vol_info['is_spike'] else '평이'})
+- 캔들 패턴: {candle_pattern}
+- 호가창 잔량: {ob_info['imbalance_desc']} (매수/매도비: {ob_info['bid_ask_ratio']:.2f})
+
+### [JSON 출력 필수 스키마]
+반드시 마크다운 백틱 없이 순수 JSON으로만 응답하세요:
+{{
+  "ACTION": "HOLD" | "EMERGENCY_EXIT" | "RUNNER_HOLD" | "TIGHTEN_STOP",
+  "REASON": "결정 사유 1줄 요약",
+  "ADJUSTED_TARGET_PRICE": {round(current_price * 1.05, 2)},
+  "ADJUSTED_STOP_LOSS": {round(avg_buy_price * 1.002, 2)},
+  "CONFIDENCE": 85
+}}
+"""
+            parsed = self._call_gemini_json(prompt, timeout=8.0)
+            if isinstance(parsed, dict):
+                act = str(parsed.get("ACTION", "HOLD")).upper()
+                if act not in ("HOLD", "EMERGENCY_EXIT", "RUNNER_HOLD", "TIGHTEN_STOP"):
+                    act = "HOLD"
+
+                adj_tp = float(parsed.get("ADJUSTED_TARGET_PRICE") or 0.0)
+                adj_sl = float(parsed.get("ADJUSTED_STOP_LOSS") or 0.0)
+                conf = int(parsed.get("CONFIDENCE") or 70)
+                reason_txt = str(parsed.get("REASON", "AI 보유 포지션 평가 완료"))
+
+                res = {
+                    "action": act,
+                    "reason": f"[AI 포지션 관리] {reason_txt}",
+                    "adjusted_target_price": adj_tp if adj_tp > current_price else None,
+                    "adjusted_stop_loss": adj_sl if 0 < adj_sl < current_price else None,
+                    "confidence": conf,
+                }
+                if hasattr(self, "_holding_eval_cache") and cache_key:
+                    self._holding_eval_cache[cache_key] = {"cached_at": time.time(), "result": res}
+                logger.info(f"🤖 [{market}] AI 포지션 진단: {act} ({reason_txt}) | 현재 손익: {pnl_pct:+.2f}%")
+                return res
+        except Exception as e:
+            logger.warning(f"[{market}] evaluate_holding_position 예외: {e}")
+
+        return fallback_res
+
+    def rank_candidate_markets(
+        self,
+        candidates: list[dict[str, Any]],
+        btc_regime: str = "NORMAL",
+        btc_change_rate: float = 0.0,
+    ) -> list[dict[str, Any]]:
+        """
+        [2순위] 1차 스크리닝 통과 종목들을 1회 배치(Batch) 프롬프트로 Gemini에게 전달하여
+        세력 덤핑/설거지 여부를 여과하고 우선순위 랭킹(Tier 1, 2, 3)을 부여
+        """
+        if not self.api_key or not candidates or len(candidates) <= 1:
+            return candidates
+
+        # 60초 캐시 (종목 리스트 기준)
+        cand_keys = ",".join(c.get("market", "") for c in candidates[:8])
+        cache_key = f"RANK:{cand_keys}"
+        now_ts = time.time()
+        if hasattr(self, "_screener_rank_cache") and cache_key in self._screener_rank_cache:
+            cached = self._screener_rank_cache[cache_key]
+            if (now_ts - float(cached.get("cached_at", 0))) < 60.0:
+                return list(cached["result"])
+
+        try:
+            cand_rows = []
+            for i, c in enumerate(candidates[:10], 1):
+                m = c.get("market", "")
+                p = float(c.get("trade_price", 0.0))
+                chg = float(c.get("change_rate", 0.0)) * 100.0
+                tb_krw = float(c.get("acc_trade_price_24h", 0.0)) / 100_000_000.0
+                rs = float(c.get("relative_strength", 0.0)) * 100.0
+                c_type = c.get("candidate_type", "CONFIRMED")
+                cand_rows.append(
+                    f"{i}. {m} | 현재가: {p:,.2f}원 | 변동률: {chg:+.2f}% | RS: {rs:+.2f}% | 24h거래대금: {tb_krw:,.0f}억원 | 유형: {c_type}"
+                )
+            cand_summary = "\n".join(cand_rows)
+
+            prompt = f"""당신은 월가 수석 암호화폐 퀀트 트레이더입니다.
+아래는 실시간 1차 수량/거래대금/스프레드 필터를 통과한 후보 암호화폐 목록입니다.
+비트코인 시장 상태: {btc_regime} (BTC 24h 변동: {btc_change_rate*100:+.2f}%)
+
+각 종목의 [상대강도(RS)], [24h 거래대금 유동성], [상승률 및 모멘텀 건전성]을 종합 평가하여,
+진짜 세력 수급 주도주와 가짜 펌핑/설거지 종목을 선별하고 최우선순위 랭킹을 지정하세요.
+
+### [후보 종목 목록]
+{cand_summary}
+
+### [평가 가이드]
+- TIER_1: 비트코인 대비 초과 수급(RS > 0), 풍부한 거래대금, 건강한 상승 초입 주도주 (최우선 매수 검토)
+- TIER_2: 거래대금 충분한 안정적 추세 종목
+- TIER_3: 상대강도 약하거나 변동성 큰 후발주
+- REJECT: 무거래량 가짜 반등, 고점 피로도 극심, 설거지성 덤핑 의심 종목
+
+### [JSON 출력 필수 스키마]
+반드시 마크다운 백틱 없이 순수 JSON 배열로만 응답하세요:
+[
+  {{"market": "KRW-XXX", "rank": 1, "tier": "TIER_1", "score": 92, "reason": "거래대금 1위 및 BTC 대비 독자 랠리"}},
+  ...
+]
+"""
+            parsed = self._call_gemini_json(prompt, timeout=8.0)
+            if isinstance(parsed, list) and len(parsed) > 0:
+                rank_map = {}
+                for item in parsed:
+                    if isinstance(item, dict) and "market" in item:
+                        m_code = str(item["market"]).upper()
+                        rank_map[m_code] = {
+                            "ai_rank": int(item.get("rank", 99)),
+                            "ai_tier": str(item.get("tier", "TIER_2")).upper(),
+                            "ai_score": float(item.get("score", 50)),
+                            "ai_reason": str(item.get("reason", "")),
+                        }
+
+                ranked_candidates = []
+                for c in candidates:
+                    m = c.get("market", "").upper()
+                    meta = rank_map.get(m, {"ai_rank": 50, "ai_tier": "TIER_2", "ai_score": 50, "ai_reason": "기본"})
+                    c_copy = dict(c)
+                    c_copy.update(meta)
+                    ranked_candidates.append(c_copy)
+
+                # REJECT가 아닌 종목 우선 및 AI 랭킹 순 정렬
+                tier_order = {"TIER_1": 1, "TIER_2": 2, "TIER_3": 3, "REJECT": 9}
+                ranked_candidates.sort(
+                    key=lambda x: (
+                        tier_order.get(x.get("ai_tier", "TIER_2"), 5),
+                        x.get("ai_rank", 50),
+                        -x.get("ai_score", 50),
+                    )
+                )
+
+                if hasattr(self, "_screener_rank_cache") and cache_key:
+                    self._screener_rank_cache[cache_key] = {"cached_at": now_ts, "result": ranked_candidates}
+
+                logger.info("✨ [Gemini AI 후보 종목 랭킹 완료]")
+                for rk, item in enumerate(ranked_candidates[:5], 1):
+                    logger.info(
+                        f"  #{rk} {item.get('market')} [{item.get('ai_tier')}] 점수: {item.get('ai_score')}점 - {item.get('ai_reason')}"
+                    )
+                return ranked_candidates
+        except Exception as e:
+            logger.warning(f"rank_candidate_markets 예외 발생: {e} ➜ 기존 퀀트 순위 유지")
+
+        return candidates
+
+    def diagnose_macro_regime(
+        self,
+        btc_candles_1h: list[dict[str, Any]],
+        btc_candles_4h: list[dict[str, Any]] | None = None,
+        fng_index: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        [3순위] BTC 1시간봉/4시간봉 및 공포탐욕 지수를 종합 진단하여 매크로 레짐 및 권장 현금 비중 산출
+        - 30분(1800초) 캐시 적용
+        """
+        now_ts = time.time()
+        if (
+            hasattr(self, "_macro_diag_cache")
+            and self._macro_diag_cache
+            and (now_ts - getattr(self, "_last_macro_diag_ts", 0.0) < 1800.0)
+        ):
+            return dict(self._macro_diag_cache)
+
+        fallback_diag = {
+            "regime": "NORMAL",
+            "risk_score": 40,
+            "recommended_cash_ratio": 0.3,
+            "summary": "BTC 정상 안정세 (로컬 규칙)",
+            "action_guideline": "정상적인 퀀트 분할 매매 진행",
+        }
+        if not self.api_key or not btc_candles_1h or len(btc_candles_1h) < 10:
+            return fallback_diag
+
+        try:
+            prices_1h = [float(c.get("trade_price", 0.0)) for c in btc_candles_1h]
+            cur_btc = prices_1h[0]
+            ema20 = self.calculate_ema(prices_1h, min(len(prices_1h), 20))
+            ema50 = self.calculate_ema(prices_1h, min(len(prices_1h), 50))
+            chg_1h = ((cur_btc - prices_1h[1]) / prices_1h[1] * 100.0) if len(prices_1h) > 1 else 0.0
+            chg_24h = (
+                ((cur_btc - prices_1h[min(24, len(prices_1h) - 1)]) / prices_1h[min(24, len(prices_1h) - 1)] * 100.0)
+                if len(prices_1h) > 5
+                else 0.0
+            )
+
+            fng_desc = fng_index.get("desc", "50점 (중립)") if fng_index else "중립"
+
+            prompt = f"""당신은 매크로 크립토 헤지펀드 CIO입니다.
+비트코인(BTC) 1시간봉 지표와 크립토 시장 심리를 진단하여 거시 레짐과 리스크 수준을 판정하세요:
+
+- BTC 현재가: {cur_btc:,.0f} KRW
+- 1시간 이평선: EMA20={ema20:,.0f} | EMA50={ema50:,.0f} ({'🟢 정배열(상승세)' if ema20 >= ema50 else '🔴 역배열(하락세)'})
+- 최근 등락률: 1시간 {chg_1h:+.2f}% | 24시간 {chg_24h:+.2f}%
+- 공포/탐욕 지수: {fng_desc}
+
+### [레짐 분류 옵션]
+- "BULL_TREND": 강력한 상승 추세, 알트코인 적극 매수
+- "NORMAL": 안정적 박스권/완만한 상승, 표준 매매
+- "CAUTION_PULLBACK": 단기 과열 후 눌림목/조정 경계
+- "BEAR_REGIME": 지속적 하락 추세, 방어적 매매 및 비중 축소
+- "CRASH": 급락/패닉 셀 진행 중, 신규 매수 전면 차단
+
+### [JSON 출력 필수 스키마]
+반드시 마크다운 백틱 없이 순수 JSON으로만 응답하세요:
+{{
+  "regime": "BULL_TREND" | "NORMAL" | "CAUTION_PULLBACK" | "BEAR_REGIME" | "CRASH",
+  "risk_score": 35,
+  "recommended_cash_ratio": 0.3,
+  "summary": "거시 시장 진단 핵심 요약 1줄",
+  "action_guideline": "봇 자금 운용 지침 1줄"
+}}
+"""
+            parsed = self._call_gemini_json(prompt, timeout=8.0)
+            if isinstance(parsed, dict) and "regime" in parsed:
+                rg = str(parsed.get("regime", "NORMAL")).upper()
+                if rg not in ("BULL_TREND", "NORMAL", "CAUTION_PULLBACK", "BEAR_REGIME", "CRASH"):
+                    rg = "NORMAL"
+
+                res = {
+                    "regime": rg,
+                    "risk_score": int(parsed.get("risk_score", 40)),
+                    "recommended_cash_ratio": float(parsed.get("recommended_cash_ratio", 0.3)),
+                    "summary": str(parsed.get("summary", "AI 매크로 진단 완료")),
+                    "action_guideline": str(parsed.get("action_guideline", "정상 운용")),
+                }
+                self._macro_diag_cache = res
+                self._last_macro_diag_ts = now_ts
+                logger.info(
+                    f"🌍 [Gemini 거시 시황 진단] 레짐: {rg} (위험도: {res['risk_score']}/100) ➜ {res['summary']}"
+                )
+                return res
+        except Exception as e:
+            logger.warning(f"diagnose_macro_regime 예외: {e}")
+
+        return fallback_diag
+
+    def generate_market_briefing(
+        self,
+        exchange_name: str,
+        total_equity: float,
+        daily_pnl_krw: float,
+        daily_pnl_pct: float,
+        held_positions_desc: str,
+        macro_diag: dict[str, Any],
+        fng_desc: str,
+    ) -> str:
+        """
+        [3순위] 텔레그램 모닝/정기 브리핑용 Gemini AI 3줄 종합 해설 생성
+        """
+        default_comment = f"현재 {exchange_name} 계좌는 {held_positions_desc} 상태이며, 리스크 안전선 내에서 정상 운용 중입니다."
+        if not self.api_key:
+            return default_comment
+
+        try:
+            prompt = f"""당신은 {exchange_name} 전담 AI 퀀트 트레이딩 비서입니다.
+아래의 실시간 봇 운용 및 시장 데이터를 바탕으로, 트레이더가 한눈에 시장 흐름과 계좌 상태를 파악할 수 있는 **친절하고 전문적인 3줄 시황 브리핑**을 작성하세요:
+
+- 거래소: {exchange_name}
+- 총 평가 자산: {total_equity:,.0f} KRW
+- 금일 손익: {daily_pnl_krw:+,.0f} KRW ({daily_pnl_pct:+.2f}%)
+- 보유 포지션: {held_positions_desc}
+- BTC 거시 레짐: {macro_diag.get('regime', 'NORMAL')} (위험도: {macro_diag.get('risk_score', 40)}/100, 요약: {macro_diag.get('summary', '')})
+- 공포/탐욕 심리: {fng_desc}
+
+### [작성 규칙]
+1. 불필요한 서론/인사말 생략.
+2. 3개의 글머리 기호(•)로 작성.
+   • [거시 시황]: BTC 추세와 시장 심리 핵심 요약
+   • [계좌 진단]: 현재 포트폴리오 상태 및 손익 평가
+   • [전략 제언]: 향후 몇 시간 동안의 안전 운용 지침
+3. 반드시 한국어로 정중하고 명확하게 작성.
+"""
+            models = self.get_candidate_models(limit=2)
+            if not models:
+                return default_comment
+
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.2,
+                    "maxOutputTokens": 800,
+                },
+            }
+            for model in models:
+                endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
+                try:
+                    resp = requests.post(endpoint, json=payload, timeout=6.0)
+                    if resp.status_code == 200:
+                        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        return text
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.debug(f"generate_market_briefing 예외: {e}")
+
+        return default_comment

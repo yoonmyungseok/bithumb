@@ -131,12 +131,17 @@ class TradingOrchestrator:
         top_count: int,
         create_screener: Callable[[], Any],
         btc_regime: str = "NORMAL",
+        analyzer: Any | None = None,
         on_screened_candidates: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> list[str]:
         """Select markets through one policy while retaining exchange exclusions."""
         held = [market for market in held_markets if exchange.is_tradeable_market(market)]
         if is_auto_mode:
-            screened = create_screener().scan_markets(top_count=top_count, held_markets=held, btc_regime=btc_regime)
+            screener = create_screener()
+            try:
+                screened = screener.scan_markets(top_count=top_count, held_markets=held, btc_regime=btc_regime, analyzer=analyzer)
+            except TypeError:
+                screened = screener.scan_markets(top_count=top_count, held_markets=held, btc_regime=btc_regime)
             # 호출자가 후보 유형 등 선별 메타데이터를 주문 기록에 보존할 수 있게 전달한다.
             if on_screened_candidates is not None:
                 on_screened_candidates(screened)
@@ -173,7 +178,13 @@ class TradingOrchestrator:
         )
 
     def classify_market_regime(
-        self, exchange: ExchangeAdapter, *, interval_minutes: int, crash_threshold_pct: float,
+        self,
+        exchange: ExchangeAdapter,
+        *,
+        interval_minutes: int,
+        crash_threshold_pct: float,
+        analyzer: Any | None = None,
+        fng_index: dict[str, Any] | None = None,
     ) -> tuple[bool, str, str]:
         """Use one fail-closed BTC regime decision for every exchange cycle."""
         try:
@@ -183,7 +194,32 @@ class TradingOrchestrator:
                 return True, "CRASH", "BTC 데이터 부족 (Fail-Closed: 안전 관망)"
             result = classify_btc_regime(candles_5m, candles_1h, crash_threshold_pct=crash_threshold_pct)
             regime = str(result.get("regime", "CRASH"))
-            return regime == "CRASH", regime, str(result.get("reason", "BTC 정상 안정세"))
+            reason = str(result.get("reason", "BTC 정상 안정세"))
+
+            # 1차 로컬 판별에서 이미 급락이면 즉시 차단
+            if regime == "CRASH":
+                return True, "CRASH", reason
+
+            # [3순위] AI 매크로 정밀 진단 결합 (30분 캐시)
+            if analyzer is not None and hasattr(analyzer, "diagnose_macro_regime") and candles_1h:
+                try:
+                    macro_diag = analyzer.diagnose_macro_regime(
+                        btc_candles_1h=candles_1h,
+                        fng_index=fng_index,
+                    )
+                    ai_regime = str(macro_diag.get("regime", "")).upper()
+                    if ai_regime == "CRASH":
+                        return True, "CRASH", f"AI 거시 위기 경보: {macro_diag.get('summary')}"
+                    elif ai_regime in ("BEAR_REGIME", "CAUTION_PULLBACK") and regime != "CRASH":
+                        regime = "RISK_OFF"
+                        reason = f"{reason} | AI: {macro_diag.get('summary')}"
+                    elif ai_regime == "BULL_TREND" and regime == "NORMAL":
+                        regime = "BULL_TREND"
+                        reason = f"{reason} | AI: {macro_diag.get('summary')}"
+                except Exception as exc:
+                    self.logger.debug("AI 매크로 진단 폴백: %s", exc)
+
+            return regime == "CRASH", regime, reason
         except Exception as exc:
             self.logger.warning("BTC market-state lookup failed; blocking entries: %s", exc)
             return True, "CRASH", f"BTC 조회 실패 (Fail-Closed: {exc})"

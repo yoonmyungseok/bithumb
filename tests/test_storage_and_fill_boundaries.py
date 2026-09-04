@@ -74,6 +74,25 @@ class StorageAndFillBoundaryTests(unittest.TestCase):
         cooldown.record_exit.assert_called_once_with("KRW-BTC", "손절 방어", exit_price=110.0)
         risk.add_realized_trade.assert_called_once()
 
+    def test_ai_emergency_exit_reason_refined_to_korean(self):
+        """AI_EMERGENCY_EXIT 사유가 확정 체결 시 한글 레이블로 정제되어 쿨다운/기록에 반영된다."""
+        journal = _InMemoryJournal()
+        journal.orders[0]["exit_reason"] = "AI_EMERGENCY_EXIT"
+        journal.orders[0]["avg_buy_price"] = 100.0
+        cooldown = MagicMock()
+        risk = MagicMock()
+        processor = OrderFillProcessor(journal, risk_manager=risk, cooldown_manager=cooldown)
+
+        # 손실 상태의 AI 비상탈출 (90원에 체결)
+        processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=90.0, remaining_volume=0.0)
+        cooldown.record_exit.assert_called_once_with("KRW-BTC", "AI 긴급 비상탈출", exit_price=90.0)
+
+        # 이익 상태의 AI 비상탈출 (110원에 체결)
+        cooldown.reset_mock()
+        journal.orders[0]["processed_executed_volume"] = 0.0
+        processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=110.0, remaining_volume=0.0)
+        cooldown.record_exit.assert_called_once_with("KRW-BTC", "AI 긴급 익절탈출", exit_price=110.0)
+
 
 if __name__ == "__main__":
     unittest.main()

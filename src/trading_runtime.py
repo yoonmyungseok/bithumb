@@ -170,6 +170,9 @@ class MarketExitInputs:
     candles_5m: list[dict[str, Any]]
     btc_regime: str
     now_str: str
+    candles_1h: list[dict[str, Any]] | None = None
+    orderbook: dict[str, Any] | None = None
+    analyzer: GeminiAnalyzer | None = None
 
 
 @dataclass
@@ -396,10 +399,15 @@ class TradingCycleEngine:
             f"(종목당 {dyn_max_pos_pct * 100:.0f}% 한도, {profile.tier_top_wording} {dyn_top_count}개)"
         )
 
+        fng = get_fear_and_greed_index()
+        is_extreme_fear = bool(fng.get("is_extreme_fear", False))
+
         is_btc_crashing, btc_regime, btc_status_msg = ctx.orchestrator.classify_market_regime(
             exchange,
             interval_minutes=self.config.interval_minutes,
             crash_threshold_pct=btc_crash_pct,
+            analyzer=analyzer,
+            fng_index=fng,
         )
         ctx.trailing_tracker.set_macro_defensive_mode(is_btc_crashing)
         if is_btc_crashing:
@@ -407,9 +415,6 @@ class TradingCycleEngine:
                 f"⚠️ [{profile.btc_crash_label}] 레짐: {btc_regime} ({btc_status_msg}) "
                 f"➜ 보유 알트코인 비상 방어 모드 가동"
             )
-
-        fng = get_fear_and_greed_index()
-        is_extreme_fear = bool(fng.get("is_extreme_fear", False))
         krw_disp = format_krw_display(krw_available)
         logger.info(
             f"📊 [{profile.summary_label}] 총 자산: {tot_disp} | 원화: {krw_disp} | "
@@ -446,6 +451,7 @@ class TradingCycleEngine:
             top_count=dyn_top_count,
             create_screener=lambda: profile.create_screener(exchange),
             btc_regime=btc_regime,
+            analyzer=analyzer,
             on_screened_candidates=capture_screened_candidates,
         )
         logger.info(
@@ -612,12 +618,101 @@ class TradingCycleEngine:
 
         hold_duration_sec = time.time() - entry_ts
         pnl_pct_current = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
+
+        # [1순위] Gemini AI 기보유 포지션 동적 관리 (긴급 탈출 / 러너 추세 추종 / 손절선 상향)
+        analyzer = getattr(market_inputs, "analyzer", None)
+        if analyzer is not None and hasattr(analyzer, "evaluate_holding_position") and candles_5m:
+            try:
+                ai_eval = analyzer.evaluate_holding_position(
+                    market=market,
+                    current_price=current_price,
+                    avg_buy_price=avg_buy_price,
+                    candles=candles_5m,
+                    candles_1h=getattr(market_inputs, "candles_1h", None),
+                    orderbook=getattr(market_inputs, "orderbook", None),
+                    hold_duration_sec=hold_duration_sec,
+                    btc_context=btc_regime,
+                )
+                ai_action = ai_eval.get("action", "HOLD")
+                if ai_action == "EMERGENCY_EXIT" and ctx.trailing_tracker.acquire_exit_lock(market):
+                    try:
+                        logger.warning(
+                            f"🚨 [{korean_name} / {market} AI 긴급 전량 탈출 발동] "
+                            f"현재가 {current_price:,.2f}원({pnl_pct_current:+.2f}%). 사유: {ai_eval.get('reason')}"
+                        )
+                        ctx.cancel_bot_open_orders(exchange, market)
+                        ctx.order_executor.submit(
+                            exchange,
+                            market=market,
+                            side="ask",
+                            volume=coin_available,
+                            ord_type="market",
+                            position_id=market,
+                            exit_reason="AI_EMERGENCY_EXIT",
+                            avg_buy_price=avg_buy_price,
+                        )
+                        if exit_profile.render_trailing_chart:
+                            ctx.chart_renderer.render_trade_chart(
+                                market=market,
+                                korean_name=korean_name,
+                                candles=candles_5m,
+                                entry_price=avg_buy_price,
+                                target_price=current_price,
+                                stop_loss=current_price,
+                                action="SELL",
+                            )
+                        return True
+                    finally:
+                        ctx.trailing_tracker.release_exit_lock(market)
+                elif ai_action in ("RUNNER_HOLD", "TIGHTEN_STOP"):
+                    ctx.trailing_tracker.update_dynamic_exit(
+                        market,
+                        target_price=ai_eval.get("adjusted_target_price"),
+                        stop_loss=ai_eval.get("adjusted_stop_loss"),
+                        runner_mode=(ai_action == "RUNNER_HOLD"),
+                    )
+            except Exception as e:
+                logger.debug(f"[{market}] AI 포지션 평가 예외 무시 (로컬 룰 유지): {e}")
+
+        # AI 동적 손절선(Tightened Stop) 도달 여부 검사
+        dynamic_sl = ctx.trailing_tracker.get_dynamic_stop_loss(market)
+        if dynamic_sl and current_price <= dynamic_sl and ctx.trailing_tracker.acquire_exit_lock(market):
+            try:
+                logger.info(
+                    f"🛡️ [{korean_name} / {market} AI 상향 손절선 도달 안착 청산] "
+                    f"현재가 {current_price:,.2f}원 <= 상향 손절가 {dynamic_sl:,.2f}원. 시장가 보호 청산!"
+                )
+                ctx.cancel_bot_open_orders(exchange, market)
+                ctx.order_executor.submit(
+                    exchange,
+                    market=market,
+                    side="ask",
+                    volume=coin_available,
+                    ord_type="market",
+                    position_id=market,
+                    exit_reason="AI_TIGHTENED_STOP",
+                    avg_buy_price=avg_buy_price,
+                )
+                return True
+            finally:
+                ctx.trailing_tracker.release_exit_lock(market)
+
+        # 최신 BTC 레짐을 트레일링 트래커에 동기화
+        if hasattr(ctx.trailing_tracker, "set_btc_regime"):
+            ctx.trailing_tracker.set_btc_regime(btc_regime)
+
         if btc_regime == "RISK_OFF":
             effective_time_stop = StrategyPolicy.TIME_STOP_SECONDS_RISK_OFF
+            effective_max_hold = StrategyPolicy.TIME_STOP_MAX_HOLD_SECONDS
+        elif btc_regime == "BULL_TREND":
+            effective_time_stop = StrategyPolicy.BULL_TIME_STOP_SECONDS
+            effective_max_hold = StrategyPolicy.BULL_TIME_STOP_MAX_HOLD_SECONDS
         elif is_night_session():
             effective_time_stop = StrategyPolicy.NIGHT_TIME_STOP_SECONDS
+            effective_max_hold = StrategyPolicy.TIME_STOP_MAX_HOLD_SECONDS
         else:
             effective_time_stop = StrategyPolicy.TIME_STOP_SECONDS_NORMAL
+            effective_max_hold = StrategyPolicy.TIME_STOP_MAX_HOLD_SECONDS
 
         is_holding_support = False
         is_trend_broken = False
@@ -637,14 +732,16 @@ class TradingCycleEngine:
         is_time_stop_profit_trigger = (
             hold_duration_sec >= effective_time_stop
             and is_breakeven_or_profit
-            and (not is_holding_support or hold_duration_sec >= StrategyPolicy.TIME_STOP_MAX_HOLD_SECONDS)
+            and (not is_holding_support or hold_duration_sec >= effective_max_hold)
         )
         is_time_stop_loss_trigger = (
-            (hold_duration_sec >= StrategyPolicy.TIME_STOP_MAX_HOLD_SECONDS or (hold_duration_sec >= effective_time_stop and is_trend_broken))
+            (hold_duration_sec >= effective_max_hold or (hold_duration_sec >= effective_time_stop and is_trend_broken))
             and (pnl_pct_current < be_threshold_pct)
         )
+        # 상승장(BULL_TREND)에서는 단기 횡보 숨고르기가 정상적이므로 조기 모멘텀 탈출을 비활성화하여 털림 방지
         is_early_momentum_exit = (
-            hold_duration_sec >= StrategyPolicy.MOMENTUM_EARLY_EXIT_SECONDS
+            (btc_regime != "BULL_TREND")
+            and hold_duration_sec >= StrategyPolicy.MOMENTUM_EARLY_EXIT_SECONDS
             and (-0.50 <= pnl_pct_current <= 0.30)
             and (not is_above_vwap)
             and is_trend_broken
@@ -1401,6 +1498,9 @@ class TradingCycleEngine:
                     candles_5m=candles_5m,
                     btc_regime=btc_regime,
                     now_str=now_str,
+                    candles_1h=candles_1h,
+                    orderbook=orderbook,
+                    analyzer=analyzer,
                 )):
                     continue
 

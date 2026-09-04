@@ -184,6 +184,9 @@
     if (act === 'BUY' || act === 'BID' || act.includes('STRONG_BUY')) {
       return `<span class="px-2 py-0.5 rounded text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">🚀 매수 승인</span>`;
     }
+    if (act.includes('EMERGENCY') || act.includes('PANIC')) {
+      return `<span class="px-2 py-0.5 rounded text-xs font-bold bg-rose-600 text-white border border-rose-500 whitespace-nowrap">🚨 비상 탈출</span>`;
+    }
     if (act === 'SELL' || act === 'ASK' || act.includes('EXIT')) {
       return `<span class="px-2 py-0.5 rounded text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40">🚨 즉시 청산</span>`;
     }
@@ -193,16 +196,35 @@
     if (act.includes('TRAILING')) {
       return `<span class="px-2 py-0.5 rounded text-xs font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/40">🚀 트레일링</span>`;
     }
+    if (act.includes('TIGHTEN')) {
+      return `<span class="px-2 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">🛡️ 손절선 상향</span>`;
+    }
+    if (act.includes('RUNNER')) {
+      return `<span class="px-2 py-0.5 rounded text-xs font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">🏃 추세 홀딩</span>`;
+    }
+    if (act.includes('STOP') || act.includes('LOSS')) {
+      return `<span class="px-2 py-0.5 rounded text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40">🛡️ 손절 방어</span>`;
+    }
     if (act.includes('HOLD') || act.includes('WATCH')) {
       return `<span class="px-2 py-0.5 rounded text-xs font-bold bg-slate-700/60 text-slate-300 border border-slate-600">🛡️ 관망/유지</span>`;
     }
     return `<span class="px-2 py-0.5 rounded text-xs font-bold bg-slate-800 text-slate-400 border border-slate-700">${act || '-'}</span>`;
   }
 
-  // 체결 사유 한글 변환
+  // 체결 및 전략 사유 한글 변환
   function formatReason(r) {
     if (!r) return '-';
     return String(r)
+      // AI 관련 비상/손절 사유
+      .replace(/AI_EMERGENCY_EXIT/gi, '🚨 AI 긴급 비상탈출')
+      .replace(/AI_TIGHTENED_STOP/gi, '🤖🛡️ AI 손절선 상향 대응')
+      .replace(/AI_EXIT/gi, '🤖 AI 청산')
+      .replace(/AI_STOP/gi, '🤖 AI 방어 손절')
+      .replace(/EMERGENCY_EXIT/gi, '🚨 긴급 비상탈출')
+      .replace(/TIGHTENED_STOP/gi, '🛡️ 손절선 상향 방어')
+      .replace(/TIGHTEN_STOP/gi, '🛡️ 손절선 상향 방어')
+      .replace(/RUNNER_HOLD/gi, '🏃 추세 추종 홀딩')
+      // 탈출/청산 사유
       .replace(/MOMENTUM_EARLY_EXIT/gi, '⚡ 모멘텀 조기 본전탈출')
       .replace(/MOMENTUM_EXIT/gi, '⚡ 모멘텀 조기 탈출')
       .replace(/TIME_STOP/gi, '⏳ 타임스탑 (횡보 청산)')
@@ -219,7 +241,37 @@
       .replace(/MANUAL_EXIT/gi, '👤 수동 청산')
       .replace(/MANUAL/gi, '👤 수동 제어')
       .replace(/REGIME_FILTER/gi, '🛑 시장 급락 방어 청산')
-      .replace(/REGIME_CRASH/gi, '🚨 BTC 급락 경보 청산');
+      .replace(/REGIME_CRASH/gi, '🚨 BTC 급락 경보 청산')
+      // 진입 및 전략 팩터 관련
+      .replace(/MOMENTUM_BREAKOUT/gi, '💥 모멘텀 돌파')
+      .replace(/MOMENTUM_PULLBACK/gi, '🌊 눌림목 반등')
+      .replace(/VOLATILITY_BREAKOUT/gi, '💥 변동성 돌파')
+      .replace(/EARLY_BREAKOUT/gi, '🌱 초기 돌파')
+      .replace(/CONFIRMED_BREAKOUT/gi, '📈 확인형 돌파')
+      .replace(/ORDERBOOK_IMBALANCE/gi, '📊 호가 불균형')
+      .replace(/MARKET_COOLDOWN/gi, '⏳ 재진입 쿨다운')
+      .replace(/DAILY_LOSS_LIMIT/gi, '🛑 일일 손실 한도 도달')
+      .replace(/CIRCUIT_BREAKER/gi, '⚡ 서킷 브레이커')
+      .replace(/KILL_SWITCH/gi, '🛑 킬스위치 활성화')
+      .replace(/MAX_POSITIONS_REACHED/gi, '⚠️ 최대 포지션 도달')
+      .replace(/MAX_POSITIONS/gi, '⚠️ 최대 포지션 도달')
+      .replace(/MAX_POSITION/gi, '⚠️ 최대 포지션 도달')
+      .replace(/INSUFFICIENT_BALANCE/gi, '💰 잔고 부족')
+      .replace(/LOW_ALPHA_SCORE/gi, '📉 알파 점수 미달')
+      .replace(/DISPARITY_OVERHEAT/gi, '🌡️ 이격도 과열')
+      .replace(/REGIME_BEAR/gi, '🐻 약세장 진입 제한')
+      .replace(/BTC_REGIME_RISK_OFF/gi, '🛑 BTC 약세 리스크 오프')
+      .replace(/BTC_CRASH/gi, '🚨 BTC 급락 경보')
+      .replace(/FEED_UNHEALTHY/gi, '📡 시세 수신 지연')
+      .replace(/DATA_UNAVAILABLE/gi, '📡 데이터 수신 불가')
+      .replace(/RECONCILIATION_PENDING/gi, '🔄 체결 대사 진행 중')
+      .replace(/RECONCILIATION_SYNC/gi, '🔄 체결 대사 동기화')
+      .replace(/UNKNOWN/gi, '❓ 상태 불명')
+      // 단독 거래 구분 치환 (t.side fallback)
+      .replace(/\bBUY\b/gi, '📈 매수')
+      .replace(/\bBID\b/gi, '📈 매수')
+      .replace(/\bSELL\b/gi, '📉 매도')
+      .replace(/\bASK\b/gi, '📉 매도');
   }
 
   // 주문 상태 뱃지
@@ -259,6 +311,12 @@
     const s = String(side).toUpperCase();
     if (s === 'BID' || s === 'BUY' || s === '매수') {
       return '<span class="px-2 py-0.5 rounded text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 whitespace-nowrap">매수</span>';
+    }
+    if (s.includes('AI_EMERGENCY') || s.includes('EMERGENCY')) {
+      return '<span class="px-2 py-0.5 rounded text-xs font-bold bg-rose-600 text-white whitespace-nowrap">🚨 AI비상탈출</span>';
+    }
+    if (s.includes('AI_TIGHTENED') || s.includes('TIGHTEN')) {
+      return '<span class="px-2 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 whitespace-nowrap">🛡️ AI손절상향</span>';
     }
     if (s.includes('TIME_STOP') || s.includes('타임스탑')) {
       return '<span class="px-2 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 whitespace-nowrap">타임스탑</span>';
@@ -426,11 +484,22 @@
     if (feedEl) {
       const feed = (data.feed && typeof data.feed === 'object') ? data.feed : {};
       const feeds = (feed.by_exchange && typeof feed.by_exchange === 'object') ? feed.by_exchange : null;
+      const feedStatusMap = {
+        CONNECTED: '정상 연결',
+        CONNECTING: '연결 중',
+        RECONNECTING: '재연결 중',
+        DISCONNECTED: '연결 끊김',
+        DATA_UNAVAILABLE: '데이터 대기',
+        HEALTHY: '정상',
+        UNHEALTHY: '지연 감지',
+      };
       const formatFeed = (label, item) => {
         const isHealthy = item && item.is_healthy === true;
         const latency = Number(item && item.latency_seconds);
         const latencyText = Number.isFinite(latency) && latency < 9999 ? `, 마지막 틱 ${latency.toFixed(1)}초 전` : '';
-        return `${label}: ${isHealthy ? '정상' : '비정상'} (${(item && item.status) || 'DATA_UNAVAILABLE'}${latencyText})`;
+        const rawStatus = (item && item.status) || 'DATA_UNAVAILABLE';
+        const statusKr = feedStatusMap[rawStatus] || rawStatus;
+        return `${label}: ${isHealthy ? '정상' : '비정상'} (${statusKr}${latencyText})`;
       };
       if (feeds) {
         feedEl.textContent = [

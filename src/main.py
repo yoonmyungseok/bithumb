@@ -385,6 +385,26 @@ def send_daily_morning_report():
         held_names = [f"{bithumb.get_korean_name(m)}({m.split('-')[-1]})" for m in held_markets]
         held_desc = ", ".join(held_names) if held_names else "없음 (100% 현금 보유)"
 
+        ai_briefing = ""
+        analyzer = GeminiAnalyzer() if os.getenv("GEMINI_API_KEY") else None
+        if analyzer is not None and hasattr(analyzer, "generate_market_briefing"):
+            try:
+                candles_1h = bithumb.get_candles(unit=60, count=30, market="KRW-BTC")
+                macro_diag = analyzer.diagnose_macro_regime(candles_1h, fng_index=fng)
+                ai_comment = analyzer.generate_market_briefing(
+                    exchange_name="빗썸",
+                    total_equity=total_equity,
+                    daily_pnl_krw=daily_pnl_krw,
+                    daily_pnl_pct=daily_pnl_pct,
+                    held_positions_desc=held_desc,
+                    macro_diag=macro_diag,
+                    fng_desc=fng.get("desc", ""),
+                )
+                if ai_comment:
+                    ai_briefing = f"\n\n🤖 <b>[Gemini AI 종합 시황 브리핑]</b>\n{ai_comment}"
+            except Exception as e:
+                logger.debug(f"AI 브리핑 생성 예외: {e}")
+
         telegram.send_message(
             f"🌅 <b>[빗썸 AI 퀀트 봇 - 09:00 KST 일일 성과 결산 브리핑]</b>\n\n"
             f"• <b>총 평가 자산:</b> {total_equity:,.0f} KRW\n"
@@ -395,6 +415,7 @@ def send_daily_morning_report():
             f"• <b>크립토 공포/탐욕 지수:</b> {fng['desc']}\n"
             f"• <b>웹 대시보드:</b> <code>http://localhost:7979</code>\n"
             f"• <b>기준 일시:</b> {now_str}"
+            f"{ai_briefing}"
         )
     except Exception as e:
         logger.error(f"모닝 리포트 발송 실패: {e}")

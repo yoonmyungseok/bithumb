@@ -1,5 +1,4 @@
 import math
-import os
 import threading
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -37,7 +36,7 @@ class StrategyPolicy:
     MIN_STOP_PCT: float = 0.018          # 기본 최소 손절선 -1.8%
     STOP_LOSS_PCT: float = 0.022         # 기본 손절 -2.2% (단기 노이즈 휩소 방어)
 
-    # 1-1. 메이저 코인(BTC/ETH) 전용 목표가/익절/타임스탑 (낮은 변동성 적응 및 자금 잠김 방어)
+    # 1-1. 메이저 코인(BTC/ETH/SOL) 전용 목표가/익절/타임스탑 (낮은 변동성 적응 및 자금 잠김 방어)
     MAJOR_MIN_TARGET_PCT: float = 0.015          # 메이저 최소 목표 수익률 +1.5%
     MAJOR_MIN_STOP_PCT: float = 0.012            # 메이저 기본 최소 손절선 -1.2%
     MAJOR_PARTIAL_TP_1_PCT: float = 0.018        # 메이저 1차 분할 익절 +1.8% (도달 시 30% 익절)
@@ -46,6 +45,19 @@ class StrategyPolicy:
     MAJOR_TRAILING_DROP_PCT: float = 0.010       # 메이저 최고점 대비 1.0% 하락 시 시장가 청산
     MAJOR_TIME_STOP_SECONDS_NORMAL: int = 7200   # 메이저 정상장 120분 타임스탑
     MAJOR_TIME_STOP_SECONDS_RISK_OFF: int = 3600 # 메이저 약세장 60분 타임스탑
+
+    # 1-2. 대세 상승장(BULL_TREND) 전용 완화/확장 파라미터 (휩소 방어 & 대세 랠리 온전 추종)
+    BULL_STOP_LOSS_PCT: float = 0.032            # 상승장 노이즈 휩소 방어 손절 -3.2% (단기 틱 털림 방지)
+    BULL_PARTIAL_TP_1_PCT: float = 0.045         # 상승장 1차 분할 익절 +4.5% (기존 +3.5%에서 확대)
+    BULL_PARTIAL_TP_2_PCT: float = 0.080         # 상승장 2차 분할 익절 +8.0% (기존 +7.0%에서 확대)
+    BULL_TRAILING_START_PCT: float = 0.040       # +4.0% 도달 시 트레일링 스탑 개시
+    BULL_TRAILING_DROP_PCT: float = 0.025        # 최고점 대비 2.5% 하락 시 청산 (상승장 자연스러운 숨고르기 파동 허용)
+    BULL_TIME_STOP_SECONDS: int = 21600          # 상승장 360분 (6시간) 기본 타임스탑
+    BULL_TIME_STOP_MAX_HOLD_SECONDS: int = 28800 # 지지선 유지 시 최대 480분 (8시간) 홀딩 유예
+    ALPHA_BUY_THRESHOLD_BULL: int = 55           # 상승장 7대 팩터 복합 알파 승인 점수 (55점으로 유연화)
+    ALPHA_BUY_THRESHOLD_NIGHT_BULL: int = 65     # 상승장 심야 알파 승인 점수 (65점)
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_BULL: int = 50       # 상승장 모멘텀 돌파 알파 (50점)
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_BULL: int = 60 # 상승장 심야 모멘텀 돌파 알파 (60점)
 
     # 2. 익절 및 트레일링 스탑 (3단계 다단계 분할 익절 & 40% 러너 추세 추종)
     PARTIAL_TP_PCT: float = 0.035        # 기본 1차 익절 기준 +3.5%
@@ -154,16 +166,17 @@ def get_alpha_buy_threshold(btc_regime: str = "NORMAL", is_night: bool | None = 
 
     # 점수 표시, 일반 진입, 반등 전용 진입이 같은 심야 보수 기준을 사용해야 한다.
     if night_active:
-        return (
-            StrategyPolicy.ALPHA_BUY_THRESHOLD_NIGHT_RISK_OFF
-            if regime_upper == "RISK_OFF"
-            else StrategyPolicy.ALPHA_BUY_THRESHOLD_NIGHT
-        )
-    return (
-        StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF
-        if regime_upper == "RISK_OFF"
-        else StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL
-    )
+        if regime_upper == "RISK_OFF":
+            return StrategyPolicy.ALPHA_BUY_THRESHOLD_NIGHT_RISK_OFF
+        elif regime_upper == "BULL_TREND":
+            return StrategyPolicy.ALPHA_BUY_THRESHOLD_NIGHT_BULL
+        return StrategyPolicy.ALPHA_BUY_THRESHOLD_NIGHT
+
+    if regime_upper == "RISK_OFF":
+        return StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF
+    elif regime_upper == "BULL_TREND":
+        return StrategyPolicy.ALPHA_BUY_THRESHOLD_BULL
+    return StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL
 
 
 def get_momentum_breakout_alpha_threshold(btc_regime: str = "NORMAL", is_night: bool | None = None) -> int:
@@ -171,16 +184,17 @@ def get_momentum_breakout_alpha_threshold(btc_regime: str = "NORMAL", is_night: 
     regime_upper = str(btc_regime or "NORMAL").upper()
     night_active = is_night if is_night is not None else is_night_session()
     if night_active:
-        return (
-            StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF
-            if regime_upper == "RISK_OFF"
-            else StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT
-        )
-    return (
-        StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF
-        if regime_upper == "RISK_OFF"
-        else StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NORMAL
-    )
+        if regime_upper == "RISK_OFF":
+            return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF
+        elif regime_upper == "BULL_TREND":
+            return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_BULL
+        return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT
+
+    if regime_upper == "RISK_OFF":
+        return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF
+    elif regime_upper == "BULL_TREND":
+        return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_BULL
+    return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NORMAL
 
 
 class OrderbookFlowTracker:
@@ -227,15 +241,15 @@ def build_orderbook_tracker_key(market: str, exchange: str = "") -> str:
     return f"{normalized_exchange}:{normalized_market}" if normalized_exchange else normalized_market
 
 
-MAJOR_MARKETS = {"KRW-BTC", "BTC", "KRW-ETH", "ETH"}
+MAJOR_MARKETS = {"KRW-BTC", "BTC", "KRW-ETH", "ETH", "KRW-SOL", "SOL"}
 
 
 def is_major_market(market: str) -> bool:
-    """시가총액 상위 대형 메이저 코인(BTC, ETH) 여부 판별"""
+    """시가총액 상위 대형 메이저 코인(BTC, ETH, SOL) 여부 판별"""
     if not market:
         return False
     m = str(market).strip().upper()
-    return m in MAJOR_MARKETS or m.replace("KRW-", "") in {"BTC", "ETH"}
+    return m in MAJOR_MARKETS or m.replace("KRW-", "") in {"BTC", "ETH", "SOL"}
 
 
 def select_completed_candles(candles: list[dict[str, Any]], minimum_count: int) -> list[dict[str, Any]]:
@@ -408,10 +422,11 @@ def classify_btc_regime(
     candles_1h: list[dict[str, Any]] | None = None,
     crash_threshold_pct: float = 0.015,
 ) -> dict[str, Any]:
-    """Classify BTC market regime into NORMAL, RISK_OFF, or CRASH.
+    """Classify BTC market regime into BULL_TREND, NORMAL, RISK_OFF, or CRASH.
 
     - CRASH: Recent 5m/15m drop >= crash_threshold_pct (1.5%) -> Stop all new buys
     - RISK_OFF: 1H Close < 1H EMA50 or 1H drop >= 1.0% -> Stricter gates & 50% sizing
+    - BULL_TREND: 1H Close >= EMA20 >= EMA50 (정배열) & 상승세 유지 -> 휩소 방어 확장 & 대세 추세 추종
     - NORMAL: Healthy uptrend/stable state
     """
     if not candles_5m or len(candles_5m) < 3:
@@ -432,6 +447,7 @@ def classify_btc_regime(
     if candles_1h and len(candles_1h) >= 20:
         prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
         ema50_1h = calculate_ema(prices_1h, min(len(prices_1h), 50))
+        ema20_1h = calculate_ema(prices_1h, min(len(prices_1h), 20))
         cur_1h = prices_1h[0]
         p_1h_prev = prices_1h[min(len(prices_1h) - 1, 3)]
         drop_1h = (cur_1h - p_1h_prev) / p_1h_prev if p_1h_prev > 0 else 0.0
@@ -442,6 +458,18 @@ def classify_btc_regime(
                 "regime": "RISK_OFF",
                 "drop_pct": round(drop_1h * 100.0, 2),
                 "reason": f"BTC 약세/조정 ({sub_reason})",
+            }
+
+        # BULL_TREND: 1H 종가가 EMA20 및 EMA50 상단에 위치하고 정배열이며 최근 조정이 없거나 상승세
+        lookback_12 = min(len(prices_1h) - 1, 12)
+        p_1h_12 = prices_1h[lookback_12]
+        gain_12h = (cur_1h - p_1h_12) / p_1h_12 if p_1h_12 > 0 else 0.0
+        if cur_1h >= ema20_1h and ema20_1h >= ema50_1h and (drop_1h > -0.003 or gain_12h > 0.005):
+            return {
+                "regime": "BULL_TREND",
+                "drop_pct": round(recent_drop * 100.0, 2),
+                "gain_12h_pct": round(gain_12h * 100.0, 2),
+                "reason": f"BTC 강력 상승 추세 (1H EMA20/50 정배열, 12H {gain_12h*100.0:+.2f}%)",
             }
 
     return {"regime": "NORMAL", "drop_pct": round(recent_drop * 100.0, 2), "reason": "BTC 정상 안정세"}
@@ -502,10 +530,10 @@ def calculate_vwap(candles: list[dict[str, Any]]) -> dict[str, Any]:
     cum_vol = 0.0
     for c in candles[:min(len(candles), 30)]:
         h = float(c.get("high_price", 0.0))
-        l = float(c.get("low_price", 0.0))
+        low_p = float(c.get("low_price", 0.0))
         close_p = float(c.get("trade_price", 0.0))
         vol = float(c.get("candle_acc_trade_volume", 0.0))
-        typical_p = (h + l + close_p) / 3.0 if (h > 0 and l > 0 and close_p > 0) else close_p
+        typical_p = (h + low_p + close_p) / 3.0 if (h > 0 and low_p > 0 and close_p > 0) else close_p
         cum_pv += typical_p * vol
         cum_vol += vol
 
@@ -693,6 +721,7 @@ def calculate_composite_alpha_score(
 
     breakdown = {
         "mtf_score": score_mtf,
+        "mtf_reason": mtf_reason,
         "vwap_score": score_vwap,
         "macd_score": score_macd,
         "rsi_score": score_rsi,
@@ -911,8 +940,16 @@ def entry_signal(
     atr_pct = atr_data["atr_pct"]
 
     is_major = is_major_market(market)
-    min_tgt_pct = StrategyPolicy.MAJOR_MIN_TARGET_PCT if is_major else StrategyPolicy.MIN_TARGET_PCT
-    min_stp_pct = StrategyPolicy.MAJOR_MIN_STOP_PCT if is_major else StrategyPolicy.MIN_STOP_PCT
+    is_bull = (regime_upper == "BULL_TREND")
+    if is_major:
+        min_tgt_pct = StrategyPolicy.MAJOR_MIN_TARGET_PCT
+        min_stp_pct = StrategyPolicy.MAJOR_MIN_STOP_PCT
+    elif is_bull:
+        min_tgt_pct = StrategyPolicy.BULL_PARTIAL_TP_1_PCT
+        min_stp_pct = StrategyPolicy.BULL_STOP_LOSS_PCT
+    else:
+        min_tgt_pct = StrategyPolicy.MIN_TARGET_PCT
+        min_stp_pct = StrategyPolicy.MIN_STOP_PCT
 
     target_offset = max(current * min_tgt_pct, volatility * StrategyPolicy.ATR_TARGET_MULTIPLIER)
     target_price = current + target_offset
@@ -925,10 +962,6 @@ def entry_signal(
         "alpha_threshold": entry_alpha_threshold,
         "is_night": night_active,
         "entry_type": normalized_entry_type,
-        "momentum_breakout": {
-            "pass": momentum_breakout_passed,
-            "detail": momentum_breakout_reason,
-        },
         "factor_breakdown": alpha_res["factor_breakdown"],
         "hard_gates": {
             "all_passed": hard_gates_passed,

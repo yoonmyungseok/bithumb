@@ -316,13 +316,21 @@ class RealtimeRiskEngine:
 
             korean_name = bithumb.get_korean_name(market)
             strat = self.latest_strategies.get(market, {})
-            raw_stop_loss = float(strat.get("STOP_LOSS", 0.0))
-            # 진입 직후 1틱(-0.3%) 털림 방지: 손절선은 평단가 대비 기본 -1.5% 이하로 안전 마진 보장
-            base_stop_loss = avg_buy_price * (1.0 - StrategyPolicy.STOP_LOSS_PCT)
+            strat_snapshot = strat.get("entry_strategy_snapshot") or {}
+            curr_regime = (
+                strat_snapshot.get("entry_btc_regime")
+                or getattr(self.trailing_tracker, "current_btc_regime", "NORMAL")
+            ).upper()
+            is_bull_regime = (curr_regime == "BULL_TREND")
+
+            raw_stop_loss = float(strat.get("STOP_LOSS", 0.0) or strat.get("stop_loss", 0.0))
+            # 진입 직후 털림 방지: 손절선은 평단가 대비 레짐별 기본 손절(BULL_TREND 시 -3.2%, 일반 -2.2%) 이하로 안전 마진 보장
+            base_sl_pct = StrategyPolicy.BULL_STOP_LOSS_PCT if is_bull_regime else StrategyPolicy.STOP_LOSS_PCT
+            base_stop_loss = avg_buy_price * (1.0 - base_sl_pct)
             effective_stop_loss = raw_stop_loss if raw_stop_loss > 0 else base_stop_loss
             effective_stop_loss = min(effective_stop_loss, base_stop_loss)
 
-            # 🛡️ [수익 보존 브레이크이븐]: 1차 분할 익절(+2.5%) 완료 시 손절선을 '평단가 + 0.3%'로 자동 락인
+            # 🛡️ [수익 보존 브레이크이븐]: 1차 분할 익절 완료 시 손절선을 '평단가 + 0.3%'로 자동 락인
             if self.trailing_tracker.is_breakeven_active(market):
                 breakeven_sl = avg_buy_price * (1.0 + StrategyPolicy.BREAKEVEN_STOP_PCT)
                 effective_stop_loss = max(effective_stop_loss, breakeven_sl)
@@ -332,11 +340,12 @@ class RealtimeRiskEngine:
             hard_stop_price = avg_buy_price * 0.955
             is_hard_stop = current_price <= hard_stop_price
 
-            # 1. 실시간 손절 검사 (단일 틱 휩소 방지: 2회 연속 하회 또는 급락 -2.5% 이하, 또는 하드스탑 -4.5% 시 즉시 실행)
+            # 1. 실시간 손절 검사 (단일 틱 휩소 방지: 2회 연속 하회 또는 급락 시 즉시 실행)
             if (effective_stop_loss > 0 and current_price <= effective_stop_loss) or is_hard_stop:
                 with self._lock:
                     self._sl_hit_count[market] = self._sl_hit_count.get(market, 0) + 1
-                    is_severe_drop = current_price <= (avg_buy_price * 0.975)
+                    severe_drop_threshold = 0.965 if is_bull_regime else 0.975
+                    is_severe_drop = current_price <= (avg_buy_price * severe_drop_threshold)
                     if not is_hard_stop and not is_severe_drop and self._sl_hit_count[market] < 2:
                         logger.debug(f"⚠️ [{market}] 1차 손절선 터치 ({current_price:,.2f}원 <= {effective_stop_loss:,.2f}원) - 휩소 확인 중")
                         return
@@ -372,7 +381,6 @@ class RealtimeRiskEngine:
                         exchange_name=ex_name,
                     )
                     self._invalidate_balance_cache()
-                    self.cooldown_manager.record_exit(market, "STOP_LOSS", exit_price=current_price)
 
                     res_data = self._confirm_and_record_exit(
                         exchange=bithumb,
@@ -400,7 +408,9 @@ class RealtimeRiskEngine:
 
             # 2. 실시간 3단계 분할 익절 & 가속 트레일링 스탑 검사
             action_type, peak_p, _trigger_p, peak_profit_pct, realized_profit_pct = (
-                self.trailing_tracker.check_position(market, current_price, avg_buy_price)
+                self.trailing_tracker.check_position(
+                    market, current_price, avg_buy_price, btc_regime=curr_regime
+                )
             )
 
             if action_type in ("PARTIAL_TP", "PARTIAL_TP_1", "PARTIAL_TP_2"):
@@ -492,7 +502,6 @@ class RealtimeRiskEngine:
                         exchange_name=ex_name,
                     )
                     self._invalidate_balance_cache()
-                    self.cooldown_manager.record_exit(market, "TRAILING_STOP", exit_price=current_price)
 
                     res_data = self._confirm_and_record_exit(
                         exchange=bithumb,
