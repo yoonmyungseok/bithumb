@@ -57,6 +57,7 @@ class TradingBootstrapContext:
     run_cycle: Callable[[], None]
     send_daily_morning_report: Callable[[], None]
     update_heartbeat: Callable[[], None]
+    cycle_offset_seconds: int = 0
 
 
 class TradingBotBootstrap:
@@ -151,6 +152,7 @@ class TradingBotBootstrap:
 
     def _start_scheduler(self, should_run_immediate: bool) -> None:
         interval_minutes = self.ctx.interval_minutes
+        offset_sec = max(0, getattr(self.ctx, "cycle_offset_seconds", 0))
         cycle_ttl = interval_minutes * 60 - 30
         _, elapsed_sec, is_cache_valid = (
             self.ctx.strategy_cache_manager.get_valid_strategies(ttl=cycle_ttl)
@@ -166,7 +168,15 @@ class TradingBotBootstrap:
                 remaining_sec,
             )
         else:
-            first_run_time = datetime.now() + timedelta(minutes=interval_minutes)
+            if offset_sec > 0:
+                first_run_time = datetime.now() + timedelta(seconds=offset_sec)
+                self.ctx.logger.info(
+                    "⏰ [사이클 오프셋 적용] 타 거래소와의 API 호출 분산을 위해 %d초(%.1f분) 후 첫 정기 분석을 시작합니다.",
+                    offset_sec,
+                    offset_sec / 60.0,
+                )
+            else:
+                first_run_time = datetime.now() + timedelta(minutes=interval_minutes)
 
         self._scheduler = BackgroundScheduler(timezone="Asia/Seoul")
         self._scheduler.add_job(
@@ -193,7 +203,9 @@ class TradingBotBootstrap:
         )
 
     def _run_initial_cycle_if_needed(self, should_run_immediate: bool) -> None:
-        if not should_run_immediate:
+        offset_sec = max(0, getattr(self.ctx, "cycle_offset_seconds", 0))
+        # 오프셋이 설정된 경우 초기 즉시 실행을 건너뛰고 스케줄러의 first_run_time(offset 후)에 실행
+        if not should_run_immediate or offset_sec > 0:
             return
         try:
             self.ctx.run_cycle()

@@ -198,6 +198,112 @@ class TradingBotBootstrapTests(unittest.TestCase):
         private_ws.drain_order_events.assert_called()
         update_heartbeat.assert_called_once()
 
+    @patch("trading_bot_bootstrap.TradingBotBootstrap._main_loop")
+    @patch("trading_bot_bootstrap.TradingBotBootstrap._register_shutdown_handlers")
+    @patch("trading_bot_bootstrap.BackgroundScheduler")
+    @patch("trading_bot_bootstrap.DashboardWebServer")
+    @patch("trading_bot_bootstrap.migrate_legacy_json_to_sqlite")
+    def test_cycle_offset_defers_initial_run(
+        self,
+        mock_migrate,
+        mock_web_server_cls,
+        mock_scheduler_cls,
+        mock_register_shutdown,
+        mock_main_loop,
+    ):
+        scheduler = MagicMock()
+        mock_scheduler_cls.return_value = scheduler
+        cache_mgr = MagicMock()
+        # 캐시 없음 -> should_run_immediate = True
+        cache_mgr.get_valid_strategies.return_value = ({}, 0.0, False)
+        run_cycle = MagicMock()
+
+        bootstrap = TradingBotBootstrap(
+            _make_profile(),
+            _make_context(
+                strategy_cache_manager=cache_mgr,
+                run_cycle=run_cycle,
+                cycle_offset_seconds=150,
+            ),
+        )
+        bootstrap.run()
+
+        # 오프셋이 설정되어 있으므로 초기 즉시 실행을 건너뛰어야 함
+        run_cycle.assert_not_called()
+        cycle_job_call = scheduler.add_job.call_args_list[0]
+        self.assertEqual(cycle_job_call.args[0], run_cycle)
+        self.assertIn("next_run_time", cycle_job_call.kwargs)
+
+    @patch("trading_bot_bootstrap.TradingBotBootstrap._main_loop")
+    @patch("trading_bot_bootstrap.TradingBotBootstrap._register_shutdown_handlers")
+    @patch("trading_bot_bootstrap.BackgroundScheduler")
+    @patch("trading_bot_bootstrap.DashboardWebServer")
+    @patch("trading_bot_bootstrap.migrate_legacy_json_to_sqlite")
+    def test_cycle_offset_zero_runs_immediately(
+        self,
+        mock_migrate,
+        mock_web_server_cls,
+        mock_scheduler_cls,
+        mock_register_shutdown,
+        mock_main_loop,
+    ):
+        scheduler = MagicMock()
+        mock_scheduler_cls.return_value = scheduler
+        cache_mgr = MagicMock()
+        # 캐시 없음 -> should_run_immediate = True
+        cache_mgr.get_valid_strategies.return_value = ({}, 0.0, False)
+        run_cycle = MagicMock()
+
+        bootstrap = TradingBotBootstrap(
+            _make_profile(),
+            _make_context(
+                strategy_cache_manager=cache_mgr,
+                run_cycle=run_cycle,
+                cycle_offset_seconds=0,
+            ),
+        )
+        bootstrap.run()
+
+        # 오프셋이 0이므로 초기 즉시 실행이 1회 호출되어야 함
+        run_cycle.assert_called_once()
+
+    @patch("trading_bot_bootstrap.TradingBotBootstrap._main_loop")
+    @patch("trading_bot_bootstrap.TradingBotBootstrap._register_shutdown_handlers")
+    @patch("trading_bot_bootstrap.BackgroundScheduler")
+    @patch("trading_bot_bootstrap.DashboardWebServer")
+    @patch("trading_bot_bootstrap.migrate_legacy_json_to_sqlite")
+    def test_cycle_offset_first_run_time_calculation(
+        self,
+        mock_migrate,
+        mock_web_server_cls,
+        mock_scheduler_cls,
+        mock_register_shutdown,
+        mock_main_loop,
+    ):
+        from datetime import datetime
+        scheduler = MagicMock()
+        mock_scheduler_cls.return_value = scheduler
+        cache_mgr = MagicMock()
+        cache_mgr.get_valid_strategies.return_value = ({}, 0.0, False)
+
+        before = datetime.now()
+        bootstrap = TradingBotBootstrap(
+            _make_profile(),
+            _make_context(
+                strategy_cache_manager=cache_mgr,
+                cycle_offset_seconds=150,
+            ),
+        )
+        bootstrap.run()
+        after = datetime.now()
+
+        cycle_job_call = scheduler.add_job.call_args_list[0]
+        next_run = cycle_job_call.kwargs.get("next_run_time")
+        self.assertIsNotNone(next_run)
+        # next_run_time은 호출 시점의 now() + 150초 사이여야 함
+        self.assertGreaterEqual((next_run - before).total_seconds(), 149.0)
+        self.assertLessEqual((next_run - after).total_seconds(), 151.0)
+
 
 if __name__ == "__main__":
     unittest.main()

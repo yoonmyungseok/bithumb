@@ -111,11 +111,14 @@ load_dotenv(override=True)
 
 BITHUMB_ACCESS_KEY = os.getenv("BITHUMB_ACCESS_KEY", "")
 BITHUMB_SECRET_KEY = os.getenv("BITHUMB_SECRET_KEY", "")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+# 빗썸 전용 Gemini API 키 (미설정 시 공용 GEMINI_API_KEY 사용)
+GEMINI_API_KEY = (os.getenv("BITHUMB_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "")).strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "5"))
+# 타 거래소와의 동시 퀀트 사이클 호출 분산을 위한 오프셋 (기본값: 0초)
+CYCLE_OFFSET_SECONDS = int(os.getenv("BITHUMB_CYCLE_OFFSET_SECONDS", os.getenv("CYCLE_OFFSET_SECONDS", "0")))
 TARGET_MARKETS = os.getenv("TARGET_MARKETS", "KRW-BTC,KRW-ETH,KRW-XRP,KRW-SOL,KRW-DOGE")
 MIN_ORDER_KRW = float(os.getenv("MIN_ORDER_KRW", "5000"))
 MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
@@ -477,6 +480,7 @@ def main():
             run_cycle=run_cycle,
             send_daily_morning_report=send_daily_morning_report,
             update_heartbeat=update_heartbeat,
+            cycle_offset_seconds=CYCLE_OFFSET_SECONDS,
         ),
     )
     bootstrap.run()

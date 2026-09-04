@@ -80,14 +80,13 @@ c:\AI\bithumb\
 │   ├── gemini_analyzer.py          # Gemini AI 퀀트 분석 및 시그널 생성 엔진
 │   ├── market_screener.py          # 확인형·초기 돌파 후보와 조건(거래대금, 상승률, 스프레드, 호가깊이) 시장 동적 탐색 (Fail-Closed, HOLO 제외)
 │   ├── trading_runtime.py          # 5분 사이클 공통 오케스트레이션 (`TradingCycleEngine`, profile 기반)
-│   ├── trading_bot_bootstrap.py    # 진입점 부트스트랩 공통화 (`TradingBotBootstrap`, 텔레그램·내부 API·WS·스케줄러·shutdown)
+│   ├── trading_bot_bootstrap.py    # 진입점 부트스트랩 공통화 (`TradingBotBootstrap`, 텔레그램·내부 API·WS·스케줄러·shutdown, 사이클 오프셋 분산)
 │   ├── paper_broker.py             # 모의투자 어댑터 (거래소별 원장 격리 지원)
 │   ├── trade_memory.py             # 트레이딩 기록, 통계 및 AI 자가학습 메모리 관리
 │   ├── telegram_alert.py           # 텔레그램 양방향 원격 제어, 디바운싱 알림, 차트 전송
 │   ├── chart_renderer.py           # matplotlib 기반 매매 시점 캔들 차트 이미지 렌더링 (다크 테마)
 │   ├── web_server.py               # 로컬 경량 웹 API 서버 모듈 (is_api_only 지원)
 │   ├── process_manager.py          # 빗썸/업비트/대시보드/전체 독립 프로세스 탐색, 종료, 상태, 로그 관리 CLI
-│   ├── trading_bot_bootstrap.py    # 진입점 부트스트랩 공통화 (`TradingBotBootstrap`, 텔레그램·내부 API·WS·스케줄러·shutdown)
 │   ├── trading_watchdog.py         # 워치독 공통 엔진 (`TradingBotWatchdog`, 하트비트 감시·자동 재시작·crash-loop 방어)
 │   ├── watchdog.py                 # 빗썸 워치독 진입점 (profile wiring)
 │   └── watchdog_upbit.py           # 업비트 워치독 진입점 (profile wiring)
@@ -188,6 +187,7 @@ c:\AI\bithumb\
 
 | 버전 | 일자 | 주요 변경 및 최적화 내역 |
 | :---: | :---: | :--- |
+| **v8.13** | 2026-09-04 | • **거래소별 퀀트 사이클 오프셋 분산 및 독립 Gemini API 키 격리 (Cycle Offset & Isolated Gemini Key)**<br>• **APScheduler 사이클 오프셋 분산 (`CYCLE_OFFSET_SECONDS`)**: 빗썸과 업비트가 5분 주기를 정확히 같은 초에 동시 가동하여 Gemini API 속도 제한(429 Quota Exceeded)에 걸리던 문제를 해결하기 위해, `TradingBotBootstrap`에 오프셋 스케줄링 메커니즘 탑재. 업비트에 기본 150초(2분 30초) 오프셋을 자동 부여하여 빗썸과 완벽히 2.5분 시차로 번갈아 AI 퀀트 분석 수행<br>• **초기 사이클 동시성 방어**: 봇 시작 시 캐시가 없을 때도 오프셋이 설정된 거래소는 즉시 실행을 유예하고 정확히 오프셋 초 뒤에 첫 사이클을 가동하여 부팅 직후의 동시 호출 충돌을 원천 차단<br>• **독립 Gemini API 키 격리 지원 (`UPBIT_GEMINI_API_KEY` / `BITHUMB_GEMINI_API_KEY`)**: 구글 계정 2개를 분리 운영할 수 있도록 거래소별 전용 환경 변수 우선순위 지원. 빗썸과 업비트가 각각 독립된 호출 쿼터(계정당 15 RPM 등)를 온전히 확보하도록 분리<br>• **단위 테스트 및 회귀 검증**: `tests/test_trading_bot_bootstrap.py`에 오프셋 유예 및 스케줄러 시간 계산 단위 테스트 3건 추가, 전체 단위 테스트 100% 통과 |
 | **v8.12** | 2026-09-04 | • **AI 트레이딩 권한 전면 확대 & 손익비 구조 정상화 (AI Direct Entry & Holding Autonomy)**<br>• **AI 단독 자율 승인 진입 (`AI Direct Entry`)**: 로컬 하드게이트 룰의 세부 조건(반등확인 미달 등)으로 관망 처리되더라도, 기본 안전망(비트코인 급락 차단, WS 정상, 쿨다운 해제, 최소 거래대금)을 통과한 유효 후보 종목에 대해 Gemini AI 심층 분석 기회를 전면 부여하고, AI가 `BUY`를 승인하면 `[AI 단독 자율 승인]`으로 즉각 매수 집행 허용<br>• **AI 포지션 자율 홀딩권 및 타임스탑 유예 (`AI Holding Autonomy`)**: 포지션 보유 중 15분/30분 타임스탑 및 조기 모멘텀 탈출로 인한 잦은 손절(-0.9~-1.5%)을 방지하기 위해, AI가 `evaluate_holding_position`에서 `HOLD` 또는 `RUNNER_HOLD`로 진단한 경우 기계적 타임스탑 손절을 자동 유예. AI의 손절가 하향 이탈 또는 `EMERGENCY_EXIT` 발생 시에만 즉각 손절 처리<br>• **알트코인 트레일링 스탑 드롭폭 정상화**: 잔파동 노이즈에 털리던 기본 트레일링 드롭폭(0.012 -> 0.020, 2.0%)을 `StrategyPolicy`와 일치시켜 휩소 털림 방지 및 온전한 추세 향유 지원<br>• **단위 테스트 및 회귀 검증**: `tests/test_ai_authority.py` 신규 작성(3개 테스트 통과), 전체 273개 단위 및 회귀 테스트 100% 통과 |
 | **v8.11** | 2026-09-04 | • **시그널/폴백/안전성 결함 수정 및 동시성 락 강화**<br>• **전략 엔진 딕셔너리 중복 키 제거**: `src/strategy_engine.py`의 `checklist_details` 내 중복 정의된 `momentum_breakout` 키 제거 및 린트 정리<br>• **Gemini 로컬 폴백 팩터 누락 보완**: `src/gemini_analyzer.py`에서 API 호출 실패 폴백 시 `vwap_info` 및 `macd_acc` 인자 전달 누락 수정 (팩터 왜곡 방지)<br>• **실시간 청산 쿨다운 조기 선반영 제거**: `src/realtime_engine.py`에서 주문 제출 직후 쿨다운을 기록하던 코드를 제거하고, `OrderFillProcessor` 체결 확인 시점에만 단일 기록하도록 거래 안전 수칙 정합화<br>• **트레일링 스탑 재조정 대상 보강**: `src/risk_manager.py`의 `TrailingStopTracker.reconcile_markets`에서 `runner_markets`와 `dynamic_targets` stale 정리 포함<br>• **GeminiAnalyzer 동시성 락 탑재**: 멀티스레드 환경에서 모델 쿨다운/블랙리스트 및 캐시 안전성을 위한 `RLock` 도입<br>• **코드 품질 개선**: `risk_controls.py`, `trade_memory.py` 내 단일행 복수문 및 모호한 변수명 정리 |
 | **v8.10** | 2026-09-04 | • **대시보드 체결 사유 및 상태 UI 전면 한글화 (`formatReason`, `formatTradeSideBadge`, `renderActionBadge`, `formatFeed`)**<br>• **체결 사유 영문 코드 한글 변환**: `dashboard/src/app.js`에서 `AI_EMERGENCY_EXIT` ➜ `🚨 AI 긴급 비상탈출`, `AI_TIGHTENED_STOP` ➜ `🤖🛡️ AI 손절선 상향 대응`, `AI_EXIT` ➜ `🤖 AI 청산`, `EMERGENCY_EXIT` ➜ `🚨 긴급 비상탈출`, `TIGHTEN_STOP` ➜ `🛡️ 손절선 상향 방어`, `RUNNER_HOLD` ➜ `🏃 추세 추종 홀딩`, 돌파/차단/쿨다운 사유까지 직관적인 한글 표기 완료<br>• **거래 구분 뱃지 및 행동 뱃지 확장**: `formatTradeSideBadge` 및 `renderActionBadge`에 AI 비상탈출(`🚨 AI비상탈출`), AI 손절상향(`🛡️ AI손절상향`), 즉시 청산, 관망/유지 뱃지 추가<br>• **주문 체결 엔진 연동**: `src/order_safety/fill_processor.py`에서 `stored_exit_reason`이 `AI_EMERGENCY_EXIT` 또는 `AI_TIGHTENED_STOP`일 때 실현 손익에 따라 `AI 긴급 익절탈출` / `AI 긴급 본전탈출` / `AI 긴급 비상탈출`로 정제 저장<br>• **내장 웹서버 동기화**: `src/web_server.py`의 인라인 fallback HTML에서도 동일한 한글 매핑 지원<br>• **단위 및 회귀 검증**: `tests/test_dashboard_frontend_korean.py` 신규 작성(3개 테스트 통과), `test_storage_and_fill_boundaries.py` 테스트 보강, 전체 266개 단위 테스트 100% 통과 |

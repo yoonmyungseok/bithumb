@@ -138,7 +138,10 @@ MOMENTUM_BREAKOUT_MIN_CHANGE_RATE = float(os.getenv("UPBIT_MOMENTUM_BREAKOUT_MIN
 MOMENTUM_BREAKOUT_MAX_CANDIDATES = int(os.getenv("UPBIT_MOMENTUM_BREAKOUT_MAX_CANDIDATES", os.getenv("MOMENTUM_BREAKOUT_MAX_CANDIDATES", os.getenv("EARLY_BREAKOUT_MAX_CANDIDATES", "2"))))
 
 INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "5"))
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+# 업비트 전용 Gemini API 키 (미설정 시 공용 GEMINI_API_KEY 사용)
+GEMINI_API_KEY = (os.getenv("UPBIT_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "")).strip()
+# 빗썸과의 동시 퀀트 사이클 호출 분산을 위한 오프셋 (기본값: 150초 = 2분 30초)
+CYCLE_OFFSET_SECONDS = int(os.getenv("UPBIT_CYCLE_OFFSET_SECONDS", os.getenv("CYCLE_OFFSET_SECONDS", "150")))
 
 _risk_settings = load_runtime_risk_settings()
 BTC_CRASH_THRESHOLD_PCT = _risk_settings.btc_crash_threshold_pct
@@ -534,6 +537,7 @@ def main():
             run_cycle=run_cycle,
             send_daily_morning_report=send_daily_morning_report,
             update_heartbeat=update_heartbeat,
+            cycle_offset_seconds=CYCLE_OFFSET_SECONDS,
         ),
     )
     bootstrap.run()
