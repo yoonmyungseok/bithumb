@@ -208,6 +208,9 @@
     if (act.includes('HOLD') || act.includes('WATCH')) {
       return `<span class="px-2 py-0.5 rounded text-xs font-bold bg-slate-700/60 text-slate-300 border border-slate-600">🛡️ 관망/유지</span>`;
     }
+    if (act.includes('FAIL') || act.includes('ERROR')) {
+      return `<span class="px-2 py-0.5 rounded text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40">❌ 실패</span>`;
+    }
     return `<span class="px-2 py-0.5 rounded text-xs font-bold bg-slate-800 text-slate-400 border border-slate-700">${act || '-'}</span>`;
   }
 
@@ -267,6 +270,9 @@
       .replace(/RECONCILIATION_PENDING/gi, '🔄 체결 대사 진행 중')
       .replace(/RECONCILIATION_SYNC/gi, '🔄 체결 대사 동기화')
       .replace(/UNKNOWN/gi, '❓ 상태 불명')
+      .replace(/\bFAILED\b/gi, '❌ 실패')
+      .replace(/\bFAIL\b/gi, '❌ 실패')
+      .replace(/\bERROR\b/gi, '⚠️ 오류')
       // 단독 거래 구분 치환 (t.side fallback)
       .replace(/\bBUY\b/gi, '📈 매수')
       .replace(/\bBID\b/gi, '📈 매수')
@@ -298,6 +304,9 @@
     }
     if (s === 'REJECTED') {
       return '<span class="px-2 py-0.5 rounded text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 whitespace-nowrap">🛑 주문 거절</span>';
+    }
+    if (s === 'FAILED' || s === 'FAIL' || s === 'ERROR') {
+      return '<span class="px-2 py-0.5 rounded text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 whitespace-nowrap">❌ 주문 실패</span>';
     }
     if (s === 'UNKNOWN') {
       return '<span class="px-2 py-0.5 rounded text-xs font-medium bg-purple-500/20 text-purple-300 border border-purple-500/40 whitespace-nowrap">❓ 확인 필요</span>';
@@ -550,22 +559,26 @@
     }
 
     const cardBithumb = document.getElementById('api_card_bithumb');
+    const cardBithumbGemini = document.getElementById('api_card_gemini_bithumb');
     const cardUpbit = document.getElementById('api_card_upbit');
+    const cardUpbitGemini = document.getElementById('api_card_gemini_upbit');
 
     // 탭별 카드 시각적 강조/흐리게 처리
-    if (cardBithumb) {
-      if (activeExchange === 'upbit') {
-        cardBithumb.classList.add('opacity-30');
-      } else {
-        cardBithumb.classList.remove('opacity-30');
-      }
-    }
-    if (cardUpbit) {
-      if (activeExchange === 'bithumb') {
-        cardUpbit.classList.add('opacity-30');
-      } else {
-        cardUpbit.classList.remove('opacity-30');
-      }
+    if (activeExchange === 'upbit') {
+      if (cardBithumb) cardBithumb.classList.add('opacity-30');
+      if (cardBithumbGemini) cardBithumbGemini.classList.add('opacity-30');
+      if (cardUpbit) cardUpbit.classList.remove('opacity-30');
+      if (cardUpbitGemini) cardUpbitGemini.classList.remove('opacity-30');
+    } else if (activeExchange === 'bithumb') {
+      if (cardBithumb) cardBithumb.classList.remove('opacity-30');
+      if (cardBithumbGemini) cardBithumbGemini.classList.remove('opacity-30');
+      if (cardUpbit) cardUpbit.classList.add('opacity-30');
+      if (cardUpbitGemini) cardUpbitGemini.classList.add('opacity-30');
+    } else {
+      if (cardBithumb) cardBithumb.classList.remove('opacity-30');
+      if (cardBithumbGemini) cardBithumbGemini.classList.remove('opacity-30');
+      if (cardUpbit) cardUpbit.classList.remove('opacity-30');
+      if (cardUpbitGemini) cardUpbitGemini.classList.remove('opacity-30');
     }
 
     // 1. 빗썸 API
@@ -657,50 +670,72 @@
       upLastEl.innerText = upData.last_endpoint ? `${upData.last_endpoint} (${upData.last_status || '-'})` : '-';
     }
 
-    // 3. Gemini AI API
-    const geminiData = apiUsage.gemini || {};
-    const geminiCalls = geminiData.api_calls || 0;
-    const geminiLimit = geminiData.quota_limit || 1500;
-    const geminiPct = geminiData.quota_used_pct !== undefined ? geminiData.quota_used_pct : (geminiLimit > 0 ? Math.round((geminiCalls / geminiLimit) * 1000) / 10 : 0);
+    // 3. Gemini AI API 렌더링 (거래소별 독립 카드 지원)
+    let btGeminiData = apiUsage.gemini_bithumb;
+    if (!btGeminiData && activeExchange === 'bithumb') {
+      btGeminiData = apiUsage.gemini;
+    }
+    let upGeminiData = apiUsage.gemini_upbit;
+    if (!upGeminiData && activeExchange === 'upbit') {
+      upGeminiData = apiUsage.gemini;
+    }
 
-    const geminiCallsRatioEl = document.getElementById('gemini_api_calls_ratio');
-    if (geminiCallsRatioEl) {
-      geminiCallsRatioEl.innerText = `${geminiCalls.toLocaleString()} / ${geminiLimit.toLocaleString()}회`;
-    }
-    const geminiBarEl = document.getElementById('gemini_quota_bar');
-    if (geminiBarEl) {
-      const clampPct = Math.min(100, Math.max(0, geminiPct));
-      geminiBarEl.style.width = `${clampPct}%`;
-      if (clampPct >= 90) {
-        geminiBarEl.className = 'bg-rose-500 h-2 rounded-full transition-all duration-500';
-      } else if (clampPct >= 70) {
-        geminiBarEl.className = 'bg-amber-500 h-2 rounded-full transition-all duration-500';
-      } else {
-        geminiBarEl.className = 'bg-gradient-to-r from-purple-500 to-indigo-500 h-2 rounded-full transition-all duration-500';
+    function renderGeminiCard(prefix, gData, gradientClass) {
+      gData = gData || {};
+      const calls = gData.api_calls || 0;
+      const limit = gData.quota_limit || 1500;
+      const pct = gData.quota_used_pct !== undefined ? gData.quota_used_pct : (limit > 0 ? Math.round((calls / limit) * 1000) / 10 : 0);
+
+      const ratioEl = document.getElementById(`${prefix}_api_calls_ratio`);
+      if (ratioEl) ratioEl.innerText = `${calls.toLocaleString()} / ${limit.toLocaleString()}회`;
+
+      const barEl = document.getElementById(`${prefix}_quota_bar`);
+      if (barEl) {
+        const clampPct = Math.min(100, Math.max(0, pct));
+        barEl.style.width = `${clampPct}%`;
+        if (clampPct >= 90) {
+          barEl.className = 'bg-rose-500 h-2 rounded-full transition-all duration-500';
+        } else if (clampPct >= 70) {
+          barEl.className = 'bg-amber-500 h-2 rounded-full transition-all duration-500';
+        } else {
+          barEl.className = `${gradientClass} h-2 rounded-full transition-all duration-500`;
+        }
       }
-    }
-    const geminiBadgeEl = document.getElementById('gemini_api_badge');
-    if (geminiBadgeEl) {
-      geminiBadgeEl.innerText = `${geminiPct}% 소진`;
-      if (geminiPct >= 90) {
-        geminiBadgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30';
-      } else if (geminiPct >= 70) {
-        geminiBadgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30';
-      } else {
-        geminiBadgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30';
+
+      const badgeEl = document.getElementById(`${prefix}_api_badge`);
+      if (badgeEl) {
+        badgeEl.innerText = `${pct}% 소진`;
+        if (pct >= 90) {
+          badgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30';
+        } else if (pct >= 70) {
+          badgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30';
+        } else {
+          badgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30';
+        }
       }
+
+      const cacheEl = document.getElementById(`${prefix}_api_cache`);
+      if (cacheEl) cacheEl.innerText = `${(gData.cache_hits || 0).toLocaleString()}회`;
+
+      const fallbackEl = document.getElementById(`${prefix}_api_fallback`);
+      if (fallbackEl) {
+        const fbCount = gData.local_fallback || 0;
+        const r429 = gData.rate_limited || 0;
+        fallbackEl.innerText = `${fbCount.toLocaleString()} / 429: ${r429.toLocaleString()}회`;
+        fallbackEl.className = r429 > 0 ? 'font-medium text-rose-400' : 'font-medium text-slate-300';
+      }
+
+      const lastEl = document.getElementById(`${prefix}_api_last`);
+      if (lastEl) lastEl.innerText = gData.last_event || '-';
     }
-    const geminiCacheEl = document.getElementById('gemini_api_cache');
-    if (geminiCacheEl) {
-      geminiCacheEl.innerText = `${(geminiData.cache_hits || 0).toLocaleString()}회`;
-    }
-    const geminiFallbackEl = document.getElementById('gemini_api_fallback');
-    if (geminiFallbackEl) {
-      geminiFallbackEl.innerText = `${(geminiData.local_fallback || 0).toLocaleString()}회`;
-    }
-    const geminiLastEl = document.getElementById('gemini_api_last');
-    if (geminiLastEl) {
-      geminiLastEl.innerText = geminiData.last_event || '-';
+
+    renderGeminiCard('gemini_bithumb', btGeminiData, 'bg-gradient-to-r from-amber-500 to-orange-500');
+    renderGeminiCard('gemini_upbit', upGeminiData, 'bg-gradient-to-r from-blue-500 to-indigo-500');
+
+    // 하위 호환: 기존 단일 gemini 카드 요소가 남아있을 경우 합산값 렌더링
+    const combinedGemini = apiUsage.gemini;
+    if (combinedGemini && document.getElementById('gemini_api_calls_ratio')) {
+      renderGeminiCard('gemini', combinedGemini, 'bg-gradient-to-r from-purple-500 to-indigo-500');
     }
   }
 

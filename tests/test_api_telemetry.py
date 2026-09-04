@@ -3,7 +3,9 @@ API 일일 사용량 및 쿼터 텔레메트리 단위 테스트 (Exchange & Gem
 """
 
 import os
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -109,10 +111,50 @@ class TestExchangeApiTelemetry(unittest.TestCase):
         self.assertEqual(snap1.total_calls, 2)
         self.assertIs(tel1, tel2)
 
+    def test_persistence_reload(self):
+        """디스크 파일에 저장된 텔레메트리가 프로세스 재시작(인스턴스 재생성) 시 당일 복원되는지 검증"""
+        temp_dir = tempfile.mkdtemp()
+        try:
+            # 1. 인스턴스에 임의의 호출 기록
+            ExchangeApiTelemetry._instances.pop("test_ex", None)
+            tel = ExchangeApiTelemetry("test_ex", data_dir=temp_dir)
+            tel.record_call("GET", "/v1/ticker", 200)
+            tel.record_call("POST", "/v1/orders", 429)
+
+            snap = tel.snapshot()
+            self.assertEqual(snap.total_calls, 2)
+            self.assertEqual(snap.rate_limited_429, 1)
+
+            # 2. 프로세스 재시작 시뮬레이션 (싱글톤 캐시 제거)
+            ExchangeApiTelemetry._instances.pop("test_ex", None)
+
+            # 3. 새 인스턴스로 동일 data_dir 로드 시 당일 데이터가 복원되어야 함
+            reloaded_tel = ExchangeApiTelemetry("test_ex", data_dir=temp_dir)
+            reloaded_snap = reloaded_tel.snapshot()
+            self.assertEqual(reloaded_snap.total_calls, 2)
+            self.assertEqual(reloaded_snap.rate_limited_429, 1)
+            self.assertEqual(reloaded_snap.by_method["GET"], 1)
+            self.assertEqual(reloaded_snap.by_method["POST"], 1)
+
+            # 4. 추가 호출 시 복원된 값에서 누적 증가
+            reloaded_tel.record_call("GET", "/v1/orderbook", 200)
+            self.assertEqual(reloaded_tel.snapshot().total_calls, 3)
+        finally:
+            ExchangeApiTelemetry._instances.pop("test_ex", None)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
 
 class TestGeminiTelemetry(unittest.TestCase):
     def setUp(self):
-        GeminiTelemetry.reset()
+        self.temp_dir = tempfile.mkdtemp()
+        GeminiTelemetry.configure(data_dir=self.temp_dir)
+        GeminiTelemetry.reset(persist=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        data_dir = os.path.join(project_root, "data")
+        GeminiTelemetry.configure(data_dir=data_dir)
 
     def test_gemini_counters_and_percentages(self):
         """Gemini 성공, 429, 캐시 적중 및 비율 계산 검증"""
@@ -133,6 +175,38 @@ class TestGeminiTelemetry(unittest.TestCase):
         self.assertAlmostEqual(data["success_rate_pct"], 66.7, places=1)
         self.assertGreater(data["quota_limit"], 0)
         self.assertIn("quota_used_pct", data)
+
+    def test_gemini_persistence_reload(self):
+        """GeminiTelemetry가 디스크 파일에 저장되고 재시작 시 당일 복원되는지 검증"""
+        temp_dir = tempfile.mkdtemp()
+        try:
+            GeminiTelemetry.configure(data_dir=temp_dir)
+            GeminiTelemetry.reset()
+            GeminiTelemetry.record_api_success("gemini-3.5-flash-lite", "KRW-BTC")
+            GeminiTelemetry.record_rate_limited("gemini-3.5-flash-lite", "KRW-ETH")
+            GeminiTelemetry.record_cache_hit("KRW-SOL")
+
+            snap = GeminiTelemetry.snapshot()
+            self.assertEqual(snap.api_calls, 2)
+            self.assertEqual(snap.rate_limited, 1)
+            self.assertEqual(snap.cache_hits, 1)
+
+            # 프로세스 재부팅 시뮬레이션: 메모리 카운터 강제 리셋 후 다시 configure
+            with GeminiTelemetry._lock:
+                GeminiTelemetry._api_calls = 0
+                GeminiTelemetry._api_success = 0
+                GeminiTelemetry._rate_limited = 0
+                GeminiTelemetry._cache_hits = 0
+
+            GeminiTelemetry.configure(data_dir=temp_dir)
+            reloaded_snap = GeminiTelemetry.snapshot()
+            self.assertEqual(reloaded_snap.api_calls, 2)
+            self.assertEqual(reloaded_snap.rate_limited, 1)
+            self.assertEqual(reloaded_snap.cache_hits, 1)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            GeminiTelemetry.configure(data_dir=self.temp_dir)
+            GeminiTelemetry.reset(persist=True)
 
 
 class TestDashboardServerApiUsage(unittest.TestCase):
@@ -165,6 +239,10 @@ class TestDashboardServerApiUsage(unittest.TestCase):
             self.assertEqual(combined["api_usage"]["upbit"]["total_calls"], 120)
             self.assertEqual(combined["api_usage"]["gemini"]["api_calls"], 25)
             self.assertEqual(combined["api_usage"]["gemini"]["cache_hits"], 13)
+            self.assertEqual(combined["api_usage"]["gemini_bithumb"]["api_calls"], 10)
+            self.assertEqual(combined["api_usage"]["gemini_bithumb"]["cache_hits"], 5)
+            self.assertEqual(combined["api_usage"]["gemini_upbit"]["api_calls"], 15)
+            self.assertEqual(combined["api_usage"]["gemini_upbit"]["cache_hits"], 8)
 
 
 if __name__ == "__main__":

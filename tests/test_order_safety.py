@@ -107,12 +107,13 @@ class OrderSafetyTests(unittest.TestCase):
 
     def test_cooldown_manager(self):
         cd = CooldownManager(
-            default_sl_cooldown=100.0,
+            default_sl_cooldown=0.0,
             default_tp_cooldown=50.0,
             default_time_stop_cooldown=100.0,
             data_dir=self.temp_dir.name,
         )
-        cd.record_exit("KRW-BTC", "STOP_LOSS", exit_price=100.0)
+        # 타임스탑 발생 시 쿨다운 정상 적용
+        cd.record_exit("KRW-BTC", "TIME_STOP", exit_price=100.0)
         is_cd, rem = cd.is_in_cooldown("KRW-BTC")
         self.assertTrue(is_cd)
         self.assertGreater(rem, 0.0)
@@ -125,10 +126,41 @@ class OrderSafetyTests(unittest.TestCase):
         is_cd_eth, _ = cd.is_in_cooldown("KRW-ETH")
         self.assertFalse(is_cd_eth)
 
-    def test_whipsaw_reentry_prevention_scenario(self):
-        """316원 타임스탑 매도 후 317원 재매수 시도와 같은 휩쏘 횡보 재진입 차단 검증"""
+    def test_stop_loss_allows_immediate_bottom_reentry(self):
+        """손절(STOP_LOSS) 발생 시 신규 매수 차단(쿨다운 및 갭 필터)이 해제되어 바닥 재매수가 즉시 허용되는지 검증"""
         cd = CooldownManager(
-            default_sl_cooldown=0.0,  # 즉시 만료로 설정하여 갭 필터만 독립 검증
+            default_sl_cooldown=0.0,
+            default_tp_cooldown=1800.0,
+            default_time_stop_cooldown=2700.0,
+            data_dir=self.temp_dir.name,
+        )
+        # 100원에 손절 청산 발생
+        cd.record_exit("KRW-SOL", "STOP_LOSS", exit_price=100.0)
+
+        # 1. 쿨다운 타이머가 걸리지 않아야 함
+        is_cd, rem = cd.is_in_cooldown("KRW-SOL")
+        self.assertFalse(is_cd)
+        self.assertEqual(rem, 0.0)
+
+        # 2. 손절가보다 아래인 바닥 가격(90원, -10%)에서도 즉시 매수 허용
+        allowed_bottom, reason_bottom = cd.check_reentry_allowed("KRW-SOL", 90.0)
+        self.assertTrue(allowed_bottom)
+        self.assertEqual(reason_bottom, "OK")
+
+        # 3. 손절가 부근(100.5원)에서도 상방 돌파 제약 없이 즉시 매수 허용
+        allowed_near, reason_near = cd.check_reentry_allowed("KRW-SOL", 100.5)
+        self.assertTrue(allowed_near)
+        self.assertEqual(reason_near, "OK")
+
+        # 4. "손절 방어" 한글 레이블 청산도 동일하게 바닥 재매수 즉시 허용
+        cd.record_exit("KRW-DOGE", "손절 방어", exit_price=300.0)
+        allowed_kr, _ = cd.check_reentry_allowed("KRW-DOGE", 280.0)
+        self.assertTrue(allowed_kr)
+
+    def test_whipsaw_reentry_prevention_scenario(self):
+        """316원 타임스탑 매도 후 317원 재매수 시도와 같은 휩쏘 횡보 재진입 차단 검증 (타임스탑 유지)"""
+        cd = CooldownManager(
+            default_sl_cooldown=0.0,
             default_tp_cooldown=0.0,
             default_time_stop_cooldown=0.0,
             data_dir=self.temp_dir.name,
@@ -152,18 +184,6 @@ class OrderSafetyTests(unittest.TestCase):
         allowed_up, reason_up = cd.check_reentry_allowed("KRW-CSIX", 322.0, min_gap_pct=0.015)
         self.assertTrue(allowed_up)
         self.assertEqual(reason_up, "OK")
-
-        # 2. 손절 316원 청산 기록
-        cd.record_exit("KRW-DOGE", "STOP_LOSS", exit_price=316.0)
-
-        # 317원 (+0.32% 미미한 반등) 시도 -> 차단되어야 함
-        allowed_sl, reason_sl = cd.check_reentry_allowed("KRW-DOGE", 317.0, min_gap_pct=0.015)
-        self.assertFalse(allowed_sl)
-        self.assertIn("상방 돌파", reason_sl)
-
-        # 322원 (+1.9% 돌파) 시도 -> 승인
-        allowed_sl_ok, _ = cd.check_reentry_allowed("KRW-DOGE", 322.0, min_gap_pct=0.015)
-        self.assertTrue(allowed_sl_ok)
 
     def test_trailing_exit_requires_price_recovery_before_reentry(self):
         """트레일링 청산 뒤 하락한 가격에서의 재진입은 추가 하락 추격을 막아야 한다."""

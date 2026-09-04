@@ -162,8 +162,8 @@
         </span>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-        <!-- 빗썸 API 카드 -->
+      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 text-xs">
+        <!-- 1. 빗썸 Open API 카드 -->
         <div id="api_card_bithumb" class="rounded-xl border border-slate-800 bg-slate-900/60 p-4 flex flex-col justify-between space-y-3">
           <div class="flex items-center justify-between">
             <span class="font-bold text-amber-400 flex items-center gap-1.5">
@@ -193,7 +193,42 @@
           </div>
         </div>
 
-        <!-- 업비트 API 카드 -->
+        <!-- 2. 빗썸 Gemini AI 카드 -->
+        <div id="api_card_gemini_bithumb" class="rounded-xl border border-slate-800 bg-slate-900/60 p-4 flex flex-col justify-between space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-purple-400 flex items-center gap-1.5">
+              <span>🟣</span>빗썸 Gemini AI
+            </span>
+            <span id="gemini_bithumb_api_badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
+              0.0% 소진
+            </span>
+          </div>
+          <div>
+            <div class="flex justify-between items-baseline text-[11px]">
+              <span class="text-slate-400">일일 사용량 (한도 대비)</span>
+              <span id="gemini_bithumb_api_calls_ratio" class="text-slate-300 font-bold">0 / 1,500회</span>
+            </div>
+            <div class="w-full bg-slate-800 h-2 rounded-full mt-1.5 overflow-hidden">
+              <div id="gemini_bithumb_quota_bar" class="bg-gradient-to-r from-amber-500 to-orange-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+            </div>
+          </div>
+          <div class="space-y-1.5 pt-2 border-t border-slate-800/80 text-slate-300 text-[11px]">
+            <div class="flex justify-between">
+              <span class="text-slate-400">⚡ AI 캐시 절감:</span>
+              <span id="gemini_bithumb_api_cache" class="font-medium text-emerald-400">0회</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-400">로컬 폴백 / 429:</span>
+              <span id="gemini_bithumb_api_fallback" class="font-medium text-slate-300">0 / 429: 0회</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-400">최근 이벤트:</span>
+              <span id="gemini_bithumb_api_last" class="font-medium truncate max-w-[140px] text-slate-400">-</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. 업비트 Open API 카드 -->
         <div id="api_card_upbit" class="rounded-xl border border-slate-800 bg-slate-900/60 p-4 flex flex-col justify-between space-y-3">
           <div class="flex items-center justify-between">
             <span class="font-bold text-blue-400 flex items-center gap-1.5">
@@ -223,38 +258,37 @@
           </div>
         </div>
 
-        <!-- Gemini AI API 카드 -->
-        <div id="api_card_gemini" class="rounded-xl border border-slate-800 bg-slate-900/60 p-4 flex flex-col justify-between space-y-3">
+        <!-- 4. 업비트 Gemini AI 카드 -->
+        <div id="api_card_gemini_upbit" class="rounded-xl border border-slate-800 bg-slate-900/60 p-4 flex flex-col justify-between space-y-3">
           <div class="flex items-center justify-between">
             <span class="font-bold text-purple-400 flex items-center gap-1.5">
-              <span>🟣</span>Gemini 퀀트 AI
+              <span>🟣</span>업비트 Gemini AI
             </span>
-            <span id="gemini_api_badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
+            <span id="gemini_upbit_api_badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
               0.0% 소진
             </span>
           </div>
           <div>
             <div class="flex justify-between items-baseline text-[11px]">
               <span class="text-slate-400">일일 사용량 (한도 대비)</span>
-              <span id="gemini_api_calls_ratio" class="text-slate-300 font-bold">0 / 1,500회</span>
+              <span id="gemini_upbit_api_calls_ratio" class="text-slate-300 font-bold">0 / 1,500회</span>
             </div>
-            <!-- Progress bar -->
             <div class="w-full bg-slate-800 h-2 rounded-full mt-1.5 overflow-hidden">
-              <div id="gemini_quota_bar" class="bg-gradient-to-r from-purple-500 to-indigo-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+              <div id="gemini_upbit_quota_bar" class="bg-gradient-to-r from-blue-500 to-indigo-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
             </div>
           </div>
           <div class="space-y-1.5 pt-2 border-t border-slate-800/80 text-slate-300 text-[11px]">
             <div class="flex justify-between">
-              <span class="text-slate-400">⚡ AI 캐시 절감 (쿼터 방어):</span>
-              <span id="gemini_api_cache" class="font-medium text-emerald-400">0회</span>
+              <span class="text-slate-400">⚡ AI 캐시 절감:</span>
+              <span id="gemini_upbit_api_cache" class="font-medium text-emerald-400">0회</span>
             </div>
             <div class="flex justify-between">
-              <span class="text-slate-400">로컬 알고리즘 폴백:</span>
-              <span id="gemini_api_fallback" class="font-medium text-slate-300">0회</span>
+              <span class="text-slate-400">로컬 폴백 / 429:</span>
+              <span id="gemini_upbit_api_fallback" class="font-medium text-slate-300">0 / 429: 0회</span>
             </div>
             <div class="flex justify-between">
               <span class="text-slate-400">최근 이벤트:</span>
-              <span id="gemini_api_last" class="font-medium truncate max-w-[140px] text-slate-400">-</span>
+              <span id="gemini_upbit_api_last" class="font-medium truncate max-w-[140px] text-slate-400">-</span>
             </div>
           </div>
         </div>

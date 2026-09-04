@@ -21,6 +21,7 @@ from chart_renderer import ChartRenderer
 from db_manager import get_db_manager, get_exchange_db_path
 from exchange_adapter import ExchangeAdapter, UpbitAdapter
 from gemini_analyzer import GeminiAnalyzer
+from gemini_telemetry import GeminiTelemetry
 from market_screener import MarketScreener
 from order_safety import (
     AmbiguousOrderError,
@@ -140,8 +141,8 @@ MOMENTUM_BREAKOUT_MAX_CANDIDATES = int(os.getenv("UPBIT_MOMENTUM_BREAKOUT_MAX_CA
 INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "5"))
 # 업비트 전용 Gemini API 키 (미설정 시 공용 GEMINI_API_KEY 사용)
 GEMINI_API_KEY = (os.getenv("UPBIT_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "")).strip()
-# 빗썸과의 동시 퀀트 사이클 호출 분산을 위한 오프셋 (기본값: 150초 = 2분 30초)
-CYCLE_OFFSET_SECONDS = int(os.getenv("UPBIT_CYCLE_OFFSET_SECONDS", os.getenv("CYCLE_OFFSET_SECONDS", "150")))
+# 타 거래소와의 동시 퀀트 사이클 호출 분산을 위한 오프셋 (기본값: 0초, 독립 계정 운영 시 동시 즉시 가동)
+CYCLE_OFFSET_SECONDS = int(os.getenv("UPBIT_CYCLE_OFFSET_SECONDS", os.getenv("CYCLE_OFFSET_SECONDS", "0")))
 
 _risk_settings = load_runtime_risk_settings()
 BTC_CRASH_THRESHOLD_PCT = _risk_settings.btc_crash_threshold_pct
@@ -163,6 +164,7 @@ PAPER_FEE_RATE = float(os.getenv("PAPER_FEE_RATE", "0.0005"))
 # 3. 데이터 저장 디렉토리 분리 (data/upbit/)
 DATA_DIR = os.path.join(PROJECT_ROOT, "data", "upbit")
 os.makedirs(DATA_DIR, exist_ok=True)
+GeminiTelemetry.configure(data_dir=DATA_DIR)
 
 # 봇 일시정지 상태 플래그
 IS_BOT_PAUSED = False

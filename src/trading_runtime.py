@@ -7,6 +7,7 @@ The cycle prefix, priority exit, entry gating, stop-loss, buy execution, and ful
 from __future__ import annotations
 
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -173,6 +174,7 @@ class MarketExitInputs:
     candles_1h: list[dict[str, Any]] | None = None
     orderbook: dict[str, Any] | None = None
     analyzer: GeminiAnalyzer | None = None
+    is_btc_crashing: bool = False
 
 
 @dataclass
@@ -202,6 +204,7 @@ class MarketEntryInputs:
     dyn_max_pos_pct: float
     now_str: str
     audit_decision: Callable[[str, str, str, list[str], dict[str, Any]], None]
+    allow_ai_analysis: bool = True
 
 
 @dataclass
@@ -223,6 +226,7 @@ class EntryGatingResult:
     reentry_reason: str = ""
     is_holding: bool = False
     latest_strategy_record: dict[str, Any] = field(default_factory=dict)
+    called_ai: bool = False
 
 
 @dataclass
@@ -305,6 +309,84 @@ class CyclePrefixResult:
     audit_decision: Callable[[str, str, str, list[str], dict[str, Any]], None]
     bot_state_badge: str = field(default="")
     is_extreme_fear: bool = False
+
+
+def validate_emergency_exit_safety(
+    market: str,
+    korean_name: str,
+    current_price: float,
+    avg_buy_price: float,
+    pnl_pct_current: float,
+    hold_duration_sec: float,
+    ai_eval: dict[str, Any],
+    candles_5m: list[dict[str, Any]] | None,
+    is_btc_crashing: bool = False,
+    is_bot_managed: bool = True,
+) -> tuple[bool, str, str]:
+    """AI EMERGENCY_EXIT의 과민 반응 및 성급한 털림을 방지하는 확정적 5중 안전 가드.
+
+    Returns:
+        (is_approved, guard_reason, fallback_action)
+        - is_approved: True면 긴급 탈출 시장가 매도 집행
+        - guard_reason: 승인 또는 차단/완화 상세 사유
+        - fallback_action: 차단 시 대체할 행동 ('HOLD' 또는 'TIGHTEN_STOP')
+    """
+    # [가드 1] 수동/외부 매수 포지션 보호: 봇이 진입하지 않은 종목은 자동 긴급 매도에서 완전 제외
+    if not is_bot_managed:
+        return (
+            False,
+            "수동 관리 포지션 보호: 봇 매수 이력이 없는 외부/수동 잔고는 자동 긴급 매도 대상에서 제외됩니다.",
+            "HOLD",
+        )
+
+    # [가드 2] AI 신뢰도(Confidence) 임계치 검증 (80점 미만 시 비상 탈출 불허)
+    confidence = int(ai_eval.get("confidence") or 70)
+    if confidence < 80 and not is_btc_crashing:
+        return (
+            False,
+            f"AI 신뢰도 부족({confidence}점 < 기준 80점)으로 긴급 탈출 보류 (정상 추세 관망)",
+            "HOLD",
+        )
+
+    # [가드 3] 진입 직후 노이즈 보호 (10분 / 600초 미만)
+    # 진입 후 10분 이내의 잔파동/스프레드에 의한 조기 털림 방지
+    if hold_duration_sec < 600.0:
+        # 손실률이 -2.0% 이하로 급락하거나 대장주(BTC) 급락 경보가 아닌 한 차단
+        if pnl_pct_current > -2.0 and not is_btc_crashing:
+            return (
+                False,
+                f"진입 초기 노이즈 보호: 보유 {hold_duration_sec / 60.0:.1f}분 (<10분) 및 경미 손익({pnl_pct_current:+.2f}% > -2.00%) 구간으로 탈출 유보",
+                "HOLD",
+            )
+
+    # [가드 4] 경미 손실/약보합 구간 시장가 탈출 차단 (손익률 >= -0.60%)
+    # -0.6% 이내의 경미한 손실에서 시장가로 매도하면 슬리피지/수수료로 손실이 확정되므로 차단하고 손절선 상향으로 완화
+    if pnl_pct_current >= -0.60:
+        return (
+            False,
+            f"약보합/경미 손실 구간 보호({pnl_pct_current:+.2f}% >= -0.60%): 시장가 투매 대신 TIGHTEN_STOP(방어 손절선)으로 완화",
+            "TIGHTEN_STOP",
+        )
+
+    # [가드 5] 캔들/모멘텀 기술적 확인 (단순 호가창 일시 왜곡 필터링)
+    if candles_5m and len(candles_5m) >= 2 and pnl_pct_current > -1.5 and not is_btc_crashing:
+        latest_c = candles_5m[0]
+        o_price = float(latest_c.get("opening_price", 0.0) or 0.0)
+        c_price = float(latest_c.get("trade_price", 0.0) or 0.0)
+        # 최신 5분봉이 양봉(종가 >= 시가)인 경우 일시적 호가 왜곡으로 판단하여 탈출 유보
+        if o_price > 0 and c_price >= o_price:
+            return (
+                False,
+                f"캔들 퀀트 검증: 최신 5분봉 양봉 지지 유지(시가 {o_price:,.0f} <= 종가 {c_price:,.0f})로 탈출 유보",
+                "HOLD",
+            )
+
+    # 모든 안전 가드 통과: 실제 급락/세력 덤핑 위험 확인
+    return (
+        True,
+        f"다층 안전 가드 통과 (손익: {pnl_pct_current:+.2f}%, 신뢰도: {confidence}점, 보유: {hold_duration_sec / 60.0:.1f}분) ➜ 긴급 탈출 승인",
+        "EMERGENCY_EXIT",
+    )
 
 
 class TradingCycleEngine:
@@ -520,6 +602,38 @@ class TradingCycleEngine:
             is_extreme_fear=is_extreme_fear,
         )
 
+    def _is_bot_managed_position(self, market: str) -> bool:
+        """주문 저널을 검사하여 해당 종목이 봇의 매수 주문으로 보유 중인 관리 포지션인지 확인."""
+        journal = getattr(self.context, "order_journal", None)
+        if not journal or not hasattr(journal, "orders"):
+            # 저널이 없거나 간이 Mock 객체인 경우 기본 동작 유지
+            return True
+        with getattr(journal, "_lock", threading.Lock()):
+            for order in reversed(journal.orders):
+                if order.get("market") == market:
+                    side = str(order.get("side", "")).lower()
+                    status = str(order.get("status", "")).upper()
+                    if side in ("bid", "buy"):
+                        if status in ("FILLED", "PARTIALLY_FILLED", "OPEN", "ACKNOWLEDGED"):
+                            return True
+                        return False
+                    elif side in ("ask", "sell"):
+                        exit_reason = str(order.get("exit_reason", "")).upper()
+                        if "PARTIAL" in exit_reason:
+                            return True
+                        if status == "FILLED":
+                            return False
+        # 저널에 마켓 기록이 없는 경우: 트레일링 트래커에 기등록된 포지션인지 확인
+        tracker = getattr(self.context, "trailing_tracker", None)
+        if tracker and hasattr(tracker, "get_entry_time"):
+            try:
+                entry_t = float(tracker.get_entry_time(market) or 0.0)
+                if entry_t > 0:
+                    return True
+            except Exception:
+                pass
+        return False
+
     def process_priority_exits(self, market_inputs: MarketExitInputs) -> bool:
         """최우선 청산(분할익절·트레일링·타임스탑) 처리. True면 마켓 루프 continue."""
         ctx = self.context
@@ -540,6 +654,13 @@ class TradingCycleEngine:
 
         if not (coin_value >= min_order_krw and avg_buy_price > 0 and not ctx.order_journal.has_active_exit_order(market)):
             return False
+
+        # [거래 안전 규칙] 봇 매수 이력이 없는 수동 관리 포지션은 자동 매매/청산 대상에서 제외
+        if not self._is_bot_managed_position(market):
+            logger.info(
+                f"🛡️ [{korean_name} / {market}] 봇 매수 이력이 없는 수동 관리 포지션으로 감지되어 자동 청산 대상에서 제외합니다."
+            )
+            return True
 
         action_type, peak_p, _trigger_p, peak_profit_pct, realized_profit_pct = (
             ctx.trailing_tracker.check_position(market, current_price, avg_buy_price)
@@ -635,37 +756,66 @@ class TradingCycleEngine:
                     btc_context=btc_regime,
                 )
                 ai_action = ai_eval.get("action", "HOLD")
-                if ai_action == "EMERGENCY_EXIT" and ctx.trailing_tracker.acquire_exit_lock(market):
-                    try:
-                        logger.warning(
-                            f"🚨 [{korean_name} / {market} AI 긴급 전량 탈출 발동] "
-                            f"현재가 {current_price:,.2f}원({pnl_pct_current:+.2f}%). 사유: {ai_eval.get('reason')}"
-                        )
-                        ctx.cancel_bot_open_orders(exchange, market)
-                        ctx.order_executor.submit(
-                            exchange,
-                            market=market,
-                            side="ask",
-                            volume=coin_available,
-                            ord_type="market",
-                            position_id=market,
-                            exit_reason="AI_EMERGENCY_EXIT",
-                            avg_buy_price=avg_buy_price,
-                        )
-                        if exit_profile.render_trailing_chart:
-                            ctx.chart_renderer.render_trade_chart(
-                                market=market,
-                                korean_name=korean_name,
-                                candles=candles_5m,
-                                entry_price=avg_buy_price,
-                                target_price=current_price,
-                                stop_loss=current_price,
-                                action="SELL",
+                if ai_action == "EMERGENCY_EXIT":
+                    is_bot_pos = self._is_bot_managed_position(market)
+                    is_safe_to_exit, guard_reason, fallback_action = validate_emergency_exit_safety(
+                        market=market,
+                        korean_name=korean_name,
+                        current_price=current_price,
+                        avg_buy_price=avg_buy_price,
+                        pnl_pct_current=pnl_pct_current,
+                        hold_duration_sec=hold_duration_sec,
+                        ai_eval=ai_eval,
+                        candles_5m=candles_5m,
+                        is_btc_crashing=market_inputs.is_btc_crashing,
+                        is_bot_managed=is_bot_pos,
+                    )
+                    if is_safe_to_exit and ctx.trailing_tracker.acquire_exit_lock(market):
+                        try:
+                            logger.warning(
+                                f"🚨 [{korean_name} / {market} AI 긴급 전량 탈출 발동] "
+                                f"현재가 {current_price:,.2f}원({pnl_pct_current:+.2f}%). "
+                                f"가드: {guard_reason} | 사유: {ai_eval.get('reason')}"
                             )
-                        return True
-                    finally:
-                        ctx.trailing_tracker.release_exit_lock(market)
-                elif ai_action in ("RUNNER_HOLD", "TIGHTEN_STOP"):
+                            ctx.cancel_bot_open_orders(exchange, market)
+                            ctx.order_executor.submit(
+                                exchange,
+                                market=market,
+                                side="ask",
+                                volume=coin_available,
+                                ord_type="market",
+                                position_id=market,
+                                exit_reason="AI_EMERGENCY_EXIT",
+                                avg_buy_price=avg_buy_price,
+                            )
+                            if exit_profile.render_trailing_chart:
+                                ctx.chart_renderer.render_trade_chart(
+                                    market=market,
+                                    korean_name=korean_name,
+                                    candles=candles_5m,
+                                    entry_price=avg_buy_price,
+                                    target_price=current_price,
+                                    stop_loss=current_price,
+                                    action="SELL",
+                                )
+                            return True
+                        finally:
+                            ctx.trailing_tracker.release_exit_lock(market)
+                    else:
+                        logger.info(
+                            f"🛡️ [{korean_name} / {market} AI 긴급 탈출 안전 가드 작동] "
+                            f"{guard_reason} (행동 조정: {ai_action} ➜ {fallback_action})"
+                        )
+                        ai_action = fallback_action
+                        if fallback_action == "TIGHTEN_STOP":
+                            def_sl = avg_buy_price * 0.998  # 평단가 -0.2% 방어 손절선
+                            ctx.trailing_tracker.update_dynamic_exit(
+                                market,
+                                target_price=ai_eval.get("adjusted_target_price"),
+                                stop_loss=max(def_sl, float(ai_eval.get("adjusted_stop_loss") or 0.0)),
+                                runner_mode=False,
+                            )
+                if ai_action in ("RUNNER_HOLD", "TIGHTEN_STOP"):
                     ctx.trailing_tracker.update_dynamic_exit(
                         market,
                         target_price=ai_eval.get("adjusted_target_price"),
@@ -913,15 +1063,36 @@ class TradingCycleEngine:
             and base_safety_passed
             and local_entry.get("allow_buy", False)
         )
-        # AI 직접 분석 자격: 기본 안전망 통과 및 최소 거래대금 확보 시, 로컬 룰 통과 여부와 무관하게 AI 심층 분석 기회 부여 (AI 권한 확대)
+        # AI 직접 분석 자격 (무료 티어 500 RPD 쿼터 가드 및 1차 유효성 게이팅 적용)
+        allow_ai = getattr(market_inputs, "allow_ai_analysis", True)
+
+        # 1차 유효성 게이팅: 로컬 룰이 관망인 종목이 AI 검토를 받으려면 최소한의 싹수가 있어야 함
+        curr_open = float(candles_5m[-1].get("opening_price", current_price)) if candles_5m else current_price
+        is_candle_valid = current_price >= (curr_open * 0.996)  # 5분봉이 -0.4% 초과 장대음봉 추락 중이 아닐 것
+        is_macro_valid = not is_btc_crashing and btc_regime != "PANIC_SELL"
+
+        rsi_valid = True
+        if candles_5m and len(candles_5m) >= 15:
+            prices = [float(c.get("trade_price", 0)) for c in candles_5m[-20:]]
+            from gemini_analyzer import GeminiAnalyzer as GA
+            rsi_val = GA.calculate_rsi(prices, 14)
+            rsi_valid = (35.0 <= rsi_val <= 75.0) or (len(set(prices)) <= 1)
+
+        pre_qualification_passed = is_candle_valid and is_macro_valid and rsi_valid
+
         should_call_ai = (
             analyzer is not None
             and base_safety_passed
+            and allow_ai
             and (
                 selected_entry.get("allow_buy", False)
-                or (candidate_trade_value >= StrategyPolicy.MIN_TRADE_VALUE_RISK_OFF * 0.5)
+                or (
+                    pre_qualification_passed
+                    and candidate_trade_value >= StrategyPolicy.MIN_TRADE_VALUE_RISK_OFF * 0.5
+                )
             )
         )
+        called_ai_flag = False
 
         if use_recovery_rebound:
             strategy = {
@@ -933,6 +1104,7 @@ class TradingCycleEngine:
                 "reason": f"[급락 후 반등 전용·축소 비중] {selected_entry.get('reason', '')}",
             }
         elif should_call_ai and analyzer is not None:
+            called_ai_flag = True
             feedback_context = ctx.trade_memory.get_feedback_context()
             if entry_profile.whale_flow_requires_capability and hasattr(ctx.ws_client, "get_whale_flow_summary"):
                 whale_flow_context = ctx.ws_client.get_whale_flow_summary(market)
@@ -1181,6 +1353,7 @@ class TradingCycleEngine:
             reentry_reason=reentry_reason,
             is_holding=is_holding,
             latest_strategy_record=latest_strategy_record,
+            called_ai=called_ai_flag,
         )
 
     def process_cycle_stop_loss(self, market_inputs: MarketStopLossInputs) -> bool:
@@ -1502,6 +1675,20 @@ class TradingCycleEngine:
         is_bot_paused = self.config.is_bot_paused()
         is_entry_ready = ctx.order_journal.is_entry_ready()
 
+        # [무료 티어 500 RPD 쿼터 가드] 당일 누적 사용량에 따른 사이클당 AI 심층 분석 예산 배정
+        from gemini_telemetry import GeminiTelemetry
+        quota_budget = GeminiTelemetry.get_daily_quota_budget()
+        if quota_budget.get("is_critical"):
+            max_ai_candidates = 0
+            logger.info("🛑 [AI 쿼터 가드] 일일 호출 450회(90%) 도달 ➜ 신규 매수 AI 분석 차단 (100% 로컬 퀀트 엔진 가동)")
+        elif quota_budget.get("is_tight"):
+            max_ai_candidates = 1
+            logger.info("⚠️ [AI 쿼터 가드] 일일 호출 350회(70%) 도달 ➜ 사이클당 AI 심층 분석 상위 1개 종목으로 압축")
+        else:
+            max_ai_candidates = 2  # 정상 상태: 사이클당 상위 최대 2개 종목만 AI 심층 분석
+
+        ai_budget_remaining = max_ai_candidates
+
         for market in target_markets:
             if self._should_skip_market(market, excluded_markets):
                 logger.warning(f"🛑 [보호 규칙 작동] 관리 제외 종목 ({market}) 분석 건너뜀")
@@ -1538,9 +1725,11 @@ class TradingCycleEngine:
                     candles_1h=candles_1h,
                     orderbook=orderbook,
                     analyzer=analyzer,
+                    is_btc_crashing=is_btc_crashing,
                 )):
                     continue
 
+                allow_ai_for_market = (ai_budget_remaining > 0)
                 entry = self.process_entry_gating(MarketEntryInputs(
                     exchange=exchange,
                     market=market,
@@ -1567,7 +1756,11 @@ class TradingCycleEngine:
                     dyn_max_pos_pct=dyn_max_pos_pct,
                     now_str=now_str,
                     audit_decision=audit_decision,
+                    allow_ai_analysis=allow_ai_for_market,
                 ))
+                if getattr(entry, "called_ai", False):
+                    ai_budget_remaining = max(0, ai_budget_remaining - 1)
+
                 if entry.should_continue:
                     continue
 

@@ -81,7 +81,7 @@ class StrategyPolicy:
     TIME_STOP_BARS_5M_RISK_OFF: int = 12 # 5분봉 12개 = 60분 (RISK_OFF 백테스트 캔들 단위)
     TIME_STOP_MAX_HOLD_BARS_5M: int = 36 # 최대 유예 36봉 (180분)
     TIME_STOP_BREAKEVEN_MIN_PNL_PCT: float = 0.0005 # 타임스탑 실질 본전 기준 (+0.05% 수수료 세이브)
-    COOLDOWN_STOP_LOSS_SEC: float = 1200.0  # 손절 후 쿨다운 20분
+    COOLDOWN_STOP_LOSS_SEC: float = 0.0     # 손절 후 쿨다운 0초 (바닥 재매수 허용)
     COOLDOWN_TIME_STOP_SEC: float = 600.0   # 타임스탑 횡보 청산 후 쿨다운 10분
     COOLDOWN_TP_SEC: float = 300.0          # 트레일링 익절 후 쿨다운 5분 (2차 랠리 조기 참여)
     REENTRY_BUFFER_PCT: float = 0.012       # 직전 청산가 대비 최소 돌파/눌림목 갭 버퍼 (+1.2%)
@@ -284,7 +284,7 @@ def calculate_rsi(prices: list[float], period: int = 14) -> float:
     losses = [max(-change, 0.0) for change in changes[-period:]]
     avg_loss = sum(losses) / period
     if avg_loss == 0:
-        return 100.0
+        return 50.0 if sum(gains) == 0 else 100.0
     rs = (sum(gains) / period) / avg_loss
     return round(100.0 - (100.0 / (1.0 + rs)), 2)
 

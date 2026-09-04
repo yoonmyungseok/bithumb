@@ -11,9 +11,19 @@ from operational_quality import build_slippage_enforcement_readiness
 from risk_manager import get_kst_now
 
 
+import shutil
+
 class GeminiTelemetryTests(unittest.TestCase):
     def setUp(self):
-        GeminiTelemetry.reset()
+        self.temp_dir = tempfile.mkdtemp()
+        GeminiTelemetry.configure(data_dir=self.temp_dir)
+        GeminiTelemetry.reset(persist=True)
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        data_dir = os.path.join(project_root, "data")
+        GeminiTelemetry.configure(data_dir=data_dir)
 
     def test_snapshot_tracks_api_and_fallback_counters(self):
         GeminiTelemetry.record_api_success("gemini-flash-lite-latest", "KRW-BTC")

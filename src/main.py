@@ -13,6 +13,7 @@ from exchange_adapter import BithumbAdapter, ExchangeAdapter
 from bot_controller import BotController
 from chart_renderer import ChartRenderer
 from gemini_analyzer import GeminiAnalyzer
+from gemini_telemetry import GeminiTelemetry
 from market_screener import MarketScreener
 from order_safety import (
     CooldownManager,
@@ -77,6 +78,7 @@ if sys.platform == "win32":
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
+GeminiTelemetry.configure(data_dir=DATA_DIR)
 
 # 1. 로깅(Logging) 환경 설정
 LOG_DIR = os.path.join(PROJECT_ROOT, "logs")

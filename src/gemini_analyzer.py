@@ -36,18 +36,12 @@ class GeminiAnalyzer:
     - [안정형 모델 라우터 & 무중단 로컬 퀀트 폴백]: Rate Limit 429 시 100% 로컬 앙상블 자율 전환
     """
 
-    # 1. Fallback 기본 안정 모델 (Flash-Lite 최우선 배치)
+    # 1. Fallback 기본 안정 모델 (무료 티어 20 RPD 제한 회피 및 500 RPD 쿼터 최적화를 위해 실존하는 Flash-Lite 전용 구성)
     FALLBACK_MODELS: ClassVar[list[str]] = [
-        "gemini-3.8-flash-lite",
         "gemini-3.5-flash-lite",
         "gemini-3.1-flash-lite",
         "gemini-flash-lite-latest",
         "gemini-2.5-flash-lite",
-        "gemini-3.8-flash",
-        "gemini-3.7-flash",
-        "gemini-3.6-flash",
-        "gemini-3.5-flash",
-        "gemini-flash-latest",
     ]
     # 하위 호환성을 위한 참조
     STABLE_MODELS = FALLBACK_MODELS
@@ -61,6 +55,27 @@ class GeminiAnalyzer:
     _MODEL_COOLDOWNS: ClassVar[dict[str, float]] = {}
     _MODEL_BLACKLIST: ClassVar[dict[str, float]] = {}
     _CLASS_LOCK: ClassVar[threading.RLock] = threading.RLock()
+
+    # 무료 티어 15 RPM(분당 15회) 준수를 위한 최소 호출 간격 제어
+    _LAST_CALL_TS: ClassVar[float] = 0.0
+    _MIN_CALL_INTERVAL_SEC: ClassVar[float] = 3.5  # 최소 3.5초 간격 유지 (최대 ~17 RPM 수준으로 억제)
+
+    # 전 모델 쿨다운 시 경고 로그 중복 폭발 억제 (3분당 최대 1회 경고)
+    _LAST_ALL_COOLDOWN_LOG_TS: ClassVar[float] = 0.0
+    _ALL_COOLDOWN_LOG_INTERVAL_SEC: ClassVar[float] = 180.0
+
+    @classmethod
+    def _wait_for_rate_limit(cls) -> None:
+        """
+        무료 티어 분당 호출 한도(15 RPM)를 안전하게 준수하기 위해 연속 호출 간격을 스로틀링합니다.
+        """
+        with cls._CLASS_LOCK:
+            now = time.time()
+            elapsed = now - cls._LAST_CALL_TS
+            if elapsed < cls._MIN_CALL_INTERVAL_SEC:
+                sleep_needed = cls._MIN_CALL_INTERVAL_SEC - elapsed
+                time.sleep(sleep_needed)
+            cls._LAST_CALL_TS = time.time()
 
     @classmethod
     def _model_priority_key(cls, name: str) -> tuple[int, float, int, int, str]:
@@ -130,8 +145,8 @@ class GeminiAnalyzer:
                     m_name = item.get("name", "").replace("models/", "").strip()
                     methods = item.get("supportedGenerationMethods", [])
 
-                    # generateContent 지원 및 Flash 계열(flash 또는 flash-lite) 선별
-                    if "generateContent" in methods and "flash" in m_name.lower():
+                    # generateContent 지원 및 Flash-Lite 계열만 선별 (일반 Flash는 일일 20회 제한으로 배제)
+                    if "generateContent" in methods and "flash-lite" in m_name.lower():
                         # 트레이딩 부적합 모델(이미지/오디오/음성/임베딩/특수 목적) 엄격 배제
                         bad_keywords = [
                             "embedding", "aqa", "imagen", "image", "audio",
@@ -149,7 +164,7 @@ class GeminiAnalyzer:
                     )
                     return sorted_models
                 else:
-                    logger.warning("Gemini ListModels 응답에 적합한 Flash 모델이 없어 기본 Fallback 목록을 사용합니다.")
+                    logger.warning("Gemini ListModels 응답에 적합한 Flash-Lite 모델이 없어 기본 Fallback 목록을 사용합니다.")
             else:
                 logger.warning(f"Gemini ListModels 조회 실패 (HTTP {resp.status_code}) ➜ 기본 Fallback 목록 사용")
         except Exception as e:
@@ -603,11 +618,31 @@ class GeminiAnalyzer:
         atr_sl = current_price - sl_delta
         dynamic_sl = min(support_sl, atr_sl, current_price * 0.985)
 
-        # 5. 동적 모델 라우터 및 쿨다운/블랙리스트 검사 (Flash-Lite 최우선 후보 3개 선정)
+        # 5. 일일 쿼터 예산 가드 (당일 450회 초과 시 신규 매수 AI 차단 및 로컬 100% 전환)
+        if hasattr(GeminiTelemetry, "can_make_api_call") and not GeminiTelemetry.can_make_api_call(for_emergency_exit=False):
+            logger.info(f"[{market}] 🛑 일일 Gemini AI 쿼터 예산(450회) 도달 ➜ [로컬 퀀트 알고리즘 엔진]으로 안전 전환 (긴급 탈출 쿼터 보존)")
+            GeminiTelemetry.record_local_fallback(market, "daily quota budget reached (450)")
+            return self._run_local_quant_engine(
+                current_price, mtf_1h, disparity_ma20, rsi_val, bb, vol_info, candle_pattern,
+                trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct,
+                vwap_info=vwap_info, macd_acc=macd_acc
+            )
+
+        # 6. 동적 모델 라우터 및 쿨다운/블랙리스트 검사 (Flash-Lite 최우선 후보 3개 선정)
         candidate_models = self.get_candidate_models(limit=3)
 
         if not candidate_models:
-            logger.warning(f"[{market}] 모든 Gemini AI 모델이 쿨다운/블랙리스트 상태입니다 ➜ [로컬 퀀트 알고리즘 엔진]으로 즉시 자동 전환")
+            now_ts = time.time()
+            with self._CLASS_LOCK:
+                should_log_warning = (now_ts - self._LAST_ALL_COOLDOWN_LOG_TS) > self._ALL_COOLDOWN_LOG_INTERVAL_SEC
+                if should_log_warning:
+                    self.__class__._LAST_ALL_COOLDOWN_LOG_TS = now_ts
+
+            if should_log_warning:
+                logger.warning(f"[{market}] 모든 Gemini AI Lite 모델이 쿨다운/블랙리스트 상태입니다 ➜ [로컬 퀀트 알고리즘 엔진]으로 즉시 자동 전환")
+            else:
+                logger.debug(f"[{market}] Gemini AI Lite 모델 쿨다운 지속 중 ➜ [로컬 퀀트 알고리즘 엔진] 전환")
+
             GeminiTelemetry.record_local_fallback(market, "all models cooling down")
             return self._run_local_quant_engine(
                 current_price, mtf_1h, disparity_ma20, rsi_val, bb, vol_info, candle_pattern,
@@ -694,6 +729,7 @@ class GeminiAnalyzer:
         for model in candidate_models:
             endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
             try:
+                self._wait_for_rate_limit()
                 response = requests.post(endpoint, json=payload, timeout=25)
                 if response.status_code == 200:
                     res_json = response.json()
@@ -760,10 +796,10 @@ class GeminiAnalyzer:
                     GeminiTelemetry.record_api_success(model, market)
                     return res
                 elif response.status_code == 429:
-                    self._set_model_cooldown(model, 900.0)  # 15분 쿨다운
-                    last_error = f"[{model}] 429 Quota Exceeded (15분 쿨다운 등록)"
+                    self._set_model_cooldown(model, 120.0)  # 무료 티어 RPM 리셋을 고려하여 2분(120초) 쿨다운
+                    last_error = f"[{model}] 429 Quota Exceeded (2분 쿨다운 등록)"
                     GeminiTelemetry.record_rate_limited(model, market)
-                    logger.warning(f"⚠️ 모델 '{model}' 429 Quota Exceeded 발생 ➜ 15분간 재호출 차단 쿨다운 등록")
+                    logger.warning(f"⚠️ 모델 '{model}' 429 Quota Exceeded 발생 ➜ 2분간 재호출 차단 쿨다운 등록")
                 elif response.status_code in (404, 400):
                     # 모델 지원 종료(Deprecated) 또는 부존재 ➜ 24시간 블랙리스트 등록 (자기 치유)
                     self._set_model_blacklist(model, 86400.0)
@@ -820,6 +856,7 @@ class GeminiAnalyzer:
         for model in models:
             endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
             try:
+                self._wait_for_rate_limit()
                 response = requests.post(endpoint, json=payload, timeout=timeout)
                 if response.status_code == 200:
                     res_json = response.json()
@@ -835,7 +872,7 @@ class GeminiAnalyzer:
                     GeminiTelemetry.record_api_success(model, "macro_or_batch")
                     return parsed
                 elif response.status_code == 429:
-                    self._set_model_cooldown(model, 900.0)
+                    self._set_model_cooldown(model, 120.0)
                     GeminiTelemetry.record_rate_limited(model, "batch")
                 elif response.status_code in (404, 400):
                     self._set_model_blacklist(model, 86400.0)
@@ -873,13 +910,20 @@ class GeminiAnalyzer:
         if not self.api_key or not candles or avg_buy_price <= 0:
             return fallback_res
 
-        # 5분봉 기준 캐시 (240초)
-        latest_c_id = str(candles[0].get("candle_date_time_utc") or candles[0].get("trade_price"))
-        cache_key = f"HOLDING:{market}:{latest_c_id}"
+        # 손익률 상태에 따른 적응형 스마트 캐시 (횡보 시 900초, 급락/급등 시 60초)
+        pnl_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100.0 if avg_buy_price > 0 else 0.0
+        adaptive_ttl = 60.0 if (pnl_pct <= -1.0 or pnl_pct >= 1.5) else 900.0
+
+        cache_key = f"HOLDING:{market}"
         if hasattr(self, "_holding_eval_cache") and cache_key in self._holding_eval_cache:
             cached = self._holding_eval_cache[cache_key]
-            if (time.time() - float(cached.get("cached_at", 0))) < 240.0:
+            if (time.time() - float(cached.get("cached_at", 0))) < adaptive_ttl:
                 return dict(cached["result"])
+
+        # 일일 비상 쿼터 가드 (490회 초과 시 긴급 탈출 AI 호출 중단 및 로컬 유지)
+        if hasattr(GeminiTelemetry, "can_make_api_call") and not GeminiTelemetry.can_make_api_call(for_emergency_exit=True):
+            logger.info(f"[{market}] 🛑 Gemini AI 일일 비상 쿼터(490회) 도달 ➜ 기보유 포지션 로컬 룰 유지")
+            return fallback_res
 
         try:
             close_prices = [float(c.get("trade_price", 0)) for c in candles if "trade_price" in c]
@@ -897,10 +941,14 @@ class GeminiAnalyzer:
             prompt = f"""당신은 암호화폐 퀀트 펀드의 수석 포지션 관리자(Risk Manager)입니다.
 현재 보유 중인 포지션 [{market}]의 실시간 수급과 차트를 정밀 분석하여 다음 중 단 하나의 행동을 결정하세요:
 
-1. "EMERGENCY_EXIT": 거래량 실린 윗꼬리 장대음봉, 대량 매도벽 출회, VWAP 이탈, 체결강도 붕괴 등 세력 덤핑/급락 징후 시 기계적 손절 전에 "즉시 시장가 전량 탈출"
+1. "EMERGENCY_EXIT": 거래량 실린 윗꼬리 장대음봉, 대량 매도벽 출회, VWAP 이탈, 직전 저점 붕괴 등 돌이킬 수 없는 세력 덤핑/급락 징후 시 기계적 손절 전에 "즉시 시장가 전량 탈출" (※ 주의: 진입 초기 10분 이내의 단순 호가 흔들림, 손실률 -0.8% 이내의 미세 조정, 지지선 유지 상태에서는 절대 남발하지 말고 HOLD 또는 TIGHTEN_STOP 선택)
 2. "RUNNER_HOLD": 거래량 급증 장대양봉 돌파, 신고가 랠리 강력 지속 시 "기계적 소액 익절을 보류하고 목표가를 상향하여 추세 최대 향유"
-3. "TIGHTEN_STOP": 단기 지지선 구축 완료 및 안정적 수익권 시 손절가를 평단가(본전) 또는 지지선으로 끌어올림
+3. "TIGHTEN_STOP": 단기 지지선 구축 완료 및 안정적 수익권(또는 불안한 보합세 방어) 시 손절가를 평단가(본전) 또는 지지선으로 끌어올림
 4. "HOLD": 정상적인 추세 유지/건강한 숨고르기 상태
+
+### [판단 가이드라인]
+- 손익률이 -0.8% 이내이거나 보유 시간이 짧은 경우, 단순 체결강도 저하나 일시적 매도벽만으로 EMERGENCY_EXIT을 선택하지 마십시오. 이는 정상적인 시장 노이즈일 수 있습니다.
+- 진짜 덤핑(장대음봉 + 거래량 급증 + 지지선 이탈)이 명백한 경우에만 높은 확신(CONFIDENCE 80 이상)으로 EMERGENCY_EXIT을 결정하십시오.
 
 ### [현재 포지션 상태]
 - 마켓: {market} | 보유 시간: {hold_min:.1f}분
@@ -1198,6 +1246,7 @@ class GeminiAnalyzer:
             for model in models:
                 endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
                 try:
+                    self._wait_for_rate_limit()
                     resp = requests.post(endpoint, json=payload, timeout=6.0)
                     if resp.status_code == 200:
                         text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()

@@ -252,6 +252,8 @@ class UnifiedDashboardServer:
             "api_usage": {
                 "exchange": {},
                 "gemini": {},
+                "gemini_bithumb": {},
+                "gemini_upbit": {},
             },
         }
 
@@ -502,6 +504,8 @@ class UnifiedDashboardServer:
             "api_usage": {
                 "bithumb": bithumb_data.get("api_usage", {}).get("exchange", {}),
                 "upbit": upbit_data.get("api_usage", {}).get("exchange", {}),
+                "gemini_bithumb": bithumb_data.get("api_usage", {}).get("gemini", {}),
+                "gemini_upbit": upbit_data.get("api_usage", {}).get("gemini", {}),
                 "gemini": {
                     "date": bithumb_data.get("api_usage", {}).get("gemini", {}).get("date") or upbit_data.get("api_usage", {}).get("gemini", {}).get("date", ""),
                     "api_calls": (
@@ -1105,15 +1109,36 @@ class UnifiedDashboardServer:
                     const isBuy = (o.side || '').toLowerCase().includes('bid') || (o.side || '').includes('매수');
                     const sideBadge = isBuy ? '<span class="badge bg-emerald-900 text-emerald-300">매수</span>' : '<span class="badge bg-rose-900 text-rose-300">매도</span>';
                     const exBadge = o.exchange === 'upbit' ? '<span class="badge bg-blue-900/60 text-blue-300">업비트</span>' : '<span class="badge bg-amber-900/60 text-amber-300">빗썸</span>';
+                    const statusMap = {
+                        FILLED: '체결 완료',
+                        DONE: '체결 완료',
+                        OPEN: '미체결 대기',
+                        WAIT: '미체결 대기',
+                        PENDING: '접수 대기',
+                        SUBMITTED: '접수 대기',
+                        CANCELLED: '취소 완료',
+                        CANCELED: '취소 완료',
+                        CANCEL: '취소 완료',
+                        REJECTED: '주문 거절',
+                        FAILED: '주문 실패',
+                        FAIL: '주문 실패',
+                        ERROR: '주문 실패',
+                        PARTIALLY_FILLED: '부분 체결',
+                        RECONCILIATION_PENDING: '체결 대사중',
+                        RECONCILED: '대사 완료',
+                        UNKNOWN: '확인 필요'
+                    };
+                    const rawStatus = String(o.status || '').toUpperCase();
+                    const statusKor = statusMap[rawStatus] || o.status || '완료';
                     return `
                         <tr class="hover:bg-slate-800/40 transition text-xs">
                             <td class="p-3">${exBadge}</td>
                             <td class="p-3 text-slate-400">${(o.created_at || o.timestamp || '-').substring(5, 19)}</td>
-                            <td class="p-3 font-medium text-white">${o.market}</td>
+                            <td class="p-3 font-medium text-white">${o.korean_name || o.market}</td>
                             <td class="p-3">${sideBadge}</td>
                             <td class="p-3">${formatKrw(o.price || o.avg_price)}</td>
                             <td class="p-3">${Number(o.volume || o.executed_volume || 0).toFixed(4)}</td>
-                            <td class="p-3 font-semibold text-slate-300">${o.status || '완료'}</td>
+                            <td class="p-3 font-semibold text-slate-300">${statusKor}</td>
                             <td class="p-3 font-mono text-slate-400">${o.slippage_bps ? (o.slippage_bps + ' bps') : '-'}</td>
                         </tr>
                     `;

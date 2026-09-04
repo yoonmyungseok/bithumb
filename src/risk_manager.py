@@ -688,9 +688,9 @@ class DailyRiskManager:
                 self.consecutive_losses = 0
             else:
                 self.consecutive_losses += 1
-                if self.consecutive_losses >= 2:
-                    self.cooldown_until_ts = time.time() + 1800.0  # 30분 쿨다운
-                    logger.warning("🛑 [연속 2회 손절 발생] 30분간 뇌동매매 방지 신규 매수 쿨다운 가동!")
+                # 손절 시 신규 매수 차단 제거: 연속 손절 시에도 매수 쿨다운을 걸지 않고,
+                # get_risk_scale_factor()를 통한 비중 디스케일링만 유지하여 바닥 재매수 기회를 보존한다.
+                self.cooldown_until_ts = 0.0
 
             self._save_state()
 

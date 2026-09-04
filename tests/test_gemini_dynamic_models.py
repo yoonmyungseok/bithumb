@@ -91,26 +91,27 @@ class GeminiDynamicModelsTests(unittest.TestCase):
 
         models = GeminiAnalyzer.fetch_available_models(api_key="fake-key")
 
-        # embedding, pro뿐 아니라 이미지/음성 모델도 완전 배제 확인
+        # embedding, pro뿐 아니라 이미지/음성 모델 및 일반 Flash(일일 20회 제한)도 완전 배제 확인
         self.assertNotIn("text-embedding-004", models)
         self.assertNotIn("gemini-pro", models)
         self.assertNotIn("gemini-3.1-flash-lite-image", models)
         self.assertNotIn("gemini-2.5-flash-preview-tts", models)
+        self.assertNotIn("gemini-3.8-flash", models)
+        self.assertNotIn("gemini-3.5-flash", models)
 
-        # 순수 텍스트 Lite 최우선 정렬 확인: 3.8-flash-lite가 1위
-        self.assertEqual(models[0], "gemini-3.8-flash-lite")
-        self.assertEqual(models[1], "gemini-3.5-flash-lite")
-        self.assertEqual(models[2], "gemini-3.8-flash")
-        self.assertEqual(models[3], "gemini-3.5-flash")
+        # 오직 순수 텍스트 Flash-Lite 계열만 선별 및 버전 순 정렬 확인
+        self.assertEqual(models, ["gemini-3.8-flash-lite", "gemini-3.5-flash-lite"])
 
     @patch("requests.get")
     def test_fallback_when_api_fails(self, mock_get):
-        """ListModels API 실패 시 기본 Fallback 모델 리스트 안전 반환 검증"""
+        """ListModels API 실패 시 기본 Fallback 모델 리스트 안전 반환 검증 (Flash-Lite 전용)"""
         mock_get.side_effect = requests.exceptions.ConnectionError("Network Down")
 
         models = GeminiAnalyzer.fetch_available_models(api_key="fake-key")
         self.assertEqual(models, GeminiAnalyzer.FALLBACK_MODELS)
-        self.assertEqual(models[0], "gemini-3.8-flash-lite")
+        self.assertEqual(models[0], "gemini-3.5-flash-lite")
+        for m in models:
+            self.assertIn("flash-lite", m)
 
     def test_auto_blacklist_on_deprecated_model(self):
         """404 Not Found 또는 지원 종료 모델 감지 시 24시간 블랙리스트 등록 검증"""
@@ -164,6 +165,23 @@ class GeminiDynamicModelsTests(unittest.TestCase):
         self.assertEqual(mock_get.call_count, 1)
         self.assertEqual(models1, models2)
 
+    def test_fallback_models_are_strictly_lite(self):
+        """기본 Fallback 모델 목록이 100% Flash-Lite 계열로만 구성되어 있는지 검증 (20 RPD Flash 원천 차단)"""
+        for model in GeminiAnalyzer.FALLBACK_MODELS:
+            self.assertIn("flash-lite", model.lower())
+            self.assertNotIn("-flash\b", model.lower())
+
+    @patch("time.sleep")
+    def test_rate_limiting_wait(self, mock_sleep):
+        """연속 호출 시 15 RPM을 준수하기 위해 time.sleep으로 지연을 주입하는지 검증"""
+        GeminiAnalyzer._LAST_CALL_TS = time.time()
+        GeminiAnalyzer._wait_for_rate_limit()
+        self.assertTrue(mock_sleep.called)
+        sleep_arg = mock_sleep.call_args[0][0]
+        self.assertGreater(sleep_arg, 0.0)
+        self.assertLessEqual(sleep_arg, GeminiAnalyzer._MIN_CALL_INTERVAL_SEC)
+
 
 if __name__ == "__main__":
     unittest.main()
+
