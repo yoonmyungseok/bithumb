@@ -12,6 +12,7 @@ echo ======================================================
 echo  [Upbit] 기존 봇 프로세스 종료 및 재시작 준비 중...
 echo ======================================================
 %PYTHON_BIN% src\process_manager.py upbit stop
+%PYTHON_BIN% src\process_manager.py upbit record_console
 ping 127.0.0.1 -n 2 > nul
 
 echo.

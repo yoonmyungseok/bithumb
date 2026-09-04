@@ -34,6 +34,140 @@ def _runtime_paths(exchange: str) -> tuple[str, str]:
     return os.path.join(runtime_dir, ".watchdog.pid.json"), os.path.join(runtime_dir, ".heartbeat")
 
 
+def _console_pid_path(exchange: str) -> str:
+    """거래소별 또는 대시보드의 콘솔 창(CMD/PowerShell) PID 파일 위치를 반환한다."""
+    ex = exchange.lower()
+    if ex == "upbit":
+        subdir = "upbit"
+    elif ex == "dashboard":
+        return os.path.join(_project_root(), "data", ".dashboard.console.pid")
+    else:
+        subdir = ""
+    return os.path.join(_project_root(), "data", subdir, ".console.pid")
+
+
+def _get_my_ancestor_pids() -> set[int]:
+    """현재 프로세스 및 모든 부모/조상 프로세스 PID 집합을 반환한다."""
+    ancestors = set()
+    try:
+        import psutil
+        curr = psutil.Process()
+        while curr:
+            ancestors.add(curr.pid)
+            curr = curr.parent()
+    except Exception:
+        ancestors.add(os.getpid())
+        ancestors.add(os.getppid())
+    return ancestors
+
+
+def _get_console_ancestor_pid() -> int:
+    """조상 프로세스 중에서 실제 콘솔 창(cmd.exe 등)의 PID를 찾는다."""
+    try:
+        import psutil
+        curr = psutil.Process()
+        while curr:
+            curr = curr.parent()
+            if not curr:
+                break
+            name = (curr.name() or "").lower()
+            if any(sh in name for sh in ("cmd.exe", "powershell.exe", "windowsterminal.exe")):
+                return curr.pid
+    except Exception:
+        pass
+    return os.getppid()
+
+
+def _close_console_pid(pid: int | None, protected_pids: set[int] | None = None) -> bool:
+    """주어진 콘솔 창 PID가 현재 프로세스나 조상 프로세스가 아닐 때 안전하게 종료한다."""
+    if not pid or pid <= 0:
+        return False
+    if protected_pids is None:
+        protected_pids = _get_my_ancestor_pids()
+    if pid in protected_pids:
+        return False
+
+    success = False
+    if sys.platform == "win32":
+        try:
+            res = subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                check=False,
+                creationflags=0x08000000,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if res.returncode == 0:
+                success = True
+        except Exception:
+            pass
+    try:
+        import psutil
+        if psutil.pid_exists(pid):
+            p = psutil.Process(pid)
+            p.kill()
+            success = True
+    except Exception:
+        pass
+    return success
+
+
+def _find_and_kill_console_windows(bat_filename: str, script_patterns: list[str]) -> int:
+    """해당 배치 파일 또는 스크립트를 실행했던 이전 콘솔 창(cmd.exe)을 찾아 모두 종료한다."""
+    ancestors = _get_my_ancestor_pids()
+    closed_pids: set[int] = set()
+
+    try:
+        import psutil
+        for p in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                pid = p.info['pid']
+                if pid in ancestors or pid in closed_pids:
+                    continue
+                cmdline = ' '.join(p.info['cmdline'] or []).lower()
+                name = (p.info['name'] or '').lower()
+
+                # 1. cmd.exe 프로세스 중 해당 배치 파일을 실행했던 창인 경우
+                if 'cmd.exe' in name and bat_filename.lower() in cmdline:
+                    if _close_console_pid(pid, ancestors):
+                        closed_pids.add(pid)
+                    continue
+
+                # 2. 실행 중인 스크립트 프로세스를 발견한 경우, 그 부모/조상 cmd.exe 창까지 추적하여 종료
+                if any(sp.lower() in cmdline for sp in script_patterns):
+                    curr = p
+                    while curr and curr.pid not in ancestors:
+                        try:
+                            parent = curr.parent()
+                            if not parent or parent.pid in ancestors:
+                                break
+                            pname = (parent.name() or '').lower()
+                            if 'cmd.exe' in pname:
+                                if _close_console_pid(parent.pid, ancestors):
+                                    closed_pids.add(parent.pid)
+                                break
+                            curr = parent
+                        except Exception:
+                            break
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    except Exception:
+        pass
+    return len(closed_pids)
+
+
+def record_console_action(exchange: str):
+    """현재 배치 파일 창(조상 CMD)의 PID를 기록하여 다음 재시작 시 이전 창을 닫을 수 있게 한다."""
+    console_pid = _get_console_ancestor_pid()
+    pid_path = _console_pid_path(exchange)
+    os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+    try:
+        with open(pid_path, "w", encoding="utf-8") as f:
+            f.write(str(console_pid))
+    except Exception:
+        pass
+
+
 def _read_pid_file(path: str) -> int | None:
     """손상되었거나 과거 형식인 PID 파일도 안전하게 무시한다."""
     try:
@@ -203,17 +337,25 @@ def _kill_pid(pid: int | str) -> bool:
 def _kill_matching_script_processes(patterns: list[str]) -> list[int]:
     """스크립트명을 포함하는 프로세스를 찾아 일괄 강제 종료한다."""
     killed_pids: list[int] = []
-    my_pid = os.getpid()
+    ancestors = _get_my_ancestor_pids()
 
     try:
         import psutil
         for proc in psutil.process_iter(['pid', 'cmdline']):
             try:
                 p_id = proc.info['pid']
-                if p_id == my_pid:
+                if p_id in ancestors:
                     continue
                 cmdline = " ".join(proc.info['cmdline'] or [])
                 if any(p in cmdline for p in patterns):
+                    try:
+                        parent = proc.parent()
+                        if parent and parent.pid not in ancestors:
+                            pname = (parent.name() or "").lower()
+                            if any(shell in pname for shell in ("cmd", "powershell", "terminal", "conhost")):
+                                _close_console_pid(parent.pid, ancestors)
+                    except Exception:
+                        pass
                     proc.kill()
                     killed_pids.append(p_id)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -255,6 +397,20 @@ def stop_action(exchange: str = "bithumb"):
         print("======================================================")
         print(" [통합 퀀트 트레이딩 대시보드 서버 종료] ")
         print("======================================================\n")
+        console_file = _console_pid_path("dashboard")
+        if os.path.exists(console_file):
+            try:
+                with open(console_file, "r", encoding="utf-8") as f:
+                    c_pid = int(f.read().strip())
+                if _close_console_pid(c_pid):
+                    print(f"🛑 [이전 콘솔 창 닫기 완료] PID: {c_pid}")
+            except Exception:
+                pass
+            try:
+                os.remove(console_file)
+            except OSError:
+                pass
+
         pid_file, _ = _runtime_paths("dashboard")
         pids = find_bot_processes("dashboard")
         stopped_count = 0
@@ -277,6 +433,11 @@ def stop_action(exchange: str = "bithumb"):
             if str(opid) not in pids:
                 print(f"🛑 [백그라운드 잔여 대시보드 정리] PID: {opid}")
                 stopped_count += 1
+
+        closed_consoles = _find_and_kill_console_windows("restart_dashboard.bat", ["dashboard_server.py"])
+        if closed_consoles > 0:
+            print(f"🛑 [이전 대시보드 콘솔 창 닫기] 총 {closed_consoles}개 창 종료")
+            stopped_count += closed_consoles
         if stopped_count > 0:
             print(f"\n✅ 통합 대시보드 서버(총 {stopped_count}개)를 완전히 종료했습니다.")
         else:
@@ -287,6 +448,20 @@ def stop_action(exchange: str = "bithumb"):
     print("======================================================")
     print(f" [{ex_name} AI Pro Quant Trading Bot 종료] ")
     print("======================================================\n")
+
+    console_file = _console_pid_path(exchange)
+    if os.path.exists(console_file):
+        try:
+            with open(console_file, "r", encoding="utf-8") as f:
+                c_pid = int(f.read().strip())
+            if _close_console_pid(c_pid):
+                print(f"🛑 [이전 {ex_name} 콘솔 창 닫기 완료] PID: {c_pid}")
+        except Exception:
+            pass
+        try:
+            os.remove(console_file)
+        except OSError:
+            pass
 
     pid_file, hb_file = _runtime_paths(exchange)
     pids = find_bot_processes(exchange)
@@ -312,6 +487,12 @@ def stop_action(exchange: str = "bithumb"):
         if str(opid) not in pids:
             print(f"🛑 [백그라운드 잔여 프로세스 강제 정리] {ex_name} PID: {opid}")
             stopped_count += 1
+
+    bat_name = "restart_upbit.bat" if ex == "upbit" else "restart_bithumb.bat"
+    closed_consoles = _find_and_kill_console_windows(bat_name, script_patterns)
+    if closed_consoles > 0:
+        print(f"🛑 [이전 {ex_name} 콘솔 창 닫기] 총 {closed_consoles}개 창 종료")
+        stopped_count += closed_consoles
 
     # 하트비트 및 락 파일 정리
     lock_file = os.path.join(os.path.dirname(hb_file), ".watchdog.lock")
@@ -530,6 +711,8 @@ def main():
         stop_action(exchange)
     elif action in ("logs", "log"):
         logs_action(exchange)
+    elif action in ("record_console", "save_console", "save_window"):
+        record_console_action(exchange)
     else:
         print(f"알 수 없는 액션: {action}")
         print("사용법:")

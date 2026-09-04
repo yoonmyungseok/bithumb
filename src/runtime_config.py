@@ -47,5 +47,6 @@ def load_runtime_risk_settings() -> RuntimeRiskSettings:
         btc_crash_threshold_pct=get_fraction_setting("BTC_CRASH_THRESHOLD_PCT", 0.015),
         max_daily_loss_pct=get_fraction_setting("MAX_DAILY_LOSS_PCT", 0.05),
         trailing_start_pct=get_fraction_setting("TRAILING_START_PCT", 0.02),
-        trailing_stop_pct=get_fraction_setting("TRAILING_STOP_PCT", 0.012),
+        trailing_stop_pct=get_fraction_setting("TRAILING_STOP_PCT", 0.020),
     )
+

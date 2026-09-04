@@ -620,6 +620,7 @@ class TradingCycleEngine:
         pnl_pct_current = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
 
         # [1순위] Gemini AI 기보유 포지션 동적 관리 (긴급 탈출 / 러너 추세 추종 / 손절선 상향)
+        ai_action = "HOLD"
         analyzer = getattr(market_inputs, "analyzer", None)
         if analyzer is not None and hasattr(analyzer, "evaluate_holding_position") and candles_5m:
             try:
@@ -747,6 +748,12 @@ class TradingCycleEngine:
             and is_trend_broken
         )
 
+        # AI가 명시적으로 보유(HOLD 또는 RUNNER_HOLD)를 유지하는 경우, 단기 잔파동/횡보에 의한 타임스탑 조기 손절을 유예하여 털림 방지 (AI 권한 확대)
+        ai_holds_position = (ai_action in ("RUNNER_HOLD", "HOLD")) and (hold_duration_sec < effective_max_hold)
+        if ai_holds_position:
+            is_time_stop_loss_trigger = False
+            is_early_momentum_exit = False
+
         is_time_stop_trigger = is_time_stop_profit_trigger or is_time_stop_loss_trigger or is_early_momentum_exit
         if exit_profile.time_stop_recheck_active_exit:
             is_time_stop_trigger = is_time_stop_trigger and not ctx.order_journal.has_active_exit_order(market)
@@ -847,6 +854,7 @@ class TradingCycleEngine:
             return EntryGatingResult(should_continue=True)
 
         night_session_active = is_night_session()
+        candidate_trade_value = float(candidate_metadata.get("acc_trade_price_24h", 0.0) or 0.0)
         local_entry = entry_signal(
             candles=completed_candles_5m,
             candles_1h=completed_candles_1h,
@@ -857,6 +865,7 @@ class TradingCycleEngine:
             entry_type=candidate_type,
             is_night=night_session_active,
         )
+
 
         if not entry_profile.block_on_reentry_denied:
             reentry_allowed, reentry_reason = ctx.cooldown_manager.check_reentry_allowed(market, current_price)
@@ -892,18 +901,26 @@ class TradingCycleEngine:
             and recovery_entry.get("allow_buy", False) and recovery_slot_available
         )
         selected_entry = recovery_entry if use_recovery_rebound else local_entry
-        use_momentum_breakout = (
-            candidate_type == "MOMENTUM_BREAKOUT"
-            and not is_holding and reentry_allowed and not is_btc_crashing and ws_healthy
-            and local_entry.get("allow_buy", False)
-        )
-        should_call_ai = (
-            analyzer is not None
-            and not is_holding
+        base_safety_passed = (
+            not is_holding
             and reentry_allowed
-            and selected_entry.get("allow_buy", False)
             and not is_btc_crashing
             and ws_healthy
+            and current_price >= StrategyPolicy.MIN_ASSET_PRICE_KRW
+        )
+        use_momentum_breakout = (
+            candidate_type == "MOMENTUM_BREAKOUT"
+            and base_safety_passed
+            and local_entry.get("allow_buy", False)
+        )
+        # AI 직접 분석 자격: 기본 안전망 통과 및 최소 거래대금 확보 시, 로컬 룰 통과 여부와 무관하게 AI 심층 분석 기회 부여 (AI 권한 확대)
+        should_call_ai = (
+            analyzer is not None
+            and base_safety_passed
+            and (
+                selected_entry.get("allow_buy", False)
+                or (candidate_trade_value >= StrategyPolicy.MIN_TRADE_VALUE_RISK_OFF * 0.5)
+            )
         )
 
         if use_recovery_rebound:
@@ -914,15 +931,6 @@ class TradingCycleEngine:
                 "stop_loss": selected_entry.get("stop_loss", current_price * 0.98),
                 "alloc_pct": dyn_max_pos_pct * StrategyPolicy.RECOVERY_REBOUND_ALLOC_RATIO,
                 "reason": f"[급락 후 반등 전용·축소 비중] {selected_entry.get('reason', '')}",
-            }
-        elif use_momentum_breakout:
-            strategy = {
-                "status": "ACTIVE", "action": "BUY",
-                "entry_price": local_entry.get("entry_price", current_price),
-                "target_price": local_entry.get("target_price", current_price * 1.03),
-                "stop_loss": local_entry.get("stop_loss", current_price * 0.98),
-                "alloc_pct": dyn_max_pos_pct * StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO,
-                "reason": f"[확정봉 모멘텀 돌파·최초 소액] {local_entry.get('reason', '')}",
             }
         elif should_call_ai and analyzer is not None:
             feedback_context = ctx.trade_memory.get_feedback_context()
@@ -950,6 +958,16 @@ class TradingCycleEngine:
                 whale_context=whale_flow_context,
                 rs_context=rs_info.get("desc", ""),
             )
+        elif use_momentum_breakout:
+            strategy = {
+                "status": "ACTIVE", "action": "BUY",
+                "entry_price": local_entry.get("entry_price", current_price),
+                "target_price": local_entry.get("target_price", current_price * 1.03),
+                "stop_loss": local_entry.get("stop_loss", current_price * 0.98),
+                "alloc_pct": dyn_max_pos_pct * StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO,
+                "reason": f"[확정봉 모멘텀 돌파·최초 소액] {local_entry.get('reason', '')}",
+            }
+
         else:
             if entry_profile.use_hold_price_fallbacks:
                 hold_entry_price = selected_entry.get("entry_price", current_price)
@@ -1005,16 +1023,35 @@ class TradingCycleEngine:
             action = "HOLD"
             reason = f"{reentry_reason} | {reason}"
 
+        is_ai_buy_signal = (
+            analyzer is not None
+            and strategy.get("action") == "BUY"
+            and any(m in strategy.get("reason", "") for m in ["gemini", "Gemini", "AI", "Flash", "flash", "flash-lite"])
+        )
+        ai_alpha = int(strategy.get("alpha_score", 0) or selected_entry.get("alpha_score", 0) or 0)
+
         if action == "BUY" and not selected_entry.get("allow_buy", False):
-            action = "HOLD"
-            reason = f"정량 공통 진입 게이트 차단: {selected_entry.get('reason', '')} | {reason}"
+            # AI Direct Entry: 로컬 하드게이트는 관망이지만 기본 안전망을 통과하고 AI가 심층 분석으로 BUY를 승인한 경우 (AI 권한 확대)
+            if is_ai_buy_signal and base_safety_passed and (ai_alpha >= StrategyPolicy.ALPHA_BUY_THRESHOLD or ai_alpha == 0):
+                logger.info(
+                    f"✨ [{market}] AI 단독 자율 승인 진입 (로컬 룰 관망 ➜ AI 적극 승인, 알파스코어: {ai_alpha}점)"
+                )
+                action = "BUY"
+                reason = f"[AI 단독 자율 승인] {reason}"
+                if strategy.get("target_price", 0) > current_price:
+                    target_price = strategy["target_price"]
+                if 0 < strategy.get("stop_loss", 0) < current_price:
+                    stop_loss = strategy["stop_loss"]
+            else:
+                action = "HOLD"
+                reason = f"정량 공통 진입 게이트 차단: {selected_entry.get('reason', '')} | {reason}"
         elif action == "BUY" and selected_entry.get("allow_buy", False):
             if entry_profile.use_hold_price_fallbacks:
-                target_price = selected_entry.get("target_price", target_price)
-                stop_loss = selected_entry.get("stop_loss", stop_loss)
+                target_price = strategy.get("target_price") or selected_entry.get("target_price", target_price)
+                stop_loss = strategy.get("stop_loss") or selected_entry.get("stop_loss", stop_loss)
             else:
-                target_price = selected_entry["target_price"]
-                stop_loss = selected_entry["stop_loss"]
+                target_price = strategy.get("target_price") or selected_entry["target_price"]
+                stop_loss = strategy.get("stop_loss") or selected_entry["stop_loss"]
 
         if is_holding:
             entry_price = avg_buy_price
