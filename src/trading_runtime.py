@@ -1092,7 +1092,18 @@ class TradingCycleEngine:
             rsi_val = GA.calculate_rsi(prices, 14)
             rsi_valid = (35.0 <= rsi_val <= 75.0) or (len(set(prices)) <= 1)
 
-        pre_qualification_passed = is_candle_valid and is_macro_valid and rsi_valid
+        # 1시간봉(MTF 1H) 대세 추세 사전 필터 (Gemini 7대 팩터 1번 규칙 사전 검증으로 쿼터 낭비 방지)
+        is_1h_trend_valid = True
+        if completed_candles_1h and len(completed_candles_1h) >= 20:
+            prices_1h = [float(c.get("trade_price", 0)) for c in completed_candles_1h]
+            from gemini_analyzer import GeminiAnalyzer as GA
+            ema20_1h = GA.calculate_ema(prices_1h, 20)
+            ema50_1h = GA.calculate_ema(prices_1h, min(len(prices_1h), 50))
+            # 1시간봉 역배열(EMA20 < EMA50)이면서 현재가가 EMA20 아래이거나, EMA20 대비 -1.5% 초과 이탈 시 차단
+            if (ema20_1h < ema50_1h and current_price < ema20_1h) or (current_price < ema20_1h * 0.985):
+                is_1h_trend_valid = False
+
+        pre_qualification_passed = is_candle_valid and is_macro_valid and rsi_valid and is_1h_trend_valid
         # 로컬 퀀트 알파 스코어 기반 품질 게이트: 관망 종목은 최소 50점 이상(정상장 기본 승인선 60점의 80% 이상)일 때만 AI 심층 분석 요청 (쿼터 낭비 방지)
         local_alpha_score = int(selected_entry.get("alpha_score", 0))
         is_quality_promising = (local_alpha_score >= 50)
@@ -1703,7 +1714,8 @@ class TradingCycleEngine:
             max_ai_candidates = 1
             logger.info("⚠️ [AI 쿼터 가드] 일일 호출 350회(70%) 도달 ➜ 사이클당 AI 심층 분석 상위 1개 종목으로 압축")
         else:
-            max_ai_candidates = 2  # 정상 상태: 사이클당 상위 최대 2개 종목만 AI 심층 분석
+            default_max_ai = int(os.getenv("MAX_AI_CANDIDATES_PER_CYCLE", "2"))
+            max_ai_candidates = max(1, default_max_ai)  # 정상 상태: 사이클당 상위 최대 N개 종목만 AI 심층 분석 (기본 2)
 
         ai_budget_remaining = max_ai_candidates
 

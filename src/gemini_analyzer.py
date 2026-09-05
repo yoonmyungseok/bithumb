@@ -73,6 +73,7 @@ class GeminiAnalyzer:
     _MACRO_DIAG_CACHE: ClassVar[dict[str, Any]] = {}
     _LAST_MACRO_DIAG_TS: ClassVar[float] = 0.0
     _SCREENER_RANK_CACHE: ClassVar[dict[str, dict[str, Any]]] = {}
+    _MARKET_AI_SCORE_CACHE: ClassVar[dict[str, dict[str, Any]]] = {}
     _HOLDING_EVAL_CACHE: ClassVar[dict[str, dict[str, Any]]] = {}
     _ANALYSIS_CACHE: ClassVar[dict[str, dict[str, Any]]] = {}
 
@@ -89,6 +90,7 @@ class GeminiAnalyzer:
             cls._MACRO_DIAG_CACHE.clear()
             cls._LAST_MACRO_DIAG_TS = 0.0
             cls._SCREENER_RANK_CACHE.clear()
+            cls._MARKET_AI_SCORE_CACHE.clear()
             cls._HOLDING_EVAL_CACHE.clear()
             cls._ANALYSIS_CACHE.clear()
 
@@ -745,10 +747,11 @@ class GeminiAnalyzer:
             return {"status": "PAUSE", "action": "HOLD", "reason": "API Key 누락"}
 
         # 0. 동일 5분봉 캔들 분석 캐시 검사 (재시작 및 5분 이내 중복 API 호출 낭비 원천 차단)
-        latest_c_id = ""
+        time_slot = int(time.time() // 300)  # 5분 타임블록
+        candle_ts = ""
         if candles:
-            latest_c_id = str(candles[0].get("candle_date_time_utc") or candles[0].get("timestamp") or candles[0].get("trade_price"))
-        cache_key = f"{market}:{latest_c_id}"
+            candle_ts = str(candles[0].get("candle_date_time_utc") or candles[0].get("timestamp") or "")
+        cache_key = f"{market}:{candle_ts or time_slot}"
         if hasattr(self, "_analysis_cache") and cache_key in self._analysis_cache:
             cached_entry = self._analysis_cache[cache_key]
             if (time.time() - float(cached_entry.get("cached_at", 0))) < 540.0:
@@ -1207,15 +1210,51 @@ class GeminiAnalyzer:
         if not self.api_key or not candidates or len(candidates) <= 1:
             return candidates
 
-        # 600초(10분) 캐시 (종목 리스트 기준)
-        cand_keys = ",".join(c.get("market", "") for c in candidates[:8])
+        # 900초(15분) 캐시 (정렬된 상위 종목 리스트 기준)
+        cand_keys = ",".join(sorted(c.get("market", "") for c in candidates[:8]))
         cache_key = f"RANK:{cand_keys}"
         now_ts = time.time()
         if hasattr(self, "_screener_rank_cache") and cache_key in self._screener_rank_cache:
             cached = self._screener_rank_cache[cache_key]
-            if (now_ts - float(cached.get("cached_at", 0))) < 600.0:
+            if (now_ts - float(cached.get("cached_at", 0))) < 900.0:
                 GeminiTelemetry.record_cache_hit("RANK")
                 return list(cached["result"])
+
+        # 개별 종목 점수 캐시(_MARKET_AI_SCORE_CACHE) 활용: 이미 60% 이상 캐시되어 있고 미평가 신규 종목이 2개 이하이면 API 호출 생략 및 캐시 합성
+        if hasattr(self, "_MARKET_AI_SCORE_CACHE"):
+            valid_cached = {
+                m: meta for m, meta in self._MARKET_AI_SCORE_CACHE.items()
+                if (now_ts - float(meta.get("cached_at", 0))) < 900.0
+            }
+            top_candidates = candidates[:8]
+            cached_count = sum(1 for c in top_candidates if c.get("market", "").upper() in valid_cached)
+            uncached_markets = [c.get("market", "").upper() for c in top_candidates if c.get("market", "").upper() not in valid_cached]
+            if len(top_candidates) >= 2 and cached_count > 0 and (cached_count / len(top_candidates)) >= 0.6 and len(uncached_markets) <= 2:
+                # 60% 이상 유효 캐시 보유 ➜ API 호출 생략하고 캐시 점수 합성
+                GeminiTelemetry.record_cache_hit("RANK")
+                logger.info(f"⚡ [Gemini AI 랭킹] 개별 종목 캐시 재사용 (미평가 {len(uncached_markets)}개 ➜ API 호출 생략, 쿼터 보존)")
+                tier_order = {"TIER_1": 1, "TIER_2": 2, "TIER_3": 3, "REJECT": 9}
+                ranked_candidates = []
+                for c in candidates:
+                    m = c.get("market", "").upper()
+                    meta = valid_cached.get(m, {"ai_rank": 50, "ai_tier": "TIER_2", "ai_score": 50.0, "ai_reason": "기본"})
+                    c_copy = dict(c)
+                    c_copy.update({
+                        "ai_rank": meta.get("ai_rank", 50),
+                        "ai_tier": meta.get("ai_tier", "TIER_2"),
+                        "ai_score": meta.get("ai_score", 50.0),
+                        "ai_reason": meta.get("ai_reason", "캐시 재사용"),
+                    })
+                    ranked_candidates.append(c_copy)
+                ranked_candidates.sort(
+                    key=lambda x: (
+                        tier_order.get(x.get("ai_tier", "TIER_2"), 5),
+                        x.get("ai_rank", 50),
+                        -x.get("ai_score", 50),
+                    )
+                )
+                self._screener_rank_cache[cache_key] = {"cached_at": now_ts, "result": ranked_candidates}
+                return ranked_candidates
 
         try:
             cand_rows = []
@@ -1260,12 +1299,15 @@ class GeminiAnalyzer:
                 for item in parsed:
                     if isinstance(item, dict) and "market" in item:
                         m_code = str(item["market"]).upper()
-                        rank_map[m_code] = {
+                        r_info = {
                             "ai_rank": int(item.get("rank", 99)),
                             "ai_tier": str(item.get("tier", "TIER_2")).upper(),
                             "ai_score": float(item.get("score", 50)),
                             "ai_reason": str(item.get("reason", "")),
                         }
+                        rank_map[m_code] = r_info
+                        if hasattr(self, "_MARKET_AI_SCORE_CACHE"):
+                            self._MARKET_AI_SCORE_CACHE[m_code] = dict(r_info, cached_at=now_ts)
 
                 ranked_candidates = []
                 for c in candidates:
