@@ -56,6 +56,23 @@ class GeminiAnalyzer:
     _MODEL_BLACKLIST: ClassVar[dict[str, float]] = {}
     _CLASS_LOCK: ClassVar[threading.RLock] = threading.RLock()
 
+    # 전역 인스턴스 간 공유되는 통합 AI 결과 캐시 (인스턴스 재생성 시에도 캐시 보존)
+    _MACRO_DIAG_CACHE: ClassVar[dict[str, Any]] = {}
+    _LAST_MACRO_DIAG_TS: ClassVar[float] = 0.0
+    _SCREENER_RANK_CACHE: ClassVar[dict[str, dict[str, Any]]] = {}
+    _HOLDING_EVAL_CACHE: ClassVar[dict[str, dict[str, Any]]] = {}
+    _ANALYSIS_CACHE: ClassVar[dict[str, dict[str, Any]]] = {}
+
+    @classmethod
+    def clear_caches(cls) -> None:
+        """단위 테스트 및 세션 재시작을 위한 AI 응답 캐시 초기화"""
+        with cls._CLASS_LOCK:
+            cls._MACRO_DIAG_CACHE.clear()
+            cls._LAST_MACRO_DIAG_TS = 0.0
+            cls._SCREENER_RANK_CACHE.clear()
+            cls._HOLDING_EVAL_CACHE.clear()
+            cls._ANALYSIS_CACHE.clear()
+
     # 무료 티어 15 RPM(분당 15회) 준수를 위한 최소 호출 간격 제어
     _LAST_CALL_TS: ClassVar[float] = 0.0
     _MIN_CALL_INTERVAL_SEC: ClassVar[float] = 3.5  # 최소 3.5초 간격 유지 (최대 ~17 RPM 수준으로 억제)
@@ -190,21 +207,49 @@ class GeminiAnalyzer:
 
     def get_candidate_models(self, limit: int = 2) -> list[str]:
         """
-        현재 시점에 쿨다운이나 블랙리스트가 아닌 최우선 순위 모델 목록을 최대 limit개 반환합니다.
+        현재 시점에 쿨다운이나 블랙리스트가 아니고, 모델별 일일 쿼터(500 RPD) 여유가 있는 최우선 순위 모델 목록을 최대 limit개 반환합니다.
         """
         now_ts = time.time()
         with self._CLASS_LOCK:
             all_models = self.get_available_models(self.api_key)
             usable = [m for m in all_models if self._MODEL_COOLDOWNS.get(m, 0.0) <= now_ts]
+            # 모델별 일일 쿼터(500회)가 남아있는 모델을 최우선 배치
+            quota_available = [m for m in usable if GeminiTelemetry.can_call_model(m, for_emergency_exit=False)]
+            if quota_available:
+                ordered = quota_available + [m for m in usable if m not in quota_available]
+                return ordered[:limit]
             return usable[:limit]
+
+    @property
+    def _analysis_cache(self) -> dict[str, dict[str, Any]]:
+        return self.__class__._ANALYSIS_CACHE
+
+    @property
+    def _holding_eval_cache(self) -> dict[str, dict[str, Any]]:
+        return self.__class__._HOLDING_EVAL_CACHE
+
+    @property
+    def _screener_rank_cache(self) -> dict[str, dict[str, Any]]:
+        return self.__class__._SCREENER_RANK_CACHE
+
+    @property
+    def _macro_diag_cache(self) -> dict[str, Any]:
+        return self.__class__._MACRO_DIAG_CACHE
+
+    @_macro_diag_cache.setter
+    def _macro_diag_cache(self, value: dict[str, Any]) -> None:
+        self.__class__._MACRO_DIAG_CACHE = value
+
+    @property
+    def _last_macro_diag_ts(self) -> float:
+        return self.__class__._LAST_MACRO_DIAG_TS
+
+    @_last_macro_diag_ts.setter
+    def _last_macro_diag_ts(self, value: float) -> None:
+        self.__class__._LAST_MACRO_DIAG_TS = value
 
     def __init__(self, api_key: str = ""):
         self.api_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
-        self._analysis_cache: dict[str, dict[str, Any]] = {}
-        self._holding_eval_cache: dict[str, dict[str, Any]] = {}
-        self._screener_rank_cache: dict[str, dict[str, Any]] = {}
-        self._macro_diag_cache: dict[str, Any] = {}
-        self._last_macro_diag_ts: float = 0.0
         self._lock = threading.RLock()
 
     @staticmethod
@@ -559,7 +604,7 @@ class GeminiAnalyzer:
         cache_key = f"{market}:{latest_c_id}"
         if hasattr(self, "_analysis_cache") and cache_key in self._analysis_cache:
             cached_entry = self._analysis_cache[cache_key]
-            if (time.time() - float(cached_entry.get("cached_at", 0))) < 270.0:
+            if (time.time() - float(cached_entry.get("cached_at", 0))) < 540.0:
                 logger.info(f"⚡ [{market}] 동일 5분봉 AI 분석 캐시 재사용 (Gemini 중복 호출 생략, 쿼터 보존)")
                 GeminiTelemetry.record_cache_hit(market)
                 return dict(cached_entry["result"])
@@ -918,6 +963,7 @@ class GeminiAnalyzer:
         if hasattr(self, "_holding_eval_cache") and cache_key in self._holding_eval_cache:
             cached = self._holding_eval_cache[cache_key]
             if (time.time() - float(cached.get("cached_at", 0))) < adaptive_ttl:
+                GeminiTelemetry.record_cache_hit(market)
                 return dict(cached["result"])
 
         # 일일 비상 쿼터 가드 (490회 초과 시 긴급 탈출 AI 호출 중단 및 로컬 유지)
@@ -1014,13 +1060,14 @@ class GeminiAnalyzer:
         if not self.api_key or not candidates or len(candidates) <= 1:
             return candidates
 
-        # 60초 캐시 (종목 리스트 기준)
+        # 600초(10분) 캐시 (종목 리스트 기준)
         cand_keys = ",".join(c.get("market", "") for c in candidates[:8])
         cache_key = f"RANK:{cand_keys}"
         now_ts = time.time()
         if hasattr(self, "_screener_rank_cache") and cache_key in self._screener_rank_cache:
             cached = self._screener_rank_cache[cache_key]
-            if (now_ts - float(cached.get("cached_at", 0))) < 60.0:
+            if (now_ts - float(cached.get("cached_at", 0))) < 600.0:
+                GeminiTelemetry.record_cache_hit("RANK")
                 return list(cached["result"])
 
         try:
@@ -1121,6 +1168,7 @@ class GeminiAnalyzer:
             and self._macro_diag_cache
             and (now_ts - getattr(self, "_last_macro_diag_ts", 0.0) < 1800.0)
         ):
+            GeminiTelemetry.record_cache_hit("MACRO")
             return dict(self._macro_diag_cache)
 
         fallback_diag = {

@@ -170,7 +170,7 @@ class AIAuthorityTests(unittest.TestCase):
         포지션 보유 중 세력 덤핑 등으로 AI가 EMERGENCY_EXIT를 판정하면 즉시 전량 시장가 탈출하는지 검증
         """
         now_ts = time.time()
-        entry_ts = now_ts - 300.0
+        entry_ts = now_ts - 700.0
 
         self.mock_analyzer.evaluate_holding_position.return_value = {
             "action": "EMERGENCY_EXIT",
@@ -178,7 +178,7 @@ class AIAuthorityTests(unittest.TestCase):
             "confidence": 95,
         }
 
-        mock_candles = [{"trade_price": 995.0} for _ in range(10)]
+        mock_candles = [{"trade_price": 970.0} for _ in range(10)]
 
         inputs = MarketExitInputs(
             exchange=self.mock_exchange,
@@ -186,8 +186,8 @@ class AIAuthorityTests(unittest.TestCase):
             korean_name="테스트",
             coin_available=10.0,
             avg_buy_price=1000.0,
-            current_price=995.0,
-            coin_value=9950.0,
+            current_price=970.0,
+            coin_value=9700.0,
             candles_5m=mock_candles,
             candles_1h=mock_candles,
             orderbook={},
@@ -199,6 +199,7 @@ class AIAuthorityTests(unittest.TestCase):
         self.mock_ctx.risk_manager.entry_times = {"KRW-TEST": entry_ts}
         self.mock_ctx.trailing_tracker.get_entry_time.return_value = entry_ts
         self.mock_ctx.trailing_tracker.acquire_exit_lock.return_value = True
+        self.mock_ctx.trailing_tracker.get_dynamic_stop_loss.return_value = None
 
         # When
 

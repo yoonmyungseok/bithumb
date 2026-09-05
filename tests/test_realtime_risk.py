@@ -230,6 +230,33 @@ class RealtimeRiskAndIndicatorTests(unittest.TestCase):
             bc.resume_bot()
             self.assertFalse(get_paused())
 
+    def test_realtime_engine_resolve_exchange_name(self):
+        from realtime_engine import RealtimeRiskEngine
+        from exchange_adapter import BithumbAdapter, UpbitAdapter, ExchangeProfile
+
+        dummy_client = types.SimpleNamespace(get_balances=lambda: {})
+        bithumb_adapter = BithumbAdapter(dummy_client)
+        upbit_adapter = UpbitAdapter(dummy_client)
+
+        journal_bithumb = types.SimpleNamespace(exchange_scope="bithumb")
+        engine = RealtimeRiskEngine(
+            exchange_factory=lambda: bithumb_adapter,
+            order_executor=None,
+            order_journal=journal_bithumb,
+            risk_manager=None,
+            cooldown_manager=None,
+            trade_memory=None,
+            trailing_tracker=None,
+            telegram=None,
+        )
+
+        self.assertEqual(engine._resolve_exchange_name(bithumb_adapter), "bithumb")
+        self.assertEqual(engine._resolve_exchange_name(upbit_adapter), "upbit")
+
+        # Mock object without key property but with journal scope
+        raw_obj = types.SimpleNamespace()
+        self.assertEqual(engine._resolve_exchange_name(raw_obj), "bithumb")
+
 
 if __name__ == "__main__":
     unittest.main()

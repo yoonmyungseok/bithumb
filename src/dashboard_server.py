@@ -528,19 +528,54 @@ class UnifiedDashboardServer:
                         bithumb_data.get("api_usage", {}).get("gemini", {}).get("cache_hits", 0) +
                         upbit_data.get("api_usage", {}).get("gemini", {}).get("cache_hits", 0)
                     ),
-                    "quota_limit": max(
-                        bithumb_data.get("api_usage", {}).get("gemini", {}).get("quota_limit", 1500),
-                        upbit_data.get("api_usage", {}).get("gemini", {}).get("quota_limit", 1500),
+                    "quota_limit": (
+                        int(bithumb_data.get("api_usage", {}).get("gemini", {}).get("quota_limit", 1000) or 1000) +
+                        int(upbit_data.get("api_usage", {}).get("gemini", {}).get("quota_limit", 1000) or 1000)
                     ),
                     "quota_used_pct": round(
                         (
                             (bithumb_data.get("api_usage", {}).get("gemini", {}).get("api_calls", 0) +
                              upbit_data.get("api_usage", {}).get("gemini", {}).get("api_calls", 0)) /
-                            max(1, max(
-                                bithumb_data.get("api_usage", {}).get("gemini", {}).get("quota_limit", 1500),
-                                upbit_data.get("api_usage", {}).get("gemini", {}).get("quota_limit", 1500),
+                            max(1, (
+                                int(bithumb_data.get("api_usage", {}).get("gemini", {}).get("quota_limit", 1000) or 1000) +
+                                int(upbit_data.get("api_usage", {}).get("gemini", {}).get("quota_limit", 1000) or 1000)
                             )) * 100.0
                         ), 1
+                    ),
+                    "models": {
+                        m: {
+                            "calls": (
+                                bithumb_data.get("api_usage", {}).get("gemini", {}).get("models", {}).get(m, {}).get("calls", 0) +
+                                upbit_data.get("api_usage", {}).get("gemini", {}).get("models", {}).get(m, {}).get("calls", 0)
+                            ),
+                            "quota_limit": (
+                                bithumb_data.get("api_usage", {}).get("gemini", {}).get("models", {}).get(m, {}).get("quota_limit", 500) +
+                                upbit_data.get("api_usage", {}).get("gemini", {}).get("models", {}).get(m, {}).get("quota_limit", 500)
+                            ),
+                            "quota_used_pct": round(
+                                (
+                                    (bithumb_data.get("api_usage", {}).get("gemini", {}).get("models", {}).get(m, {}).get("calls", 0) +
+                                     upbit_data.get("api_usage", {}).get("gemini", {}).get("models", {}).get(m, {}).get("calls", 0)) /
+                                    max(1, (
+                                        bithumb_data.get("api_usage", {}).get("gemini", {}).get("models", {}).get(m, {}).get("quota_limit", 500) +
+                                        upbit_data.get("api_usage", {}).get("gemini", {}).get("models", {}).get(m, {}).get("quota_limit", 500)
+                                    )) * 100.0
+                                ), 1
+                            ),
+                            "success": (
+                                bithumb_data.get("api_usage", {}).get("gemini", {}).get("models", {}).get(m, {}).get("success", 0) +
+                                upbit_data.get("api_usage", {}).get("gemini", {}).get("models", {}).get(m, {}).get("success", 0)
+                            ),
+                            "rate_limited": (
+                                bithumb_data.get("api_usage", {}).get("gemini", {}).get("models", {}).get(m, {}).get("rate_limited", 0) +
+                                upbit_data.get("api_usage", {}).get("gemini", {}).get("models", {}).get(m, {}).get("rate_limited", 0)
+                            ),
+                        }
+                        for m in ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite")
+                    },
+                    "reset_info": (
+                        bithumb_data.get("api_usage", {}).get("gemini", {}).get("reset_info") or
+                        upbit_data.get("api_usage", {}).get("gemini", {}).get("reset_info") or {}
                     ),
                 },
             },

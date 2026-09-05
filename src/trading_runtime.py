@@ -399,6 +399,9 @@ class TradingCycleEngine:
         self.exit_profile = config.exit_profile
         self.entry_profile = config.entry_profile
         self.buy_profile = config.buy_profile
+        self.analyzer: GeminiAnalyzer | None = (
+            GeminiAnalyzer(api_key=self.config.gemini_api_key) if self.config.gemini_api_key else None
+        )
 
     def _load_cycle_environment(self) -> None:
         env_file = self.config.env_file
@@ -434,7 +437,13 @@ class TradingCycleEngine:
         logger.info("============================================================")
 
         exchange = ctx.create_exchange_client()
-        analyzer = GeminiAnalyzer(api_key=self.config.gemini_api_key) if self.config.gemini_api_key else None
+        # analyzer 인스턴스 재사용 (키 갱신 시에만 재생성)
+        if self.config.gemini_api_key:
+            if self.analyzer is None or getattr(self.analyzer, "api_key", "") != self.config.gemini_api_key:
+                self.analyzer = GeminiAnalyzer(api_key=self.config.gemini_api_key)
+        else:
+            self.analyzer = None
+        analyzer = self.analyzer
 
         ctx.orchestrator.reconcile_orders(
             exchange, ctx.order_journal, ctx.fill_processor, label=profile.reconcile_label,
@@ -827,7 +836,12 @@ class TradingCycleEngine:
 
         # AI 동적 손절선(Tightened Stop) 도달 여부 검사
         dynamic_sl = ctx.trailing_tracker.get_dynamic_stop_loss(market)
-        if dynamic_sl and current_price <= dynamic_sl and ctx.trailing_tracker.acquire_exit_lock(market):
+        if (
+            isinstance(dynamic_sl, (int, float))
+            and dynamic_sl > 0
+            and current_price <= dynamic_sl
+            and ctx.trailing_tracker.acquire_exit_lock(market)
+        ):
             try:
                 logger.info(
                     f"🛡️ [{korean_name} / {market} AI 상향 손절선 도달 안착 청산] "
@@ -1079,6 +1093,9 @@ class TradingCycleEngine:
             rsi_valid = (35.0 <= rsi_val <= 75.0) or (len(set(prices)) <= 1)
 
         pre_qualification_passed = is_candle_valid and is_macro_valid and rsi_valid
+        # 로컬 퀀트 알파 스코어 기반 품질 게이트: 관망 종목은 최소 50점 이상(정상장 기본 승인선 60점의 80% 이상)일 때만 AI 심층 분석 요청 (쿼터 낭비 방지)
+        local_alpha_score = int(selected_entry.get("alpha_score", 0))
+        is_quality_promising = (local_alpha_score >= 50)
 
         should_call_ai = (
             analyzer is not None
@@ -1089,6 +1106,7 @@ class TradingCycleEngine:
                 or (
                     pre_qualification_passed
                     and candidate_trade_value >= StrategyPolicy.MIN_TRADE_VALUE_RISK_OFF * 0.5
+                    and is_quality_promising
                 )
             )
         )

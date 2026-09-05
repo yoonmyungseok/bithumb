@@ -205,14 +205,35 @@
           </div>
           <div>
             <div class="flex justify-between items-baseline text-[11px]">
-              <span class="text-slate-400">일일 사용량 (한도 대비)</span>
-              <span id="gemini_bithumb_api_calls_ratio" class="text-slate-300 font-bold">0 / 1,500회</span>
+              <span class="text-slate-400">일일 총 사용량</span>
+              <span id="gemini_bithumb_api_calls_ratio" class="text-slate-300 font-bold">0 / 1,000회</span>
             </div>
             <div class="w-full bg-slate-800 h-2 rounded-full mt-1.5 overflow-hidden">
               <div id="gemini_bithumb_quota_bar" class="bg-gradient-to-r from-amber-500 to-orange-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
             </div>
           </div>
-          <div class="space-y-1.5 pt-2 border-t border-slate-800/80 text-slate-300 text-[11px]">
+          <!-- 모델별 사용량 분리 (3.5 / 3.1) -->
+          <div class="bg-slate-950/60 rounded-lg p-2 space-y-1.5 border border-slate-800/60 text-[10px]">
+            <div>
+              <div class="flex justify-between text-slate-400">
+                <span class="flex items-center gap-1 font-medium text-amber-300/90"><span>⚡</span>3.5 Flash-Lite</span>
+                <span id="gemini_bithumb_m35_ratio" class="font-medium text-slate-300">0 / 500회 (0%)</span>
+              </div>
+              <div class="w-full bg-slate-800 h-1 rounded-full mt-1 overflow-hidden">
+                <div id="gemini_bithumb_m35_bar" class="bg-amber-400 h-1 rounded-full transition-all duration-500" style="width: 0%"></div>
+              </div>
+            </div>
+            <div>
+              <div class="flex justify-between text-slate-400">
+                <span class="flex items-center gap-1 font-medium text-orange-300/90"><span>⚡</span>3.1 Flash-Lite</span>
+                <span id="gemini_bithumb_m31_ratio" class="font-medium text-slate-300">0 / 500회 (0%)</span>
+              </div>
+              <div class="w-full bg-slate-800 h-1 rounded-full mt-1 overflow-hidden">
+                <div id="gemini_bithumb_m31_bar" class="bg-orange-400 h-1 rounded-full transition-all duration-500" style="width: 0%"></div>
+              </div>
+            </div>
+          </div>
+          <div class="space-y-1.5 pt-1 text-slate-300 text-[11px]">
             <div class="flex justify-between">
               <span class="text-slate-400">⚡ AI 캐시 절감:</span>
               <span id="gemini_bithumb_api_cache" class="font-medium text-emerald-400">0회</span>
@@ -220,6 +241,10 @@
             <div class="flex justify-between">
               <span class="text-slate-400">로컬 폴백 / 429:</span>
               <span id="gemini_bithumb_api_fallback" class="font-medium text-slate-300">0 / 429: 0회</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-400">쿼터 리셋(PT):</span>
+              <span id="gemini_bithumb_api_reset" class="font-medium text-slate-400">-</span>
             </div>
             <div class="flex justify-between">
               <span class="text-slate-400">최근 이벤트:</span>
@@ -270,14 +295,35 @@
           </div>
           <div>
             <div class="flex justify-between items-baseline text-[11px]">
-              <span class="text-slate-400">일일 사용량 (한도 대비)</span>
-              <span id="gemini_upbit_api_calls_ratio" class="text-slate-300 font-bold">0 / 1,500회</span>
+              <span class="text-slate-400">일일 총 사용량</span>
+              <span id="gemini_upbit_api_calls_ratio" class="text-slate-300 font-bold">0 / 1,000회</span>
             </div>
             <div class="w-full bg-slate-800 h-2 rounded-full mt-1.5 overflow-hidden">
               <div id="gemini_upbit_quota_bar" class="bg-gradient-to-r from-blue-500 to-indigo-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
             </div>
           </div>
-          <div class="space-y-1.5 pt-2 border-t border-slate-800/80 text-slate-300 text-[11px]">
+          <!-- 모델별 사용량 분리 (3.5 / 3.1) -->
+          <div class="bg-slate-950/60 rounded-lg p-2 space-y-1.5 border border-slate-800/60 text-[10px]">
+            <div>
+              <div class="flex justify-between text-slate-400">
+                <span class="flex items-center gap-1 font-medium text-amber-300/90"><span>⚡</span>3.5 Flash-Lite</span>
+                <span id="gemini_upbit_m35_ratio" class="font-medium text-slate-300">0 / 500회 (0%)</span>
+              </div>
+              <div class="w-full bg-slate-800 h-1 rounded-full mt-1 overflow-hidden">
+                <div id="gemini_upbit_m35_bar" class="bg-amber-400 h-1 rounded-full transition-all duration-500" style="width: 0%"></div>
+              </div>
+            </div>
+            <div>
+              <div class="flex justify-between text-slate-400">
+                <span class="flex items-center gap-1 font-medium text-orange-300/90"><span>⚡</span>3.1 Flash-Lite</span>
+                <span id="gemini_upbit_m31_ratio" class="font-medium text-slate-300">0 / 500회 (0%)</span>
+              </div>
+              <div class="w-full bg-slate-800 h-1 rounded-full mt-1 overflow-hidden">
+                <div id="gemini_upbit_m31_bar" class="bg-orange-400 h-1 rounded-full transition-all duration-500" style="width: 0%"></div>
+              </div>
+            </div>
+          </div>
+          <div class="space-y-1.5 pt-1 text-slate-300 text-[11px]">
             <div class="flex justify-between">
               <span class="text-slate-400">⚡ AI 캐시 절감:</span>
               <span id="gemini_upbit_api_cache" class="font-medium text-emerald-400">0회</span>
@@ -285,6 +331,10 @@
             <div class="flex justify-between">
               <span class="text-slate-400">로컬 폴백 / 429:</span>
               <span id="gemini_upbit_api_fallback" class="font-medium text-slate-300">0 / 429: 0회</span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-slate-400">쿼터 리셋(PT):</span>
+              <span id="gemini_upbit_api_reset" class="font-medium text-slate-400">-</span>
             </div>
             <div class="flex justify-between">
               <span class="text-slate-400">최근 이벤트:</span>

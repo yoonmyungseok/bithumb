@@ -80,6 +80,22 @@ class RealtimeRiskEngine:
         with self._balance_lock:
             self._last_balance_ts = 0.0
 
+    def _resolve_exchange_name(self, exchange: Any) -> str:
+        """어댑터 또는 API 클라이언트에서 명시적 거래소 식별자를 반환한다."""
+        key = getattr(exchange, "key", None)
+        if key:
+            return str(key).lower()
+        profile = getattr(exchange, "profile", None)
+        if profile and hasattr(profile, "key"):
+            return str(profile.key).lower()
+        journal_scope = getattr(self.order_journal, "exchange_scope", None)
+        if journal_scope:
+            return str(journal_scope).lower()
+        client = getattr(exchange, "client", exchange)
+        if hasattr(client, "get_candlestick"):
+            return "bithumb"
+        return "upbit"
+
     def cancel_bot_open_orders(self, market: str | None = None) -> int:
         """봇이 발행한 미체결 주문만 선별 취소하여 외부/수동 주문 보호"""
         canceled = 0
@@ -367,7 +383,7 @@ class RealtimeRiskEngine:
                     self.trailing_tracker.clear(market)
                     self.cancel_bot_open_orders(market)
 
-                    ex_name = "bithumb" if hasattr(bithumb, "get_candlestick") else "upbit"
+                    ex_name = self._resolve_exchange_name(bithumb)
                     order_res = self.order_executor.submit(
                         bithumb,
                         market=market,
@@ -439,7 +455,7 @@ class RealtimeRiskEngine:
                         )
                         self.cancel_bot_open_orders(market)
 
-                        ex_name = "bithumb" if hasattr(bithumb, "get_candlestick") else "upbit"
+                        ex_name = self._resolve_exchange_name(bithumb)
                         order_res = self.order_executor.submit(
                             bithumb,
                             market=market,
@@ -488,7 +504,7 @@ class RealtimeRiskEngine:
                     )
                     self.cancel_bot_open_orders(market)
 
-                    ex_name = "bithumb" if hasattr(bithumb, "get_candlestick") else "upbit"
+                    ex_name = self._resolve_exchange_name(bithumb)
                     order_res = self.order_executor.submit(
                         bithumb,
                         market=market,

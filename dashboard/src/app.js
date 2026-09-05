@@ -683,7 +683,7 @@
     function renderGeminiCard(prefix, gData, gradientClass) {
       gData = gData || {};
       const calls = gData.api_calls || 0;
-      const limit = gData.quota_limit || 1500;
+      const limit = gData.quota_limit || 1000;
       const pct = gData.quota_used_pct !== undefined ? gData.quota_used_pct : (limit > 0 ? Math.round((calls / limit) * 1000) / 10 : 0);
 
       const ratioEl = document.getElementById(`${prefix}_api_calls_ratio`);
@@ -727,6 +727,46 @@
 
       const lastEl = document.getElementById(`${prefix}_api_last`);
       if (lastEl) lastEl.innerText = gData.last_event || '-';
+
+      // 3.5 / 3.1 모델별 사용량 렌더링
+      const models = gData.models || {};
+      const m35 = models['gemini-3.5-flash-lite'] || {};
+      const m31 = models['gemini-3.1-flash-lite'] || {};
+
+      const m35Calls = m35.calls || 0;
+      const m35Limit = m35.quota_limit || 500;
+      const m35Pct = m35.quota_used_pct !== undefined ? m35.quota_used_pct : (m35Limit > 0 ? Math.round((m35Calls / m35Limit) * 1000) / 10 : 0);
+
+      const m31Calls = m31.calls || 0;
+      const m31Limit = m31.quota_limit || 500;
+      const m31Pct = m31.quota_used_pct !== undefined ? m31.quota_used_pct : (m31Limit > 0 ? Math.round((m31Calls / m31Limit) * 1000) / 10 : 0);
+
+      const m35RatioEl = document.getElementById(`${prefix}_m35_ratio`);
+      if (m35RatioEl) m35RatioEl.innerText = `${m35Calls.toLocaleString()} / ${m35Limit.toLocaleString()}회 (${m35Pct}%)`;
+
+      const m35BarEl = document.getElementById(`${prefix}_m35_bar`);
+      if (m35BarEl) {
+        m35BarEl.style.width = `${Math.min(100, Math.max(0, m35Pct))}%`;
+        m35BarEl.className = m35Pct >= 90 ? 'bg-rose-500 h-1 rounded-full transition-all duration-500' : (m35Pct >= 70 ? 'bg-amber-400 h-1 rounded-full transition-all duration-500' : 'bg-amber-400 h-1 rounded-full transition-all duration-500');
+      }
+
+      const m31RatioEl = document.getElementById(`${prefix}_m31_ratio`);
+      if (m31RatioEl) m31RatioEl.innerText = `${m31Calls.toLocaleString()} / ${m31Limit.toLocaleString()}회 (${m31Pct}%)`;
+
+      const m31BarEl = document.getElementById(`${prefix}_m31_bar`);
+      if (m31BarEl) {
+        m31BarEl.style.width = `${Math.min(100, Math.max(0, m31Pct))}%`;
+        m31BarEl.className = m31Pct >= 90 ? 'bg-rose-500 h-1 rounded-full transition-all duration-500' : (m31Pct >= 70 ? 'bg-orange-400 h-1 rounded-full transition-all duration-500' : 'bg-orange-400 h-1 rounded-full transition-all duration-500');
+      }
+
+      // 리셋 정보 렌더링
+      const resetInfo = gData.reset_info || {};
+      const resetEl = document.getElementById(`${prefix}_api_reset`);
+      if (resetEl) {
+        const timeKst = resetInfo.reset_time_kst || '16:00 KST';
+        const remStr = resetInfo.remaining_str ? ` (${resetInfo.remaining_str})` : '';
+        resetEl.innerText = `${timeKst}${remStr}`;
+      }
     }
 
     renderGeminiCard('gemini_bithumb', btGeminiData, 'bg-gradient-to-r from-amber-500 to-orange-500');

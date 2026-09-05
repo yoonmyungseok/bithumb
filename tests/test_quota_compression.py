@@ -33,7 +33,7 @@ class TestQuotaCompression(unittest.TestCase):
         GeminiTelemetry.configure(data_dir=data_dir)
 
     def test_gemini_telemetry_quota_budget_levels(self):
-        """GeminiTelemetry의 쿼터 단계별 플래그(tight 350, critical 450, exhausted 490) 검증"""
+        """GeminiTelemetry의 쿼터 단계별 플래그(tight 700, critical 900, exhausted 980) 검증 (1,000 RPD 기준)"""
         # 1. 초기 상태: 정상
         budget = GeminiTelemetry.get_daily_quota_budget()
         self.assertFalse(budget["is_tight"])
@@ -42,31 +42,31 @@ class TestQuotaCompression(unittest.TestCase):
         self.assertTrue(GeminiTelemetry.can_make_api_call(for_emergency_exit=False))
         self.assertTrue(GeminiTelemetry.can_make_api_call(for_emergency_exit=True))
 
-        # 2. 350회 도달 (70%): is_tight 활성화
-        GeminiTelemetry._api_calls = 350
+        # 2. 700회 도달 (70%): is_tight 활성화
+        GeminiTelemetry._api_calls = 700
         budget = GeminiTelemetry.get_daily_quota_budget()
         self.assertTrue(budget["is_tight"])
         self.assertFalse(budget["is_critical"])
         self.assertTrue(GeminiTelemetry.can_make_api_call(for_emergency_exit=False))
 
-        # 3. 450회 도달 (90%): is_critical 활성화 (신규 매수 AI 차단, 긴급 탈출은 허용)
-        GeminiTelemetry._api_calls = 450
+        # 3. 900회 도달 (90%): is_critical 활성화 (신규 매수 AI 차단, 긴급 탈출은 허용)
+        GeminiTelemetry._api_calls = 900
         budget = GeminiTelemetry.get_daily_quota_budget()
         self.assertTrue(budget["is_critical"])
         self.assertFalse(GeminiTelemetry.can_make_api_call(for_emergency_exit=False))
         self.assertTrue(GeminiTelemetry.can_make_api_call(for_emergency_exit=True))
 
-        # 4. 490회 도달 (98%): is_exhausted 활성화 (긴급 탈출도 차단)
-        GeminiTelemetry._api_calls = 490
+        # 4. 980회 도달 (98%): is_exhausted 활성화 (긴급 탈출도 차단)
+        GeminiTelemetry._api_calls = 980
         budget = GeminiTelemetry.get_daily_quota_budget()
         self.assertTrue(budget["is_exhausted"])
         self.assertFalse(GeminiTelemetry.can_make_api_call(for_emergency_exit=False))
         self.assertFalse(GeminiTelemetry.can_make_api_call(for_emergency_exit=True))
 
     def test_analyzer_respects_daily_quota_guard(self):
-        """GeminiAnalyzer.analyze가 450회 도달 시 API 호출을 즉시 건너뛰고 로컬 엔진으로 폴백하는지 검증"""
+        """GeminiAnalyzer.analyze가 900회 도달 시 API 호출을 즉시 건너뛰고 로컬 엔진으로 폴백하는지 검증"""
         analyzer = GeminiAnalyzer(api_key="fake-key")
-        GeminiTelemetry._api_calls = 450  # 450회 한도 도달
+        GeminiTelemetry._api_calls = 900  # 900회 한도 도달
 
         candles_5m = [
             {
