@@ -46,9 +46,22 @@ class GeminiAnalyzer:
     # 하위 호환성을 위한 참조
     STABLE_MODELS = FALLBACK_MODELS
 
+    # 브리핑 전용 Fallback 모델 (하루 1회 발송용 최신 Flash 모델 순차 구성, Pro 모델 완전 배제)
+    BRIEFING_FALLBACK_MODELS: ClassVar[list[str]] = [
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+    ]
+
     # 동적 감지된 모델 캐시 및 TTL (6시간)
     _CACHED_MODELS: ClassVar[list[str]] = []
+    _CACHED_BRIEFING_MODELS: ClassVar[list[str]] = []
     _MODELS_CACHED_AT: ClassVar[float] = 0.0
+    _BRIEFING_MODELS_CACHED_AT: ClassVar[float] = 0.0
     _MODELS_CACHE_TTL: ClassVar[float] = 21600.0
 
     # 모델별 쿨다운(429/타임아웃) 및 블랙리스트(404/지원종료) 만료 시점 캐시 (전역 공유)
@@ -67,6 +80,12 @@ class GeminiAnalyzer:
     def clear_caches(cls) -> None:
         """단위 테스트 및 세션 재시작을 위한 AI 응답 캐시 초기화"""
         with cls._CLASS_LOCK:
+            cls._CACHED_MODELS.clear()
+            cls._CACHED_BRIEFING_MODELS.clear()
+            cls._MODELS_CACHED_AT = 0.0
+            cls._BRIEFING_MODELS_CACHED_AT = 0.0
+            cls._MODEL_COOLDOWNS.clear()
+            cls._MODEL_BLACKLIST.clear()
             cls._MACRO_DIAG_CACHE.clear()
             cls._LAST_MACRO_DIAG_TS = 0.0
             cls._SCREENER_RANK_CACHE.clear()
@@ -112,6 +131,42 @@ class GeminiAnalyzer:
             tier = 1
         else:
             tier = 0
+
+        # 2. 버전 번호 파싱 (예: gemini-3.8-flash -> 3.8, gemini-3.1-flash -> 3.1)
+        version_match = re.search(r"(\d+(?:\.\d+)?)", lower_name)
+        version = float(version_match.group(1)) if version_match else 0.0
+
+        # 'latest' 별칭 처리 (버전 명시 없는 latest는 안정적 최신으로 취급)
+        is_latest = 1 if "latest" in lower_name else 0
+        if is_latest and version == 0.0:
+            version = 2.99
+
+        # preview/experimental 모델 패널티 (안정 릴리스 우선)
+        is_preview = 1 if ("preview" in lower_name or "exp" in lower_name) else 0
+        stable_flag = 0 if is_preview else 1
+
+        return (tier, version, stable_flag, is_latest, lower_name)
+
+    @classmethod
+    def _briefing_model_priority_key(cls, name: str) -> tuple[int, float, int, int, str]:
+        """
+        일일 브리핑용 Gemini 모델 우선순위 점수 산출 함수 (내림차순 정렬)
+        1순위(Tier 2): 일반 flash 계열 (분석력/문장력 최우선, gemini-3.8-flash 우선)
+        2순위(Tier 1): pro 계열
+        3순위(Tier 0): flash-lite 계열 (폴백용)
+        세부 정렬: 최신 버전 번호(예: 3.8 > 3.7 > 3.5 > 3.1 > 2.5), latest 별칭, 정식 릴리스 우선
+        """
+        lower_name = name.lower()
+
+        # 1. Tier 판별: 일반 flash = 1, flash-lite = 0, pro 및 기타 = -1 (Pro 모델 완전 배제)
+        if "pro" in lower_name:
+            tier = -1
+        elif "flash-lite" in lower_name:
+            tier = 0
+        elif "flash" in lower_name:
+            tier = 1
+        else:
+            tier = -1
 
         # 2. 버전 번호 파싱 (예: gemini-3.8-flash -> 3.8, gemini-3.1-flash -> 3.1)
         version_match = re.search(r"(\d+(?:\.\d+)?)", lower_name)
@@ -219,6 +274,98 @@ class GeminiAnalyzer:
                 ordered = quota_available + [m for m in usable if m not in quota_available]
                 return ordered[:limit]
             return usable[:limit]
+
+    @classmethod
+    def fetch_available_briefing_models(cls, api_key: str = "") -> list[str]:
+        """
+        브리핑용 최신 고성능 모델 목록을 API(ListModels)로부터 조회하여
+        최신 flash 계열 우선(3.8-flash 최우선)으로 자동 정렬합니다.
+        (이미지·오디오·임베딩 등 미디어/특수 목적 모델은 제외)
+        """
+        key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
+        if not key:
+            return list(cls.BRIEFING_FALLBACK_MODELS)
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_models = data.get("models", [])
+                valid_models = []
+                for item in raw_models:
+                    m_name = item.get("name", "").replace("models/", "").strip()
+                    methods = item.get("supportedGenerationMethods", [])
+
+                    # generateContent 지원 모델 선별
+                    if "generateContent" in methods:
+                        # 브리핑 부적합 모델(Pro 모델 완전 배제, 이미지/오디오/음성/임베딩/특수 목적 배제)
+                        bad_keywords = [
+                            "pro", "embedding", "aqa", "imagen", "image", "audio",
+                            "tts", "stt", "omni", "vision", "high-res"
+                        ]
+                        if any(bad in m_name.lower() for bad in bad_keywords):
+                            continue
+                        # Flash 계열 모델만 허용
+                        if "flash" not in m_name.lower():
+                            continue
+                        valid_models.append(m_name)
+
+                if valid_models:
+                    sorted_models = sorted(valid_models, key=cls._briefing_model_priority_key, reverse=True)
+                    logger.info(
+                        f"✨ [Gemini Briefing Router] 브리핑 지원 모델 {len(sorted_models)}개 자동 감지 및 정렬 완료 "
+                        f"(1위: {sorted_models[0]}): {sorted_models[:5]}"
+                    )
+                    return sorted_models
+                else:
+                    logger.warning("Gemini ListModels 응답에 적합한 브리핑 모델이 없어 기본 Fallback 목록을 사용합니다.")
+            else:
+                logger.warning(f"Gemini ListModels 브리핑 모델 조회 실패 (HTTP {resp.status_code}) ➜ 기본 Fallback 목록 사용")
+        except Exception as e:
+            logger.warning(f"Gemini ListModels 브리핑 모델 조회 중 예외 발생: {e} ➜ 기본 Fallback 목록 사용")
+
+        return list(cls.BRIEFING_FALLBACK_MODELS)
+
+    @classmethod
+    def get_available_briefing_models(cls, api_key: str = "", force_refresh: bool = False) -> list[str]:
+        """
+        6시간 TTL 캐시를 적용하여 브리핑용 가용 모델 목록을 반환합니다. (영구/장기 블랙리스트 제외)
+        """
+        now = time.time()
+        with cls._CLASS_LOCK:
+            if force_refresh or not cls._CACHED_BRIEFING_MODELS or (now - cls._BRIEFING_MODELS_CACHED_AT > cls._MODELS_CACHE_TTL):
+                models = cls.fetch_available_briefing_models(api_key)
+                cls._CACHED_BRIEFING_MODELS = models
+                cls._BRIEFING_MODELS_CACHED_AT = now
+
+            # 블랙리스트 제외된 활성 모델만 반환 (Pro 모델 엄격 배제)
+            active_models = [
+                m for m in cls._CACHED_BRIEFING_MODELS
+                if cls._MODEL_BLACKLIST.get(m, 0.0) <= now and "pro" not in m.lower()
+            ]
+            return active_models if active_models else list(cls.BRIEFING_FALLBACK_MODELS)
+
+    def get_briefing_candidate_models(self, limit: int = 5) -> list[str]:
+        """
+        현재 시점에 쿨다운이나 블랙리스트가 아닌 브리핑 최우선 순위 모델 목록을 최대 limit개 반환합니다.
+        (Pro 모델 완전 제외, 3.8-flash 최우선 ➜ 3.7 ➜ 3.6 ➜ 3.5 ➜ 3-flash ➜ 3.5-flash-lite 순차 폴백)
+        """
+        now_ts = time.time()
+        with self._CLASS_LOCK:
+            all_models = self.get_available_briefing_models(self.api_key)
+            usable = [
+                m for m in all_models
+                if self._MODEL_COOLDOWNS.get(m, 0.0) <= now_ts and "pro" not in m.lower()
+            ]
+            if usable:
+                return usable[:limit]
+            # 쿨다운 중이더라도 블랙리스트가 아닌 fallback 모델 반환
+            fallback_usable = [
+                m for m in self.BRIEFING_FALLBACK_MODELS
+                if self._MODEL_BLACKLIST.get(m, 0.0) <= now_ts and "pro" not in m.lower()
+            ]
+            return fallback_usable[:limit] if fallback_usable else list(self.BRIEFING_FALLBACK_MODELS[:limit])
 
     @property
     def _analysis_cache(self) -> dict[str, dict[str, Any]]:
@@ -1280,7 +1427,8 @@ class GeminiAnalyzer:
    • [전략 제언]: 향후 몇 시간 동안의 안전 운용 지침
 3. 반드시 한국어로 정중하고 명확하게 작성.
 """
-            models = self.get_candidate_models(limit=2)
+            # 브리핑 전용: gemini-3.8-flash 및 최신 고성능 모델부터 순차 호출
+            models = self.get_briefing_candidate_models(limit=5)
             if not models:
                 return default_comment
 
@@ -1295,11 +1443,26 @@ class GeminiAnalyzer:
                 endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
                 try:
                     self._wait_for_rate_limit()
-                    resp = requests.post(endpoint, json=payload, timeout=6.0)
+                    resp = requests.post(endpoint, json=payload, timeout=8.0)
                     if resp.status_code == 200:
-                        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                        return text
-                except Exception:
+                        data = resp.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            if parts and "text" in parts[0]:
+                                text = parts[0]["text"].strip()
+                                logger.info(f"✨ [{exchange_name}] 09:00 종합 시황 브리핑 생성 성공 (모델: {model})")
+                                return text
+                    elif resp.status_code in (429, 503):
+                        logger.warning(f"브리핑 모델 {model} 일시 제한/오류 (HTTP {resp.status_code}) ➜ 차순위 최신 모델로 순차 전환")
+                        self._set_model_cooldown(model, 300.0)
+                    elif resp.status_code == 404:
+                        logger.debug(f"브리핑 모델 {model} 미지원 (HTTP 404) ➜ 차순위 모델로 순차 전환")
+                        self._set_model_blacklist(model, 86400.0)
+                    else:
+                        logger.debug(f"브리핑 모델 {model} 응답 실패: HTTP {resp.status_code}")
+                except Exception as ex:
+                    logger.debug(f"브리핑 모델 {model} 호출 예외: {ex}")
                     continue
         except Exception as e:
             logger.debug(f"generate_market_briefing 예외: {e}")

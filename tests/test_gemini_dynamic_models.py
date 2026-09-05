@@ -181,6 +181,141 @@ class GeminiDynamicModelsTests(unittest.TestCase):
         self.assertGreater(sleep_arg, 0.0)
         self.assertLessEqual(sleep_arg, GeminiAnalyzer._MIN_CALL_INTERVAL_SEC)
 
+    def test_briefing_model_priority_sorting(self):
+        """브리핑 전용 정렬: gemini-3.8-flash 최우선, 최신 Flash 순차 정렬 및 Pro 모델 배제 검증"""
+        raw_models = [
+            "gemini-3.5-flash",
+            "gemini-3.8-flash",
+            "gemini-3.6-flash",
+            "gemini-3-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
+            "gemini-2.5-pro",
+            "gemini-pro",
+            "gemini-3.7-flash",
+        ]
+
+        sorted_models = sorted(raw_models, key=GeminiAnalyzer._briefing_model_priority_key, reverse=True)
+
+        # 1. 최우선 1위는 반드시 gemini-3.8-flash
+        self.assertEqual(sorted_models[0], "gemini-3.8-flash")
+
+        # 2. 상위권은 사용 가능한 최신 Flash 모델 순서여야 함 (3.8 > 3.7 > 3.6 > 3.5 > 3)
+        self.assertEqual(sorted_models[1], "gemini-3.7-flash")
+        self.assertEqual(sorted_models[2], "gemini-3.6-flash")
+        self.assertEqual(sorted_models[3], "gemini-3.5-flash")
+        self.assertEqual(sorted_models[4], "gemini-3-flash")
+
+        # 3. 그 다음은 Lite 계열 순서
+        self.assertEqual(sorted_models[5], "gemini-3.5-flash-lite")
+        self.assertEqual(sorted_models[6], "gemini-3.1-flash-lite")
+
+        # 4. Pro 모델은 tier -1로 맨 뒤에 배치됨
+        self.assertIn(sorted_models[7], ["gemini-2.5-pro", "gemini-pro"])
+        self.assertIn(sorted_models[8], ["gemini-2.5-pro", "gemini-pro"])
+
+    @patch("requests.get")
+    def test_fetch_briefing_models_excludes_pro_and_media(self, mock_get):
+        """ListModels API로부터 조회 시 pro 모델 및 미디어 모델이 브리핑 목록에서 완전히 배제되는지 검증"""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "models": [
+                {"name": "models/gemini-2.5-pro", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/gemini-pro", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/gemini-3.7-flash", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/gemini-3.5-flash", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/gemini-3-flash", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/gemini-3.5-flash-lite", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/gemini-3.1-flash-lite-image", "supportedGenerationMethods": ["generateContent"]},
+            ]
+        }
+        mock_get.return_value = mock_resp
+
+        models = GeminiAnalyzer.fetch_available_briefing_models(api_key="fake-key")
+
+        # Pro 및 미디어 모델 완전 배제 확인
+        self.assertNotIn("gemini-2.5-pro", models)
+        self.assertNotIn("gemini-pro", models)
+        self.assertNotIn("gemini-3.1-flash-lite-image", models)
+
+        # 1위는 3.8-flash
+        self.assertEqual(models[0], "gemini-3.8-flash")
+        # Flash 모델 순서 유지 확인
+        self.assertEqual(
+            models[:5],
+            [
+                "gemini-3.8-flash",
+                "gemini-3.7-flash",
+                "gemini-3.6-flash",
+                "gemini-3.5-flash",
+                "gemini-3-flash",
+            ],
+        )
+
+    def test_briefing_candidate_models_fallback(self):
+        """3.8-flash 쿨다운 시 차순위 최신 모델로 순차 폴백되는지 검증 (Pro 모델은 절대 포함 안 됨)"""
+        analyzer = GeminiAnalyzer(api_key="fake-key")
+        GeminiAnalyzer._CACHED_BRIEFING_MODELS = [
+            "gemini-3.8-flash",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+        ]
+        GeminiAnalyzer._BRIEFING_MODELS_CACHED_AT = time.time()
+
+        # 정상 상태: 1위는 3.8-flash
+        candidates = analyzer.get_briefing_candidate_models(limit=3)
+        self.assertEqual(candidates[0], "gemini-3.8-flash")
+
+        # 3.8-flash가 일시적 쿨다운/429인 경우
+        GeminiAnalyzer._MODEL_COOLDOWNS["gemini-3.8-flash"] = time.time() + 300.0
+
+        candidates_fallback = analyzer.get_briefing_candidate_models(limit=3)
+        # 차순위인 3.7-flash가 1위로 자동 승격
+        self.assertEqual(candidates_fallback[0], "gemini-3.7-flash")
+        self.assertEqual(candidates_fallback[1], "gemini-3.6-flash")
+
+        # 반환된 목록에 pro 모델이 일체 없는지 확인
+        for c in candidates_fallback:
+            self.assertNotIn("pro", c.lower())
+
+    @patch("requests.post")
+    def test_generate_market_briefing_calls_highest_priority_model(self, mock_post):
+        """09:00 시황 브리핑 생성 시 gemini-3.8-flash로 우선 호출되는지 검증"""
+        analyzer = GeminiAnalyzer(api_key="fake-key")
+        GeminiAnalyzer._CACHED_BRIEFING_MODELS = [
+            "gemini-3.8-flash",
+            "gemini-3.5-flash",
+        ]
+        GeminiAnalyzer._BRIEFING_MODELS_CACHED_AT = time.time()
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "candidates": [
+                {"content": {"parts": [{"text": "• [거시 시황]: BTC 강세 지속\n• [계좌 진단]: 안전 운용 중\n• [전략 제언]: 관망 유지"}]}}
+            ]
+        }
+        mock_post.return_value = mock_resp
+
+        result = analyzer.generate_market_briefing(
+            exchange_name="빗썸",
+            total_equity=1000000.0,
+            daily_pnl_krw=10000.0,
+            daily_pnl_pct=1.0,
+            held_positions_desc="KRW-BTC",
+            macro_diag={"regime": "NORMAL", "risk_score": 30, "summary": "정상"},
+            fng_desc="탐욕",
+        )
+
+        self.assertIn("[거시 시황]", result)
+        # mock_post 호출된 url에 gemini-3.8-flash가 포함되어 있는지 확인
+        called_url = mock_post.call_args[0][0]
+        self.assertIn("gemini-3.8-flash", called_url)
+
 
 if __name__ == "__main__":
     unittest.main()
