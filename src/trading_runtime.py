@@ -1108,6 +1108,11 @@ class TradingCycleEngine:
         local_alpha_score = int(selected_entry.get("alpha_score", 0))
         is_quality_promising = (local_alpha_score >= 50)
 
+        allow_ai_direct = (
+            StrategyPolicy.is_ai_direct_entry_enabled()
+            if hasattr(StrategyPolicy, "is_ai_direct_entry_enabled")
+            else False
+        )
         should_call_ai = (
             analyzer is not None
             and base_safety_passed
@@ -1115,7 +1120,8 @@ class TradingCycleEngine:
             and (
                 selected_entry.get("allow_buy", False)
                 or (
-                    pre_qualification_passed
+                    allow_ai_direct
+                    and pre_qualification_passed
                     and candidate_trade_value >= StrategyPolicy.MIN_TRADE_VALUE_RISK_OFF * 0.5
                     and is_quality_promising
                 )
@@ -1232,7 +1238,13 @@ class TradingCycleEngine:
         ai_alpha = int(strategy.get("alpha_score", 0) or selected_entry.get("alpha_score", 0) or 0)
 
         if action == "BUY" and not selected_entry.get("allow_buy", False):
-            # AI Direct Entry: 로컬 하드게이트는 관망이지만 기본 안전망을 통과하고 AI가 심층 분석으로 BUY를 승인한 경우 (AI 권한 확대)
+            # AI Direct Entry: 로컬 하드게이트는 관망이지만 기본 안전망을 통과하고 AI가 심층 분석으로 BUY를 승인한 경우
+            # 승률 저조(20~30%) 방지를 위해 ENABLE_AI_DIRECT_ENTRY 기본 비활성화 정책을 준수한다.
+            allow_ai_direct = (
+                StrategyPolicy.is_ai_direct_entry_enabled()
+                if hasattr(StrategyPolicy, "is_ai_direct_entry_enabled")
+                else False
+            )
             threshold = (
                 StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF
                 if btc_regime == "RISK_OFF"
@@ -1247,7 +1259,7 @@ class TradingCycleEngine:
             can_enter_daily = True
             if isinstance(daily_losses, (int, float)) and isinstance(max_daily_losses, (int, float)):
                 can_enter_daily = daily_losses < max_daily_losses
-            if is_ai_buy_signal and base_safety_passed and can_enter_daily and (ai_alpha >= threshold or ai_alpha == 0):
+            if allow_ai_direct and is_ai_buy_signal and base_safety_passed and can_enter_daily and (ai_alpha >= threshold or ai_alpha == 0):
                 logger.info(
                     f"✨ [{market}] AI 단독 자율 승인 진입 (로컬 룰 관망 ➜ AI 적극 승인, 알파스코어: {ai_alpha}점, 레짐: {btc_regime})"
                 )
@@ -1259,7 +1271,10 @@ class TradingCycleEngine:
                     stop_loss = strategy["stop_loss"]
             else:
                 action = "HOLD"
-                reason = f"정량 공통 진입 게이트 차단: {selected_entry.get('reason', '')} | {reason}"
+                if not allow_ai_direct and is_ai_buy_signal:
+                    reason = f"로컬 퀀트 관망 종목 AI 단독 매수 차단(안전 정책): {selected_entry.get('reason', '')} | {reason}"
+                else:
+                    reason = f"정량 공통 진입 게이트 차단: {selected_entry.get('reason', '')} | {reason}"
         elif action == "BUY" and selected_entry.get("allow_buy", False):
             if entry_profile.use_hold_price_fallbacks:
                 target_price = strategy.get("target_price") or selected_entry.get("target_price", target_price)

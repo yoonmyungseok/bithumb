@@ -1,4 +1,5 @@
 import math
+import os
 import threading
 from datetime import datetime, timezone, timedelta
 from typing import Any
@@ -46,25 +47,25 @@ class StrategyPolicy:
     MAJOR_TIME_STOP_SECONDS_NORMAL: int = 7200   # 메이저 정상장 120분 타임스탑
     MAJOR_TIME_STOP_SECONDS_RISK_OFF: int = 3600 # 메이저 약세장 60분 타임스탑
 
-    # 1-2. 대세 상승장(BULL_TREND) 전용 완화/확장 파라미터 (휩소 방어 & 대세 랠리 온전 추종)
-    BULL_STOP_LOSS_PCT: float = 0.032            # 상승장 노이즈 휩소 방어 손절 -3.2% (단기 틱 털림 방지)
-    BULL_PARTIAL_TP_1_PCT: float = 0.045         # 상승장 1차 분할 익절 +4.5% (기존 +3.5%에서 확대)
-    BULL_PARTIAL_TP_2_PCT: float = 0.080         # 상승장 2차 분할 익절 +8.0% (기존 +7.0%에서 확대)
-    BULL_TRAILING_START_PCT: float = 0.040       # +4.0% 도달 시 트레일링 스탑 개시
-    BULL_TRAILING_DROP_PCT: float = 0.025        # 최고점 대비 2.5% 하락 시 청산 (상승장 자연스러운 숨고르기 파동 허용)
-    BULL_TIME_STOP_SECONDS: int = 21600          # 상승장 360분 (6시간) 기본 타임스탑
-    BULL_TIME_STOP_MAX_HOLD_SECONDS: int = 28800 # 지지선 유지 시 최대 480분 (8시간) 홀딩 유예
-    ALPHA_BUY_THRESHOLD_BULL: int = 55           # 상승장 7대 팩터 복합 알파 승인 점수 (55점으로 유연화)
-    ALPHA_BUY_THRESHOLD_NIGHT_BULL: int = 65     # 상승장 심야 알파 승인 점수 (65점)
-    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_BULL: int = 50       # 상승장 모멘텀 돌파 알파 (50점)
-    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_BULL: int = 60 # 상승장 심야 모멘텀 돌파 알파 (60점)
+    # 1-2. 대세 상승장(BULL_TREND) 전용 파라미터 (정상화: 휩소 과다 손실 차단 및 선제 익절)
+    BULL_STOP_LOSS_PCT: float = 0.020            # 상승장 손절 -2.0% (과다 손절 방어, 추세 강세선 보호)
+    BULL_PARTIAL_TP_1_PCT: float = 0.030         # 상승장 1차 분할 익절 +3.0% (선제 수익 실현 후 Break-Even 락인)
+    BULL_PARTIAL_TP_2_PCT: float = 0.060         # 상승장 2차 분할 익절 +6.0% (현실적 2차 목표)
+    BULL_TRAILING_START_PCT: float = 0.030       # +3.0% 도달 시 트레일링 스탑 개시
+    BULL_TRAILING_DROP_PCT: float = 0.015        # 최고점 대비 1.5% 하락 시 청산 (상승장 고점 반락 선제 익절)
+    BULL_TIME_STOP_SECONDS: int = 7200           # 상승장 120분 (2시간) 타임스탑 (자금 잠김 방어)
+    BULL_TIME_STOP_MAX_HOLD_SECONDS: int = 10800 # 지지선 유지 시 최대 180분 (3시간) 홀딩 유예
+    ALPHA_BUY_THRESHOLD_BULL: int = 65           # 상승장 알파 승인 점수 (65점으로 엄선하여 고점 상투 차단)
+    ALPHA_BUY_THRESHOLD_NIGHT_BULL: int = 70     # 상승장 심야 알파 승인 점수 (70점)
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_BULL: int = 60       # 상승장 모멘텀 돌파 알파 (60점)
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_BULL: int = 65 # 상승장 심야 모멘텀 돌파 알파 (65점)
 
-    # 2. 익절 및 트레일링 스탑 (3단계 다단계 분할 익절 & 40% 러너 추세 추종)
+    # 2. 익절 및 트레일링 스탑 (2~3단계 분할 익절 & 2차 러너 추세 추종)
     PARTIAL_TP_PCT: float = 0.035        # 기본 1차 익절 기준 +3.5%
-    PARTIAL_TP_1_PCT: float = 0.035      # 1차 +3.5% 도달 시 30% 분할 익절
-    PARTIAL_TP_1_RATIO: float = 0.30     # 1차 익절 비중 (30% 선제 수익 실현)
-    PARTIAL_TP_2_PCT: float = 0.070      # 2차 +7.0% 도달 시 원금의 30% 분할 익절
-    PARTIAL_TP_2_RATIO: float = 0.30     # 2차 익절 비중 (잔여 중 42.85% = 원금의 30%)
+    PARTIAL_TP_1_PCT: float = 0.035      # 1차 +3.5% 도달 시 분할 익절
+    PARTIAL_TP_1_RATIO: float = 0.50     # 1차 익절 비중 (50% 선제 수익 실현하여 손익비 대폭 개선)
+    PARTIAL_TP_2_PCT: float = 0.070      # 2차 +7.0% 도달 시 분할 익절
+    PARTIAL_TP_2_RATIO: float = 0.25     # 2차 익절 비중 (원금의 25% = 잔여 50% 중 50%)
     BREAKEVEN_STOP_PCT: float = 0.003    # 1차 익절 완료 후 본전 보장 스탑 (+0.3% 수수료 보장)
     TRAILING_START_PCT: float = 0.030    # +3.0% 트레일링 스탑 활성화
     TRAILING_DROP_PCT: float = 0.020     # 최고점 대비 2.0% 하락 시 시장가 청산 (알트 숨고르기 허용)
@@ -99,19 +100,34 @@ class StrategyPolicy:
     RSI_MIN_RISK_OFF: float = 42.0       # RISK_OFF 저점 반등 확인용 RSI 최소치
     RSI_MAX_RISK_OFF: float = 65.0       # RISK_OFF 고점 추격 방지용 RSI 최대치 (약세장 독자 수급 수용을 위해 65.0으로 현실화)
     PCT_B_MIN: float = 0.20              # 볼린저 밴드 %B 최소치
-    PCT_B_MAX: float = 0.65              # 상단권 모멘텀 추격을 차단하는 절대 상한
+    PCT_B_MAX: float = 0.60              # 상단권 모멘텀 추격을 차단하는 절대 상한 (0.65 -> 0.60으로 강화)
     PULLBACK_PCT_B_MIN_NORMAL: float = 0.25  # 정상장 저점권 반등 후보 하한
     PULLBACK_PCT_B_MAX_NORMAL: float = 0.60  # 정상장 저점권 반등 후보 상한
     PULLBACK_PCT_B_MIN_RISK_OFF: float = 0.28  # RISK_OFF 반등 후보 하한
-    PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.70  # RISK_OFF 반등 후보 상한 (볼린저밴드 0.70까지 수용)
+    PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.65  # RISK_OFF 반등 후보 상한 (과도한 상단 추격 차단)
     PULLBACK_LOOKBACK_BARS: int = 12      # 최근 지지 저점 산정에 사용하는 5분봉 수
     PULLBACK_MAX_DISTANCE_NORMAL: float = 0.035  # 정상장 최근 저점 대비 최대 허용 거리
     PULLBACK_MAX_DISTANCE_RISK_OFF: float = 0.035  # RISK_OFF 최근 저점 대비 최대 허용 거리 (3.5%로 현실화)
-    MAX_MA20_DISPARITY: float = 1.035    # MA20 대비 최대 이격도 +3.5% (강한 돌파 캔들 수용)
-    MAX_UPPER_SHADOW_RATIO: float = 0.55 # 캔들 윗꼬리 최대 허용 비율 (55%)
+    MAX_MA20_DISPARITY: float = 1.035    # MA20 대비 최대 이격도 +3.5% (강한 모멘텀 돌파 캔들 수용)
+    MAX_UPPER_SHADOW_RATIO: float = 0.50 # 캔들 윗꼬리 최대 허용 비율 (50%로 강화하여 피뢰침 차단)
     MA_ALIGNMENT_RATIO: float = 0.995    # MA5 >= MA20 * 0.995
     PULLBACK_MA_ALIGNMENT_RATIO: float = 0.990  # 저점 반등은 MA20 아래 1% 이내 회복까지 허용
     RISK_OFF_ALLOC_RATIO: float = 0.4    # RISK_OFF 진입 비중 축소 (기존 60% -> 40%로 리스크 축소)
+
+    # 4-0. AI 단독 자율 승인 (AI Direct Entry) 기본 비활성화
+    # 로컬 퀀트 관망(allow_buy=False) 상태에서 AI 단독 매수 진입 시 승률 20~30%로 저조하므로 기본 차단한다.
+    # AI는 로컬 퀀트 1차 통과 종목의 2차 컨펌 및 보유 포지션 리스크 관리(탈출/목표가)에 집중한다.
+    ENABLE_AI_DIRECT_ENTRY: bool = False
+
+    @classmethod
+    def is_ai_direct_entry_enabled(cls) -> bool:
+        """환경 변수 또는 클래스 속성을 통해 AI 단독 진입 허용 여부를 안전하게 확인"""
+        env_val = os.getenv("ENABLE_AI_DIRECT_ENTRY", "").strip().lower()
+        if env_val in ("true", "1", "yes", "y", "enable", "enabled"):
+            return True
+        if env_val in ("false", "0", "no", "n", "disable", "disabled"):
+            return False
+        return cls.ENABLE_AI_DIRECT_ENTRY
 
     # 4-2. 급락 후 반등 전용 정책: 일반 RISK_OFF 기준을 낮추지 않고, 별도·축소 비중으로만 사용한다.
     RECOVERY_REBOUND_ENABLED: bool = True

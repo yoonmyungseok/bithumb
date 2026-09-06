@@ -93,6 +93,38 @@ class StorageAndFillBoundaryTests(unittest.TestCase):
         processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=110.0, remaining_volume=0.0)
         cooldown.record_exit.assert_called_once_with("KRW-BTC", "AI 긴급 익절탈출", exit_price=110.0)
 
+    def test_insert_trade_canonical_field_mapping(self):
+        """insert_trade 호출 시 레거시 키(reason, btc_regime, bars_held)가 표준 컬럼으로 매핑된다."""
+        import tempfile
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_db = os.path.join(tmpdir, "test_trading.db")
+            mgr = db_manager.get_db_manager(test_db)
+            trade_sample = {
+                "market": "KRW-ETH",
+                "timestamp": "2026-09-06 12:00:00",
+                "entry_price": 3000000.0,
+                "exit_price": 3090000.0,
+                "pnl_krw": 90000.0,
+                "pnl_pct": 3.0,
+                "side": "트레일링 익절",
+                "reason": "1차 목표 도달 트레일링",
+                "btc_regime": "BULL_TREND",
+                "bars_held": 6,
+            }
+            row_id = mgr.insert_trade("upbit", trade_sample)
+            self.assertGreater(row_id, 0)
+
+            trades = mgr.get_trades("upbit", "KRW-ETH")
+            self.assertEqual(len(trades), 1)
+            row = trades[0]
+            self.assertEqual(row["exchange"], "upbit")
+            self.assertEqual(row["market"], "KRW-ETH")
+            self.assertIn("트레일링", row["exit_reason"])
+            self.assertEqual(row["market_regime"], "BULL_TREND")
+            self.assertEqual(row["hold_duration_min"], 30)  # 6봉 * 5분 = 30분
+            self.assertEqual(row["exit_time"], "2026-09-06 12:00:00")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,7 +19,7 @@ echo.
 echo ======================================================
 echo  [Dashboard] 통합 대시보드 게이트웨이 서버 실행 시작
 echo  (창을 닫으면 프로세스가 즉시 종료됩니다)
-echo  대시보드 접속 주소: http://localhost:7979
+echo  대시보드 접속 주소: http://100.76.22.126:7979 (Tailscale)
 echo ======================================================
 %PYTHON_BIN% src\dashboard_server.py
 echo.

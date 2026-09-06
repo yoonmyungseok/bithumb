@@ -19,6 +19,13 @@ def _project_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(_project_root(), ".env"))
+except ImportError:
+    pass
+
+
 def _runtime_paths(exchange: str) -> tuple[str, str]:
     """거래소별 워치독 PID 파일과 봇 하트비트 파일 위치를 반환한다."""
     ex = exchange.lower()
@@ -257,7 +264,10 @@ def status_action(exchange: str = "bithumb"):
                 print(f"🟢 [대시보드 서버 가동 중] PID: {pid}")
         else:
             print("⚪ [중지됨] 실행 중인 통합 대시보드 프로세스가 없습니다.")
-        print("🌐 [통합 대시보드 접속 URL] http://localhost:7979")
+        dashboard_host = os.getenv("DASHBOARD_HOST", "100.76.22.126")
+        display_host = dashboard_host if dashboard_host not in ("0.0.0.0", "") else "localhost"
+        dashboard_port = int(os.getenv("DASHBOARD_PORT", "7979"))
+        print(f"🌐 [통합 대시보드 접속 URL] http://{display_host}:{dashboard_port}")
         print()
         return
 

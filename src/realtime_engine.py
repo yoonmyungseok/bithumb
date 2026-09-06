@@ -431,8 +431,8 @@ class RealtimeRiskEngine:
 
             if action_type in ("PARTIAL_TP", "PARTIAL_TP_1", "PARTIAL_TP_2"):
                 is_stage2 = (action_type == "PARTIAL_TP_2")
-                # 1차: 보유의 30% 매도 | 2차: 잔여의 42.85% (원금 대비 30%) 매도 ➔ 최종 40% 잔여 러너 유지
-                sell_ratio = (30.0 / 70.0) if is_stage2 else StrategyPolicy.PARTIAL_TP_1_RATIO
+                # 1차: 보유의 50% 매도 | 2차: 잔여의 50% (원금 대비 25%) 매도 ➔ 최종 25% 대세 추종 러너 유지
+                sell_ratio = 0.50 if is_stage2 else StrategyPolicy.PARTIAL_TP_1_RATIO
                 sell_vol = coin_available * sell_ratio
                 sell_val = sell_vol * current_price
                 if sell_val >= self.min_order_krw:
@@ -446,9 +446,9 @@ class RealtimeRiskEngine:
 
                     try:
                         stage_label = (
-                            f"2차 +{StrategyPolicy.PARTIAL_TP_2_PCT*100:.1f}%(30%)"
+                            f"2차 +{StrategyPolicy.PARTIAL_TP_2_PCT*100:.1f}%(25%)"
                             if is_stage2
-                            else f"1차 +{StrategyPolicy.PARTIAL_TP_1_PCT*100:.1f}%(30%)"
+                            else f"1차 +{StrategyPolicy.PARTIAL_TP_1_PCT*100:.1f}%({int(StrategyPolicy.PARTIAL_TP_1_RATIO*100)}%)"
                         )
                         logger.info(
                             f"⚡ [실시간 {stage_label} 분할익절] {korean_name}({market}) 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 시장가 분할 익절!"

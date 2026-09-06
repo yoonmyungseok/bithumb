@@ -435,18 +435,18 @@ class TrailingStopTracker:
                 tp_1_target = StrategyPolicy.PARTIAL_TP_1_PCT
                 tp_2_target = StrategyPolicy.PARTIAL_TP_2_PCT
 
-            # 1. [3단계 다단계 분할 익절: 1차(30%) / 2차(30%) / 3차 잔여(40%) 가속 트레일링]
+            # 1. [다단계 분할 익절: 1차(50%) / 2차(25%) / 3차 잔여(25%) 가속 트레일링]
             raw_stage = self.partial_tp_done.get(market, 0)
             cur_stage = 1 if raw_stage is True else int(raw_stage or 0)
 
-            # 1-A. 1차 30% 분할 익절 (메이저 +1.8% / 상승장 +4.5% / 일반 +3.5% 도달 시)
+            # 1-A. 1차 50% 분할 익절 (메이저 +1.8% / 상승장 +3.0% / 일반 +3.5% 도달 시)
             if current_profit_rate >= tp_1_target and cur_stage < 1:
                 self.partial_tp_done[market] = 1
                 self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
                 self._save_state(force=True)
                 return "PARTIAL_TP_1", current_price, current_price, current_profit_pct, current_profit_pct
 
-            # 1-B. 2차 30% 추가 분할 익절 (메이저 +3.5% / 상승장 +8.0% / 일반 +7.0% 도달 시)
+            # 1-B. 2차 25% 추가 분할 익절 (메이저 +3.5% / 상승장 +6.0% / 일반 +7.0% 도달 시)
             if current_profit_rate >= tp_2_target and cur_stage < 2:
                 self.partial_tp_done[market] = 2
                 self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
@@ -462,8 +462,8 @@ class TrailingStopTracker:
                 effective_start_pct = StrategyPolicy.MAJOR_TRAILING_START_PCT  # +1.5%
                 base_drop_pct = StrategyPolicy.MAJOR_TRAILING_DROP_PCT        # 1.0%
             elif is_bull:
-                effective_start_pct = StrategyPolicy.BULL_TRAILING_START_PCT  # +4.0%
-                base_drop_pct = StrategyPolicy.BULL_TRAILING_DROP_PCT        # 2.5%
+                effective_start_pct = StrategyPolicy.BULL_TRAILING_START_PCT  # +3.0%
+                base_drop_pct = StrategyPolicy.BULL_TRAILING_DROP_PCT        # 1.5%
             else:
                 effective_start_pct = self.start_profit_pct                    # +3.0%
                 base_drop_pct = self.trailing_drop_pct                        # 2.0%
@@ -483,7 +483,7 @@ class TrailingStopTracker:
                 elif is_major:
                     active_drop_pct = min(base_drop_pct, 0.010)  # 메이저: 1.0% 밀착
                 elif is_bull:
-                    active_drop_pct = min(base_drop_pct, 0.025)  # 상승장: 2.5% 숨고르기 허용
+                    active_drop_pct = min(base_drop_pct, 0.015)  # 상승장: 1.5% 고점 반락 선제 익절
                 elif peak_profit_pct >= 20.0:
                     active_drop_pct = 0.012  # +20% 이상 폭등 구간: 1.2% 고점 추적
                 elif peak_profit_pct >= 10.0:

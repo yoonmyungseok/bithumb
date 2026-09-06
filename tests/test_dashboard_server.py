@@ -273,6 +273,25 @@ class UnifiedDashboardServerTests(unittest.TestCase):
         self.assertEqual({item["source"] for item in upbit["alerts"]}, {"업비트 봇", "업비트 워치독"})
         self.assertTrue(all("빗썸" not in item["message"] for item in upbit["alerts"]))
 
+    def test_default_host_binding_from_env_or_default(self):
+        """환경변수 DASHBOARD_HOST 설정 시 해당 값을 채택하고, 미설정 시 100.76.22.126을 기본 채택해야 한다."""
+        with patch.dict(os.environ, {"DASHBOARD_HOST": "100.76.22.126", "DASHBOARD_PORT": "7979"}, clear=False):
+            server = UnifiedDashboardServer()
+            self.assertEqual(server.host, "100.76.22.126")
+            self.assertEqual(server.port, 7979)
+
+        with patch.dict(os.environ, {}, clear=False):
+            if "DASHBOARD_HOST" in os.environ:
+                del os.environ["DASHBOARD_HOST"]
+            server_default = UnifiedDashboardServer(port=17999)
+            self.assertEqual(server_default.host, "100.76.22.126")
+
+    def test_explicit_host_override(self):
+        """명시적으로 인자로 넘긴 host는 환경 변수보다 우선하여 바인딩되어야 한다."""
+        with patch.dict(os.environ, {"DASHBOARD_HOST": "100.76.22.126"}):
+            server = UnifiedDashboardServer(port=17999, host="127.0.0.1")
+            self.assertEqual(server.host, "127.0.0.1")
+
 
 if __name__ == "__main__":
     unittest.main()

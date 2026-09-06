@@ -36,6 +36,9 @@ if sys.platform == "win32":
 
 # 로깅 설정 (logs/dashboard.log)
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# 환경 변수 로드 (.env)
+load_dotenv(os.path.join(project_root, ".env"))
+
 log_dir = os.path.join(project_root, "logs")
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, "dashboard.log")
@@ -96,15 +99,15 @@ class UnifiedDashboardServer:
 
     def __init__(
         self,
-        port: int = 7979,
-        host: str = "0.0.0.0",
+        port: int | None = None,
+        host: str | None = None,
         bithumb_api_url: str = "http://127.0.0.1:17979",
         upbit_api_url: str = "http://127.0.0.1:17980",
         static_dir: str | None = None,
         alert_log_dir: str | None = None,
     ):
-        self.port = port
-        self.host = host
+        self.port = port if port is not None else int(os.getenv("DASHBOARD_PORT", "7979"))
+        self.host = host if host is not None else os.getenv("DASHBOARD_HOST", "100.76.22.126")
         self.bithumb_api_url = bithumb_api_url.rstrip("/")
         self.upbit_api_url = upbit_api_url.rstrip("/")
         self.static_dir = static_dir or self._resolve_static_dir()
@@ -650,7 +653,8 @@ class UnifiedDashboardServer:
             try:
                 QuietThreadingHTTPServer.allow_reuse_address = True
                 self.server = QuietThreadingHTTPServer((self.host, self.port), handler_cls)
-                logger.info(f"🌐 [통합 퀀트 트레이딩 대시보드 가동] 접속 주소: http://localhost:{self.port}")
+                display_host = self.host if self.host not in ("0.0.0.0", "") else "localhost"
+                logger.info(f"🌐 [통합 퀀트 트레이딩 대시보드 가동] 접속 주소: http://{display_host}:{self.port}")
                 logger.info(f"   • 빗썸 내부 API 연동: {self.bithumb_api_url}")
                 logger.info(f"   • 업비트 내부 API 연동: {self.upbit_api_url}")
 
@@ -1203,9 +1207,10 @@ class UnifiedDashboardServer:
 
 
 def main():
-    load_dotenv()
+    load_dotenv(os.path.join(project_root, ".env"))
 
     parser = argparse.ArgumentParser(description="Unified Quant Trading Dashboard Server")
+    parser.add_argument("--host", type=str, default=os.getenv("DASHBOARD_HOST", "100.76.22.126"), help="대시보드 바인딩 호스트 IP (기본: 100.76.22.126)")
     parser.add_argument("--port", type=int, default=int(os.getenv("DASHBOARD_PORT", "7979")), help="Dashboard Port (default: 7979)")
     parser.add_argument("--bithumb-url", type=str, default=os.getenv("BITHUMB_API_URL", "http://127.0.0.1:17979"), help="Bithumb Internal API URL")
     parser.add_argument("--upbit-url", type=str, default=os.getenv("UPBIT_API_URL", "http://127.0.0.1:17980"), help="Upbit Internal API URL")
@@ -1219,14 +1224,15 @@ def main():
     except Exception:
         pass
 
+    display_host = args.host if args.host not in ("0.0.0.0", "") else "localhost"
     logger.info("======================================================")
     logger.info("  통합 퀀트 트레이딩 대시보드 게이트웨이 서버 가동")
-    logger.info("  접속 URL: http://localhost:%d", args.port)
+    logger.info("  접속 URL: http://%s:%d", display_host, args.port)
     logger.info("======================================================")
 
     server = UnifiedDashboardServer(
         port=args.port,
-        host="0.0.0.0",
+        host=args.host,
         bithumb_api_url=args.bithumb_url,
         upbit_api_url=args.upbit_url,
     )

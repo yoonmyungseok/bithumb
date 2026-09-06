@@ -209,18 +209,36 @@ class DatabaseManager:
         """Insert a completed trade record."""
         ex = exchange.strip().lower()
         market = str(trade.get("market", "")).upper()
-        entry_time = str(trade.get("entry_time", ""))
-        exit_time = str(trade.get("exit_time", ""))
-        entry_price = float(trade.get("entry_price", 0.0))
-        exit_price = float(trade.get("exit_price", 0.0))
-        pnl_krw = float(trade.get("pnl_krw", trade.get("pnl", 0.0)))
-        pnl_pct = float(trade.get("pnl_pct", 0.0))
-        hold_duration_min = int(trade.get("hold_duration_min", trade.get("hold_duration", 0)))
-        exit_reason = str(trade.get("exit_reason", ""))
+        entry_time = str(trade.get("entry_time", "") or trade.get("created_at", ""))
+        exit_time = str(trade.get("exit_time", "") or trade.get("timestamp", ""))
+        entry_price = float(trade.get("entry_price", 0.0) or 0.0)
+        exit_price = float(trade.get("exit_price", 0.0) or 0.0)
+        pnl_krw = float(trade.get("pnl_krw", trade.get("pnl", 0.0)) or 0.0)
+        pnl_pct = float(trade.get("pnl_pct", 0.0) or 0.0)
+
+        # hold_duration_min: 명시적 분 단위 또는 5분봉 개수(bars_held * 5) 기반 산출
+        raw_hold = trade.get("hold_duration_min", trade.get("hold_duration"))
+        if raw_hold is not None and str(raw_hold).strip():
+            try:
+                hold_duration_min = int(raw_hold)
+            except (ValueError, TypeError):
+                hold_duration_min = 0
+        elif trade.get("bars_held") is not None:
+            try:
+                hold_duration_min = int(trade.get("bars_held", 0)) * 5
+            except (ValueError, TypeError):
+                hold_duration_min = 0
+        else:
+            hold_duration_min = 0
+
+        # exit_reason: exit_reason, reason, side 순서로 폴백 매핑
+        exit_reason = str(trade.get("exit_reason", "") or trade.get("reason", "") or trade.get("side", ""))
+
         strategy_tags = json.dumps(trade.get("strategy_tags", []), ensure_ascii=False) if isinstance(trade.get("strategy_tags"), list) else str(trade.get("strategy_tags", ""))
-        market_regime = str(trade.get("market_regime", ""))
-        btc_trend = str(trade.get("btc_trend", ""))
-        factor_scores = json.dumps(trade.get("factor_scores", {}), ensure_ascii=False)
+        # market_regime: market_regime 또는 btc_regime 매핑
+        market_regime = str(trade.get("market_regime", "") or trade.get("btc_regime", ""))
+        btc_trend = str(trade.get("btc_trend", "") or trade.get("btc_regime", ""))
+        factor_scores = json.dumps(trade.get("factor_scores", trade.get("indicators", {})), ensure_ascii=False)
         raw_data = json.dumps(trade, ensure_ascii=False)
 
         with _DB_LOCK, self._get_connection() as conn:

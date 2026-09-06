@@ -45,6 +45,26 @@ class StrategyEngineTests(unittest.TestCase):
         self.assertFalse(signal["allow_buy"])
         self.assertIn("레짐 경보", signal["reason"])
 
+    def test_ma20_disparity_hard_gate(self):
+        """MA20 대비 +3.5% 초과 이격 시 하드게이트 차단 검증"""
+        # 29개 과거 캔들(100원 부근) + 최신 캔들(104원: 4% 초과 급등)
+        candles = [{"trade_price": 100.0, "high_price": 100.5, "low_price": 99.5, "opening_price": 100.0} for _ in range(30)]
+        candles[0] = {"trade_price": 104.0, "high_price": 104.2, "low_price": 103.5, "opening_price": 103.6}
+        signal = entry_signal(candles, btc_regime="NORMAL")
+        self.assertFalse(signal["allow_buy"])
+        hard_gates = signal["checklist_details"]["hard_gates"]
+        self.assertFalse(hard_gates["disparity_guard"]["pass"])
+
+    def test_upper_shadow_hard_gate(self):
+        """캔들 윗꼬리 비율 50% 초과 시 피뢰침 차단 검증"""
+        candles = [{"trade_price": 100.0, "high_price": 100.5, "low_price": 99.5, "opening_price": 100.0} for _ in range(30)]
+        # 최신 캔들: 저가 100, 시가 100.5, 종가 101, 고가 103 -> 전체 범위 3.0, 윗꼬리 (103 - 101) = 2.0 (66.7% > 40%)
+        candles[0] = {"trade_price": 101.0, "high_price": 103.0, "low_price": 100.0, "opening_price": 100.5}
+        signal = entry_signal(candles, btc_regime="NORMAL")
+        self.assertFalse(signal["allow_buy"])
+        hard_gates = signal["checklist_details"]["hard_gates"]
+        self.assertFalse(hard_gates["shadow_guard"]["pass"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -155,13 +155,21 @@ class TradeMemoryManager:
         else:
             lesson = f"성공적 익절 (+{pnl_pct:.2f}%). 명확한 지지선과 1:1.5 이상의 손익비 충족이 효과적이었음."
 
+        hold_min = extra_fields.get("hold_duration_min")
+        if hold_min is None and bars_held is not None:
+            hold_min = int(bars_held) * 5
+        elif hold_min is None:
+            hold_min = 0
+
         trade_item = {
             "timestamp": timestamp,
+            "exit_time": timestamp,
             "trade_id": trade_id or f"tr-{int(time.time() * 1000)}",
             "position_id": position_id or market,
             "exchange": exchange,
             "market": market,
             "side": side,
+            "exit_reason": side or reason,
             "order_status": order_status,
             "entry_price": entry_price,
             "exit_price": exit_price,
@@ -171,12 +179,14 @@ class TradeMemoryManager:
             "pnl_pct": pnl_pct,
             "pnl_krw": pnl_krw,
             "is_win": is_win,
-            "reason": reason,
+            "reason": reason or side,
             "lesson": lesson,
             "btc_regime": btc_regime,
+            "market_regime": btc_regime,
             "alpha_score": alpha_score,
             "indicators": indicators or {},
             "bars_held": bars_held,
+            "hold_duration_min": hold_min,
         }
         trade_item.update(extra_fields)
         with self._lock:
