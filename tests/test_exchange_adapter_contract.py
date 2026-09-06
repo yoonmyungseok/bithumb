@@ -80,6 +80,36 @@ class ExchangeAdapterContractTests(unittest.TestCase):
         self.assertEqual(manual, ["KRW-BTC", "KRW-ETH"])
         self.assertEqual(automated, ["KRW-XRP"])
 
+    def test_prefetched_input_is_used_only_within_the_short_safety_window(self):
+        client = FakeExchangeClient()
+        adapter = BithumbAdapter(client)
+        orchestrator = TradingOrchestrator(__import__("logging").getLogger("test"))
+        prefetched = {
+            "price": 123.0,
+            "orderbook": {"market": "KRW-BTC", "prefetched": True},
+            "observed_at": __import__("time").monotonic(),
+        }
+
+        snapshot = orchestrator.load_market_snapshot(adapter, "KRW-BTC", 5, prefetched)
+
+        self.assertEqual(snapshot.current_price, 123.0)
+        self.assertTrue(snapshot.orderbook["prefetched"])
+
+    def test_stale_prefetched_input_falls_back_to_exchange_lookup(self):
+        client = FakeExchangeClient()
+        adapter = BithumbAdapter(client)
+        orchestrator = TradingOrchestrator(__import__("logging").getLogger("test"))
+        stale = {
+            "price": 123.0,
+            "orderbook": {"market": "KRW-BTC", "prefetched": True},
+            "observed_at": __import__("time").monotonic() - 2.0,
+        }
+
+        snapshot = orchestrator.load_market_snapshot(adapter, "KRW-BTC", 5, stale)
+
+        self.assertEqual(snapshot.current_price, 100.0)
+        self.assertNotIn("prefetched", snapshot.orderbook)
+
 
 if __name__ == "__main__":
     unittest.main()

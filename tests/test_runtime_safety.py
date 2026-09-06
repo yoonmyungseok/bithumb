@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from heartbeat_monitor import get_heartbeat_health
 from runtime_config import get_fraction_setting, load_runtime_risk_settings
 from upbit_websocket import UpbitWebSocketClient, WebSocketHealthState
+from websocket_manager import BithumbWebSocketClient
 
 
 class RuntimeSafetyTests(unittest.TestCase):
@@ -76,6 +77,37 @@ class RuntimeSafetyTests(unittest.TestCase):
         self.assertEqual(health["status"], WebSocketHealthState.PROCESSING_DELAY)
         self.assertFalse(health["is_healthy"])
         self.assertEqual(health["callback_queue_depth"], 101)
+
+    def test_duplicate_price_ticks_skip_callback_enqueue(self):
+        # 빗썸 중복 틱 필터링 검증
+        received_bithumb = []
+        bithumb_ws = BithumbWebSocketClient(
+            initial_markets=["KRW-BTC"],
+            on_price_callback=lambda m, p: received_bithumb.append((m, p)),
+        )
+        # 동일 가격 틱 5회 연속 수신 시뮬레이션
+        msg = json.dumps({"type": "ticker", "code": "KRW-BTC", "trade_price": 50000000.0})
+        for _ in range(5):
+            bithumb_ws._on_message(None, msg)
+
+        self.assertEqual(bithumb_ws._callback_queue.qsize(), 1, "동일 가격 틱은 최초 1회만 큐에 인큐되어야 함")
+
+        # 가격 변동 시 정상 인큐
+        msg_changed = json.dumps({"type": "ticker", "code": "KRW-BTC", "trade_price": 50100000.0})
+        bithumb_ws._on_message(None, msg_changed)
+        self.assertEqual(bithumb_ws._callback_queue.qsize(), 2, "가격 변동 틱은 정상 인큐되어야 함")
+
+        # 업비트 중복 틱 필터링 검증
+        received_upbit = []
+        upbit_ws = UpbitWebSocketClient(
+            initial_markets=["KRW-BTC"],
+            on_price_callback=lambda m, p: received_upbit.append((m, p)),
+        )
+        msg_upbit = json.dumps({"type": "ticker", "code": "KRW-BTC", "trade_price": 50000000.0})
+        for _ in range(5):
+            upbit_ws._on_message(None, msg_upbit)
+
+        self.assertEqual(upbit_ws._callback_queue.qsize(), 1, "업비트에서도 동일 가격 틱은 최초 1회만 큐에 인큐되어야 함")
 
 
 if __name__ == "__main__":

@@ -138,9 +138,9 @@ def test_guard5_bullish_candle_holds():
         market="KRW-NEAR",
         korean_name="니어",
         current_price=6050.0,
-        avg_buy_price=6100.0,
-        pnl_pct_current=-0.82,  # -0.82% (보호 범위 -0.6%는 벗어남)
-        hold_duration_sec=1200.0,  # 20분 경과
+        avg_buy_price=6133.0,
+        pnl_pct_current=-1.35,  # -1.35% (가드 4의 -1.2%는 벗어났으나 -1.5% 이내)
+        hold_duration_sec=1200.0,  # 20분 경과 (가드 3 통과)
         ai_eval=ai_eval,
         candles_5m=[
             {"trade_price": 6050.0, "opening_price": 6020.0},  # 양봉 (6050 >= 6020)
@@ -154,8 +154,38 @@ def test_guard5_bullish_candle_holds():
     assert "양봉 지지 유지" in reason
 
 
+def test_guard6_mtf_1h_trend_holds():
+    """1시간봉 대세 상승 지지선(EMA20) 유지 상태에서는 5분봉 음봉이어도 TIGHTEN_STOP으로 완화 검증."""
+    ai_eval = {
+        "action": "EMERGENCY_EXIT",
+        "confidence": 90,
+        "reason": "5분봉 음봉 및 체결강도 저하",
+    }
+    # 1시간봉 EMA20 생성 (가격 100원 기준)
+    candles_1h = [{"trade_price": 102.0} for _ in range(25)]
+    is_approved, reason, fallback = validate_emergency_exit_safety(
+        market="KRW-FLOCK",
+        korean_name="플록",
+        current_price=101.0,
+        avg_buy_price=102.7,
+        pnl_pct_current=-1.65,  # -1.65% (가드 4, 가드 5 미적용 구간)
+        hold_duration_sec=1200.0,  # 20분 경과
+        ai_eval=ai_eval,
+        candles_5m=[
+            {"trade_price": 101.0, "opening_price": 102.0},  # 음봉
+            {"trade_price": 102.0, "opening_price": 103.0},
+        ],
+        is_btc_crashing=False,
+        is_bot_managed=True,
+        candles_1h=candles_1h,
+    )
+    assert not is_approved
+    assert fallback == "TIGHTEN_STOP"
+    assert "MTF 1H 대세 상승 지지 유지" in reason
+
+
 def test_all_guards_pass_real_emergency():
-    """진짜 위험 상황(충분한 보유 시간, 손익 -1.8%, 음봉 하락, 신뢰도 90)에서는 승인 검증."""
+    """진짜 위험 상황(충분한 보유 시간, 손익 -2.4%, 음봉 하락, 신뢰도 90, 1H 지지 이탈)에서는 승인 검증."""
     ai_eval = {
         "action": "EMERGENCY_EXIT",
         "confidence": 90,
@@ -224,6 +254,7 @@ if __name__ == "__main__":
         test_guard3_early_noise_exception_on_hard_crash,
         test_guard4_breakeven_downgrades_to_tighten_stop,
         test_guard5_bullish_candle_holds,
+        test_guard6_mtf_1h_trend_holds,
         test_all_guards_pass_real_emergency,
         test_is_bot_managed_position,
     ]

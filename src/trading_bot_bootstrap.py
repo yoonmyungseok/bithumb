@@ -257,13 +257,20 @@ class TradingBotBootstrap:
             try:
                 now_ts = time.time()
                 # WebSocket 수신 콜백은 큐만 적재하므로 주문·파일 작업은 메인 스레드에서 직렬화한다.
-                self.ctx.ws_client.drain_callbacks()
+                drained = self.ctx.ws_client.drain_callbacks()
                 if self.ctx.private_ws is not None:
                     self.ctx.private_ws.drain_order_events()
                 if now_ts - last_hb_ts >= 15.0:
                     self.ctx.update_heartbeat()
                     last_hb_ts = now_ts
-                time.sleep(1)
+                # 큐에 대기 중인 작업이 많았을 경우 즉시 추가 소화하고, 비어있을 때는 짧게 대기(50ms)하여 CPU 과열 방지 및 실시간성 확보
+                drained_count = 0
+                try:
+                    drained_count = int(drained) if drained is not None else 0
+                except (TypeError, ValueError):
+                    drained_count = 0
+                if drained_count < 200:
+                    time.sleep(0.05)
             except (KeyboardInterrupt, SystemExit):
                 self._handle_exit(None, None)
             except Exception as exc:

@@ -108,6 +108,43 @@ class StrategyPolicySSOTTests(unittest.TestCase):
         self.assertFalse(signal["allow_buy"])
         self.assertFalse(signal["checklist_details"]["hard_gates"]["bb_guard"]["pass"])
 
+    def test_risk_off_accepts_only_the_new_narrow_upper_band_range(self):
+        """RISK_OFF에서는 0.75 이하만 허용하고 일반장 0.72 상한은 그대로 유지한다."""
+        candles = [
+            {"trade_price": 100.0, "opening_price": 99.0, "high_price": 101.0,
+             "low_price": 98.0, "candle_acc_trade_volume": 1000.0}
+            for _ in range(30)
+        ]
+        approved_alpha = {"total_score": 70, "allow_buy": True, "factor_breakdown": {"orderflow_score": 10}}
+
+        with patch("strategy_engine.calculate_composite_alpha_score", return_value=approved_alpha), \
+             patch("strategy_engine.calculate_bollinger_bands", return_value={"middle": 100.0, "upper": 110.0, "lower": 90.0, "width_pct": 0.2, "pct_b": 0.74}), \
+             patch("strategy_engine.calculate_rsi", return_value=55.0):
+            risk_off = entry_signal(candles, btc_regime="RISK_OFF", is_night=False)
+            normal = entry_signal(candles, btc_regime="NORMAL", is_night=False)
+
+        self.assertTrue(risk_off["allow_buy"])
+        self.assertEqual(risk_off["checklist_details"]["hard_gates"]["bb_guard"]["max"], 0.75)
+        self.assertFalse(normal["allow_buy"])
+        self.assertFalse(normal["checklist_details"]["hard_gates"]["bb_guard"]["pass"])
+
+    def test_risk_off_still_blocks_upper_band_chase_above_075(self):
+        """약세장 완화 후에도 %B 0.76 이상은 상투 추격으로 차단한다."""
+        candles = [
+            {"trade_price": 100.0, "opening_price": 99.0, "high_price": 101.0,
+             "low_price": 98.0, "candle_acc_trade_volume": 1000.0}
+            for _ in range(30)
+        ]
+        approved_alpha = {"total_score": 90, "allow_buy": True, "factor_breakdown": {"orderflow_score": 10}}
+
+        with patch("strategy_engine.calculate_composite_alpha_score", return_value=approved_alpha), \
+             patch("strategy_engine.calculate_bollinger_bands", return_value={"middle": 100.0, "upper": 110.0, "lower": 90.0, "width_pct": 0.2, "pct_b": 0.76}), \
+             patch("strategy_engine.calculate_rsi", return_value=55.0):
+            signal = entry_signal(candles, btc_regime="RISK_OFF", is_night=False)
+
+        self.assertFalse(signal["allow_buy"])
+        self.assertFalse(signal["checklist_details"]["hard_gates"]["bb_guard"]["pass"])
+
     def test_pullback_bounce_is_approved_only_after_recovery_confirmation(self):
         """최근 저점 인근의 확정 양봉 반등만 신규 매수 후보가 될 수 있어야 한다."""
         chronological_prices = [97.0, 98.0, 97.0, 96.0, 97.0] * 5 + [95.0, 96.0, 97.0]

@@ -74,6 +74,10 @@ class TradingRuntimePrefixTests(unittest.TestCase):
             def complete_reconciliation_if_safe(self):
                 return None
 
+            def is_entry_ready(self):
+                # 기본 fixture는 대사 완료 상태로 두어 일반 사이클 회귀 동작을 보존한다.
+                return True
+
             def has_active_exit_order(self, market):
                 return False
 

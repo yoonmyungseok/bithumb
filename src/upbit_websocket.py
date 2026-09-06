@@ -59,6 +59,7 @@ class UpbitWebSocketClient:
         self._callback_dropped_count = 0
         self._last_callback_delay_seconds = 0.0
         self._max_callback_delay_seconds = 0.0
+        self._last_callback_prices: dict[str, float] = {}
         self.last_tick_time: float = 0.0
         self.last_tick_time_by_market: dict[str, float] = {}
         self.market_subscription_time: dict[str, float] = {}
@@ -280,8 +281,15 @@ class UpbitWebSocketClient:
                         self.confirmed_markets.add(code)
                         self.is_connected = True
 
+                    should_enqueue = False
                     if self.on_price_callback:
-                        self._enqueue_callback("price", (code, price))
+                        with self._lock:
+                            last_p = self._last_callback_prices.get(code)
+                            if last_p is None or abs(price - last_p) > 1e-9:
+                                self._last_callback_prices[code] = price
+                                should_enqueue = True
+                        if should_enqueue:
+                            self._enqueue_callback("price", (code, price))
 
             # 2. 실시간 체결 (Trade) 수신 ➜ 고래 대량 체결 탐지
             elif msg_type == "trade":

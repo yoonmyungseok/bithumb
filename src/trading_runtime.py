@@ -21,6 +21,7 @@ from risk_manager import get_fear_and_greed_index, get_kst_now, get_kst_now_str
 from runtime_config import load_runtime_risk_settings
 from strategy_engine import (
     StrategyPolicy,
+    calculate_ema,
     calculate_relative_strength,
     calculate_vwap,
     entry_signal,
@@ -303,6 +304,7 @@ class CyclePrefixResult:
     dyn_max_pos_pct: float
     dyn_top_count: int
     target_markets: list[str]
+    prefetched_market_inputs: dict[str, dict[str, Any]]
     screened_candidate_metadata: dict[str, dict[str, Any]]
     excluded_markets: frozenset[str]
     cycle_id: str
@@ -322,8 +324,9 @@ def validate_emergency_exit_safety(
     candles_5m: list[dict[str, Any]] | None,
     is_btc_crashing: bool = False,
     is_bot_managed: bool = True,
+    candles_1h: list[dict[str, Any]] | None = None,
 ) -> tuple[bool, str, str]:
-    """AI EMERGENCY_EXIT의 과민 반응 및 성급한 털림을 방지하는 확정적 5중 안전 가드.
+    """AI EMERGENCY_EXIT의 과민 반응 및 성급한 털림을 방지하는 확정적 6중 안전 가드.
 
     Returns:
         (is_approved, guard_reason, fallback_action)
@@ -348,23 +351,23 @@ def validate_emergency_exit_safety(
             "HOLD",
         )
 
-    # [가드 3] 진입 직후 노이즈 보호 (10분 / 600초 미만)
-    # 진입 후 10분 이내의 잔파동/스프레드에 의한 조기 털림 방지
-    if hold_duration_sec < 600.0:
+    # [가드 3] 진입 직후 노이즈 보호 (15분 / 900초 미만)
+    # 진입 후 15분 이내의 잔파동/스프레드에 의한 조기 털림 방지
+    if hold_duration_sec < 900.0:
         # 손실률이 -2.0% 이하로 급락하거나 대장주(BTC) 급락 경보가 아닌 한 차단
         if pnl_pct_current > -2.0 and not is_btc_crashing:
             return (
                 False,
-                f"진입 초기 노이즈 보호: 보유 {hold_duration_sec / 60.0:.1f}분 (<10분) 및 경미 손익({pnl_pct_current:+.2f}% > -2.00%) 구간으로 탈출 유보",
+                f"진입 초기 노이즈 보호: 보유 {hold_duration_sec / 60.0:.1f}분 (<15분) 및 경미 손익({pnl_pct_current:+.2f}% > -2.00%) 구간으로 탈출 유보",
                 "HOLD",
             )
 
-    # [가드 4] 경미 손실/약보합 구간 시장가 탈출 차단 (손익률 >= -0.60%)
-    # -0.6% 이내의 경미한 손실에서 시장가로 매도하면 슬리피지/수수료로 손실이 확정되므로 차단하고 손절선 상향으로 완화
-    if pnl_pct_current >= -0.60:
+    # [가드 4] 경미 손실/약보합 구간 시장가 투매 차단 (손익률 >= -1.20%)
+    # -1.2% 이내의 경미한 손실에서 시장가로 매도하면 슬리피지/수수료로 손실이 확정되므로 차단하고 손절선 상향으로 완화
+    if pnl_pct_current >= -1.20:
         return (
             False,
-            f"약보합/경미 손실 구간 보호({pnl_pct_current:+.2f}% >= -0.60%): 시장가 투매 대신 TIGHTEN_STOP(방어 손절선)으로 완화",
+            f"약보합/경미 손실 구간 보호({pnl_pct_current:+.2f}% >= -1.20%): 시장가 투매 대신 TIGHTEN_STOP(방어 손절선)으로 완화",
             "TIGHTEN_STOP",
         )
 
@@ -379,6 +382,19 @@ def validate_emergency_exit_safety(
                 False,
                 f"캔들 퀀트 검증: 최신 5분봉 양봉 지지 유지(시가 {o_price:,.0f} <= 종가 {c_price:,.0f})로 탈출 유보",
                 "HOLD",
+            )
+
+    # [가드 6] MTF 1시간봉 대세 상승 지지 보호 (상위 타임프레임 추세 추종)
+    # 1시간봉이 EMA20 위에서 우상향 지지 중이고 손실이 -2.0% 이내라면, 5분봉 단기 윗꼬리/체결강도 저하에 의한 털림 방지
+    if candles_1h and len(candles_1h) >= 20 and pnl_pct_current > -2.0 and not is_btc_crashing:
+        prices_1h = [float(c.get("trade_price", 0.0) or 0.0) for c in candles_1h]
+        ema20_1h = calculate_ema(prices_1h, 20)
+        curr_1h = prices_1h[0] if prices_1h else current_price
+        if curr_1h >= ema20_1h * 0.998:
+            return (
+                False,
+                f"MTF 1H 대세 상승 지지 유지 (1H {curr_1h:,.1f} >= EMA20 {ema20_1h:,.1f}): 5분봉 단기 흔들기 투매 방지 및 TIGHTEN_STOP으로 완화",
+                "TIGHTEN_STOP",
             )
 
     # 모든 안전 가드 통과: 실제 급락/세력 덤핑 위험 확인
@@ -533,6 +549,17 @@ class TradingCycleEngine:
                 if market_code:
                     screened_candidate_metadata[market_code] = dict(candidate)
 
+        # 아래 상태에서는 신규 매수가 불가능하므로 후보 순위용 외부 AI 호출만 생략한다.
+        # 보유 포지션의 청산·방어 및 REST 체결 재조정은 이 조건과 무관하게 계속 실행한다.
+        is_entry_ready = ctx.order_journal.is_entry_ready()
+        allow_ai_candidate_ranking = not (
+            is_paused or is_kill_switch or is_btc_crashing or not is_entry_ready
+        )
+        screener_analyzer = analyzer if allow_ai_candidate_ranking else None
+        if analyzer is not None and not allow_ai_candidate_ranking:
+            logger.info("[성능 최적화] 신규 진입 차단 상태라 Gemini 후보 랭킹을 생략합니다.")
+
+        selection_started_at = time.monotonic()
         target_markets = ctx.orchestrator.select_target_markets(
             exchange,
             held_markets=held_markets,
@@ -542,15 +569,18 @@ class TradingCycleEngine:
             top_count=dyn_top_count,
             create_screener=lambda: profile.create_screener(exchange),
             btc_regime=btc_regime,
-            analyzer=analyzer,
+            analyzer=screener_analyzer,
             on_screened_candidates=capture_screened_candidates,
         )
+        ctx.orchestrator.record_latency("market_selection", time.monotonic() - selection_started_at)
         logger.info(
             f"{profile.markets_log_prefix}이번 사이클 최종 분석 대상 마켓 "
             f"({len(target_markets)}개): {target_markets}"
         )
 
         ctx.ws_client.update_subscriptions(list(dict.fromkeys(target_markets + held_markets + ["KRW-BTC"])))
+        # 전략용 일괄 응답은 1초 이내에만 재사용하며, 이후 마켓은 기존 단건 조회로 폴백한다.
+        prefetched_market_inputs = ctx.orchestrator.prefetch_market_inputs(exchange, target_markets)
 
         ctx.decision_db.purge_strategy_decisions(
             profile.decision_exchange, time.time() - 30 * 24 * 60 * 60,
@@ -603,6 +633,7 @@ class TradingCycleEngine:
             dyn_max_pos_pct=dyn_max_pos_pct,
             dyn_top_count=dyn_top_count,
             target_markets=target_markets,
+            prefetched_market_inputs=prefetched_market_inputs,
             screened_candidate_metadata=screened_candidate_metadata,
             excluded_markets=excluded_markets,
             cycle_id=cycle_id,
@@ -778,6 +809,7 @@ class TradingCycleEngine:
                         candles_5m=candles_5m,
                         is_btc_crashing=market_inputs.is_btc_crashing,
                         is_bot_managed=is_bot_pos,
+                        candles_1h=getattr(market_inputs, "candles_1h", None),
                     )
                     if is_safe_to_exit and ctx.trailing_tracker.acquire_exit_lock(market):
                         try:
@@ -1746,7 +1778,11 @@ class TradingCycleEngine:
             default_max_ai = int(os.getenv("MAX_AI_CANDIDATES_PER_CYCLE", "2"))
             max_ai_candidates = max(1, default_max_ai)  # 정상 상태: 사이클당 상위 최대 N개 종목만 AI 심층 분석 (기본 2)
 
-        ai_budget_remaining = max_ai_candidates
+        # 확실한 진입 차단 상태에서는 개별 신규 진입 AI 분석도 수행하지 않는다.
+        if is_bot_paused or is_kill_switch or is_btc_crashing or not is_entry_ready:
+            ai_budget_remaining = 0
+        else:
+            ai_budget_remaining = max_ai_candidates
 
         for market in target_markets:
             if self._should_skip_market(market, excluded_markets):
@@ -1756,7 +1792,12 @@ class TradingCycleEngine:
             try:
                 candidate_metadata = screened_candidate_metadata.get(market, {})
                 candidate_type = str(candidate_metadata.get("candidate_type", "CONFIRMED")).upper()
-                market_snapshot = ctx.orchestrator.load_market_snapshot(exchange, market, interval_minutes)
+                market_snapshot = ctx.orchestrator.load_market_snapshot(
+                    exchange,
+                    market,
+                    interval_minutes,
+                    prefix.prefetched_market_inputs.get(market),
+                )
                 korean_name = market_snapshot.korean_name
                 logger.info(
                     f"--- [{korean_name} / {market} {profile.market_analysis_log_label}] ---"
@@ -1885,12 +1926,17 @@ class TradingCycleEngine:
         """5분 사이클 전체(prefix -> market loop -> suffix) 실행."""
         logger = self.context.logger
         error_prefix = self.profile.cycle_error_log_prefix
+        cycle_started_at = time.monotonic()
         try:
             prefix = self.run_cycle_prefix()
+            market_loop_started_at = time.monotonic()
             self.run_market_loop(prefix)
+            self.context.orchestrator.record_latency("market_loop", time.monotonic() - market_loop_started_at)
             self.run_cycle_suffix(prefix)
         except Exception as exc:
             logger.error(
                 f"{error_prefix}전체 트레이딩 사이클 예외 발생: {exc}",
                 exc_info=True,
             )
+        finally:
+            self.context.orchestrator.record_latency("full_cycle", time.monotonic() - cycle_started_at)

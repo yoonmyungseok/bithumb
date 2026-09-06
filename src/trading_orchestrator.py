@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import logging
 import time
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -26,6 +27,22 @@ class TradingOrchestrator:
         self._balance_snapshot: dict[str, Any] = {}
         self._balance_snapshot_at = 0.0
         self._balance_snapshot_exchange_id: int | None = None
+        # 최근 실행 구간만 보존해 장기 실행 중 메모리 증가 없이 p50/p95를 관찰한다.
+        self._latencies: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=40))
+
+    def record_latency(self, name: str, elapsed_seconds: float) -> None:
+        """성능 측정값을 누적하고 20회마다 운영 로그로 요약한다."""
+        samples = self._latencies[name]
+        samples.append(max(0.0, float(elapsed_seconds)))
+        if len(samples) < 20 or len(samples) % 20 != 0:
+            return
+        ordered = sorted(samples)
+        p50 = ordered[len(ordered) // 2]
+        p95 = ordered[min(len(ordered) - 1, int((len(ordered) - 1) * 0.95))]
+        self.logger.info(
+            "[성능 계측] %s 최근 %d회: p50=%.3fs p95=%.3fs max=%.3fs",
+            name, len(ordered), p50, p95, ordered[-1],
+        )
 
     def get_balance_snapshot(
         self, exchange: ExchangeAdapter, *, force_refresh: bool = False, ttl_seconds: float = 2.0,
@@ -157,13 +174,62 @@ class TradingOrchestrator:
             if market and exchange.is_tradeable_market(market)
         ))
 
-    def load_market_snapshot(self, exchange: ExchangeAdapter, market: str, interval_minutes: int) -> "MarketSnapshot":
+    def prefetch_market_inputs(self, exchange: ExchangeAdapter, markets: list[str]) -> dict[str, dict[str, Any]]:
+        """동일 사이클의 전략 입력만 일괄 조회하고, 주문 직전 검증에는 사용하지 않는다."""
+        unique_markets = list(dict.fromkeys(market for market in markets if market))
+        if not unique_markets:
+            return {}
+
+        started_at = time.monotonic()
+        try:
+            tickers = exchange.get_tickers(unique_markets)
+            orderbooks = exchange.get_orderbooks(unique_markets)
+        except Exception as exc:
+            # 사전 조회 실패는 캐시를 만들지 않아 이후 단건 조회와 fail-closed 경계를 보존한다.
+            self.logger.debug("전략 입력 일괄 사전 조회 실패: %s", exc)
+            return {}
+        finally:
+            self.record_latency("strategy_input_prefetch", time.monotonic() - started_at)
+
+        observed_at = time.monotonic()
+        result: dict[str, dict[str, Any]] = {}
+        for ticker in tickers or []:
+            if isinstance(ticker, dict) and isinstance(ticker.get("market"), str):
+                try:
+                    price = float(ticker.get("trade_price", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    # 손상된 가격은 사전 조회에서 제외해 단건 조회/fail-closed 경계로 넘긴다.
+                    continue
+                if price > 0:
+                    result.setdefault(ticker["market"], {})["price"] = price
+        for orderbook in orderbooks or []:
+            if isinstance(orderbook, dict) and isinstance(orderbook.get("market"), str):
+                result.setdefault(orderbook["market"], {})["orderbook"] = orderbook
+        for payload in result.values():
+            payload["observed_at"] = observed_at
+        return result
+
+    def load_market_snapshot(
+        self,
+        exchange: ExchangeAdapter,
+        market: str,
+        interval_minutes: int,
+        prefetched_input: dict[str, Any] | None = None,
+    ) -> "MarketSnapshot":
         """Load the common per-market inputs used by strategy and exit logic."""
+        started_at = time.monotonic()
         currency = market.split("-")[-1] if "-" in market else market
         # 시장별 분석은 짧은 TTL 잔고 스냅샷을 공유해 종목 수만큼 REST를 반복하지 않는다.
         balances = self.get_balance_snapshot(exchange)
         coin = balances.get(currency, {"balance": 0.0, "locked": 0.0, "avg_buy_price": 0.0})
-        return MarketSnapshot(
+        # 전략 판단에는 1초 이내의 일괄 응답만 사용한다. 그 밖에는 기존 단건 REST 조회로 즉시 폴백한다.
+        is_fresh_prefetch = bool(
+            prefetched_input
+            and time.monotonic() - float(prefetched_input.get("observed_at", 0.0) or 0.0) <= 1.0
+        )
+        prefetched_price = float((prefetched_input or {}).get("price", 0.0) or 0.0)
+        prefetched_orderbook = (prefetched_input or {}).get("orderbook")
+        snapshot = MarketSnapshot(
             market=market,
             currency=currency,
             korean_name=exchange.get_korean_name(market),
@@ -171,11 +237,13 @@ class TradingOrchestrator:
             krw_available=float(balances.get("KRW", {}).get("balance", 0.0)),
             coin_available=float(coin.get("balance", 0.0)),
             avg_buy_price=float(coin.get("avg_buy_price", 0.0)),
-            current_price=exchange.get_current_price(market),
+            current_price=prefetched_price if is_fresh_prefetch and prefetched_price > 0 else exchange.get_current_price(market),
             candles_5m=exchange.get_candles(unit=interval_minutes, count=30, market=market),
             candles_1h=exchange.get_candles(unit=60, count=50, market=market),
-            orderbook=exchange.get_orderbook(market),
+            orderbook=prefetched_orderbook if is_fresh_prefetch and isinstance(prefetched_orderbook, dict) else exchange.get_orderbook(market),
         )
+        self.record_latency("market_snapshot", time.monotonic() - started_at)
+        return snapshot
 
     def classify_market_regime(
         self,

@@ -40,7 +40,7 @@ class TestRelativeStrengthAndMomentumExit(unittest.TestCase):
     def test_strategy_policy_ssot_constants(self):
         self.assertEqual(StrategyPolicy.PARTIAL_TP_1_RATIO, 0.50)
         self.assertEqual(StrategyPolicy.STOP_LOSS_PCT, 0.022)
-        self.assertEqual(StrategyPolicy.MOMENTUM_EARLY_EXIT_SECONDS, 1800)
+        self.assertEqual(StrategyPolicy.MOMENTUM_EARLY_EXIT_SECONDS, 2700)
         self.assertEqual(StrategyPolicy.RS_MIN_RISK_OFF, 0.008)
 
 

@@ -72,8 +72,8 @@ class StrategyPolicy:
     MIN_PROFIT_BUFFER_PCT: float = 0.005 # +0.5% 최소 보장 마진
 
     # 3. 시간 기반 청산 (타임스탑) & 15분 모멘텀 조기 탈출 & 쿨다운
-    MOMENTUM_EARLY_EXIT_SECONDS: int = 1800 # 30분 모멘텀 소멸 조기 본전 탈출 (1800초)
-    MOMENTUM_EARLY_EXIT_BARS_5M: int = 6   # 5분봉 6개 캔들
+    MOMENTUM_EARLY_EXIT_SECONDS: int = 2700 # 45분 모멘텀 소멸 조기 본전 탈출 (2700초로 유예 확대)
+    MOMENTUM_EARLY_EXIT_BARS_5M: int = 9   # 5분봉 9개 캔들
     TIME_STOP_SECONDS: int = 7200        # 120분 타임스탑 (기본 정상장, 실거래 초 단위)
     TIME_STOP_SECONDS_NORMAL: int = 7200 # 정상장 120분 타임스탑
     TIME_STOP_SECONDS_RISK_OFF: int = 3600 # RISK_OFF 약세장 60분 단축 타임스탑
@@ -91,7 +91,7 @@ class StrategyPolicy:
     # 4. 하드 안전 게이트 (Hard Safety Gates) & 상대 강도(RS) 임계값
     ALPHA_BUY_THRESHOLD: int = 60        # 7대 팩터 복합 알파 승인 점수 (100점 만점)
     ALPHA_BUY_THRESHOLD_NORMAL: int = 60 # 정상장 7대 팩터 복합 알파 승인 점수
-    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 75 # RISK_OFF 약세장 엄선 승인 점수 (기존 60 -> 75점 상향)
+    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 70 # RISK_OFF 약세장 엄선 승인 점수 (75 -> 70점으로 현실화)
     RS_MIN_RISK_OFF: float = 0.008       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+0.8% 초과 상승)
     MIN_TRADE_VALUE_RISK_OFF: float = 2_000_000_000.0  # 약세장 최소 24시간 거래대금 20억 원
     MIN_ASSET_PRICE_KRW: float = 10.0    # 10원 미만 극초저가 코인 차단
@@ -100,11 +100,14 @@ class StrategyPolicy:
     RSI_MIN_RISK_OFF: float = 42.0       # RISK_OFF 저점 반등 확인용 RSI 최소치
     RSI_MAX_RISK_OFF: float = 65.0       # RISK_OFF 고점 추격 방지용 RSI 최대치 (약세장 독자 수급 수용을 위해 65.0으로 현실화)
     PCT_B_MIN: float = 0.20              # 볼린저 밴드 %B 최소치
-    PCT_B_MAX: float = 0.60              # 상단권 모멘텀 추격을 차단하는 절대 상한 (0.65 -> 0.60으로 강화)
+    PCT_B_MAX: float = 0.72              # NORMAL/BULL_TREND 상단권 모멘텀 추격을 차단하는 상한
+    # RISK_OFF에서는 하드 안전 조건을 모두 만족한 반등의 0.73~0.75 구간만 추가 수용한다.
+    # 이 값은 눌림목 상한과 동일하게 유지해 두 게이트 간 정책 불일치를 막는다.
+    PCT_B_MAX_RISK_OFF: float = 0.75
     PULLBACK_PCT_B_MIN_NORMAL: float = 0.25  # 정상장 저점권 반등 후보 하한
-    PULLBACK_PCT_B_MAX_NORMAL: float = 0.60  # 정상장 저점권 반등 후보 상한
+    PULLBACK_PCT_B_MAX_NORMAL: float = 0.68  # 정상장 저점권 반등 후보 상한 (0.60 -> 0.68)
     PULLBACK_PCT_B_MIN_RISK_OFF: float = 0.28  # RISK_OFF 반등 후보 하한
-    PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.65  # RISK_OFF 반등 후보 상한 (과도한 상단 추격 차단)
+    PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.75  # RISK_OFF 반등 후보 상한: 하드 상한과 같게 유지
     PULLBACK_LOOKBACK_BARS: int = 12      # 최근 지지 저점 산정에 사용하는 5분봉 수
     PULLBACK_MAX_DISTANCE_NORMAL: float = 0.035  # 정상장 최근 저점 대비 최대 허용 거리
     PULLBACK_MAX_DISTANCE_RISK_OFF: float = 0.035  # RISK_OFF 최근 저점 대비 최대 허용 거리 (3.5%로 현실화)
@@ -146,7 +149,7 @@ class StrategyPolicy:
     MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN: float = 1.3
     MOMENTUM_BREAKOUT_LOOKBACK_BARS: int = 4
     MOMENTUM_BREAKOUT_RSI_MIN: float = 52.0
-    MOMENTUM_BREAKOUT_RSI_MAX: float = 68.0
+    MOMENTUM_BREAKOUT_RSI_MAX: float = 72.0
     MOMENTUM_BREAKOUT_RS_MIN: float = 0.008
     MOMENTUM_BREAKOUT_MTF_EMA20_RATIO: float = 0.990
     MOMENTUM_BREAKOUT_ALLOC_RATIO: float = 0.25
@@ -841,7 +844,13 @@ def entry_signal(
         rsi_hard_min = StrategyPolicy.RSI_MIN_NORMAL
         rsi_hard_max = StrategyPolicy.RSI_MAX_NORMAL
     hard_gate_rsi = (rsi_hard_min <= rsi <= rsi_hard_max)
-    hard_gate_bb = (StrategyPolicy.PCT_B_MIN <= pct_b <= StrategyPolicy.PCT_B_MAX)
+    # 약세장은 레짐 전용 상한만 사용한다. NORMAL/BULL_TREND의 추격 매수 방어 범위는 유지한다.
+    pct_b_hard_max = (
+        StrategyPolicy.PCT_B_MAX_RISK_OFF
+        if regime_upper == "RISK_OFF"
+        else StrategyPolicy.PCT_B_MAX
+    )
+    hard_gate_bb = (StrategyPolicy.PCT_B_MIN <= pct_b <= pct_b_hard_max)
     # 저점 반등은 단기 이평이 중심선에 완전히 복귀하기 전의 회복 구간도 허용한다.
     hard_gate_ma = ma5 >= ma20 * StrategyPolicy.PULLBACK_MA_ALIGNMENT_RATIO
 
@@ -984,7 +993,7 @@ def entry_signal(
             "btc_regime": {"pass": hard_gate_btc, "regime": btc_regime},
             "mtf_trend": {"pass": hard_gate_mtf, "detail": mtf_reason},
             "rsi_guard": {"pass": hard_gate_rsi, "value": rsi, "min": rsi_hard_min, "max": rsi_hard_max},
-            "bb_guard": {"pass": hard_gate_bb, "value": round(pct_b, 3), "min": StrategyPolicy.PCT_B_MIN, "max": StrategyPolicy.PCT_B_MAX},
+            "bb_guard": {"pass": hard_gate_bb, "value": round(pct_b, 3), "min": StrategyPolicy.PCT_B_MIN, "max": pct_b_hard_max},
             "ma_alignment": {"pass": hard_gate_ma, "ma5": round(ma5, 2), "ma20": round(ma20, 2)},
             "disparity_guard": {"pass": hard_gate_disparity, "current": round(current, 2), "limit": round(ma20 * StrategyPolicy.MAX_MA20_DISPARITY, 2)},
             "shadow_guard": {"pass": hard_gate_shadow, "ratio": round(upper_shadow_ratio, 3), "max": StrategyPolicy.MAX_UPPER_SHADOW_RATIO},
