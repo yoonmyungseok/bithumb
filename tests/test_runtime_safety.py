@@ -70,8 +70,9 @@ class RuntimeSafetyTests(unittest.TestCase):
         client.is_connected = True
         client.last_tick_time = time.time()
         client.last_tick_time_by_market["KRW-BTC"] = client.last_tick_time
-        for _ in range(101):
-            client._enqueue_callback("price", ("KRW-BTC", 100.0))
+        # 가격 병합은 같은 종목에만 적용되므로 서로 다른 종목을 적재해 실제 적체 상태를 만든다.
+        for index in range(101):
+            client._enqueue_callback("price", (f"KRW-TEST{index}", 100.0))
 
         health = client.get_health_status("KRW-BTC")
         self.assertEqual(health["status"], WebSocketHealthState.PROCESSING_DELAY)
@@ -92,10 +93,12 @@ class RuntimeSafetyTests(unittest.TestCase):
 
         self.assertEqual(bithumb_ws._callback_queue.qsize(), 1, "동일 가격 틱은 최초 1회만 큐에 인큐되어야 함")
 
-        # 가격 변동 시 정상 인큐
+        # 가격 변동은 이미 대기 중인 종목의 오래된 이벤트를 늘리지 않고 최신 캐시로 병합한다.
         msg_changed = json.dumps({"type": "ticker", "code": "KRW-BTC", "trade_price": 50100000.0})
         bithumb_ws._on_message(None, msg_changed)
-        self.assertEqual(bithumb_ws._callback_queue.qsize(), 2, "가격 변동 틱은 정상 인큐되어야 함")
+        self.assertEqual(bithumb_ws._callback_queue.qsize(), 1, "같은 종목 가격 틱은 하나만 대기해야 함")
+        bithumb_ws.drain_callbacks()
+        self.assertEqual(received_bithumb, [("KRW-BTC", 50100000.0)], "처리 시에는 최신 캐시 가격을 사용해야 함")
 
         # 업비트 중복 틱 필터링 검증
         received_upbit = []
@@ -108,6 +111,32 @@ class RuntimeSafetyTests(unittest.TestCase):
             upbit_ws._on_message(None, msg_upbit)
 
         self.assertEqual(upbit_ws._callback_queue.qsize(), 1, "업비트에서도 동일 가격 틱은 최초 1회만 큐에 인큐되어야 함")
+        msg_upbit_changed = json.dumps({"type": "ticker", "code": "KRW-BTC", "trade_price": 50100000.0})
+        upbit_ws._on_message(None, msg_upbit_changed)
+        self.assertEqual(upbit_ws._callback_queue.qsize(), 1, "업비트도 같은 종목 가격 틱을 병합해야 함")
+        upbit_ws.drain_callbacks()
+        self.assertEqual(received_upbit, [("KRW-BTC", 50100000.0)], "업비트 처리 시에도 최신 캐시 가격을 사용해야 함")
+
+    def test_upbit_whale_callback_is_rate_limited_and_invalid_message_is_observable(self):
+        """업비트 고래 이벤트는 폭주를 막고 비정상 수신은 주문 없이 경고로 남겨야 한다."""
+        received_whales = []
+        client = UpbitWebSocketClient(
+            initial_markets=["KRW-BTC"],
+            on_whale_callback=lambda *args: received_whales.append(args),
+        )
+        whale_message = json.dumps({
+            "type": "trade", "code": "KRW-BTC", "trade_price": 100000000.0,
+            "trade_volume": 1.0, "ask_bid": "BID",
+        })
+        client._on_message(None, whale_message)
+        client._on_message(None, whale_message)
+        self.assertEqual(client._callback_queue.qsize(), 1, "같은 종목 고래 이벤트는 30초 내 한 번만 대기해야 함")
+        client.drain_callbacks()
+        self.assertEqual(len(received_whales), 1)
+
+        with self.assertLogs("upbit_websocket", level="WARNING") as logs:
+            client._on_message(None, "{invalid")
+        self.assertIn("업비트 WebSocket 메시지 해석 실패", logs.output[0])
 
 
 if __name__ == "__main__":

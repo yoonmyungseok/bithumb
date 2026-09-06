@@ -198,6 +198,20 @@ def get_alpha_buy_threshold(btc_regime: str = "NORMAL", is_night: bool | None = 
     return StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL
 
 
+def is_ai_direct_entry_eligible(
+    alpha_score: Any,
+    btc_regime: str = "NORMAL",
+    is_night: bool | None = None,
+) -> bool:
+    """AI 단독 진입은 누락 없는 알파 점수와 공통 세션 정책을 모두 충족할 때만 허용한다."""
+    try:
+        normalized_score = int(alpha_score)
+    except (TypeError, ValueError):
+        # 점수 누락·형식 오류는 AI 단독 매수의 근거가 될 수 없으므로 fail-closed 처리한다.
+        return False
+    return normalized_score >= get_alpha_buy_threshold(btc_regime, is_night)
+
+
 def get_momentum_breakout_alpha_threshold(btc_regime: str = "NORMAL", is_night: bool | None = None) -> int:
     """확정봉 모멘텀 돌파 전용 알파 기준을 세션과 BTC 레짐별로 반환한다."""
     regime_upper = str(btc_regime or "NORMAL").upper()

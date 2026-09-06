@@ -53,6 +53,11 @@ class BithumbWebSocketClient:
         # 수신 스레드와 주문 처리 스레드를 분리해 ping/pong 지연을 방지한다.
         self._callback_queue: queue.Queue[tuple[str, tuple[Any, ...]]] = queue.Queue(maxsize=2000)
         self._callback_dropped_count = 0
+        # 가격 이벤트는 종목별 최신 값만 의미가 있으므로 중복 대기 여부를 보관한다.
+        self._pending_price_markets: set[str] = set()
+        self._callback_processed_count = 0
+        self._callback_total_execution_seconds = 0.0
+        self._callback_max_execution_seconds = 0.0
         self._last_callback_delay_seconds = 0.0
         self._max_callback_delay_seconds = 0.0
         self._last_callback_prices: dict[str, float] = {}
@@ -92,6 +97,9 @@ class BithumbWebSocketClient:
         with self._lock:
             callback_delay = self._last_callback_delay_seconds
             callback_drops = self._callback_dropped_count
+            callback_processed = self._callback_processed_count
+            callback_total_execution = self._callback_total_execution_seconds
+            callback_max_execution = self._callback_max_execution_seconds
 
         if not connected:
             state = WebSocketHealthState.DISCONNECTED
@@ -128,6 +136,9 @@ class BithumbWebSocketClient:
             "callback_queue_depth": queue_depth,
             "callback_delay_seconds": round(callback_delay, 3),
             "callback_dropped_count": callback_drops,
+            "callback_processed_count": callback_processed,
+            "callback_avg_execution_seconds": round(callback_total_execution / callback_processed, 4) if callback_processed else 0.0,
+            "callback_max_execution_seconds": round(callback_max_execution, 4),
         }
 
     def get_latest_price(self, market: str) -> float:
@@ -194,17 +205,28 @@ class BithumbWebSocketClient:
             except queue.Empty:
                 break
             try:
+                callback_started_at = time.monotonic()
                 if kind == "price" and self.on_price_callback:
-                    self.on_price_callback(*args)
+                    market, queued_price = args
+                    # 큐 적재 뒤 수신된 최신 가격으로 손절·트레일링 판단을 수행한다.
+                    with self._lock:
+                        current_price = self.latest_prices.get(market, queued_price)
+                        self._pending_price_markets.discard(market)
+                    self.on_price_callback(market, current_price)
                 elif kind == "whale" and self.on_whale_callback:
                     self.on_whale_callback(*args)
             except Exception as exc:
                 logger.warning("빗썸 WebSocket 후속 콜백 처리 실패: %s", exc)
             finally:
-                delay = max(0.0, time.monotonic() - enqueued_at)
+                completed_at = time.monotonic()
+                delay = max(0.0, completed_at - enqueued_at)
+                execution_seconds = max(0.0, completed_at - callback_started_at)
                 with self._lock:
                     self._last_callback_delay_seconds = delay
                     self._max_callback_delay_seconds = max(self._max_callback_delay_seconds, delay)
+                    self._callback_processed_count += 1
+                    self._callback_total_execution_seconds += execution_seconds
+                    self._callback_max_execution_seconds = max(self._callback_max_execution_seconds, execution_seconds)
             drained += 1
 
         # 큐가 비워졌다면 잔여 딜레이를 0으로 리셋하여 다음 사이클 오탐 방지
@@ -216,16 +238,28 @@ class BithumbWebSocketClient:
 
     def _enqueue_callback(self, kind: str, args: tuple[Any, ...]) -> None:
         """큐 포화 시 오래된 이벤트를 버려 연결 유지와 최신 가격 처리를 우선한다."""
+        if kind == "price" and args:
+            market = str(args[0])
+            with self._lock:
+                # 같은 종목의 더 새 가격은 캐시에 이미 반영됐으므로 큐에는 한 건만 남긴다.
+                if market in self._pending_price_markets:
+                    return
+                self._pending_price_markets.add(market)
         try:
             self._callback_queue.put_nowait((kind, args, time.monotonic()))
         except queue.Full:
             try:
-                self._callback_queue.get_nowait()
+                dropped_kind, dropped_args, _ = self._callback_queue.get_nowait()
+                if dropped_kind == "price" and dropped_args:
+                    with self._lock:
+                        self._pending_price_markets.discard(str(dropped_args[0]))
                 self._callback_queue.put_nowait((kind, args, time.monotonic()))
                 with self._lock:
                     self._callback_dropped_count += 1
             except queue.Empty:
-                pass
+                if kind == "price" and args:
+                    with self._lock:
+                        self._pending_price_markets.discard(str(args[0]))
 
     def _send_subscription(self):
         if not self.ws or not self.ws.sock or not self.ws.sock.connected:

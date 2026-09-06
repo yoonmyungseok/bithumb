@@ -499,6 +499,7 @@
         RECONNECTING: '재연결 중',
         DISCONNECTED: '연결 끊김',
         DATA_UNAVAILABLE: '데이터 대기',
+        PROCESSING_DELAY: '콜백 처리 지연',
         HEALTHY: '정상',
         UNHEALTHY: '지연 감지',
       };
@@ -507,8 +508,14 @@
         const latency = Number(item && item.latency_seconds);
         const latencyText = Number.isFinite(latency) && latency < 9999 ? `, 마지막 틱 ${latency.toFixed(1)}초 전` : '';
         const rawStatus = (item && item.status) || 'DATA_UNAVAILABLE';
+        const queueDepth = Number(item && item.callback_queue_depth);
+        const callbackAvg = Number(item && item.callback_avg_execution_seconds);
+        // 지연 상태에서만 큐 지표를 보여 정상 화면의 노이즈를 줄이고 원인 파악을 돕는다.
+        const backlogText = rawStatus === 'PROCESSING_DELAY' && Number.isFinite(queueDepth)
+          ? `, 대기 ${queueDepth}건${Number.isFinite(callbackAvg) ? `, 평균 처리 ${callbackAvg.toFixed(3)}초` : ''}`
+          : '';
         const statusKr = feedStatusMap[rawStatus] || rawStatus;
-        return `${label}: ${isHealthy ? '정상' : '비정상'} (${statusKr}${latencyText})`;
+        return `${label}: ${isHealthy ? '정상' : '비정상'} (${statusKr}${latencyText}${backlogText})`;
       };
       if (feeds) {
         feedEl.textContent = [

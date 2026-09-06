@@ -25,6 +25,7 @@ from strategy_engine import (
     calculate_relative_strength,
     calculate_vwap,
     entry_signal,
+    is_ai_direct_entry_eligible,
     is_night_session,
     recovery_rebound_signal,
     select_completed_candles,
@@ -1277,11 +1278,6 @@ class TradingCycleEngine:
                 if hasattr(StrategyPolicy, "is_ai_direct_entry_enabled")
                 else False
             )
-            threshold = (
-                StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF
-                if btc_regime == "RISK_OFF"
-                else StrategyPolicy.ALPHA_BUY_THRESHOLD
-            )
             daily_losses = (
                 ctx.cooldown_manager.get_daily_loss_count(market)
                 if hasattr(ctx.cooldown_manager, "get_daily_loss_count")
@@ -1291,7 +1287,9 @@ class TradingCycleEngine:
             can_enter_daily = True
             if isinstance(daily_losses, (int, float)) and isinstance(max_daily_losses, (int, float)):
                 can_enter_daily = daily_losses < max_daily_losses
-            if allow_ai_direct and is_ai_buy_signal and base_safety_passed and can_enter_daily and (ai_alpha >= threshold or ai_alpha == 0):
+            if allow_ai_direct and is_ai_buy_signal and base_safety_passed and can_enter_daily and is_ai_direct_entry_eligible(
+                ai_alpha, btc_regime, is_night_session(),
+            ):
                 logger.info(
                     f"✨ [{market}] AI 단독 자율 승인 진입 (로컬 룰 관망 ➜ AI 적극 승인, 알파스코어: {ai_alpha}점, 레짐: {btc_regime})"
                 )

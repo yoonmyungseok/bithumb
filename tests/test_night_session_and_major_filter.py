@@ -13,6 +13,7 @@ from strategy_engine import (
     calculate_composite_alpha_score,
     entry_signal,
     get_alpha_buy_threshold,
+    is_ai_direct_entry_eligible,
     get_momentum_breakout_alpha_threshold,
     KST,
 )
@@ -111,6 +112,13 @@ class TestNightSessionAndMajorFilter(unittest.TestCase):
         self.assertEqual(get_momentum_breakout_alpha_threshold("RISK_OFF", is_night=False), StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF)
         self.assertEqual(get_momentum_breakout_alpha_threshold("NORMAL", is_night=True), StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT)
         self.assertEqual(get_momentum_breakout_alpha_threshold("RISK_OFF", is_night=True), StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF)
+
+    def test_ai_direct_entry_requires_score_and_uses_night_threshold(self):
+        """AI 단독 진입은 점수 누락을 차단하고 심야 공통 임계값을 적용해야 한다."""
+        self.assertFalse(is_ai_direct_entry_eligible(0, "RISK_OFF", is_night=True))
+        self.assertFalse(is_ai_direct_entry_eligible(None, "RISK_OFF", is_night=True))
+        self.assertFalse(is_ai_direct_entry_eligible(74, "RISK_OFF", is_night=True))
+        self.assertTrue(is_ai_direct_entry_eligible(75, "RISK_OFF", is_night=True))
 
     def test_entry_signal_enforces_night_alpha_boundaries(self):
         """최종 진입 게이트도 심야 레짐별 공격형 알파 경계값을 그대로 적용해야 한다."""

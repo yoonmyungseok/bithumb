@@ -53,10 +53,16 @@ class UpbitWebSocketClient:
         self.ws: websocket.WebSocketApp | None = None
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._last_whale_time: dict[str, float] = {}
         self._whale_trades: list[dict[str, Any]] = []
         # 네트워크 수신 스레드는 큐 적재만 수행해 ping/pong 처리를 막지 않는다.
         self._callback_queue: queue.Queue[tuple[str, tuple[Any, ...]]] = queue.Queue(maxsize=2000)
         self._callback_dropped_count = 0
+        # 가격 이벤트는 종목별 최신 값만 의미가 있으므로 중복 대기 여부를 보관한다.
+        self._pending_price_markets: set[str] = set()
+        self._callback_processed_count = 0
+        self._callback_total_execution_seconds = 0.0
+        self._callback_max_execution_seconds = 0.0
         self._last_callback_delay_seconds = 0.0
         self._max_callback_delay_seconds = 0.0
         self._last_callback_prices: dict[str, float] = {}
@@ -96,6 +102,9 @@ class UpbitWebSocketClient:
         with self._lock:
             callback_delay = self._last_callback_delay_seconds
             callback_drops = self._callback_dropped_count
+            callback_processed = self._callback_processed_count
+            callback_total_execution = self._callback_total_execution_seconds
+            callback_max_execution = self._callback_max_execution_seconds
 
         if not connected:
             state = WebSocketHealthState.DISCONNECTED
@@ -132,6 +141,9 @@ class UpbitWebSocketClient:
             "callback_queue_depth": queue_depth,
             "callback_delay_seconds": round(callback_delay, 3),
             "callback_dropped_count": callback_drops,
+            "callback_processed_count": callback_processed,
+            "callback_avg_execution_seconds": round(callback_total_execution / callback_processed, 4) if callback_processed else 0.0,
+            "callback_max_execution_seconds": round(callback_max_execution, 4),
         }
 
     def get_latest_price(self, market: str) -> float:
@@ -206,17 +218,28 @@ class UpbitWebSocketClient:
             except queue.Empty:
                 break
             try:
+                callback_started_at = time.monotonic()
                 if kind == "price" and self.on_price_callback:
-                    self.on_price_callback(*args)
+                    market, queued_price = args
+                    # 큐 적재 뒤 수신된 최신 가격으로 손절·트레일링 판단을 수행한다.
+                    with self._lock:
+                        current_price = self.latest_prices.get(market, queued_price)
+                        self._pending_price_markets.discard(market)
+                    self.on_price_callback(market, current_price)
                 elif kind == "whale" and self.on_whale_callback:
                     self.on_whale_callback(*args)
             except Exception as exc:
                 logger.warning("웹소켓 후속 콜백 처리 실패: %s", exc)
             finally:
-                delay = max(0.0, time.monotonic() - enqueued_at)
+                completed_at = time.monotonic()
+                delay = max(0.0, completed_at - enqueued_at)
+                execution_seconds = max(0.0, completed_at - callback_started_at)
                 with self._lock:
                     self._last_callback_delay_seconds = delay
                     self._max_callback_delay_seconds = max(self._max_callback_delay_seconds, delay)
+                    self._callback_processed_count += 1
+                    self._callback_total_execution_seconds += execution_seconds
+                    self._callback_max_execution_seconds = max(self._callback_max_execution_seconds, execution_seconds)
             dispatched += 1
 
         # 큐가 비워졌다면 잔여 딜레이를 0으로 리셋하여 다음 사이클 오탐 방지
@@ -228,16 +251,28 @@ class UpbitWebSocketClient:
 
     def _enqueue_callback(self, kind: str, args: tuple[Any, ...]) -> None:
         """큐 포화 시 오래된 실시간 이벤트를 버려 네트워크 연결을 우선 보호한다."""
+        if kind == "price" and args:
+            market = str(args[0])
+            with self._lock:
+                # 같은 종목의 더 새 가격은 캐시에 이미 반영됐으므로 큐에는 한 건만 남긴다.
+                if market in self._pending_price_markets:
+                    return
+                self._pending_price_markets.add(market)
         try:
             self._callback_queue.put_nowait((kind, args, time.monotonic()))
         except queue.Full:
             try:
-                self._callback_queue.get_nowait()
+                dropped_kind, dropped_args, _ = self._callback_queue.get_nowait()
+                if dropped_kind == "price" and dropped_args:
+                    with self._lock:
+                        self._pending_price_markets.discard(str(dropped_args[0]))
                 self._callback_queue.put_nowait((kind, args, time.monotonic()))
                 with self._lock:
                     self._callback_dropped_count += 1
             except queue.Empty:
-                pass
+                if kind == "price" and args:
+                    with self._lock:
+                        self._pending_price_markets.discard(str(args[0]))
 
     def _send_subscription(self):
         if not self.ws or not self.ws.sock or not self.ws.sock.connected:
@@ -319,11 +354,22 @@ class UpbitWebSocketClient:
                             "qty": qty,
                         })
 
-                    if self.on_whale_callback:
-                        self._enqueue_callback("whale", (code, price, val_krw, side))
+                    # 빗썸과 같은 30초 종목별 쿨다운으로 고래 이벤트 폭주를 막는다.
+                    last_t = self._last_whale_time.get(code, 0.0)
+                    if now_ts - last_t >= 30:
+                        self._last_whale_time[code] = now_ts
+                        logger.info("🐋 [업비트 고래 대량 체결 감지] %s %s 체결: %s원", code, side, f"{val_krw:,.0f}")
+                        if self.on_whale_callback:
+                            self._enqueue_callback("whale", (code, price, val_krw, side))
 
-        except Exception:
-            pass
+        except (json.JSONDecodeError, ValueError, TypeError, KeyError) as exc:
+            # 비정상 수신은 주문으로 이어지지 않으며, 원인 추적용 최소 정보만 남긴다.
+            logger.warning(
+                "업비트 WebSocket 메시지 해석 실패: type=%s, code=%s, error=%s",
+                msg_type if "msg_type" in locals() else "unknown",
+                code if "code" in locals() else "unknown",
+                type(exc).__name__,
+            )
 
     def _on_open(self, ws: Any):
         with self._lock:
