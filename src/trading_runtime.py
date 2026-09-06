@@ -1197,6 +1197,10 @@ class TradingCycleEngine:
                 btc_context=f"{btc_status_msg} ({'급락 위험 감지' if is_btc_crashing else '정상 안정세'})",
                 whale_context=whale_flow_context,
                 rs_context=rs_info.get("desc", ""),
+                btc_regime=btc_regime,
+                is_night=night_session_active,
+                candidate_type=candidate_type,
+                entry_policy_mode="RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD",
             )
         elif use_momentum_breakout:
             strategy = {

@@ -11,6 +11,7 @@ import requests
 
 from gemini_telemetry import GeminiTelemetry
 from strategy_engine import (
+    StrategyPolicy,
     calculate_atr as se_calculate_atr,
     calculate_bollinger_bands as se_calculate_bollinger_bands,
     calculate_composite_alpha_score as se_calculate_composite_alpha_score,
@@ -19,6 +20,9 @@ from strategy_engine import (
     calculate_macd_acceleration as se_calculate_macd_acceleration,
     calculate_rsi as se_calculate_rsi,
     calculate_vwap as se_calculate_vwap,
+    get_alpha_buy_threshold,
+    get_momentum_breakout_alpha_threshold,
+    is_night_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -738,6 +742,10 @@ class GeminiAnalyzer:
         btc_context: str = "비트코인(BTC): 🟢 정상 안정세",
         whale_context: str = "최근 5분간 고래 대량 체결 없음 (수급 평온)",
         rs_context: str = "",
+        btc_regime: str = "NORMAL",
+        is_night: bool | None = None,
+        candidate_type: str = "CONFIRMED",
+        entry_policy_mode: str = "STANDARD",
     ) -> dict[str, Any]:
         """
         [7대 팩터 앙상블 + VWAP + MACD 가속도 + MTF + 상대강도(RS) + 호가수급 + ATR 변동성] 퀀트 분석 엔진 v5.1
@@ -751,7 +759,16 @@ class GeminiAnalyzer:
         candle_ts = ""
         if candles:
             candle_ts = str(candles[0].get("candle_date_time_utc") or candles[0].get("timestamp") or "")
-        cache_key = f"{market}:{candle_ts or time_slot}"
+        # 같은 확정봉이라도 BTC 레짐·세션·후보 경로가 바뀌면 매수 기준이 달라지므로
+        # 이전 AI 판단을 재사용하지 않는다.
+        regime_upper = str(btc_regime or "NORMAL").upper()
+        night_active = is_night if is_night is not None else is_night_session()
+        normalized_candidate_type = str(candidate_type or "CONFIRMED").upper()
+        normalized_policy_mode = str(entry_policy_mode or "STANDARD").upper()
+        cache_key = (
+            f"{market}:{candle_ts or time_slot}:{regime_upper}:"
+            f"{int(night_active)}:{normalized_candidate_type}:{normalized_policy_mode}"
+        )
         if hasattr(self, "_analysis_cache") and cache_key in self._analysis_cache:
             cached_entry = self._analysis_cache[cache_key]
             if (time.time() - float(cached_entry.get("cached_at", 0))) < 540.0:
@@ -845,7 +862,50 @@ class GeminiAnalyzer:
                 vwap_info=vwap_info, macd_acc=macd_acc
             )
 
-        # 6. 기관 퀀트 헤지펀드 시스템 프롬프트 v5.1
+        # 6. 현재 StrategyPolicy를 AI 요청에도 그대로 주입해 정책 불일치를 방지한다.
+        if normalized_candidate_type == "MOMENTUM_BREAKOUT":
+            current_alpha_threshold = get_momentum_breakout_alpha_threshold(regime_upper, night_active)
+            policy_details = (
+                f"모멘텀 돌파 전용입니다. 최신 확정 5분봉이 직전 {StrategyPolicy.MOMENTUM_BREAKOUT_LOOKBACK_BARS}봉 고점을 돌파하고, "
+                f"거래량이 최근 20봉 평균의 {StrategyPolicy.MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN:.1f}배 이상, 양봉, "
+                f"RSI {StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MIN:.0f}~{StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MAX:.0f}, "
+                f"1시간 EMA20의 {StrategyPolicy.MOMENTUM_BREAKOUT_MTF_EMA20_RATIO:.3f}배 이상을 모두 충족해야 합니다. "
+                f"초기 주문 비중은 최대 종목 비중의 {StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO * 100:.0f}%를 넘지 않습니다."
+            )
+        elif normalized_policy_mode == "RECOVERY_REBOUND":
+            current_alpha_threshold = max(
+                StrategyPolicy.RECOVERY_REBOUND_ALPHA_THRESHOLD,
+                get_alpha_buy_threshold(regime_upper, night_active),
+            )
+            policy_details = (
+                "급락 후 반등 전용 경로입니다. RISK_OFF에서만 사용하며, 확정 5분봉 반등과 핵심 하드 게이트, "
+                f"BTC 대비 RS +{StrategyPolicy.RECOVERY_REBOUND_RS_MIN * 100:.1f}% 이상, 24시간 거래대금 "
+                f"{StrategyPolicy.MIN_TRADE_VALUE_RISK_OFF / 100_000_000:.0f}억 원 이상, 1시간 EMA20의 "
+                f"{StrategyPolicy.RECOVERY_REBOUND_MTF_EMA20_RATIO:.3f}배 이상을 모두 충족해야 합니다. "
+                f"초기 주문 비중은 일반 슬롯의 {StrategyPolicy.RECOVERY_REBOUND_ALLOC_RATIO * 100:.0f}%입니다."
+            )
+        else:
+            current_alpha_threshold = get_alpha_buy_threshold(regime_upper, night_active)
+            policy_details = (
+                "일반 확인형 경로입니다. 로컬 하드 게이트(확정봉·MTF·RSI·볼린저·MA 정렬·이격·윗꼬리·"
+                "저점권 반등)를 모두 통과한 후보만 AI 분석 대상입니다."
+            )
+
+        if regime_upper == "RISK_OFF":
+            if normalized_policy_mode == "RECOVERY_REBOUND":
+                risk_off_instruction = (
+                    f"반등 전용 경로이므로 BTC 대비 RS +{StrategyPolicy.RECOVERY_REBOUND_RS_MIN * 100:.1f}% 이상과 "
+                    "독자 수급이 확인되지 않으면 HOLD를 반환하세요."
+                )
+            else:
+                risk_off_instruction = (
+                    f"약세장 스크리닝 기준인 BTC 대비 RS +{StrategyPolicy.RS_MIN_RISK_OFF * 100:.1f}% 이상을 충족하고, "
+                    "비트코인과 동조하지 않는 독자 수급이 확인된 종목만 제한적으로 검토하세요."
+                )
+        else:
+            risk_off_instruction = "BTC가 급락하거나 시장 데이터가 불확실하면 신규 매수를 제안하지 말고 HOLD를 반환하세요."
+
+        # 7. 기관 퀀트 헤지펀드 시스템 프롬프트 v5.2
         memory_section = f"\n{trade_memory_context}\n" if trade_memory_context else ""
         rs_line = f"- 비트코인 대비 상대 강도(RS): {rs_context}\n" if rs_context else ""
 
@@ -854,7 +914,15 @@ class GeminiAnalyzer:
 
 ### [0. 대장주(BTC) 거시 시장 환경 & 코인 상대 강도(RS)]
 - 비트코인 시장 상태: {btc_context}
-{rs_line}※ 알트코인은 비트코인의 단기 급락세에 취약합니다. 특히 BTC가 약세(RISK_OFF)일 때는 비트코인과 함께 흐르는 대형 코인이나 무거래량 코인의 롱 매수를 전면 거부(HOLD)하고, 비트코인 대비 압도적인 독자 수급과 상대 강도(RS >= +1.5%)가 입증된 독자 랠리 종목에 한해서만 엄선하여 BUY를 승인하세요.
+{rs_line}※ 알트코인은 비트코인의 단기 급락세에 취약합니다. {risk_off_instruction}
+
+### [0-1. 이번 요청의 실행 정책 — AI가 절대 우회할 수 없음]
+- BTC 레짐: {regime_upper} | 심야 세션(00:00~07:00 KST): {'예' if night_active else '아니오'}
+- 후보 유형: {normalized_candidate_type} | 정책 경로: {normalized_policy_mode}
+- 현재 알파 승인 기준: {current_alpha_threshold}점 이상
+- 경로 조건: {policy_details}
+- AI의 판단은 주문 권한이 아닙니다. 로컬 하드 게이트, 주문 REST 대사 완료, WebSocket 정상, 종목별 쿨다운, 미해결 주문 부재, 리스크 한도, 호가 영향 검증 중 하나라도 불충족하면 시스템은 BUY를 제출하지 않습니다.
+- 데이터가 누락·모순되거나 위 조건의 충족 여부를 확인할 수 없으면 추정하지 말고 반드시 HOLD를 반환하세요. ACK는 체결이 아니며 체결·포지션·손익 상태를 가정하지 마세요.
 
 ### [1. MTF 상위 추세 & VWAP 기관 수급 & 호가창 수급 데이터]
 - 1시간봉 대세 방향: {mtf_1h['desc']}
@@ -881,8 +949,8 @@ class GeminiAnalyzer:
 - 보유 여부: {'🔒 [보유 중]' if is_holding else '⚪ [미보유 (현금)]'} | 가용 원화: {krw_balance:,.0f} KRW
 - 보유 수량: {coin_balance:.8f} {currency} (평가: {coin_value:,.0f} KRW) | 평단가: {avg_buy_price:,.2f} KRW (손익률: {pnl_pct:+.2f}%)
 
-### [4. 7대 복합 팩터 앙상블 매수 승인 규칙 (알파 스코어 60점 이상 시 BUY 승인)]
-신규 매수(BUY) 승인을 내리기 위해서는 아래 7대 팩터 종합 점수가 **60점 이상(약세장 75점 이상)**이어야 합니다:
+### [4. 7대 복합 팩터 앙상블 매수 승인 규칙]
+신규 매수(BUY) 승인을 내리기 위해서는 아래 7대 팩터 종합 점수가 **이번 요청의 현재 알파 승인 기준({current_alpha_threshold}점) 이상**이어야 합니다:
 1. [MTF 1H 추세] 1시간봉 대세 하락장이 아닐 것.
 2. [VWAP 기관 수급] 현재가가 VWAP 상단에 안착 지지 또는 돌파할 것.
 3. [MACD 가속도] 히스토그램 기울기가 양의 방향으로 가속 확장 중일 것.
@@ -906,6 +974,7 @@ class GeminiAnalyzer:
   "TARGET_PRICE": {int(dynamic_tp) if dynamic_tp >= 100 else round(dynamic_tp, 2)},
   "STOP_LOSS": {int(dynamic_sl) if dynamic_sl >= 100 else round(dynamic_sl, 2)},
   "ALLOC_PCT": 0.5,
+  "ALPHA_SCORE": 0,
   "REASON": "체크리스트 충족 현황 및 눌림목 지지/수급/손익비 기반 1~2줄 정밀 요약"
 }}
 """

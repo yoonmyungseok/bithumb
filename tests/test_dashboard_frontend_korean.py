@@ -141,6 +141,77 @@ class DashboardFrontendKoreanTests(unittest.TestCase):
         self.assertIn("추세 홀딩", results["runner"])
         self.assertIn("매수 승인", results["buy"])
 
+    def test_operational_observability_helpers_preserve_fill_boundary(self):
+        """표시 전용 우선순위와 주문 흐름이 ACK를 체결 확정으로 표현하지 않는지 검증"""
+        priority_code = self._extract_function("getPositionOperationalPriority")
+        lifecycle_code = self._extract_function("getOrderLifecycle")
+        summary_code = self._extract_function("summarizeCandidateReason")
+        candidate_code = self._extract_function("getCandidateEntryAvailability")
+        js_code = f"""
+        {priority_code}
+        {lifecycle_code}
+        {summary_code}
+        {candidate_code}
+        const results = {{
+          urgent: getPositionOperationalPriority({{ current_price: 100, stop_loss: 101 }}),
+          observe: getPositionOperationalPriority({{ current_price: 100, stop_loss: 99.5 }}),
+          ack: getOrderLifecycle({{ status: 'ACKNOWLEDGED' }}),
+          filled: getOrderLifecycle({{ status: 'FILLED' }}),
+          blocked: getCandidateEntryAvailability({{ allow_buy: true }}, {{ entry_ready: false, entry_block_reasons: ['체결 대사 진행 주문 1건'] }}),
+          eligible: getCandidateEntryAvailability({{ allow_buy: true }}, {{ entry_ready: true }}),
+          watching: getCandidateEntryAvailability({{ allow_buy: false, reason: '1차 퀀트 관망 대기: 하드게이트 통과, 알파스코어 74점, MA5 <= MA20, RSI 45.8' }}, {{ entry_ready: true }})
+        }};
+        console.log(JSON.stringify(results));
+        """
+        proc = subprocess.run(
+            ["node", "-e", js_code],
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding="utf-8",
+        )
+        results = json.loads(proc.stdout)
+
+        self.assertEqual(results["urgent"]["label"], "즉시 확인")
+        self.assertEqual(results["observe"]["label"], "관찰")
+        self.assertIn("체결 아님", results["ack"]["label"])
+        self.assertIn("체결 확정", results["filled"]["label"])
+        self.assertEqual(results["blocked"]["label"], "전역 차단")
+        self.assertEqual(results["eligible"]["label"], "진입 검토 가능")
+        self.assertEqual(results["watching"]["detail"], "1차 퀀트 관망 대기 · 알파 74점")
+
+    def test_watchlist_and_order_journal_use_scroll_limits(self):
+        """운영 표는 약 10건 높이만 표시하고 나머지 행은 스크롤로 확인해야 한다."""
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        index_path = os.path.join(project_root, "dashboard", "index.html")
+        style_path = os.path.join(project_root, "dashboard", "src", "styles.css")
+
+        with open(index_path, "r", encoding="utf-8") as index_file:
+            index_content = index_file.read()
+        with open(style_path, "r", encoding="utf-8") as style_file:
+            style_content = style_file.read()
+
+        self.assertIn('class="table-scroll-watchlist overflow-x-auto', index_content)
+        self.assertIn('class="table-scroll-order-journal overflow-x-auto', index_content)
+        self.assertIn('class="table-scroll-recent-trades overflow-x-auto', index_content)
+        self.assertIn('.table-scroll-watchlist {', style_content)
+        self.assertIn('max-height: 38rem;', style_content)
+        self.assertIn('.table-scroll-order-journal', style_content)
+        self.assertIn('.table-scroll-recent-trades {', style_content)
+        self.assertIn('max-height: 29rem;', style_content)
+        self.assertIn('position: sticky;', style_content)
+
+    def test_safety_panel_uses_exchange_cards_instead_of_duplicate_feed_board(self):
+        """실거래 안전 상태는 거래소별 카드에만 시세 상태를 표시해야 한다."""
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        index_path = os.path.join(project_root, "dashboard", "index.html")
+
+        with open(index_path, "r", encoding="utf-8") as index_file:
+            index_content = index_file.read()
+
+        self.assertIn('id="safety_exchange_detail"', index_content)
+        self.assertNotIn('id="feed_health"', index_content)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -102,6 +102,34 @@ body {
   box-shadow: 0 2px 10px rgba(37, 99, 235, 0.35);
 }
 
+/* 운영 표의 표시 높이만 제한해 데이터 전체는 세로 스크롤로 계속 확인한다. */
+.table-scroll-watchlist,
+.table-scroll-order-journal,
+.table-scroll-recent-trades {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* 분석 근거가 두 줄 이상인 후보 행까지 고려해 약 10건을 한 화면에 표시한다. */
+.table-scroll-watchlist {
+  max-height: 38rem;
+}
+
+/* 거래 이력과 주문 저널은 행 높이가 작아 약 10건을 표시한 뒤 스크롤한다. */
+.table-scroll-order-journal,
+.table-scroll-recent-trades {
+  max-height: 29rem;
+}
+
+/* 스크롤 중에도 열 제목을 고정해 주문 상태와 후보 지표를 혼동하지 않게 한다. */
+.table-scroll-watchlist thead,
+.table-scroll-order-journal thead,
+.table-scroll-recent-trades thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
 /* Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

@@ -435,6 +435,7 @@
       cell.textContent = '현재 WARNING 이상 비정상 로그가 없습니다.';
       row.appendChild(cell);
       tbody.appendChild(row);
+      renderAlertIncidentSummary(alerts);
       return;
     }
 
@@ -457,6 +458,50 @@
       });
       tbody.appendChild(row);
     });
+    renderAlertIncidentSummary(alerts);
+  }
+
+  // 같은 종류의 경고를 사건 단위로 묶어 운영자가 원문을 모두 읽기 전에 우선순위를 파악하게 한다.
+  // 원문 메시지는 이 함수에서도 HTML로 삽입하지 않아 로그 기반 스크립트 실행을 차단한다.
+  function renderAlertIncidentSummary(alerts) {
+    const container = document.getElementById('alert_incident_summary');
+    if (!container) return;
+    container.replaceChildren();
+
+    if (!alerts || alerts.length === 0) {
+      const empty = document.createElement('span');
+      empty.className = 'text-slate-500';
+      empty.textContent = '최근 비정상 사건이 없습니다.';
+      container.appendChild(empty);
+      return;
+    }
+
+    const incidents = new Map();
+    alerts.forEach(alert => {
+      const message = String(alert && alert.message || '')
+        .replace(/^\[?\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\]?\s*/, '')
+        .replace(/\d+/g, '#');
+      const source = String(alert && alert.source || '알 수 없는 구성요소');
+      const level = String(alert && alert.level || 'WARNING').toUpperCase();
+      const key = `${source}|${level}|${message}`;
+      const saved = incidents.get(key) || { source, level, message, count: 0 };
+      saved.count += 1;
+      incidents.set(key, saved);
+    });
+
+    [...incidents.values()]
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5)
+      .forEach(incident => {
+        const chip = document.createElement('span');
+        const severe = incident.level === 'CRITICAL' || incident.level === 'ERROR';
+        chip.className = severe
+          ? 'px-2 py-1 rounded-lg border border-rose-500/40 bg-rose-500/10 text-rose-200'
+          : 'px-2 py-1 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-100';
+        chip.textContent = `${incident.source} · ${incident.level} ${incident.count}건`;
+        chip.title = incident.message || '메시지 없음';
+        container.appendChild(chip);
+      });
   }
 
   // 서버가 전달한 안전 상태는 HTML로 삽입하지 않고 DOM 텍스트로만 표시한다.
@@ -466,7 +511,6 @@
     const badge = document.getElementById('entry_ready_badge');
     const summary = document.getElementById('safety_summary');
     const reasonsEl = document.getElementById('entry_block_reasons');
-    const feedEl = document.getElementById('feed_health');
     const countsEl = document.getElementById('order_status_counts');
 
     if (badge) {
@@ -490,43 +534,6 @@
         reasonsEl.appendChild(item);
       });
     }
-    if (feedEl) {
-      const feed = (data.feed && typeof data.feed === 'object') ? data.feed : {};
-      const feeds = (feed.by_exchange && typeof feed.by_exchange === 'object') ? feed.by_exchange : null;
-      const feedStatusMap = {
-        CONNECTED: '정상 연결',
-        CONNECTING: '연결 중',
-        RECONNECTING: '재연결 중',
-        DISCONNECTED: '연결 끊김',
-        DATA_UNAVAILABLE: '데이터 대기',
-        PROCESSING_DELAY: '콜백 처리 지연',
-        HEALTHY: '정상',
-        UNHEALTHY: '지연 감지',
-      };
-      const formatFeed = (label, item) => {
-        const isHealthy = item && item.is_healthy === true;
-        const latency = Number(item && item.latency_seconds);
-        const latencyText = Number.isFinite(latency) && latency < 9999 ? `, 마지막 틱 ${latency.toFixed(1)}초 전` : '';
-        const rawStatus = (item && item.status) || 'DATA_UNAVAILABLE';
-        const queueDepth = Number(item && item.callback_queue_depth);
-        const callbackAvg = Number(item && item.callback_avg_execution_seconds);
-        // 지연 상태에서만 큐 지표를 보여 정상 화면의 노이즈를 줄이고 원인 파악을 돕는다.
-        const backlogText = rawStatus === 'PROCESSING_DELAY' && Number.isFinite(queueDepth)
-          ? `, 대기 ${queueDepth}건${Number.isFinite(callbackAvg) ? `, 평균 처리 ${callbackAvg.toFixed(3)}초` : ''}`
-          : '';
-        const statusKr = feedStatusMap[rawStatus] || rawStatus;
-        return `${label}: ${isHealthy ? '정상' : '비정상'} (${statusKr}${latencyText}${backlogText})`;
-      };
-      if (feeds) {
-        feedEl.textContent = [
-          formatFeed('빗썸', feeds.bithumb),
-          formatFeed('업비트', feeds.upbit)
-        ].join(' · ');
-      } else {
-        feedEl.textContent = formatFeed('현재 거래소', feed);
-      }
-      feedEl.className = feed.is_healthy === true ? 'text-emerald-300' : 'text-rose-300';
-    }
     if (countsEl) {
       const counts = (data.order_status_counts && typeof data.order_status_counts === 'object') ? data.order_status_counts : {};
       // 저장 상태 코드는 그대로 두고, 사용자 화면에서만 한글 상태명으로 변환한다.
@@ -549,6 +556,43 @@
         .join(' · ');
       countsEl.textContent = text || '최근 주문 없음';
     }
+
+    // 통합 탭은 거래소별 안전 원인을 나란히 보여 주되, 개별 탭에서는 현재 거래소 하나만 표시한다.
+    renderExchangeSafetyDetails(data);
+  }
+
+  function renderExchangeSafetyDetails(safety) {
+    const container = document.getElementById('safety_exchange_detail');
+    if (!container) return;
+    container.replaceChildren();
+
+    const byExchange = safety && safety.by_exchange && typeof safety.by_exchange === 'object'
+      ? safety.by_exchange
+      : null;
+    const details = byExchange || { current: safety || {} };
+    const labels = { bithumb: '🟡 빗썸', upbit: '🔵 업비트', current: '현재 거래소' };
+
+    Object.entries(details).forEach(([exchange, item]) => {
+      const data = (item && typeof item === 'object') ? item : {};
+      const ready = data.entry_ready === true;
+      const feed = (data.feed && typeof data.feed === 'object') ? data.feed : {};
+      const reasons = Array.isArray(data.entry_block_reasons) ? data.entry_block_reasons : [];
+      const card = document.createElement('div');
+      card.className = ready
+        ? 'rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3'
+        : 'rounded-xl border border-rose-500/30 bg-rose-500/5 p-3';
+      const title = document.createElement('div');
+      title.className = 'font-semibold text-slate-100';
+      title.textContent = `${labels[exchange] || exchange}: ${ready ? '신규 매수 가능' : '신규 매수 차단'}`;
+      const body = document.createElement('div');
+      body.className = 'text-[11px] mt-1 text-slate-300';
+      const feedStatus = String(feed.status || 'DATA_UNAVAILABLE');
+      body.textContent = reasons.length
+        ? reasons.slice(0, 2).join(' · ')
+        : `시세 스트림 ${feedStatus}`;
+      card.append(title, body);
+      container.appendChild(card);
+    });
   }
 
   // API 일일 사용량 & 쿼터 패널 렌더링
@@ -822,13 +866,97 @@
     return `<div class="mt-1 text-[11px] text-amber-200">${parts.join(' · ')}</div>`;
   }
 
+  // 이 우선순위는 화면 정렬 전용이다. 주문·손절 조건이나 포지션 상태에는 어떠한 변경도 가하지 않는다.
+  function getPositionOperationalPriority(position) {
+    const pos = (position && typeof position === 'object') ? position : {};
+    const riskState = (pos.risk_state && typeof pos.risk_state === 'object') ? pos.risk_state : {};
+    const action = String(pos.action || '').toUpperCase();
+    const current = Number(pos.current_price || 0);
+    const stopLoss = Number(pos.stop_loss || 0);
+
+    if (riskState.exit_in_progress === true || action.includes('EMERGENCY') || action.includes('EXIT')) {
+      return { rank: 0, label: '즉시 확인', detail: '청산 대응 또는 주문 진행 상태', tone: 'rose' };
+    }
+    if (current > 0 && stopLoss > 0 && current <= stopLoss) {
+      return { rank: 0, label: '즉시 확인', detail: '현재가가 표시 손절가 이하', tone: 'rose' };
+    }
+    // 손절가 1% 이내는 주문 신호가 아니라 운용자가 확인할 표시상 관찰 구간이다.
+    if (current > 0 && stopLoss > 0 && ((current - stopLoss) / current * 100) <= 1.0) {
+      return { rank: 1, label: '관찰', detail: '표시 손절가 1% 이내', tone: 'amber' };
+    }
+    return { rank: 2, label: '정상', detail: '즉시 확인 조건 없음', tone: 'emerald' };
+  }
+
+  function renderPositionOperationalPriority(priority) {
+    const data = priority || { label: '정상', detail: '즉시 확인 조건 없음', tone: 'emerald' };
+    const color = data.tone === 'rose'
+      ? 'bg-rose-500/20 text-rose-200 border-rose-500/40'
+      : (data.tone === 'amber'
+        ? 'bg-amber-500/20 text-amber-200 border-amber-500/40'
+        : 'bg-emerald-500/20 text-emerald-200 border-emerald-500/40');
+    return `<div><span class="px-2 py-0.5 rounded text-xs font-bold border ${color}">${data.label}</span><div class="mt-1 text-[10px] text-slate-400">${data.detail}</div></div>`;
+  }
+
+  // 진입 가능성 칸은 상태를 빠르게 판단하는 용도이므로 긴 전략 근거를 반복하지 않는다.
+  // 상세 근거는 표의 마지막 "AI / 퀀트 진입 분석 근거" 열에 그대로 남긴다.
+  function summarizeCandidateReason(reason) {
+    const text = String(reason || '').trim();
+    if (!text) return '개별 전략 기준 미통과';
+    const headline = text.split(':', 1)[0].trim() || text;
+    const scoreMatch = text.match(/알파\s*스코어\s*([0-9]+(?:\.[0-9]+)?)점/i);
+    return scoreMatch ? `${headline} · 알파 ${scoreMatch[1]}점` : headline;
+  }
+
+  // 후보의 최종 주문 가능 여부는 엔진이 다시 판정한다. 이 값은 화면 조회 시점의 설명일 뿐이다.
+  function getCandidateEntryAvailability(candidate, safety) {
+    const cand = (candidate && typeof candidate === 'object') ? candidate : {};
+    const safe = (safety && typeof safety === 'object') ? safety : {};
+    if (safe.entry_ready !== true) {
+      const reasons = Array.isArray(safe.entry_block_reasons) ? safe.entry_block_reasons : [];
+      return { label: '전역 차단', detail: reasons[0] || '안전 상태 확인 대기', tone: 'rose' };
+    }
+    if (cand.allow_buy !== true) {
+      return { label: '전략 관망', detail: summarizeCandidateReason(cand.reason), tone: 'slate' };
+    }
+    return { label: '진입 검토 가능', detail: '주문 직전 엔진의 최종 안전 검증 필요', tone: 'emerald' };
+  }
+
+  function renderCandidateEntryAvailability(availability) {
+    const data = availability || { label: '상태 확인 중', detail: '', tone: 'slate' };
+    const color = data.tone === 'rose'
+      ? 'bg-rose-500/20 text-rose-200 border-rose-500/40'
+      : (data.tone === 'emerald'
+        ? 'bg-emerald-500/20 text-emerald-200 border-emerald-500/40'
+        : 'bg-slate-700/60 text-slate-200 border-slate-600');
+    return `<div><span class="px-2 py-0.5 rounded text-xs font-bold border ${color}">${data.label}</span><div class="mt-1 text-[10px] text-slate-400 max-w-[160px] whitespace-normal">${formatReason(data.detail)}</div></div>`;
+  }
+
+  // 주문 상태만으로 관측 가능한 흐름을 표시한다. ACK를 체결 확정처럼 보이지 않게 분리한다.
+  function getOrderLifecycle(order) {
+    const status = String(order && order.status || '').toUpperCase();
+    if (status === 'FILLED' || status === 'DONE') {
+      return { label: '요청 → 접수 → 대사 → 체결 확정', detail: '체결 확정 상태', tone: 'emerald' };
+    }
+    if (status === 'RECONCILIATION_PENDING' || status === 'RECONCILED') {
+      return { label: '요청 → 접수 → REST 대사', detail: status === 'RECONCILED' ? '대사 완료, 체결 상태 확인' : '체결 대사 진행 중', tone: 'amber' };
+    }
+    if (status === 'ACK' || status === 'ACKNOWLEDGED' || status === 'OPEN' || status === 'WAIT' || status === 'PENDING' || status === 'SUBMITTED') {
+      return { label: '요청 → 접수(체결 아님)', detail: 'Private WS 또는 REST 확인 대기', tone: 'blue' };
+    }
+    if (status === 'UNKNOWN') {
+      return { label: '상태 확인 필요', detail: 'REST 대사 전에는 체결로 처리하지 않음', tone: 'rose' };
+    }
+    return { label: '주문 상태 확인 중', detail: '확정 체결 여부 미판정', tone: 'slate' };
+  }
+
   function renderOrderProgress(order) {
     const executed = Number(order.executed_volume || 0);
     const requested = Number(order.volume || 0);
     const remaining = Number(order.remaining_volume || 0);
     const quantity = requested > 0 ? `${executed.toFixed(6)} / ${requested.toFixed(6)}` : `${executed.toFixed(6)} 체결`;
     const remainingText = remaining > 0 ? `잔여 ${remaining.toFixed(6)}` : '잔여 없음';
-    return `<div class="font-mono text-slate-200">${quantity}</div><div class="text-[11px] text-slate-400">${remainingText}</div>`;
+    const lifecycle = getOrderLifecycle(order);
+    return `<div class="font-mono text-slate-200">${quantity}</div><div class="text-[11px] text-slate-400">${remainingText}</div><div class="text-[10px] mt-1 ${lifecycle.tone === 'rose' ? 'text-rose-300' : (lifecycle.tone === 'amber' ? 'text-amber-300' : 'text-slate-400')}">${lifecycle.label}</div>`;
   }
 
   // Render Core Dashboard Data
@@ -928,7 +1056,7 @@
 
     // Render Tables
     renderPositionsTable(positions);
-    renderCandidatesTable(candidates);
+    renderCandidatesTable(candidates, d.safety);
     renderDailyHistoryTable(d.daily_stats_history || []);
     renderRecentTradesTable(d.recent_trades || []);
     renderOrderJournalTable(d.recent_orders || []);
@@ -942,7 +1070,7 @@
     if (!positions || positions.length === 0) {
       tbody.innerHTML = `
         <tr>
-          <td colspan="8" class="p-8 text-center text-slate-500">
+          <td colspan="9" class="p-8 text-center text-slate-500">
             <div class="text-3xl mb-2">💼</div>
             <div class="text-sm font-medium">현재 보유 중인 포지션이 없습니다. (100% 현금 대기 중)</div>
           </td>
@@ -951,7 +1079,10 @@
       return;
     }
 
-    tbody.innerHTML = positions.map(pos => {
+    const prioritizedPositions = positions
+      .map(pos => ({ pos, priority: getPositionOperationalPriority(pos) }))
+      .sort((left, right) => left.priority.rank - right.priority.rank);
+    tbody.innerHTML = prioritizedPositions.map(({ pos, priority }) => {
       const pnlPct = Number(pos.pnl_pct || 0);
       const pnlKrw = Number(pos.pnl_krw || 0);
       const isProfit = pnlPct >= 0;
@@ -981,6 +1112,9 @@
             <div class="text-xs font-normal opacity-80">${pnlKrw !== 0 ? (pnlKrw > 0 ? '+' : '') + formatKrw(pnlKrw) : ''}</div>
           </td>
           <td class="p-3 whitespace-nowrap">
+            ${renderPositionOperationalPriority(priority)}
+          </td>
+          <td class="p-3 whitespace-nowrap">
             ${renderActionBadge(pos.action)}
           </td>
           <td class="p-3 whitespace-nowrap text-xs">
@@ -1000,14 +1134,14 @@
   }
 
   // Render Candidates Watchlist Table
-  function renderCandidatesTable(candidates) {
+  function renderCandidatesTable(candidates, safety) {
     const tbody = document.getElementById('candidates_tbody');
     if (!tbody) return;
 
     if (!candidates || candidates.length === 0) {
       tbody.innerHTML = `
         <tr>
-          <td colspan="7" class="p-8 text-center text-slate-500">
+          <td colspan="8" class="p-8 text-center text-slate-500">
             <div class="text-3xl mb-2">🎯</div>
             <div class="text-sm font-medium">현재 진입 기준을 통과한 신규 스캔 후보 종목이 없습니다.</div>
           </td>
@@ -1030,6 +1164,7 @@
 
       const targetStr = cand.target_price > 0 ? `${formatPrice(cand.target_price)} 원 (${cand.target_pct >= 0 ? '+' : ''}${(cand.target_pct || 0).toFixed(1)}%)` : '-';
       const stopStr = cand.stop_loss > 0 ? `${formatPrice(cand.stop_loss)} 원 (${cand.stop_pct || 0}%)` : '-';
+      const availability = getCandidateEntryAvailability(cand, safety);
 
       return `
         <tr class="hover:bg-slate-800/40 transition-colors border-b border-slate-800/80">
@@ -1049,6 +1184,9 @@
           </td>
           <td class="p-3 whitespace-nowrap">
             ${renderActionBadge(cand.action || (cand.allow_buy ? 'BUY' : 'HOLD'))}
+          </td>
+          <td class="p-3 whitespace-nowrap">
+            ${renderCandidateEntryAvailability(availability)}
           </td>
           <td class="p-3 whitespace-nowrap text-xs">
             <div class="text-emerald-400">목표: ${targetStr}</div>

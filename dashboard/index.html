@@ -130,20 +130,18 @@
         </div>
         <span id="entry_ready_badge" class="px-3 py-1 rounded-full text-xs font-bold bg-slate-700 text-slate-300">확인 중</span>
       </div>
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 text-xs">
         <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
           <div class="text-slate-400 mb-1">신규 매수 차단 사유</div>
           <ul id="entry_block_reasons" class="space-y-1 text-slate-200"><li>상태 수신 대기</li></ul>
-        </div>
-        <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
-          <div class="text-slate-400 mb-1">시세 스트림</div>
-          <div id="feed_health" class="text-slate-200">상태 수신 대기</div>
         </div>
         <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
           <div class="text-slate-400 mb-1">주문 상태 집계</div>
           <div id="order_status_counts" class="text-slate-200">상태 수신 대기</div>
         </div>
       </div>
+      <!-- 통합 화면에서는 거래소별 원인을 분리해, 한쪽 장애를 다른 거래소 문제로 오인하지 않게 한다. -->
+      <div id="safety_exchange_detail" class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3" aria-label="거래소별 안전 상태"></div>
     </section>
 
     <!-- API 일일 사용량 & 쿼터 모니터링 영역 -->
@@ -386,6 +384,7 @@
               <th class="p-3 whitespace-nowrap">현재가 / 평단가</th>
               <th class="p-3 whitespace-nowrap">보유 수량 / 평가액</th>
               <th class="p-3 whitespace-nowrap">수익률</th>
+              <th class="p-3 whitespace-nowrap">운영 우선순위</th>
               <th class="p-3 whitespace-nowrap min-w-[90px]">AI 행동</th>
               <th class="p-3 whitespace-nowrap">목표가 / 손절가</th>
               <th class="p-3 whitespace-nowrap">알파 스코어</th>
@@ -409,7 +408,7 @@
           <p class="text-xs text-slate-400 mt-0.5">실시간 거래대금 & 급등 모멘텀 스크리너가 발굴한 7대 알파 분석 결과</p>
         </div>
       </div>
-      <div class="overflow-x-auto rounded-xl border border-slate-800/80">
+      <div class="table-scroll-watchlist overflow-x-auto rounded-xl border border-slate-800/80" aria-label="신규 스캔 종목 AI 진입 전략 후보군 목록">
         <table class="w-full text-left text-sm text-slate-300">
           <thead class="bg-slate-800/80 text-slate-400 uppercase text-xs">
             <tr>
@@ -417,6 +416,7 @@
               <th class="p-3 whitespace-nowrap">현재가 (KRW)</th>
               <th class="p-3 whitespace-nowrap min-w-[90px]">7대 알파 스코어</th>
               <th class="p-3 whitespace-nowrap min-w-[90px]">AI 추천 행동</th>
+              <th class="p-3 whitespace-nowrap">진입 가능성</th>
               <th class="p-3 whitespace-nowrap">목표가 (+%) / 손절가 (-%)</th>
               <th class="p-3 whitespace-nowrap">예상 손익비 (R:R)</th>
               <th class="p-3 min-w-[220px]">AI / 퀀트 진입 분석 근거</th>
@@ -469,7 +469,7 @@
         <h2 class="text-base font-bold text-white mb-3 flex items-center">
           <span class="mr-2">💰</span> 최근 완료 거래 내역
         </h2>
-        <div class="overflow-x-auto rounded-xl border border-slate-800/80">
+        <div class="table-scroll-recent-trades overflow-x-auto rounded-xl border border-slate-800/80" aria-label="최근 완료 거래 내역 목록">
           <table class="w-full text-left text-xs text-slate-300">
             <thead class="bg-slate-800/80 text-slate-400 uppercase">
               <tr>
@@ -492,7 +492,8 @@
         <h2 class="text-base font-bold text-white mb-3 flex items-center">
           <span class="mr-2">🛡️</span> 실시간 주문 저널 (Order Journal)
         </h2>
-        <div class="overflow-x-auto rounded-xl border border-slate-800/80">
+        <p class="text-[11px] text-slate-500 mb-3">접수(ACK)는 체결이 아닙니다. 체결·포지션 반영은 Private WebSocket 또는 REST 대사 확인 뒤에만 확정됩니다.</p>
+        <div class="table-scroll-order-journal overflow-x-auto rounded-xl border border-slate-800/80" aria-label="실시간 주문 저널 목록">
           <table class="w-full text-left text-xs text-slate-300">
             <thead class="bg-slate-800/80 text-slate-400 uppercase">
               <tr>
@@ -522,6 +523,8 @@
         <span id="alerts_count" class="text-xs text-slate-400">조회 중...</span>
       </div>
       <p class="text-xs text-slate-500 mb-3">WARNING · ERROR · CRITICAL만 최근순으로 표시합니다.</p>
+      <!-- 원문 로그는 아래 표에서 textContent로 렌더링하고, 이 영역은 반복 사건의 우선순위만 요약한다. -->
+      <div id="alert_incident_summary" class="flex flex-wrap gap-2 mb-3 text-xs" aria-live="polite"></div>
       <div class="overflow-x-auto rounded-xl border border-slate-800/80 max-h-96 overflow-y-auto">
         <table class="w-full text-left text-xs text-slate-300">
           <thead class="bg-slate-800/80 text-slate-400 uppercase sticky top-0">

@@ -256,6 +256,12 @@ class DashboardWebServer:
         .badge {{ padding: 3px 8px; border-radius: 6px; font-weight: bold; font-size: 0.75rem; white-space: nowrap; display: inline-block; }}
         .factor-chip {{ font-size: 0.65rem; padding: 1px 6px; border-radius: 4px; font-family: monospace; }}
         .tab-btn.active {{ background-color: #2563eb; color: #ffffff; border-color: #3b82f6; }}
+        /* 대체 화면도 운영 표를 약 10건 높이로 제한하고 나머지는 세로 스크롤로 제공한다. */
+        .table-scroll-watchlist, .table-scroll-order-journal, .table-scroll-recent-trades {{ overflow-y: auto; overscroll-behavior: contain; }}
+        .table-scroll-watchlist {{ max-height: 38rem; }}
+        .table-scroll-order-journal, .table-scroll-recent-trades {{ max-height: 29rem; }}
+        /* 열 제목을 고정해 스크롤 중에도 데이터 의미를 안전하게 구분한다. */
+        .table-scroll-watchlist thead, .table-scroll-order-journal thead, .table-scroll-recent-trades thead {{ position: sticky; top: 0; z-index: 1; }}
     </style>
 </head>
 <body class="p-4 sm:p-6">
@@ -370,7 +376,7 @@ class DashboardWebServer:
                     <span id="cand_regime_indicator" class="badge bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">🟢 정상장 (진입 60점+)</span>
                 </div>
             </div>
-            <div class="overflow-x-auto">
+            <div class="table-scroll-watchlist overflow-x-auto" aria-label="신규 스캔 종목 AI 진입 전략 후보군 목록">
                 <table class="w-full text-left text-sm text-slate-300">
                     <thead class="bg-slate-800/60 text-slate-400 uppercase text-xs">
                         <tr>
@@ -397,7 +403,7 @@ class DashboardWebServer:
                 <h2 class="text-lg font-bold text-white mb-4 flex items-center">
                     <span class="mr-2">💰</span> 최근 완료 거래 내역
                 </h2>
-                <div class="overflow-x-auto">
+                <div class="table-scroll-recent-trades overflow-x-auto" aria-label="최근 완료 거래 내역 목록">
                     <table class="w-full text-left text-xs text-slate-300">
                         <thead class="bg-slate-800/60 text-slate-400 uppercase">
                             <tr>
@@ -420,7 +426,7 @@ class DashboardWebServer:
                 <h2 class="text-lg font-bold text-white mb-4 flex items-center">
                     <span class="mr-2">🛡️</span> 실시간 주문 저널
                 </h2>
-                <div class="overflow-x-auto">
+                <div class="table-scroll-order-journal overflow-x-auto" aria-label="실시간 주문 저널 목록">
                     <table class="w-full text-left text-xs text-slate-300">
                         <thead class="bg-slate-800/60 text-slate-400 uppercase">
                             <tr>

@@ -109,6 +109,69 @@ class TestTradeImprovementGuards(unittest.TestCase):
         self.assertEqual(res["alloc_pct"], 0.0)
         self.assertIn("과열 가드레일 작동", res["reason"])
 
+    @patch("requests.post")
+    def test_gemini_prompt_uses_current_policy_context(self, mock_post):
+        """Gemini 요청 프롬프트가 현재 레짐·경로 정책과 JSON 스키마를 함께 전달하는지 검증"""
+        analyzer = GeminiAnalyzer(api_key="fake_test_key")
+        analyzer.get_candidate_models = MagicMock(return_value=["gemini-3.5-flash-lite"])
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "candidates": [{"content": {"parts": [{
+                "text": '{"STATUS":"ACTIVE","ACTION":"HOLD","ENTRY_PRICE":100,"TARGET_PRICE":104,"STOP_LOSS":98,"ALLOC_PCT":0,"ALPHA_SCORE":70,"REASON":"대기"}'
+            }]}}]
+        }
+        mock_post.return_value = mock_response
+        candles = [
+            {
+                "opening_price": 100.0,
+                "high_price": 101.0,
+                "low_price": 99.0,
+                "trade_price": 100.0,
+                "candle_acc_trade_volume": 100.0,
+                "candle_date_time_utc": "2026-09-06T00:00:00",
+            }
+            for _ in range(30)
+        ]
+
+        analyzer.analyze(
+            market="KRW-TEST",
+            current_price=100.0,
+            candles=candles,
+            krw_balance=100000.0,
+            coin_balance=0.0,
+            avg_buy_price=0.0,
+            btc_regime="RISK_OFF",
+            is_night=False,
+            candidate_type="CONFIRMED",
+            entry_policy_mode="STANDARD",
+        )
+
+        prompt = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
+        self.assertIn("BTC 레짐: RISK_OFF", prompt)
+        self.assertIn("현재 알파 승인 기준: 70점 이상", prompt)
+        self.assertIn("AI의 판단은 주문 권한이 아닙니다", prompt)
+        self.assertIn('"ALPHA_SCORE": 0', prompt)
+
+        # 같은 확정봉이라도 정책 경로가 달라지면 캐시를 공유하지 않고 최신 기준을 다시 주입해야 한다.
+        analyzer.analyze(
+            market="KRW-TEST",
+            current_price=100.0,
+            candles=candles,
+            krw_balance=100000.0,
+            coin_balance=0.0,
+            avg_buy_price=0.0,
+            btc_regime="RISK_OFF",
+            is_night=True,
+            candidate_type="MOMENTUM_BREAKOUT",
+            entry_policy_mode="STANDARD",
+        )
+        momentum_prompt = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertIn("후보 유형: MOMENTUM_BREAKOUT", momentum_prompt)
+        self.assertIn("현재 알파 승인 기준: 75점 이상", momentum_prompt)
+        self.assertIn("최대 종목 비중의 25%", momentum_prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
