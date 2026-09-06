@@ -126,36 +126,40 @@ class OrderSafetyTests(unittest.TestCase):
         is_cd_eth, _ = cd.is_in_cooldown("KRW-ETH")
         self.assertFalse(is_cd_eth)
 
-    def test_stop_loss_allows_immediate_bottom_reentry(self):
-        """손절(STOP_LOSS) 발생 시 신규 매수 차단(쿨다운 및 갭 필터)이 해제되어 바닥 재매수가 즉시 허용되는지 검증"""
+    def test_stop_loss_enforces_cooldown_and_daily_limit(self):
+        """손절 발생 시 30분 쿨다운 적용 및 동일 종목 2회 손절 시 당일 완전 차단 검증"""
         cd = CooldownManager(
-            default_sl_cooldown=0.0,
+            default_sl_cooldown=1800.0,
             default_tp_cooldown=1800.0,
             default_time_stop_cooldown=2700.0,
+            max_daily_losses_per_market=2,
             data_dir=self.temp_dir.name,
         )
-        # 100원에 손절 청산 발생
+        # 100원에 1차 손절 청산 발생
         cd.record_exit("KRW-SOL", "STOP_LOSS", exit_price=100.0)
 
-        # 1. 쿨다운 타이머가 걸리지 않아야 함
+        # 1. 30분(1800초) 쿨다운이 정상 적용되어야 함
         is_cd, rem = cd.is_in_cooldown("KRW-SOL")
-        self.assertFalse(is_cd)
-        self.assertEqual(rem, 0.0)
+        self.assertTrue(is_cd)
+        self.assertGreater(rem, 1700.0)
 
-        # 2. 손절가보다 아래인 바닥 가격(90원, -10%)에서도 즉시 매수 허용
-        allowed_bottom, reason_bottom = cd.check_reentry_allowed("KRW-SOL", 90.0)
-        self.assertTrue(allowed_bottom)
-        self.assertEqual(reason_bottom, "OK")
+        # 2. 쿨다운 중에는 재진입이 차단되어야 함
+        allowed, reason = cd.check_reentry_allowed("KRW-SOL", 95.0)
+        self.assertFalse(allowed)
+        self.assertIn("쿨다운 대기 중", reason)
 
-        # 3. 손절가 부근(100.5원)에서도 상방 돌파 제약 없이 즉시 매수 허용
-        allowed_near, reason_near = cd.check_reentry_allowed("KRW-SOL", 100.5)
-        self.assertTrue(allowed_near)
-        self.assertEqual(reason_near, "OK")
+        # 3. 당일 손절 카운트 1회 확인
+        self.assertEqual(cd.get_daily_loss_count("KRW-SOL"), 1)
 
-        # 4. "손절 방어" 한글 레이블 청산도 동일하게 바닥 재매수 즉시 허용
-        cd.record_exit("KRW-DOGE", "손절 방어", exit_price=300.0)
-        allowed_kr, _ = cd.check_reentry_allowed("KRW-DOGE", 280.0)
-        self.assertTrue(allowed_kr)
+        # 4. 동일 종목 2차 손절 청산 발생 (100원에 재진입 후 95원에 손절)
+        cd.record_exit("KRW-SOL", "손절 방어", exit_price=95.0)
+        self.assertEqual(cd.get_daily_loss_count("KRW-SOL"), 2)
+
+        # 5. 당일 2회 손절 누적으로 당일 자정까지 해당 종목 완전 차단 확인
+        allowed_blocked, reason_blocked = cd.check_reentry_allowed("KRW-SOL", 98.0)
+        self.assertFalse(allowed_blocked)
+        self.assertIn("당일 손절 2회 누적", reason_blocked)
+        self.assertIn("거래 완전 차단", reason_blocked)
 
     def test_whipsaw_reentry_prevention_scenario(self):
         """316원 타임스탑 매도 후 317원 재매수 시도와 같은 휩쏘 횡보 재진입 차단 검증 (타임스탑 유지)"""

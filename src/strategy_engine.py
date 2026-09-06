@@ -80,8 +80,8 @@ class StrategyPolicy:
     TIME_STOP_BARS_5M: int = 24          # 5분봉 24개 = 120분 (백테스트 캔들 단위)
     TIME_STOP_BARS_5M_RISK_OFF: int = 12 # 5분봉 12개 = 60분 (RISK_OFF 백테스트 캔들 단위)
     TIME_STOP_MAX_HOLD_BARS_5M: int = 36 # 최대 유예 36봉 (180분)
-    TIME_STOP_BREAKEVEN_MIN_PNL_PCT: float = 0.0005 # 타임스탑 실질 본전 기준 (+0.05% 수수료 세이브)
-    COOLDOWN_STOP_LOSS_SEC: float = 0.0     # 손절 후 쿨다운 0초 (바닥 재매수 허용)
+    TIME_STOP_BREAKEVEN_MIN_PNL_PCT: float = 0.003 # 타임스탑 실질 본전 기준 (+0.30% 완충 마진 확보)
+    COOLDOWN_STOP_LOSS_SEC: float = 1800.0  # 손절 후 쿨다운 30분 (연속 손절 방어)
     COOLDOWN_TIME_STOP_SEC: float = 600.0   # 타임스탑 횡보 청산 후 쿨다운 10분
     COOLDOWN_TP_SEC: float = 300.0          # 트레일링 익절 후 쿨다운 5분 (2차 랠리 조기 참여)
     REENTRY_BUFFER_PCT: float = 0.012       # 직전 청산가 대비 최소 돌파/눌림목 갭 버퍼 (+1.2%)
@@ -90,7 +90,7 @@ class StrategyPolicy:
     # 4. 하드 안전 게이트 (Hard Safety Gates) & 상대 강도(RS) 임계값
     ALPHA_BUY_THRESHOLD: int = 60        # 7대 팩터 복합 알파 승인 점수 (100점 만점)
     ALPHA_BUY_THRESHOLD_NORMAL: int = 60 # 정상장 7대 팩터 복합 알파 승인 점수
-    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 60 # RISK_OFF 약세장 공격형 승인 점수
+    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 75 # RISK_OFF 약세장 엄선 승인 점수 (기존 60 -> 75점 상향)
     RS_MIN_RISK_OFF: float = 0.008       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+0.8% 초과 상승)
     MIN_TRADE_VALUE_RISK_OFF: float = 2_000_000_000.0  # 약세장 최소 24시간 거래대금 20억 원
     MIN_ASSET_PRICE_KRW: float = 10.0    # 10원 미만 극초저가 코인 차단
@@ -111,7 +111,7 @@ class StrategyPolicy:
     MAX_UPPER_SHADOW_RATIO: float = 0.55 # 캔들 윗꼬리 최대 허용 비율 (55%)
     MA_ALIGNMENT_RATIO: float = 0.995    # MA5 >= MA20 * 0.995
     PULLBACK_MA_ALIGNMENT_RATIO: float = 0.990  # 저점 반등은 MA20 아래 1% 이내 회복까지 허용
-    RISK_OFF_ALLOC_RATIO: float = 0.6    # RISK_OFF 진입 비중 (60%로 확대하여 알트 불장 수익 확보)
+    RISK_OFF_ALLOC_RATIO: float = 0.4    # RISK_OFF 진입 비중 축소 (기존 60% -> 40%로 리스크 축소)
 
     # 4-2. 급락 후 반등 전용 정책: 일반 RISK_OFF 기준을 낮추지 않고, 별도·축소 비중으로만 사용한다.
     RECOVERY_REBOUND_ENABLED: bool = True
@@ -124,13 +124,13 @@ class StrategyPolicy:
 
     # 4-1. 공격형 모멘텀 돌파는 미완성 봉이 아닌 최신 확정봉만으로 평가한다.
     MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NORMAL: int = 55
-    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF: int = 60
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF: int = 70
     MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT: int = 65
-    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF: int = 70
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF: int = 75
     MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN: float = 1.3
     MOMENTUM_BREAKOUT_LOOKBACK_BARS: int = 4
     MOMENTUM_BREAKOUT_RSI_MIN: float = 52.0
-    MOMENTUM_BREAKOUT_RSI_MAX: float = 75.0
+    MOMENTUM_BREAKOUT_RSI_MAX: float = 68.0
     MOMENTUM_BREAKOUT_RS_MIN: float = 0.008
     MOMENTUM_BREAKOUT_MTF_EMA20_RATIO: float = 0.990
     MOMENTUM_BREAKOUT_ALLOC_RATIO: float = 0.25
@@ -152,7 +152,7 @@ class StrategyPolicy:
     NIGHT_SESSION_START_HOUR: int = 0
     NIGHT_SESSION_END_HOUR: int = 7
     ALPHA_BUY_THRESHOLD_NIGHT: int = 75           # 심야 정상장 알파 승인 점수 (60 -> 75 상향)
-    ALPHA_BUY_THRESHOLD_NIGHT_RISK_OFF: int = 70  # 심야 약세장 공격형 알파 승인 점수
+    ALPHA_BUY_THRESHOLD_NIGHT_RISK_OFF: int = 75  # 심야 약세장 엄선 알파 승인 점수 (75점 유지)
     NIGHT_SESSION_ALLOC_RATIO: float = 0.50       # 심야 진입 자금 비중 50% 축소
     NIGHT_PARTIAL_TP_1_PCT: float = 0.015         # 심야 1차 분할 익절 +1.5% (조기 수익 확정)
     NIGHT_TIME_STOP_SECONDS: int = 5400           # 심야 90분 단축 타임스탑

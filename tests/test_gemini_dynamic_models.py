@@ -315,8 +315,145 @@ class GeminiDynamicModelsTests(unittest.TestCase):
         # mock_post 호출된 url에 gemini-3.8-flash가 포함되어 있는지 확인
         called_url = mock_post.call_args[0][0]
         self.assertIn("gemini-3.8-flash", called_url)
+        # payload에 maxOutputTokens가 3000으로 전달되는지 확인
+        called_payload = mock_post.call_args[1]["json"]
+        self.assertEqual(called_payload["generationConfig"]["maxOutputTokens"], 3000)
+
+    @patch("requests.post")
+    def test_generate_market_briefing_thinking_budget_for_3_7_flash(self, mock_post):
+        """gemini-3.7-flash 등 추론 모델 호출 시 thinkingBudget=0 적용 검증"""
+        analyzer = GeminiAnalyzer(api_key="fake-key")
+        GeminiAnalyzer._CACHED_BRIEFING_MODELS = ["gemini-3.7-flash"]
+        GeminiAnalyzer._BRIEFING_MODELS_CACHED_AT = time.time()
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "candidates": [
+                {
+                    "finishReason": "STOP",
+                    "content": {
+                        "parts": [{"text": "• [거시 시황]: BTC 강세 지속\n• [계좌 진단]: 안전 운용 중\n• [전략 제언]: 관망 유지"}]
+                    },
+                }
+            ]
+        }
+        mock_post.return_value = mock_resp
+
+        result = analyzer.generate_market_briefing(
+            exchange_name="업비트",
+            total_equity=1000000.0,
+            daily_pnl_krw=0.0,
+            daily_pnl_pct=0.0,
+            held_positions_desc="KRW-BTC",
+            macro_diag={"regime": "NORMAL", "risk_score": 30, "summary": "정상"},
+            fng_desc="탐욕",
+        )
+
+        self.assertIn("[거시 시황]", result)
+        called_payload = mock_post.call_args[1]["json"]
+        self.assertEqual(called_payload["generationConfig"]["thinkingConfig"]["thinkingBudget"], 0)
+        self.assertEqual(called_payload["generationConfig"]["maxOutputTokens"], 3000)
+
+    @patch("requests.post")
+    def test_generate_market_briefing_skips_truncated_response(self, mock_post):
+        """finishReason=MAX_TOKENS 또는 불완전 텍스트 시 차순위 모델로 순차 전환 검증"""
+        analyzer = GeminiAnalyzer(api_key="fake-key")
+        GeminiAnalyzer._CACHED_BRIEFING_MODELS = [
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+        ]
+        GeminiAnalyzer._BRIEFING_MODELS_CACHED_AT = time.time()
+
+        # 1번째 호출(3.7-flash): MAX_TOKENS로 텍스트 잘림 발생
+        resp_truncated = MagicMock()
+        resp_truncated.status_code = 200
+        resp_truncated.json.return_value = {
+            "candidates": [
+                {
+                    "finishReason": "MAX_TOKENS",
+                    "content": {"parts": [{"text": "• [거시 시황]: 시장 전반에 탐욕 심리(73점)가 잔존해 있으나, BTC 1시간봉 이평선"}]},
+                }
+            ]
+        }
+
+        # 2번째 호출(3.6-flash): 정상 완성 응답
+        resp_ok = MagicMock()
+        resp_ok.status_code = 200
+        resp_ok.json.return_value = {
+            "candidates": [
+                {
+                    "finishReason": "STOP",
+                    "content": {
+                        "parts": [{"text": "• [거시 시황]: BTC 강세 지속\n• [계좌 진단]: 안전 운용 중\n• [전략 제언]: 분할 매수 대기"}]
+                    },
+                }
+            ]
+        }
+
+        mock_post.side_effect = [resp_truncated, resp_ok]
+
+        result = analyzer.generate_market_briefing(
+            exchange_name="빗썸",
+            total_equity=1000000.0,
+            daily_pnl_krw=0.0,
+            daily_pnl_pct=0.0,
+            held_positions_desc="KRW-BTC",
+            macro_diag={"regime": "NORMAL", "risk_score": 30, "summary": "정상"},
+            fng_desc="탐욕",
+        )
+
+        # 1번째 잘린 모델을 건너뛰고 2번째 모델의 정상 텍스트가 반환되어야 함
+        self.assertIn("[전략 제언]", result)
+        self.assertEqual(mock_post.call_count, 2)
+        # 2번째 호출된 모델이 3.6-flash인지 확인
+        second_call_url = mock_post.call_args_list[1][0][0]
+        self.assertIn("gemini-3.6-flash", second_call_url)
+
+    @patch("requests.post")
+    def test_generate_market_briefing_retries_on_400_thinking_config(self, mock_post):
+        """thinkingConfig 미지원으로 HTTP 400 발생 시 thinkingConfig 제거 후 재전송 성공 검증"""
+        analyzer = GeminiAnalyzer(api_key="fake-key")
+        GeminiAnalyzer._CACHED_BRIEFING_MODELS = ["gemini-3.7-flash"]
+        GeminiAnalyzer._BRIEFING_MODELS_CACHED_AT = time.time()
+
+        resp_400 = MagicMock()
+        resp_400.status_code = 400
+        resp_400.text = "Unknown field: thinkingConfig"
+
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        resp_200.json.return_value = {
+            "candidates": [
+                {
+                    "finishReason": "STOP",
+                    "content": {
+                        "parts": [{"text": "• [거시 시황]: BTC 강세 지속\n• [계좌 진단]: 안전 운용 중\n• [전략 제언]: 관망 유지"}]
+                    },
+                }
+            ]
+        }
+
+        mock_post.side_effect = [resp_400, resp_200]
+
+        result = analyzer.generate_market_briefing(
+            exchange_name="빗썸",
+            total_equity=1000000.0,
+            daily_pnl_krw=0.0,
+            daily_pnl_pct=0.0,
+            held_positions_desc="KRW-BTC",
+            macro_diag={"regime": "NORMAL", "risk_score": 30, "summary": "정상"},
+            fng_desc="탐욕",
+        )
+
+        self.assertIn("[거시 시황]", result)
+        self.assertEqual(mock_post.call_count, 2)
+        # 재시도 payload에 thinkingConfig가 제거되었는지 확인
+        retry_payload = mock_post.call_args_list[1][1]["json"]
+        self.assertNotIn("thinkingConfig", retry_payload["generationConfig"])
 
 
 if __name__ == "__main__":
     unittest.main()
+
 

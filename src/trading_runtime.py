@@ -1233,9 +1233,23 @@ class TradingCycleEngine:
 
         if action == "BUY" and not selected_entry.get("allow_buy", False):
             # AI Direct Entry: 로컬 하드게이트는 관망이지만 기본 안전망을 통과하고 AI가 심층 분석으로 BUY를 승인한 경우 (AI 권한 확대)
-            if is_ai_buy_signal and base_safety_passed and (ai_alpha >= StrategyPolicy.ALPHA_BUY_THRESHOLD or ai_alpha == 0):
+            threshold = (
+                StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF
+                if btc_regime == "RISK_OFF"
+                else StrategyPolicy.ALPHA_BUY_THRESHOLD
+            )
+            daily_losses = (
+                ctx.cooldown_manager.get_daily_loss_count(market)
+                if hasattr(ctx.cooldown_manager, "get_daily_loss_count")
+                else 0
+            )
+            max_daily_losses = getattr(ctx.cooldown_manager, "max_daily_losses_per_market", 2)
+            can_enter_daily = True
+            if isinstance(daily_losses, (int, float)) and isinstance(max_daily_losses, (int, float)):
+                can_enter_daily = daily_losses < max_daily_losses
+            if is_ai_buy_signal and base_safety_passed and can_enter_daily and (ai_alpha >= threshold or ai_alpha == 0):
                 logger.info(
-                    f"✨ [{market}] AI 단독 자율 승인 진입 (로컬 룰 관망 ➜ AI 적극 승인, 알파스코어: {ai_alpha}점)"
+                    f"✨ [{market}] AI 단독 자율 승인 진입 (로컬 룰 관망 ➜ AI 적극 승인, 알파스코어: {ai_alpha}점, 레짐: {btc_regime})"
                 )
                 action = "BUY"
                 reason = f"[AI 단독 자율 승인] {reason}"

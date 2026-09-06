@@ -103,14 +103,14 @@ class TestNightSessionAndMajorFilter(unittest.TestCase):
 
     def test_alpha_threshold_ssot_has_four_session_boundaries(self):
         """주간·심야와 NORMAL·RISK_OFF 조합은 단일 알파 기준을 반환해야 한다."""
-        self.assertEqual(get_alpha_buy_threshold("NORMAL", is_night=False), 60)
-        self.assertEqual(get_alpha_buy_threshold("RISK_OFF", is_night=False), 60)
-        self.assertEqual(get_alpha_buy_threshold("NORMAL", is_night=True), 75)
-        self.assertEqual(get_alpha_buy_threshold("RISK_OFF", is_night=True), 70)
-        self.assertEqual(get_momentum_breakout_alpha_threshold("NORMAL", is_night=False), 55)
-        self.assertEqual(get_momentum_breakout_alpha_threshold("RISK_OFF", is_night=False), 60)
-        self.assertEqual(get_momentum_breakout_alpha_threshold("NORMAL", is_night=True), 65)
-        self.assertEqual(get_momentum_breakout_alpha_threshold("RISK_OFF", is_night=True), 70)
+        self.assertEqual(get_alpha_buy_threshold("NORMAL", is_night=False), StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL)
+        self.assertEqual(get_alpha_buy_threshold("RISK_OFF", is_night=False), StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF)
+        self.assertEqual(get_alpha_buy_threshold("NORMAL", is_night=True), StrategyPolicy.ALPHA_BUY_THRESHOLD_NIGHT)
+        self.assertEqual(get_alpha_buy_threshold("RISK_OFF", is_night=True), StrategyPolicy.ALPHA_BUY_THRESHOLD_NIGHT_RISK_OFF)
+        self.assertEqual(get_momentum_breakout_alpha_threshold("NORMAL", is_night=False), StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NORMAL)
+        self.assertEqual(get_momentum_breakout_alpha_threshold("RISK_OFF", is_night=False), StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF)
+        self.assertEqual(get_momentum_breakout_alpha_threshold("NORMAL", is_night=True), StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT)
+        self.assertEqual(get_momentum_breakout_alpha_threshold("RISK_OFF", is_night=True), StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF)
 
     def test_entry_signal_enforces_night_alpha_boundaries(self):
         """최종 진입 게이트도 심야 레짐별 공격형 알파 경계값을 그대로 적용해야 한다."""
@@ -118,7 +118,7 @@ class TestNightSessionAndMajorFilter(unittest.TestCase):
 
         for btc_regime, blocked_score, approved_score in (
             ("NORMAL", 74, 75),
-            ("RISK_OFF", 69, 70),
+            ("RISK_OFF", 74, 75),
         ):
             with self.subTest(btc_regime=btc_regime, alpha_score=blocked_score):
                 with patch(

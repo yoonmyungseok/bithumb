@@ -891,7 +891,7 @@ class GeminiAnalyzer:
 6. [수급 & 호가창] 호가 갭 <= 0.35%, 체결강도 90% 이상 또는 고래 유입.
 7. [기대 손익비] (목표가 - 진입가) >= 1.5 * (진입가 - 손절가) 수학적 보장.
 
-※ 극단적인 과열(RSI > 75, 이격도 > 105%)이나 1시간봉 하락 추세가 아니라면, 유망한 상승 모멘텀 또는 지지 반등 시 적극적으로 BUY를 결정하세요.
+※ [엄격한 상투 추격 매수 금지] 이미 최근 캔들이 급등하여 볼린저 밴드 상단(%B >= 0.88)에 도달했거나 거래량이 터진 뒤 윗꼬리가 달린 종목의 추격 매수(Chasing the Top)는 절대 금지(HOLD)합니다. 5분봉 MA20 또는 VWAP 지지선에서 안정적인 눌림목 안착이 확인되고 손익비가 1:1.5 이상 확보된 경우에만 BUY를 승인하세요.
 
 ### [5. 목표가/손절가 수학적 유효성 규칙]
 - BUY 시: 반드시 '손절가 < 현재가 < 목표가' 관계를 만족해야 하며, 손익비 1:1.5 이상을 유지하세요.
@@ -956,14 +956,35 @@ class GeminiAnalyzer:
                         stop_l = dynamic_sl
 
                     if action == "BUY":
-                        if target_p <= current_price:
-                            target_p = dynamic_tp
-                        if stop_l >= current_price or stop_l <= 0:
-                            stop_l = dynamic_sl
-                        reward = target_p - current_price
-                        risk = current_price - stop_l
-                        if risk > 0 and (reward / risk) < 1.3:
-                            target_p = current_price + (risk * 1.5)
+                        # 단기 과열 하드 가드레일 (Safe Guardrail: 상투 잡기 원천 방어)
+                        overheat_reasons = []
+                        if rsi_val > 65.0:
+                            overheat_reasons.append(f"RSI과열({rsi_val:.1f}>65.0)")
+                        pct_b_val = float(bb.get("pct_b", 0.5))
+                        if pct_b_val > 0.88:
+                            overheat_reasons.append(f"볼린저상단이탈(%B {pct_b_val:.2f}>0.88)")
+                        if disparity_ma20 > 103.5:
+                            overheat_reasons.append(f"MA20이격과열({disparity_ma20:.1f}%>103.5%)")
+                        t_power_val = float(trade_strength.get("trade_power_pct", 100.0))
+                        if t_power_val > 350.0:
+                            overheat_reasons.append(f"체결강도비정상과열({t_power_val:.0f}%>350%)")
+
+                        if overheat_reasons:
+                            logger.warning(
+                                f"🛡️ [{market}] AI 매수 신호에 과열 가드레일 작동 ➜ HOLD 강제 전환: {', '.join(overheat_reasons)}"
+                            )
+                            action = "HOLD"
+                            alloc_p = 0.0
+                            reason_t = f"[과열 가드레일 작동: HOLD 강제 전환 ({', '.join(overheat_reasons)})] {reason_t}"
+                        else:
+                            if target_p <= current_price:
+                                target_p = dynamic_tp
+                            if stop_l >= current_price or stop_l <= 0:
+                                stop_l = dynamic_sl
+                            reward = target_p - current_price
+                            risk = current_price - stop_l
+                            if risk > 0 and (reward / risk) < 1.3:
+                                target_p = current_price + (risk * 1.5)
 
                     if alloc_p > 1.0:
                         alloc_p = alloc_p / 100.0
@@ -1474,25 +1495,56 @@ class GeminiAnalyzer:
             if not models:
                 return default_comment
 
-            payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.2,
-                    "maxOutputTokens": 800,
-                },
-            }
             for model in models:
                 endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
+                # 3.7 등 하이브리드 추론 모델은 불필요한 Thinking에 토큰이 소진되어 출력이 잘리지 않도록 thinkingBudget=0 적용
+                # 구형 모델과의 호환성을 위해 thinkingConfig를 조건부 적용하며, 400 발생 시 제거 후 1회 폴백 재시도
+                supports_thinking_budget = any(k in model.lower() for k in ("3.7", "thinking", "2.5"))
+                gen_config: dict[str, Any] = {
+                    "temperature": 0.2,
+                    "maxOutputTokens": 3000,
+                }
+                if supports_thinking_budget:
+                    gen_config["thinkingConfig"] = {"thinkingBudget": 0}
+
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": gen_config,
+                }
+
                 try:
                     self._wait_for_rate_limit()
-                    resp = requests.post(endpoint, json=payload, timeout=8.0)
+                    resp = requests.post(endpoint, json=payload, timeout=12.0)
+                    # 만약 thinkingConfig 미지원으로 HTTP 400 반환 시 thinkingConfig 제거 후 1회 재전송
+                    if resp.status_code == 400 and "thinkingConfig" in gen_config:
+                        gen_config_no_thinking = dict(gen_config)
+                        gen_config_no_thinking.pop("thinkingConfig", None)
+                        payload["generationConfig"] = gen_config_no_thinking
+                        resp = requests.post(endpoint, json=payload, timeout=12.0)
+
                     if resp.status_code == 200:
                         data = resp.json()
                         candidates = data.get("candidates", [])
                         if candidates:
-                            parts = candidates[0].get("content", {}).get("parts", [])
+                            cand = candidates[0]
+                            finish_reason = cand.get("finishReason", "")
+                            if finish_reason == "MAX_TOKENS":
+                                logger.warning(f"브리핑 모델 {model} 토큰 한도 도달(MAX_TOKENS)로 텍스트 잘림 감지 ➜ 차순위 모델 전환")
+                                continue
+
+                            parts = cand.get("content", {}).get("parts", [])
                             if parts and "text" in parts[0]:
                                 text = parts[0]["text"].strip()
+                                # 텍스트 완성도 검증: 3개 글머리 기호 중 최소 2개 이상 포함 및 최소 길이 확인
+                                has_bullets = (
+                                    text.count("•") >= 2
+                                    or ("[거시" in text and "[전략" in text)
+                                    or ("[거시" in text and "[계좌" in text)
+                                )
+                                if not has_bullets or len(text) < 40:
+                                    logger.warning(f"브리핑 모델 {model} 불완전/미완성 텍스트 응답({len(text)}자) ➜ 차순위 모델 전환")
+                                    continue
+
                                 logger.info(f"✨ [{exchange_name}] 09:00 종합 시황 브리핑 생성 성공 (모델: {model})")
                                 return text
                     elif resp.status_code in (429, 503):
