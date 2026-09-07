@@ -41,7 +41,7 @@ class TestGeminiPTRollover(unittest.TestCase):
         self.assertEqual(canonical_model_name("models/gemini-3.5-flash-lite-001"), "gemini-3.5-flash-lite")
         self.assertEqual(canonical_model_name("gemini-3.1-flash-lite"), "gemini-3.1-flash-lite")
         self.assertEqual(canonical_model_name("gemini-3.1-flash-lite-preview"), "gemini-3.1-flash-lite")
-        self.assertEqual(canonical_model_name("unknown-model"), "gemini-3.5-flash-lite")
+        self.assertEqual(canonical_model_name("unknown-model"), "unknown-model")
 
     def test_pt_reset_info(self):
         """PT 자정 기준 리셋 시간 및 KST 환산 정보 산출 검증"""
@@ -87,8 +87,8 @@ class TestGeminiPTRollover(unittest.TestCase):
 
     def test_can_call_model_guard(self):
         """특정 모델이 450회(일반) 또는 490회(긴급) 도달 시 개별 가드가 동작하는지 검증"""
-        GeminiTelemetry._by_model["gemini-3.5-flash-lite"]["calls"] = 450
-        GeminiTelemetry._by_model["gemini-3.1-flash-lite"]["calls"] = 100
+        GeminiTelemetry._by_model["gemini-3.5-flash-lite"] = {"calls": 450, "success": 0, "rate_limited": 0, "errors": 0}
+        GeminiTelemetry._by_model["gemini-3.1-flash-lite"] = {"calls": 100, "success": 0, "rate_limited": 0, "errors": 0}
 
         # 3.5 모델은 일반 매수 분석 차단, 긴급 탈출은 허용
         self.assertFalse(GeminiTelemetry.can_call_model("gemini-3.5-flash-lite", for_emergency_exit=False))

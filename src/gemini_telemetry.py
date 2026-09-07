@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from zoneinfo import ZoneInfo
 # 미국 태평양 표준시 (PT, PDT/PST 일광절약시간 자동 계산) & 한국 표준시 (KST)
 PT_TZ = ZoneInfo("America/Los_Angeles")
 KST_TZ = timezone(timedelta(hours=9))
+
+LIST_MODELS_KEY = "list_models"
 
 
 def get_pt_today_str() -> str:
@@ -48,15 +51,92 @@ def get_pt_reset_info() -> dict[str, Any]:
 
 
 def canonical_model_name(model: str) -> str:
-    """다양한 모델 이름 표기를 3.5 / 3.1 Flash-Lite 표준 명칭으로 정규화"""
-    lower = (model or "").lower()
-    if "3.5" in lower:
+    """쿼터 가드용 Flash-Lite 계열 표준 명칭 (하위 호환)"""
+    return quota_bucket_for_model(model)
+
+
+def quota_bucket_for_model(model: str) -> str:
+    """Google AI Studio 무료 티어 쿼터 그룹 키 (실제 모델 ID 기반)"""
+    if model == LIST_MODELS_KEY:
+        return LIST_MODELS_KEY
+
+    lower = (model or "").lower().strip()
+    if not lower:
+        return "unknown"
+
+    lite_match = re.search(r"gemini-(\d+(?:\.\d+)?)-flash-lite", lower)
+    if lite_match or ("flash-lite" in lower or "flash_lite" in lower):
+        if "3.1" in lower:
+            return "gemini-3.1-flash-lite"
+        version = lite_match.group(1) if lite_match else None
+        if version:
+            return f"gemini-{version}-flash-lite"
+        if "latest" in lower or "2.5" in lower:
+            return "gemini-3.5-flash-lite"
         return "gemini-3.5-flash-lite"
-    if "3.1" in lower:
-        return "gemini-3.1-flash-lite"
-    if "2.5" in lower:
-        return "gemini-2.5-flash-lite"
-    return "gemini-3.5-flash-lite"
+
+    flash_match = re.search(r"gemini-(\d+(?:\.\d+)?)-flash", lower)
+    if flash_match and "lite" not in lower:
+        return f"gemini-{flash_match.group(1)}-flash"
+
+    return lower
+
+
+def quota_limit_for_bucket(bucket: str) -> int:
+    """Google AI Studio 무료 티어 모델별 일일 한도 (RPD)"""
+    if bucket == LIST_MODELS_KEY:
+        return 0
+    if "flash-lite" in bucket:
+        return 500
+    if bucket.endswith("-flash"):
+        return 20
+    return 0
+
+
+def _empty_model_stat() -> dict[str, int]:
+    return {"calls": 0, "success": 0, "rate_limited": 0, "errors": 0}
+
+
+def _normalize_model_stats(raw: dict[str, Any] | None) -> dict[str, dict[str, int]]:
+    """디스크/레거시 포맷을 실제 모델 ID 기반 통계로 정규화"""
+    if not raw:
+        return {}
+    normalized: dict[str, dict[str, int]] = {}
+    for model_id, stat in raw.items():
+        if not isinstance(stat, dict):
+            continue
+        normalized[str(model_id)] = {
+            "calls": int(stat.get("calls", 0)),
+            "success": int(stat.get("success", 0)),
+            "rate_limited": int(stat.get("rate_limited", 0)),
+            "errors": int(stat.get("errors", 0)),
+        }
+    return normalized
+
+
+def _aggregate_quota_buckets(by_model: dict[str, dict[str, int]]) -> dict[str, dict[str, Any]]:
+    """실제 모델 ID 통계를 Google 쿼터 그룹별로 합산"""
+    buckets: dict[str, dict[str, Any]] = {}
+    for model_id, stat in by_model.items():
+        if model_id == LIST_MODELS_KEY:
+            continue
+        bucket = quota_bucket_for_model(model_id)
+        if bucket not in buckets:
+            limit = quota_limit_for_bucket(bucket)
+            buckets[bucket] = {
+                "calls": 0,
+                "success": 0,
+                "rate_limited": 0,
+                "errors": 0,
+                "quota_limit": limit,
+                "quota_used_pct": 0.0,
+            }
+        for key in ("calls", "success", "rate_limited", "errors"):
+            buckets[bucket][key] += int(stat.get(key, 0))
+        limit = int(buckets[bucket]["quota_limit"] or 0)
+        calls = int(buckets[bucket]["calls"])
+        buckets[bucket]["quota_used_pct"] = round((calls / limit) * 100.0, 1) if limit > 0 else 0.0
+    return buckets
 
 
 @dataclass(frozen=True)
@@ -67,6 +147,8 @@ class GeminiTelemetrySnapshot:
     api_calls: int
     api_success: int
     rate_limited: int
+    http_errors: int
+    list_models_calls: int
     local_fallback: int
     cache_hits: int
     last_event_at: float
@@ -77,19 +159,40 @@ class GeminiTelemetrySnapshot:
 
     def to_dict(self) -> dict[str, Any]:
         used_pct = round((self.api_calls / max(1, self.quota_limit)) * 100.0, 1)
+        by_model = self.by_model or {}
+        quota_buckets = _aggregate_quota_buckets(by_model)
 
-        # 모델별 500회 한도 대비 사용량 산출
+        # 대시보드 하위 호환: Flash-Lite 2개 그룹은 항상 노출
         models_dict: dict[str, Any] = {}
         for m_name in ("gemini-3.5-flash-lite", "gemini-3.1-flash-lite"):
-            m_stat = (self.by_model or {}).get(m_name, {})
+            m_stat = quota_buckets.get(m_name, {})
             m_calls = int(m_stat.get("calls", 0))
-            m_limit = 500
+            m_limit = quota_limit_for_bucket(m_name)
             models_dict[m_name] = {
                 "calls": m_calls,
                 "success": int(m_stat.get("success", 0)),
                 "rate_limited": int(m_stat.get("rate_limited", 0)),
+                "errors": int(m_stat.get("errors", 0)),
                 "quota_limit": m_limit,
-                "quota_used_pct": round((m_calls / m_limit) * 100.0, 1),
+                "quota_used_pct": round((m_calls / m_limit) * 100.0, 1) if m_limit > 0 else 0.0,
+            }
+
+        # Google 대시보드 대조용: 실제 모델 ID별 상세 통계
+        models_by_id: dict[str, Any] = {}
+        for model_id, stat in sorted(by_model.items(), key=lambda item: (-item[1].get("calls", 0), item[0])):
+            if int(stat.get("calls", 0)) <= 0:
+                continue
+            bucket = quota_bucket_for_model(model_id)
+            limit = quota_limit_for_bucket(bucket) if model_id != LIST_MODELS_KEY else 0
+            calls = int(stat.get("calls", 0))
+            models_by_id[model_id] = {
+                "calls": calls,
+                "success": int(stat.get("success", 0)),
+                "rate_limited": int(stat.get("rate_limited", 0)),
+                "errors": int(stat.get("errors", 0)),
+                "quota_bucket": bucket,
+                "quota_limit": limit,
+                "quota_used_pct": round((calls / limit) * 100.0, 1) if limit > 0 else 0.0,
             }
 
         return {
@@ -97,11 +200,15 @@ class GeminiTelemetrySnapshot:
             "api_calls": self.api_calls,
             "api_success": self.api_success,
             "rate_limited": self.rate_limited,
+            "http_errors": self.http_errors,
+            "list_models_calls": self.list_models_calls,
             "local_fallback": self.local_fallback,
             "cache_hits": self.cache_hits,
             "quota_limit": self.quota_limit,
             "quota_used_pct": used_pct,
             "models": models_dict,
+            "models_by_id": models_by_id,
+            "quota_buckets": quota_buckets,
             "reset_info": self.reset_info or get_pt_reset_info(),
             "success_rate_pct": round((self.api_success / self.api_calls) * 100.0, 1) if self.api_calls else 0.0,
             "fallback_rate_pct": round((self.local_fallback / max(1, self.api_calls)) * 100.0, 1),
@@ -118,6 +225,8 @@ class GeminiTelemetry:
     _api_calls = 0
     _api_success = 0
     _rate_limited = 0
+    _http_errors = 0
+    _list_models_calls = 0
     _local_fallback = 0
     _cache_hits = 0
     _last_event_at = 0.0
@@ -125,29 +234,44 @@ class GeminiTelemetry:
     _quota_limit = int(os.getenv("GEMINI_DAILY_QUOTA_LIMIT", "1000"))
     _storage_path: str | None = None
     _configured = False
-    _by_model: dict[str, dict[str, int]] = {
-        "gemini-3.5-flash-lite": {"calls": 0, "success": 0, "rate_limited": 0},
-        "gemini-3.1-flash-lite": {"calls": 0, "success": 0, "rate_limited": 0},
-    }
+    _by_model: dict[str, dict[str, int]] = {}
+
+    @classmethod
+    def _ensure_model_stat_locked(cls, model_key: str) -> dict[str, int]:
+        if model_key not in cls._by_model:
+            cls._by_model[model_key] = _empty_model_stat()
+        return cls._by_model[model_key]
+
+    @classmethod
+    def _bucket_call_count_locked(cls, bucket: str) -> int:
+        total = 0
+        for model_id, stat in cls._by_model.items():
+            if model_id == LIST_MODELS_KEY:
+                continue
+            if quota_bucket_for_model(model_id) == bucket:
+                total += int(stat.get("calls", 0))
+        return total
 
     @classmethod
     def can_call_model(cls, model: str, for_emergency_exit: bool = False) -> bool:
-        """특정 모델의 일일 쿼터(500 RPD) 개별 초과 여부 가드"""
+        """특정 모델 쿼터 그룹의 일일 HTTP 시도 횟수 기반 가드"""
         with cls._lock:
             cls._ensure_configured_locked()
             cls._check_and_rollover()
-            c_name = canonical_model_name(model)
-            m_stat = cls._by_model.get(c_name, {})
-            m_calls = m_stat.get("calls", 0)
+            bucket = quota_bucket_for_model(model)
+            m_calls = cls._bucket_call_count_locked(bucket)
             threshold = 490 if for_emergency_exit else 450
+            limit = quota_limit_for_bucket(bucket)
+            if limit <= 0:
+                return True
             return m_calls < threshold
 
     @classmethod
     def can_make_api_call(cls, for_emergency_exit: bool = False) -> bool:
         """
         일일 쿼터(Flash-Lite 2개 모델 각 500회 = 총 1,000 RPD) 예산 가드:
-        - 신규 매수 분석: 당일 총 호출수 < 900회 (90%) 일 때 허용
-        - 긴급 탈출/비상 대응: 당일 총 호출수 < 980회 (98%) 일 때 허용
+        - 신규 매수 분석: 당일 총 HTTP 시도 < 900회 (90%) 일 때 허용
+        - 긴급 탈출/비상 대응: 당일 총 HTTP 시도 < 980회 (98%) 일 때 허용
         """
         with cls._lock:
             cls._ensure_configured_locked()
@@ -157,7 +281,7 @@ class GeminiTelemetry:
 
     @classmethod
     def get_daily_quota_budget(cls) -> dict[str, Any]:
-        """당일 호출량 및 남은 쿼터 단계 정보 반환 (1,000회 기준)"""
+        """당일 HTTP 시도량 및 남은 쿼터 단계 정보 반환 (1,000회 기준)"""
         with cls._lock:
             cls._ensure_configured_locked()
             cls._check_and_rollover()
@@ -166,9 +290,9 @@ class GeminiTelemetry:
             return {
                 "api_calls": calls,
                 "quota_limit": limit,
-                "is_tight": calls >= int(limit * 0.70),       # 70% (700회) 이상 시 사이클당 1개 종목으로 축소
-                "is_critical": calls >= int(limit * 0.90),    # 90% (900회) 이상 시 신규 매수 AI 전면 차단 (100% 로컬 퀀트)
-                "is_exhausted": calls >= int(limit * 0.98),   # 98% (980회) 이상 시 전면 차단 (Fail-soft)
+                "is_tight": calls >= int(limit * 0.70),
+                "is_critical": calls >= int(limit * 0.90),
+                "is_exhausted": calls >= int(limit * 0.98),
             }
 
     @classmethod
@@ -202,33 +326,13 @@ class GeminiTelemetry:
                 cls._api_calls = int(data.get("api_calls", 0))
                 cls._api_success = int(data.get("api_success", 0))
                 cls._rate_limited = int(data.get("rate_limited", 0))
+                cls._http_errors = int(data.get("http_errors", 0))
+                cls._list_models_calls = int(data.get("list_models_calls", 0))
                 cls._local_fallback = int(data.get("local_fallback", 0))
                 cls._cache_hits = int(data.get("cache_hits", 0))
                 cls._last_event_at = float(data.get("last_event_at", 0.0))
                 cls._last_event = str(data.get("last_event", ""))
-
-                # 모델별 데이터 복원
-                raw_models = data.get("by_model") or data.get("models") or {}
-                cls._by_model = {
-                    "gemini-3.5-flash-lite": {
-                        "calls": int(raw_models.get("gemini-3.5-flash-lite", {}).get("calls", 0)),
-                        "success": int(raw_models.get("gemini-3.5-flash-lite", {}).get("success", 0)),
-                        "rate_limited": int(raw_models.get("gemini-3.5-flash-lite", {}).get("rate_limited", 0)),
-                    },
-                    "gemini-3.1-flash-lite": {
-                        "calls": int(raw_models.get("gemini-3.1-flash-lite", {}).get("calls", 0)),
-                        "success": int(raw_models.get("gemini-3.1-flash-lite", {}).get("success", 0)),
-                        "rate_limited": int(raw_models.get("gemini-3.1-flash-lite", {}).get("rate_limited", 0)),
-                    },
-                }
-                # 만약 총 호출은 있는데 모델별 분할이 비어있는 경우 균등 배분 보정
-                total_m_calls = sum(m["calls"] for m in cls._by_model.values())
-                if cls._api_calls > 0 and total_m_calls == 0:
-                    half = cls._api_calls // 2
-                    cls._by_model["gemini-3.5-flash-lite"]["calls"] = cls._api_calls - half
-                    cls._by_model["gemini-3.5-flash-lite"]["success"] = cls._api_calls - half
-                    cls._by_model["gemini-3.1-flash-lite"]["calls"] = half
-                    cls._by_model["gemini-3.1-flash-lite"]["success"] = half
+                cls._by_model = _normalize_model_stats(data.get("by_model") or data.get("models") or {})
         except Exception:
             pass
 
@@ -243,6 +347,8 @@ class GeminiTelemetry:
                 "api_calls": cls._api_calls,
                 "api_success": cls._api_success,
                 "rate_limited": cls._rate_limited,
+                "http_errors": cls._http_errors,
+                "list_models_calls": cls._list_models_calls,
                 "local_fallback": cls._local_fallback,
                 "cache_hits": cls._cache_hits,
                 "quota_limit": cls._quota_limit,
@@ -267,12 +373,11 @@ class GeminiTelemetry:
             cls._api_calls = 0
             cls._api_success = 0
             cls._rate_limited = 0
+            cls._http_errors = 0
+            cls._list_models_calls = 0
             cls._local_fallback = 0
             cls._cache_hits = 0
-            cls._by_model = {
-                "gemini-3.5-flash-lite": {"calls": 0, "success": 0, "rate_limited": 0},
-                "gemini-3.1-flash-lite": {"calls": 0, "success": 0, "rate_limited": 0},
-            }
+            cls._by_model = {}
             cls._save_state_locked()
 
     @classmethod
@@ -285,34 +390,56 @@ class GeminiTelemetry:
             cls._save_state_locked()
 
     @classmethod
-    def record_api_success(cls, model: str, market: str) -> None:
+    def record_http_attempt(
+        cls,
+        model: str,
+        context: str,
+        endpoint: str = "generate_content",
+        status_code: int | None = None,
+        error_kind: str = "",
+    ) -> None:
+        """Google AI Studio와 동일하게 모든 HTTP 시도를 실제 모델 ID별로 집계"""
         with cls._lock:
             cls._check_and_rollover()
             cls._api_calls += 1
-            cls._api_success += 1
-            c_name = canonical_model_name(model)
-            if c_name not in cls._by_model:
-                cls._by_model[c_name] = {"calls": 0, "success": 0, "rate_limited": 0}
-            cls._by_model[c_name]["calls"] += 1
-            cls._by_model[c_name]["success"] += 1
+
+            if endpoint == "list_models":
+                cls._list_models_calls += 1
+                model_key = LIST_MODELS_KEY
+            else:
+                model_key = (model or "unknown").strip() or "unknown"
+
+            stat = cls._ensure_model_stat_locked(model_key)
+            stat["calls"] += 1
+
+            if status_code == 200:
+                cls._api_success += 1
+                stat["success"] += 1
+            elif status_code == 429:
+                cls._rate_limited += 1
+                stat["rate_limited"] += 1
+            else:
+                cls._http_errors += 1
+                stat["errors"] += 1
+
             cls._last_event_at = time.time()
-            cls._last_event = f"{market} success via {model}"
+            if endpoint == "list_models":
+                status_label = str(status_code) if status_code is not None else (error_kind or "error")
+                cls._last_event = f"{context} list_models HTTP {status_label}"
+            else:
+                status_label = str(status_code) if status_code is not None else (error_kind or "error")
+                cls._last_event = f"{context} {model_key} HTTP {status_label}"
             cls._save_state_locked()
 
     @classmethod
+    def record_api_success(cls, model: str, market: str) -> None:
+        """하위 호환 래퍼 (성공 HTTP 1회)"""
+        cls.record_http_attempt(model, market, "generate_content", 200)
+
+    @classmethod
     def record_rate_limited(cls, model: str, market: str) -> None:
-        with cls._lock:
-            cls._check_and_rollover()
-            cls._api_calls += 1
-            cls._rate_limited += 1
-            c_name = canonical_model_name(model)
-            if c_name not in cls._by_model:
-                cls._by_model[c_name] = {"calls": 0, "success": 0, "rate_limited": 0}
-            cls._by_model[c_name]["calls"] += 1
-            cls._by_model[c_name]["rate_limited"] += 1
-            cls._last_event_at = time.time()
-            cls._last_event = f"{market} rate limited on {model}"
-            cls._save_state_locked()
+        """하위 호환 래퍼 (429 HTTP 1회)"""
+        cls.record_http_attempt(model, market, "generate_content", 429)
 
     @classmethod
     def record_local_fallback(cls, market: str, reason: str) -> None:
@@ -334,6 +461,8 @@ class GeminiTelemetry:
                 api_calls=cls._api_calls,
                 api_success=cls._api_success,
                 rate_limited=cls._rate_limited,
+                http_errors=cls._http_errors,
+                list_models_calls=cls._list_models_calls,
                 local_fallback=cls._local_fallback,
                 cache_hits=cls._cache_hits,
                 last_event_at=cls._last_event_at,
@@ -351,14 +480,13 @@ class GeminiTelemetry:
             cls._api_calls = 0
             cls._api_success = 0
             cls._rate_limited = 0
+            cls._http_errors = 0
+            cls._list_models_calls = 0
             cls._local_fallback = 0
             cls._cache_hits = 0
             cls._last_event_at = 0.0
             cls._last_event = ""
-            cls._by_model = {
-                "gemini-3.5-flash-lite": {"calls": 0, "success": 0, "rate_limited": 0},
-                "gemini-3.1-flash-lite": {"calls": 0, "success": 0, "rate_limited": 0},
-            }
+            cls._by_model = {}
             if persist:
                 cls._ensure_configured_locked()
                 cls._save_state_locked()

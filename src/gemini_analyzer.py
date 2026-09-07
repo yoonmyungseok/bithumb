@@ -119,6 +119,18 @@ class GeminiAnalyzer:
                 time.sleep(sleep_needed)
             cls._LAST_CALL_TS = time.time()
 
+    @staticmethod
+    def _record_http(
+        model: str,
+        context: str,
+        endpoint: str = "generate_content",
+        response: requests.Response | None = None,
+        error_kind: str = "",
+    ) -> None:
+        """Google AI Studio와 동일하게 모든 HTTP 시도를 텔레메트리에 반영"""
+        status_code = response.status_code if response is not None else None
+        GeminiTelemetry.record_http_attempt(model, context, endpoint, status_code, error_kind)
+
     @classmethod
     def _model_priority_key(cls, name: str) -> tuple[int, float, int, int, str]:
         """
@@ -215,6 +227,7 @@ class GeminiAnalyzer:
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
         try:
             resp = requests.get(url, timeout=10)
+            cls._record_http("", "trading_router", "list_models", resp)
             if resp.status_code == 200:
                 data = resp.json()
                 raw_models = data.get("models", [])
@@ -246,6 +259,7 @@ class GeminiAnalyzer:
             else:
                 logger.warning(f"Gemini ListModels 조회 실패 (HTTP {resp.status_code}) ➜ 기본 Fallback 목록 사용")
         except Exception as e:
+            cls._record_http("", "trading_router", "list_models", error_kind="exception")
             logger.warning(f"Gemini ListModels 조회 중 예외 발생: {e} ➜ 기본 Fallback 목록 사용")
 
         return list(cls.FALLBACK_MODELS)
@@ -295,6 +309,7 @@ class GeminiAnalyzer:
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
         try:
             resp = requests.get(url, timeout=10)
+            cls._record_http("", "briefing_router", "list_models", resp)
             if resp.status_code == 200:
                 data = resp.json()
                 raw_models = data.get("models", [])
@@ -329,6 +344,7 @@ class GeminiAnalyzer:
             else:
                 logger.warning(f"Gemini ListModels 브리핑 모델 조회 실패 (HTTP {resp.status_code}) ➜ 기본 Fallback 목록 사용")
         except Exception as e:
+            cls._record_http("", "briefing_router", "list_models", error_kind="exception")
             logger.warning(f"Gemini ListModels 브리핑 모델 조회 중 예외 발생: {e} ➜ 기본 Fallback 목록 사용")
 
         return list(cls.BRIEFING_FALLBACK_MODELS)
@@ -1003,6 +1019,7 @@ class GeminiAnalyzer:
             try:
                 self._wait_for_rate_limit()
                 response = requests.post(endpoint, json=payload, timeout=25)
+                self._record_http(model, market, response=response)
                 if response.status_code == 200:
                     res_json = response.json()
                     raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -1086,12 +1103,10 @@ class GeminiAnalyzer:
                     }
                     if hasattr(self, "_analysis_cache") and cache_key:
                         self._analysis_cache[cache_key] = {"cached_at": time.time(), "result": res}
-                    GeminiTelemetry.record_api_success(model, market)
                     return res
                 elif response.status_code == 429:
                     self._set_model_cooldown(model, 120.0)  # 무료 티어 RPM 리셋을 고려하여 2분(120초) 쿨다운
                     last_error = f"[{model}] 429 Quota Exceeded (2분 쿨다운 등록)"
-                    GeminiTelemetry.record_rate_limited(model, market)
                     logger.warning(f"⚠️ 모델 '{model}' 429 Quota Exceeded 발생 ➜ 2분간 재호출 차단 쿨다운 등록")
                 elif response.status_code in (404, 400):
                     # 모델 지원 종료(Deprecated) 또는 부존재 ➜ 24시간 블랙리스트 등록 (자기 치유)
@@ -1103,10 +1118,12 @@ class GeminiAnalyzer:
                     logger.warning(f"모델 '{model}' 호출 실패 ({response.status_code})")
             except requests.exceptions.Timeout as e:
                 # 일시적인 구글 서버 읽기 타임아웃 ➜ 3분 단기 쿨다운 후 차순위 모델 전환
+                self._record_http(model, market, error_kind="timeout")
                 self._set_model_cooldown(model, 180.0)
                 last_error = f"[{model}] Timeout: {e}"
                 logger.warning(f"⏳ 모델 '{model}' 응답 타임아웃 ➜ 3분 쿨다운 등록 후 차순위 모델 전환")
             except (requests.exceptions.RequestException, KeyError, ValueError, IndexError) as e:
+                self._record_http(model, market, error_kind="exception")
                 last_error = f"[{model}] Exception: {e}"
                 logger.warning(f"모델 '{model}' 요청 예외: {e}")
 
@@ -1151,6 +1168,7 @@ class GeminiAnalyzer:
             try:
                 self._wait_for_rate_limit()
                 response = requests.post(endpoint, json=payload, timeout=timeout)
+                self._record_http(model, "macro_or_batch", response=response)
                 if response.status_code == 200:
                     res_json = response.json()
                     raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -1162,16 +1180,16 @@ class GeminiAnalyzer:
                             parsed = json.loads(json_match.group(0))
                         else:
                             continue
-                    GeminiTelemetry.record_api_success(model, "macro_or_batch")
                     return parsed
                 elif response.status_code == 429:
                     self._set_model_cooldown(model, 120.0)
-                    GeminiTelemetry.record_rate_limited(model, "batch")
                 elif response.status_code in (404, 400):
                     self._set_model_blacklist(model, 86400.0)
             except requests.exceptions.Timeout:
+                self._record_http(model, "macro_or_batch", error_kind="timeout")
                 self._set_model_cooldown(model, 180.0)
             except Exception as e:
+                self._record_http(model, "macro_or_batch", error_kind="exception")
                 logger.debug(f"모델 '{model}' 호출 예외: {e}")
         return None
 
@@ -1592,12 +1610,14 @@ class GeminiAnalyzer:
                 try:
                     self._wait_for_rate_limit()
                     resp = requests.post(endpoint, json=payload, timeout=12.0)
+                    self._record_http(model, f"{exchange_name}_briefing", response=resp)
                     # 만약 thinkingConfig 미지원으로 HTTP 400 반환 시 thinkingConfig 제거 후 1회 재전송
                     if resp.status_code == 400 and "thinkingConfig" in gen_config:
                         gen_config_no_thinking = dict(gen_config)
                         gen_config_no_thinking.pop("thinkingConfig", None)
                         payload["generationConfig"] = gen_config_no_thinking
                         resp = requests.post(endpoint, json=payload, timeout=12.0)
+                        self._record_http(model, f"{exchange_name}_briefing_retry", response=resp)
 
                     if resp.status_code == 200:
                         data = resp.json()
@@ -1633,6 +1653,7 @@ class GeminiAnalyzer:
                     else:
                         logger.debug(f"브리핑 모델 {model} 응답 실패: HTTP {resp.status_code}")
                 except Exception as ex:
+                    self._record_http(model, f"{exchange_name}_briefing", error_kind="exception")
                     logger.debug(f"브리핑 모델 {model} 호출 예외: {ex}")
                     continue
         except Exception as e:

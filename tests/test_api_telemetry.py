@@ -176,6 +176,24 @@ class TestGeminiTelemetry(unittest.TestCase):
         self.assertGreater(data["quota_limit"], 0)
         self.assertIn("quota_used_pct", data)
 
+    def test_http_attempt_counts_all_statuses_and_models(self):
+        """모든 HTTP 시도(성공/429/오류)와 실제 모델 ID별 집계 검증"""
+        GeminiTelemetry.record_http_attempt("gemini-3.5-flash-lite", "KRW-BTC", "generate_content", 200)
+        GeminiTelemetry.record_http_attempt("gemini-3.1-flash-lite-preview", "KRW-ETH", "generate_content", 401)
+        GeminiTelemetry.record_http_attempt("gemini-3.7-flash", "briefing", "generate_content", 404)
+        GeminiTelemetry.record_http_attempt("", "trading_router", "list_models", 200)
+
+        snap = GeminiTelemetry.snapshot().to_dict()
+        self.assertEqual(snap["api_calls"], 4)
+        self.assertEqual(snap["api_success"], 2)
+        self.assertEqual(snap["http_errors"], 2)
+        self.assertEqual(snap["list_models_calls"], 1)
+        self.assertIn("gemini-3.1-flash-lite-preview", snap["models_by_id"])
+        self.assertIn("gemini-3.7-flash", snap["models_by_id"])
+        self.assertIn("list_models", snap["models_by_id"])
+        self.assertEqual(snap["models"]["gemini-3.1-flash-lite"]["calls"], 1)
+        self.assertEqual(snap["quota_buckets"]["gemini-3.7-flash"]["calls"], 1)
+
     def test_gemini_persistence_reload(self):
         """GeminiTelemetry가 디스크 파일에 저장되고 재시작 시 당일 복원되는지 검증"""
         temp_dir = tempfile.mkdtemp()
