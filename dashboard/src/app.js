@@ -970,7 +970,7 @@
       : (data.tone === 'emerald'
         ? 'bg-emerald-500/20 text-emerald-200 border-emerald-500/40'
         : 'bg-slate-700/60 text-slate-200 border-slate-600');
-    return `<div><span class="px-2 py-0.5 rounded text-xs font-bold border ${color}">${data.label}</span><div class="mt-1 text-[10px] text-slate-400 max-w-[160px] whitespace-normal">${formatReason(data.detail)}</div></div>`;
+    return `<span class="px-2 py-0.5 rounded text-xs font-bold border ${color}">${data.label}</span>`;
   }
 
   // 주문 상태만으로 관측 가능한 흐름을 표시한다. ACK를 체결 확정처럼 보이지 않게 분리한다.

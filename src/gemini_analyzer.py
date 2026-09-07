@@ -1095,7 +1095,7 @@ class GeminiAnalyzer:
   "STOP_LOSS": {int(dynamic_sl) if dynamic_sl >= 100 else round(dynamic_sl, 2)},
   "ALLOC_PCT": 0.5,
   "ALPHA_SCORE": 0,
-  "REASON": "1~2줄: 충족/미충족 핵심 팩터, 가장 강한 반대 근거, 진입 가설 무효화 조건을 제공된 수치로만 요약"
+  "REASON": "반드시 한국어로 1~2줄 작성: 충족/미충족 핵심 팩터, 가장 강한 반대 근거, 진입 가설 무효화 조건을 제공된 수치로만 요약"
 }}
 """
 
@@ -1290,7 +1290,7 @@ class GeminiAnalyzer:
 반드시 마크다운 백틱 없이 순수 JSON으로만 응답하세요:
 {{
   "ACTION": "HOLD" | "EMERGENCY_EXIT" | "RUNNER_HOLD" | "TIGHTEN_STOP",
-  "REASON": "결정 사유 1줄 요약",
+  "REASON": "반드시 한국어로 결정 사유 1줄 요약",
   "ADJUSTED_TARGET_PRICE": {round(current_price * 1.05, 2)},
   "ADJUSTED_STOP_LOSS": {round(avg_buy_price * 1.002, 2)},
   "CONFIDENCE": 85
@@ -1419,7 +1419,7 @@ class GeminiAnalyzer:
 반드시 마크다운 백틱 없이 순수 JSON 객체로만 응답하세요:
 {{
   "rankings": [
-    {{"market": "KRW-XXX", "rank": 1, "tier": "TIER_1", "score": 92, "reason": "거래대금 1위 및 BTC 대비 독자 랠리"}}
+    {{"market": "KRW-XXX", "rank": 1, "tier": "TIER_1", "score": 92, "reason": "반드시 한국어로 선정 사유 1줄 작성"}}
   ]
 }}
 """
@@ -1552,8 +1552,8 @@ class GeminiAnalyzer:
   "regime": "BULL_TREND" | "NORMAL" | "CAUTION_PULLBACK" | "BEAR_REGIME" | "CRASH",
   "risk_score": 35,
   "recommended_cash_ratio": 0.3,
-  "summary": "거시 시장 진단 핵심 요약 1줄",
-  "action_guideline": "봇 자금 운용 지침 1줄"
+  "summary": "반드시 한국어로 거시 시장 진단 핵심 요약 1줄",
+  "action_guideline": "반드시 한국어로 봇 자금 운용 지침 1줄"
 }}
 """
             parsed = self._call_gemini_json(

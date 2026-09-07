@@ -79,6 +79,8 @@ class BithumbGroqProviderTests(unittest.TestCase):
         self.assertEqual(payload["messages"][0]["content"], GroqProvider.SYSTEM_INSTRUCTION)
         self.assertIn("ACK는 체결이 아닙니다", payload["messages"][0]["content"])
         self.assertIn("업비트, Gemini", payload["messages"][0]["content"])
+        self.assertIn("한국어로만 작성", payload["messages"][0]["content"])
+        self.assertIn("반드시 한국어로", payload["messages"][1]["content"])
         snapshot = AIProviderTelemetry.snapshot("bithumb")
         self.assertEqual(snapshot["reset_info"]["raw"], "1h15m")
         self.assertEqual(snapshot["reset_info"]["source"], "x-ratelimit-reset-requests")

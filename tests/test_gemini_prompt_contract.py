@@ -65,6 +65,7 @@ class TestGeminiEntryPromptContract(unittest.TestCase):
         self.assertIn("RECOVERY_REBOUND", sent_prompt)
         self.assertIn('"ALPHA_SCORE"', sent_prompt)
         self.assertIn('"REASON"', sent_prompt)
+        self.assertIn("반드시 한국어로", sent_prompt)
 
 
 if __name__ == "__main__":

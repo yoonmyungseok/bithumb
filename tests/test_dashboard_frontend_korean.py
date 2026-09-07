@@ -147,11 +147,13 @@ class DashboardFrontendKoreanTests(unittest.TestCase):
         lifecycle_code = self._extract_function("getOrderLifecycle")
         summary_code = self._extract_function("summarizeCandidateReason")
         candidate_code = self._extract_function("getCandidateEntryAvailability")
+        render_candidate_code = self._extract_function("renderCandidateEntryAvailability")
         js_code = f"""
         {priority_code}
         {lifecycle_code}
         {summary_code}
         {candidate_code}
+        {render_candidate_code}
         const results = {{
           urgent: getPositionOperationalPriority({{ current_price: 100, stop_loss: 101 }}),
           observe: getPositionOperationalPriority({{ current_price: 100, stop_loss: 99.5 }}),
@@ -159,7 +161,8 @@ class DashboardFrontendKoreanTests(unittest.TestCase):
           filled: getOrderLifecycle({{ status: 'FILLED' }}),
           blocked: getCandidateEntryAvailability({{ allow_buy: true }}, {{ entry_ready: false, entry_block_reasons: ['체결 대사 진행 주문 1건'] }}),
           eligible: getCandidateEntryAvailability({{ allow_buy: true }}, {{ entry_ready: true }}),
-          watching: getCandidateEntryAvailability({{ allow_buy: false, reason: '1차 퀀트 관망 대기: 하드게이트 통과, 알파스코어 74점, MA5 <= MA20, RSI 45.8' }}, {{ entry_ready: true }})
+          watching: getCandidateEntryAvailability({{ allow_buy: false, reason: '1차 퀀트 관망 대기: 하드게이트 통과, 알파스코어 74점, MA5 <= MA20, RSI 45.8' }}, {{ entry_ready: true }}),
+          rendered_badge: renderCandidateEntryAvailability({{ label: '진입 검토 가능', tone: 'emerald', detail: '상세 사유' }})
         }};
         console.log(JSON.stringify(results));
         """
@@ -179,6 +182,10 @@ class DashboardFrontendKoreanTests(unittest.TestCase):
         self.assertEqual(results["blocked"]["label"], "전역 차단")
         self.assertEqual(results["eligible"]["label"], "진입 검토 가능")
         self.assertEqual(results["watching"]["detail"], "1차 퀀트 관망 대기 · 알파 74점")
+        self.assertEqual(
+            results["rendered_badge"],
+            '<span class="px-2 py-0.5 rounded text-xs font-bold border bg-emerald-500/20 text-emerald-200 border-emerald-500/40">진입 검토 가능</span>',
+        )
 
     def test_watchlist_and_order_journal_use_scroll_limits(self):
         """운영 표는 약 10건 높이만 표시하고 나머지 행은 스크롤로 확인해야 한다."""
