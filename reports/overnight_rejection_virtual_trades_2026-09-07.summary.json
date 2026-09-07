@@ -1,0 +1,220 @@
+{
+  "analysis_generated_at_kst": "2026-09-07T09:13:30.626083+09:00",
+  "scope": "2026-09-07 trading.log ACTION=HOLD candidates",
+  "assumptions": {
+    "entry_slippage_rate": 0.001,
+    "exit_slippage_rate": 0.001,
+    "entry_fee_rate": 0.0004,
+    "exit_fee_rate": 0.0004,
+    "hold_minutes": 90,
+    "entry_candle_handling": "판단 시점 이후 다음 완성 5분봉부터 MFE/MAE를 계산"
+  },
+  "total_candidates": 1493,
+  "completed_candidates": 1200,
+  "pending_90m_candidates": 286,
+  "candle_fetch_errors": [],
+  "by_exchange": {
+    "bithumb": {
+      "raw": {
+        "count": 295,
+        "positive_time_stop": 140,
+        "win_rate_pct": 47.46,
+        "avg_time_stop_net_pct": -0.0179,
+        "median_time_stop_net_pct": -0.1028,
+        "avg_mfe_net_pct": 1.2643,
+        "avg_mae_net_pct": -1.4214
+      },
+      "non_overlapping_90m": {
+        "count": 37,
+        "positive_time_stop": 16,
+        "win_rate_pct": 43.24,
+        "avg_time_stop_net_pct": -0.0964,
+        "median_time_stop_net_pct": -0.1025,
+        "avg_mfe_net_pct": 1.7471,
+        "avg_mae_net_pct": -1.4224
+      },
+      "score_buckets": {
+        "0_49": {
+          "count": 146,
+          "positive_time_stop": 62,
+          "win_rate_pct": 42.47,
+          "avg_time_stop_net_pct": -0.0977,
+          "median_time_stop_net_pct": -0.2796,
+          "avg_mfe_net_pct": 1.0086,
+          "avg_mae_net_pct": -1.3626
+        },
+        "50_64": {
+          "count": 100,
+          "positive_time_stop": 49,
+          "win_rate_pct": 49.0,
+          "avg_time_stop_net_pct": 0.1242,
+          "median_time_stop_net_pct": -0.1019,
+          "avg_mfe_net_pct": 1.7103,
+          "avg_mae_net_pct": -1.5442
+        },
+        "65_74": {
+          "count": 38,
+          "positive_time_stop": 20,
+          "win_rate_pct": 52.63,
+          "avg_time_stop_net_pct": -0.2728,
+          "median_time_stop_net_pct": 0.1314,
+          "avg_mfe_net_pct": 1.0099,
+          "avg_mae_net_pct": -1.4247
+        },
+        "75_plus": {
+          "count": 11,
+          "positive_time_stop": 9,
+          "win_rate_pct": 81.82,
+          "avg_time_stop_net_pct": 0.6307,
+          "median_time_stop_net_pct": 0.2537,
+          "avg_mfe_net_pct": 1.4828,
+          "avg_mae_net_pct": -1.0726
+        }
+      },
+      "near_complete_momentum": {
+        "count": 3,
+        "positive_time_stop": 1,
+        "win_rate_pct": 33.33,
+        "avg_time_stop_net_pct": 1.7888,
+        "median_time_stop_net_pct": -0.8571,
+        "avg_mfe_net_pct": 1.6752,
+        "avg_mae_net_pct": -1.023
+      },
+      "reason_groups": [
+        [
+          "하드 게이트",
+          113
+        ],
+        [
+          "RSI 범위 이탈",
+          56
+        ],
+        [
+          "반등 미확인",
+          51
+        ],
+        [
+          "거래량 부족",
+          26
+        ],
+        [
+          "상위 추세 미달",
+          14
+        ],
+        [
+          "이격 과열",
+          13
+        ],
+        [
+          "복합 조건 미달",
+          13
+        ],
+        [
+          "돌파 미확인",
+          9
+        ]
+      ]
+    },
+    "upbit": {
+      "raw": {
+        "count": 905,
+        "positive_time_stop": 433,
+        "win_rate_pct": 47.85,
+        "avg_time_stop_net_pct": 0.0478,
+        "median_time_stop_net_pct": -0.086,
+        "avg_mfe_net_pct": 1.1637,
+        "avg_mae_net_pct": -1.2276
+      },
+      "non_overlapping_90m": {
+        "count": 86,
+        "positive_time_stop": 39,
+        "win_rate_pct": 45.35,
+        "avg_time_stop_net_pct": 0.0851,
+        "median_time_stop_net_pct": -0.1792,
+        "avg_mfe_net_pct": 1.0811,
+        "avg_mae_net_pct": -1.2889
+      },
+      "score_buckets": {
+        "0_49": {
+          "count": 425,
+          "positive_time_stop": 216,
+          "win_rate_pct": 50.82,
+          "avg_time_stop_net_pct": 0.1915,
+          "median_time_stop_net_pct": 0.0511,
+          "avg_mfe_net_pct": 1.4091,
+          "avg_mae_net_pct": -1.2088
+        },
+        "50_64": {
+          "count": 276,
+          "positive_time_stop": 128,
+          "win_rate_pct": 46.38,
+          "avg_time_stop_net_pct": -0.0932,
+          "median_time_stop_net_pct": -0.0998,
+          "avg_mfe_net_pct": 1.071,
+          "avg_mae_net_pct": -1.2971
+        },
+        "65_74": {
+          "count": 178,
+          "positive_time_stop": 77,
+          "win_rate_pct": 43.26,
+          "avg_time_stop_net_pct": -0.0686,
+          "median_time_stop_net_pct": -0.1019,
+          "avg_mfe_net_pct": 0.7614,
+          "avg_mae_net_pct": -1.2013
+        },
+        "75_plus": {
+          "count": 26,
+          "positive_time_stop": 12,
+          "win_rate_pct": 46.15,
+          "avg_time_stop_net_pct": -0.0082,
+          "median_time_stop_net_pct": -0.086,
+          "avg_mfe_net_pct": 0.8918,
+          "avg_mae_net_pct": -0.9758
+        }
+      },
+      "near_complete_momentum": {
+        "count": 13,
+        "positive_time_stop": 5,
+        "win_rate_pct": 38.46,
+        "avg_time_stop_net_pct": -0.8286,
+        "median_time_stop_net_pct": -1.1488,
+        "avg_mfe_net_pct": 0.6377,
+        "avg_mae_net_pct": -2.0547
+      },
+      "reason_groups": [
+        [
+          "RSI 범위 이탈",
+          379
+        ],
+        [
+          "거래량 부족",
+          198
+        ],
+        [
+          "하드 게이트",
+          124
+        ],
+        [
+          "반등 미확인",
+          82
+        ],
+        [
+          "돌파 미확인",
+          41
+        ],
+        [
+          "복합 조건 미달",
+          38
+        ],
+        [
+          "상위 추세 미달",
+          33
+        ],
+        [
+          "이격 과열",
+          10
+        ]
+      ]
+    }
+  }
+}
