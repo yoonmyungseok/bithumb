@@ -159,6 +159,16 @@ class TradingOrchestrator:
                 screened = screener.scan_markets(top_count=top_count, held_markets=held, btc_regime=btc_regime, analyzer=analyzer)
             except TypeError:
                 screened = screener.scan_markets(top_count=top_count, held_markets=held, btc_regime=btc_regime)
+
+            # [Dual-Track] 스윙 전용 유망 후보군 병합 스캔 (최대 1종목)
+            if hasattr(screener, "scan_swing_markets"):
+                try:
+                    swing_candidates = screener.scan_swing_markets(top_count=1, held_markets=held, btc_regime=btc_regime)
+                    if swing_candidates:
+                        screened.extend(swing_candidates)
+                except Exception as exc:
+                    self.logger.debug("스윙 후보 스크리닝 폴백: %s", exc)
+
             # 호출자가 후보 유형 등 선별 메타데이터를 주문 기록에 보존할 수 있게 전달한다.
             if on_screened_candidates is not None:
                 on_screened_candidates(screened)

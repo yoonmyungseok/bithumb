@@ -1,4 +1,4 @@
-# Bithumb & Upbit AI Pro Quant Trading Bot (v8.26)
+# Bithumb & Upbit AI Pro Quant Trading Bot (v8.34)
 
 본 문서는 `c:\AI\bithumb` 디렉토리에 위치한 빗썸(Bithumb) 및 업비트(Upbit) 듀얼 거래소 지원 AI 퀀트 트레이딩 봇의 프로젝트 설명 및 아키텍처 설계서입니다. 이 문서는 다른 AI 에이전트 또는 개발자가 프로젝트의 전반적인 구조와 핵심 로직을 빠르고 명확하게 파악할 수 있도록 작성되었습니다.
 
@@ -20,6 +20,12 @@
 - **주요 전략 및 아키텍처**: 
   - **다중 시간대(MTF) 분석**: 1시간봉 대세 추세 + 5분봉 정밀 타점 정렬
 - **거래대금 및 모멘텀 기반 동적 시장 스크리닝**: 모멘텀 후보를 `EARLY`(당일 상승률 +3% 이하의 RS 확인 초입)와 `EXTENDED`(확장 후반) 단계로 기록한다. 신규 주문은 `EARLY`에서만 소액으로 허용하고, `EXTENDED`는 분석·감사만 수행해 후발 추격을 방지한다. 동일 5분 사이클에서는 모멘텀 신규 주문을 1건으로 제한한다.
+  - **Dual-Track(단타 + 스윙) 병행 전략 (v8.34)**:
+    - **단타 트랙(SCALP)**: 5분봉 기반 스캘핑, 1차 +3.5% 익절, 손절 -2.2%, 120분/180분 타임스탑을 통한 높은 회전율 및 리스크 방어 유지
+    - **스윙 트랙(SWING)**: 대형 메이저(BTC/ETH/SOL/XRP) 및 24시간 거래대금 300억 원 이상 최상위 우량 코인 대상, 4H/1H 추세 지지 기반 장기 추세 추종
+    - **스윙 전용 파라미터**: 손절 -5.5%, 절대 하드스탑 -8.0%, 1차 익절 +8.0%(40%), 2차 익절 +15.0%(30%), 트레일링 시작 +8.0%/드롭 4.0%, 본전보장 +1.5%
+    - **스윙 타임스탑 면제**: 120분/180분 시간 청산을 면제하고, 4H EMA20 이탈 시에만 추세 청산(`evaluate_swing_trend_exit`) 집행
+    - **슬롯 격리(`RiskGuard`)**: 단타 슬롯과 스윙 슬롯을 독립적으로 관리하여 한 트랙의 자금 잠김이 다른 트랙의 기회를 방해하지 않음
   - **2중 호가 안전망 (Fail-Closed)**: 매수/매도 스프레드 $\le 0.35\%$, 상위 5호가 누적 매수 잔량 $\ge 2,000$만 원 검증
   - **결정론적 기술지표 및 6중 리스크 안전 가드**: 볼린저 밴드(일반장 %B 0.20~0.72, `RISK_OFF`는 하드게이트 전체 통과 시 0.75까지), RSI 상한 72.0, 6중 AI 긴급 탈출 가드(15분 초기 보호, -1.20% 미세손실 완화, 1H MTF 우상향 보호), 7대 팩터 복합 알파 게이트 (LLM 환각 및 섣부른 조기 손절 차단)
   - **0.1초 초저지연 실시간 리스크 엔진**: WebSocket 틱 기반 0.1초 즉각 손절, 1차 50% 분할익절, 잔여 2차(25%) 및 가속 트레일링 스탑
@@ -50,11 +56,12 @@
 - `build_bithumb_analyzer()`는 Groq **설정 오류**가 있을 때만 `None`을 반환한다. FAST 런타임 장애(`entry_safety`)는 `get_bithumb_ai_entry_block_reason()`과 주문 게이트에서만 신규 BUY를 차단하고, 분석기는 유지해 FAST 재시도로 자동 복구할 수 있게 한다.
 - 운영 계측에는 마지막 오류의 목적, 모델, HTTP 상태 및 제한된 오류 코드/타입만 저장한다. API 키, 프롬프트, 오류 메시지 원문, 계좌·주문 식별자는 로그·대시보드·영속 파일에 저장하지 않는다. Groq 거시 진단이 실패하면 `CAUTION_PULLBACK` 방어 상태와 `AI_UNAVAILABLE` 표기를 사용해 정상 레짐으로 오인하지 않는다.
 
-### 빗썸 Groq 배치 JSON Schema 정합화 (v8.33)
+### 빗썸 Groq JSON Schema 안정화 및 진단 로깅 보강 (v8.35)
 
 - Groq Structured Outputs의 strict 모드는 **object 루트**만 허용한다. 후보 랭킹 응답은 `{"rankings":[...]}` 래퍼 객체로 감싸고, Gemini 경로의 순수 배열 응답도 파싱 호환을 유지한다.
-- 거시 진단·보유 평가·후보 랭킹 FAST 호출은 목적별 `schema_name`(`bithumb_macro_result`, `bithumb_holding_result`, `bithumb_ranking_result`)과 `strict=false` best-effort를 사용하고, 로컬 `_validate_schema`로 재검증한다. **신규 진입 `analyze()`만 `strict=true`를 유지**한다.
+- Groq 인퍼런스 서버의 조기 HTTP 400(`json_validate_failed`) 드랍을 방지하기 위해, 신규 진입 `analyze_market()`을 포함한 모든 FAST JSON Schema 호출(`complete_json`)에 `strict=false` (best-effort 가이던스)를 일관되게 적용한다. 수신된 JSON은 로컬 `_parse_json_text()` 및 `_validate_schema()`를 통해 필수 필드와 타입을 엄격히 재검증하며, 검증 실패 시 fail-closed로 신규 BUY를 안전 차단한다.
 - `_call_gemini_json()`의 빈 스키마 폴백은 Groq 400을 피하도록 `additionalProperties:false`와 `required:[]`를 포함한 object 스키마를 사용한다.
+- Groq HTTP 4xx 오류 발생 시 `error.code` 외에 민감정보(API 키, 토큰, 계정정보 등)가 마스킹된 안전한 오류 요약(`_safe_error_summary`)을 로그에 함께 기록하여 신속한 원인 진단을 지원한다.
 
 ---
 
@@ -223,6 +230,8 @@ c:\AI\bithumb\
 ## 4. 변경 이력 및 개선 히스토리 (Changelog)
 
 > 성능 경계: 전략 입력의 일괄 ticker·호가 값은 최대 1초만 재사용하며, 주문 직전 검증·체결 대사에는 사용하지 않습니다. 신규 진입 차단 상태에서는 후보용 AI 호출을 생략하지만 보유 포지션 방어는 계속 수행합니다.
+
+| **v8.34** | 2026-09-07 | • **모멘텀 확장 후반(EXTENDED) 과잉 매수 차단 해소 및 주도주 진입 정상화**<br>• **모멘텀 초입 상한선 상향**: `StrategyPolicy.MOMENTUM_EARLY_MAX_CHANGE_RATE`를 기존 3.0%에서 **5.0%**로 현실화하여 3~5%대 주도주 파동의 초입 진입 기회 확보 (환경 변수 `MOMENTUM_EARLY_MAX_CHANGE_RATE` 연동)<br>• **EXTENDED 고확신 확인형 진입 허용**: 5% 초과 확장 구간 종목이라도 단순 돌파 추격만 차단하고, 로컬 퀀트 하드게이트를 통과하고 AI가 고득점(알파 80점 이상)으로 승인한 건전한 눌림목/추세 확인형 셋업은 정상 매수 허용<br>• **후보 분류 정합성 복원**: 일반 스크리너 풀에서 0.3% 수준의 미세 변동 종목이 `MOMENTUM_BREAKOUT`으로 오분류되는 현상을 방지하고 정상적인 `CONFIRMED` 후보 경로 보존<br>• **검증**: `test_market_screener.py`(4% EARLY 및 6% EXTENDED 검증), `test_ai_authority.py`(80점 미만 차단 및 80점 이상 허용 검증), 전체 358개 단위 테스트 100% 통과 |
 
 | **v8.33** | 2026-09-07 | • **빗썸 Groq 복구 deadlock 및 배치 Schema 400 수정**<br>• **분석기 유지·주문만 차단**: FAST 장애 시 `build_bithumb_analyzer()`는 계속 생성하고 `get_bithumb_ai_entry_block_reason()`만 신규 BUY를 차단해 FAST 재시도로 `entry_safety` 자동 복구<br>• **Groq object 루트 정합화**: 후보 랭킹을 `rankings` 래퍼 객체로 변경하고 거시·보유·랭킹 FAST는 best-effort schema + 로컬 재검증, 신규 진입만 strict 유지<br>• **검증**: 분석기 유지·macro 성공 복구·object 루트 schema 회귀 테스트 추가, live Groq macro/ranking 호출 200 확인 |
 

@@ -338,22 +338,31 @@ class RealtimeRiskEngine:
                 or getattr(self.trailing_tracker, "current_btc_regime", "NORMAL")
             ).upper()
             is_bull_regime = (curr_regime == "BULL_TREND")
+            is_swing = getattr(self.trailing_tracker, "is_swing_position", lambda m: False)(market)
 
             raw_stop_loss = float(strat.get("STOP_LOSS", 0.0) or strat.get("stop_loss", 0.0))
-            # 진입 직후 털림 방지: 손절선은 평단가 대비 레짐별 기본 손절(BULL_TREND 시 -3.2%, 일반 -2.2%) 이하로 안전 마진 보장
-            base_sl_pct = StrategyPolicy.BULL_STOP_LOSS_PCT if is_bull_regime else StrategyPolicy.STOP_LOSS_PCT
+            # 진입 직후 털림 방지: 손절선은 평단가 대비 레짐/전략별 기본 손절 이하로 안전 마진 보장
+            if is_swing:
+                base_sl_pct = StrategyPolicy.SWING_STOP_LOSS_PCT
+            elif is_bull_regime:
+                base_sl_pct = StrategyPolicy.BULL_STOP_LOSS_PCT
+            else:
+                base_sl_pct = StrategyPolicy.STOP_LOSS_PCT
+
             base_stop_loss = avg_buy_price * (1.0 - base_sl_pct)
             effective_stop_loss = raw_stop_loss if raw_stop_loss > 0 else base_stop_loss
             effective_stop_loss = min(effective_stop_loss, base_stop_loss)
 
-            # 🛡️ [수익 보존 브레이크이븐]: 1차 분할 익절 완료 시 손절선을 '평단가 + 0.3%'로 자동 락인
+            # 🛡️ [수익 보존 브레이크이븐]: 1차 분할 익절 완료 시 손절선 락인 (스윙 +1.5%, 단타 +0.3%)
             if self.trailing_tracker.is_breakeven_active(market):
-                breakeven_sl = avg_buy_price * (1.0 + StrategyPolicy.BREAKEVEN_STOP_PCT)
+                be_pct = StrategyPolicy.SWING_BREAKEVEN_STOP_PCT if is_swing else StrategyPolicy.BREAKEVEN_STOP_PCT
+                breakeven_sl = avg_buy_price * (1.0 + be_pct)
                 effective_stop_loss = max(effective_stop_loss, breakeven_sl)
             now_str = get_kst_now_str()
 
-            # 0. 단일 종목 절대 손실 하드 스탑 (Hard-Stop Guard: -4.5% 도달 시 틱 카운트 지연 없이 즉각 청산)
-            hard_stop_price = avg_buy_price * 0.955
+            # 0. 단일 종목 절대 손실 하드 스탑 (스윙 -8.0%, 단타 -4.5% 도달 시 즉각 청산)
+            hard_stop_pct = StrategyPolicy.SWING_HARD_STOP_PCT if is_swing else 0.045
+            hard_stop_price = avg_buy_price * (1.0 - hard_stop_pct)
             is_hard_stop = current_price <= hard_stop_price
 
             # 1. 실시간 손절 검사 (단일 틱 휩소 방지: 2회 연속 하회 또는 급락 시 즉시 실행)

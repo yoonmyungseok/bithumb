@@ -39,6 +39,17 @@ class ExchangeAdapterContractTests(unittest.TestCase):
         self.assertEqual(order["client_order_id"], "entry-1")
         self.assertEqual(client.created_orders[0]["side"], "bid")
 
+    def test_get_ticker_delegation_and_fallback(self):
+        client = FakeExchangeClient()
+        adapter = BithumbAdapter(client, data_dir="data/bithumb", web_port=7979)
+        self.assertEqual(adapter.get_ticker("KRW-BTC"), {})
+
+        client.get_tickers = lambda markets: [{"market": m, "trade_price": 50000.0} for m in markets]
+        self.assertEqual(adapter.get_ticker("KRW-BTC")["trade_price"], 50000.0)
+
+        client.get_ticker = lambda market="KRW-BTC": {"market": market, "trade_price": 99999.0}
+        self.assertEqual(adapter.get_ticker("KRW-BTC")["trade_price"], 99999.0)
+
     def test_upbit_protected_market_is_rejected_at_the_adapter_boundary(self):
         client = FakeExchangeClient()
         adapter = UpbitAdapter(client)

@@ -124,6 +124,13 @@ class ExchangeAdapter:
         method = getattr(self.client, "get_tickers", None)
         return method(markets) if callable(method) else []
 
+    def get_ticker(self, market: str = "KRW-BTC") -> dict[str, Any]:
+        method = getattr(self.client, "get_ticker", None)
+        if callable(method):
+            return method(market)
+        tickers = self.get_tickers([market])
+        return tickers[0] if tickers else {}
+
     def get_orderbooks(self, markets: list[str]) -> list[dict[str, Any]]:
         method = getattr(self.client, "get_orderbooks", None)
         return method(markets) if callable(method) else []

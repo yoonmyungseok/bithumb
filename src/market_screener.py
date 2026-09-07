@@ -406,3 +406,111 @@ class MarketScreener:
             logger.error(f"마켓 스크리닝 중 오류 발생: {e}")
             fallback = [{"market": m} for m in (held_markets or ["KRW-BTC"])]
             return fallback
+
+    def scan_swing_markets(
+        self,
+        top_count: int = 2,
+        held_markets: list[str] | None = None,
+        btc_regime: str = "NORMAL",
+    ) -> list[dict[str, Any]]:
+        """
+        중기/추세추종 스윙(SWING) 유망 종목 스크리닝 (Dual-Track)
+        - 대형 메이저 코인(BTC/ETH/SOL/XRP) 우선 선별
+        - 24시간 거래대금 300억 원 이상 최상위 우량 코인 중 유동성과 추세가 안정적인 종목
+        - CRASH 레짐에서는 신규 스윙 진입 차단 (Fail-Closed)
+        """
+        held_set: set[str] = {m.upper() for m in (held_markets or [])}
+        regime_upper = (btc_regime or "NORMAL").upper()
+        if regime_upper in ("CRASH", "BEAR_VOLATILE"):
+            logger.info("⚠️ BTC CRASH 레짐으로 인해 스윙 신규 스캔 중단")
+            return []
+
+        try:
+            try:
+                all_markets_data = self.api.get_all_markets(is_details=True)
+            except TypeError:
+                all_markets_data = self.api.get_all_markets()
+
+            krw_markets = [
+                m for m in all_markets_data
+                if isinstance(m, dict)
+                and m.get("market", "").startswith("KRW-")
+                and not (isinstance(m.get("market_event"), dict) and m.get("market_event", {}).get("warning") is True)
+                and m.get("market_warning") not in ("CAUTION", "WARNING")
+            ]
+            krw_market_codes = [m["market"] for m in krw_markets if "market" in m]
+            if not krw_market_codes:
+                return []
+
+            chunk_size = 50
+            all_tickers: list[dict[str, Any]] = []
+            get_tickers_fn = getattr(self.api, "get_tickers", None)
+            if callable(get_tickers_fn):
+                for i in range(0, len(krw_market_codes), chunk_size):
+                    chunk = krw_market_codes[i : i + chunk_size]
+                    tickers_chunk = get_tickers_fn(chunk)
+                    all_tickers.extend(tickers_chunk)
+            elif callable(getattr(self.api, "get_ticker", None)):
+                ticker_res = self.api.get_ticker(krw_market_codes)
+                if isinstance(ticker_res, list):
+                    all_tickers.extend(ticker_res)
+                elif isinstance(ticker_res, dict):
+                    all_tickers.append(ticker_res)
+
+            if not all_tickers:
+                return []
+
+            btc_ticker = next((t for t in all_tickers if t.get("market") == "KRW-BTC"), None)
+            btc_change_rate = _safe_float(btc_ticker.get("signed_change_rate", btc_ticker.get("change_rate", 0.0))) if btc_ticker else 0.0
+
+            swing_candidates: list[dict[str, Any]] = []
+            excluded_manual = get_excluded_manual_holdings()
+
+            # 스윙 최소 거래대금 (기본 300억 원)
+            min_swing_trade_val = 30_000_000_000.0
+
+            for t in all_tickers:
+                market = t.get("market", "")
+                trade_price = _safe_float(t.get("trade_price"))
+                change_rate = _safe_float(t.get("signed_change_rate", t.get("change_rate")))
+                acc_price_24h = _safe_float(t.get("acc_trade_price_24h", t.get("acc_trade_value_24h", 0.0)))
+                relative_strength = change_rate - btc_change_rate
+
+                if not market or trade_price <= 0:
+                    continue
+                if market in EXCLUDED_STABLE_MARKETS or market in excluded_manual or market.replace("KRW-", "") in excluded_manual:
+                    continue
+                if market in held_set:
+                    continue
+
+                is_major = market in EXCLUDED_MAJOR_SCALPING_MARKETS
+                # 메이저는 거래대금 조건 완화(50억 이상), 일반 알트는 300억 이상
+                if is_major and acc_price_24h < 5_000_000_000.0:
+                    continue
+                elif not is_major and acc_price_24h < min_swing_trade_val:
+                    continue
+
+                # 스윙 점수 산출: 메이저 가산점(50점) + 거래대금 로그 점수 + 상대강도 보너스
+                major_bonus = 50.0 if is_major else 0.0
+                rs_bonus = max(-10.0, min(30.0, relative_strength * 100.0))
+                score = major_bonus + (math.log10(max(1.0, acc_price_24h)) * 5.0) + rs_bonus
+
+                swing_candidates.append({
+                    "market": market,
+                    "trade_price": trade_price,
+                    "change_rate": change_rate,
+                    "acc_trade_price_24h": acc_price_24h,
+                    "relative_strength": relative_strength,
+                    "score": score,
+                    "candidate_type": "SWING",
+                    "strategy_mode": "SWING",
+                    "is_held": False,
+                })
+
+            swing_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+            return swing_candidates[:top_count]
+
+        except Exception as e:
+            logger.error(f"스윙 마켓 스크리닝 중 오류: {e}")
+            return []
+

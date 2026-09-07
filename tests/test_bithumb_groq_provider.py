@@ -55,8 +55,8 @@ class BithumbGroqProviderTests(unittest.TestCase):
         os.environ.update(self.env)
 
     @patch("ai_provider.requests.post")
-    def test_fast_trading_uses_20b_and_strict_schema(self, mock_post):
-        """신규 진입 분석은 20B 한 모델과 strict JSON Schema만 사용해야 한다."""
+    def test_fast_trading_uses_20b_and_best_effort_schema(self, mock_post):
+        """신규 진입 분석은 20B 모델과 best-effort(strict=False) JSON Schema 및 로컬 검증을 사용해야 한다."""
         response = MagicMock(status_code=200)
         response.headers = {"x-ratelimit-reset-requests": "1h15m"}
         response.json.return_value = {"choices": [{"message": {"content": (
@@ -72,7 +72,7 @@ class BithumbGroqProviderTests(unittest.TestCase):
         self.assertEqual(result["action"], "HOLD")
         payload = mock_post.call_args.kwargs["json"]
         self.assertEqual(payload["model"], GroqProvider.FAST_TRADING)
-        self.assertTrue(payload["response_format"]["json_schema"]["strict"])
+        self.assertFalse(payload["response_format"]["json_schema"]["strict"])
         self.assertNotIn(GroqProvider.DEEP_BRIEFING, str(payload))
         # 모든 20B 분석 호출에는 빗썸 전용 안전 지침이 system 메시지로 선행해야 한다.
         self.assertEqual(payload["messages"][0]["role"], "system")
@@ -174,6 +174,32 @@ class BithumbGroqProviderTests(unittest.TestCase):
         reopened = AIProviderTelemetry.snapshot("bithumb")["entry_safety"]
         self.assertFalse(reopened["entry_blocked"])
         self.assertEqual(reopened["status"], "NORMAL")
+
+    def test_groq_safe_error_summary_masks_sensitive_info(self):
+        """오류 요약은 민감정보(키/토큰)를 마스킹하고 안전한 메시지만 추출해야 한다."""
+        response = MagicMock()
+        response.json.return_value = {
+            "error": {
+                "message": "Failed to validate JSON: missing field with bearer token_12345 secret_abc and gsk_fakekey123",
+                "code": "json_validate_failed",
+            }
+        }
+        summary = GroqProvider._safe_error_summary(response)
+        code = GroqProvider._safe_error_code(response)
+        self.assertEqual(code, "json_validate_failed")
+        self.assertIn("Failed to validate JSON", summary)
+        self.assertNotIn("token_12345", summary)
+        self.assertNotIn("secret_abc", summary)
+        self.assertNotIn("gsk_fakekey123", summary)
+
+    def test_complete_json_defaults_to_non_strict(self):
+        """GroqProvider.complete_json은 기본적으로 strict=False를 적용해야 한다."""
+        provider = GroqProvider("fake_key", GroqProvider.FAST_TRADING, GroqProvider.DEEP_BRIEFING)
+        with patch.object(provider, "_post") as mock_post:
+            mock_post.return_value = MagicMock(value='{"STATUS":"ACTIVE"}', status_code=200, error_code="")
+            provider.complete_json("test prompt", [GroqProvider.FAST_TRADING], {"type": "object"}, context="test", timeout=10.0, max_tokens=100)
+            payload = mock_post.call_args[0][1]
+            self.assertFalse(payload["response_format"]["json_schema"]["strict"])
 
     def test_entry_safety_restores_after_reconfigure(self):
         """프로세스 재시작을 모사해도 FAST 장애 신규 BUY 차단 상태가 유지되어야 한다."""

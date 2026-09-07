@@ -25,6 +25,7 @@ from strategy_engine import (
     calculate_relative_strength,
     calculate_vwap,
     entry_signal,
+    evaluate_swing_trend_exit,
     is_ai_direct_entry_eligible,
     is_night_session,
     recovery_rebound_signal,
@@ -921,6 +922,45 @@ class TradingCycleEngine:
             effective_time_stop = StrategyPolicy.TIME_STOP_SECONDS_NORMAL
             effective_max_hold = StrategyPolicy.TIME_STOP_MAX_HOLD_SECONDS
 
+        is_swing = getattr(ctx.trailing_tracker, "is_swing_position", lambda m: False)(market)
+        if is_swing:
+            # 스윙 포지션은 120분/180분 타임스탑을 면제하고, 상위봉(1H/4H) 추세 지지선 이탈 시에만 청산한다.
+            candles_1h = getattr(market_inputs, "candles_1h", None)
+            is_trend_exit, trend_reason = evaluate_swing_trend_exit(candles_1h or [], current_price)
+            if not is_trend_exit:
+                return False  # 스윙 추세 지지 중이므로 홀딩 유지
+
+            if ctx.trailing_tracker.acquire_exit_lock(market):
+                try:
+                    logger.warning(f"🌊 [{korean_name} / {market} 스윙 추세 이탈 청산] {trend_reason}")
+                    ctx.cancel_bot_open_orders(exchange, market)
+                    order_res = ctx.order_executor.submit(
+                        exchange,
+                        market=market,
+                        side="ask",
+                        volume=coin_available,
+                        ord_type="market",
+                        position_id=market,
+                        exit_reason="SWING_TREND_STOP",
+                        avg_buy_price=avg_buy_price,
+                    )
+                    ctx.confirm_and_record_exit(
+                        exchange=exchange,
+                        market=market,
+                        korean_name=korean_name,
+                        side_label="SWING_TREND_STOP",
+                        order_res=order_res,
+                        avg_buy_price=avg_buy_price,
+                        fallback_price=current_price,
+                        fallback_vol=coin_available,
+                        exit_reason=trend_reason,
+                        now_str=now_str,
+                    )
+                    return True
+                finally:
+                    ctx.trailing_tracker.release_exit_lock(market)
+            return False
+
         is_holding_support = False
         is_trend_broken = False
         is_above_vwap = True
@@ -1340,10 +1380,19 @@ class TradingCycleEngine:
                 stop_loss = strategy.get("stop_loss") or selected_entry["stop_loss"]
 
         if candidate_type == "MOMENTUM_BREAKOUT" and not is_holding:
-            # 확장 구간은 분석·감사는 유지하되, 초입을 놓친 신규 추격 주문은 허용하지 않는다.
+            # 확장 구간은 단순 돌파 추격 주문을 차단하되, 1차 퀀트 하드게이트 통과 및 AI 심층 분석에서 고득점(알파 80점 이상) 확인형 승인을 받은 특급 주도주는 허용한다.
             if momentum_phase != "EARLY":
-                action = "HOLD"
-                reason = f"모멘텀 확장 후반 신규 추격 차단(단계={momentum_phase}) | {reason}"
+                is_high_conviction_ai_entry = (
+                    action == "BUY"
+                    and is_ai_buy_signal
+                    and ai_alpha >= 80
+                    and selected_entry.get("allow_buy", False)
+                )
+                if not is_high_conviction_ai_entry:
+                    action = "HOLD"
+                    reason = f"모멘텀 확장 후반 신규 추격 차단(단계={momentum_phase}) | {reason}"
+                else:
+                    reason = f"[EXTENDED 주도주 고확신 확인형 진입(알파 {ai_alpha}점)] {reason}"
             elif not market_inputs.momentum_entry_slot_available:
                 action = "HOLD"
                 reason = f"동일 5분 사이클 모멘텀 신규 주문 1건 제한 | {reason}"
@@ -1377,6 +1426,12 @@ class TradingCycleEngine:
         if candidate_type == "MOMENTUM_BREAKOUT" and action == "BUY":
             alloc_pct = min(alloc_pct, dyn_max_pos_pct * StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO)
             reason = f"[⚡모멘텀 돌파 최초 소액] {reason}"
+
+        if (candidate_type == "SWING" or candidate_metadata.get("strategy_mode") == "SWING") and action == "BUY":
+            target_price = entry_price * (1.0 + StrategyPolicy.SWING_TARGET_PCT)
+            stop_loss = entry_price * (1.0 - StrategyPolicy.SWING_STOP_LOSS_PCT)
+            alloc_pct = min(dyn_max_pos_pct, StrategyPolicy.SWING_ALLOC_RATIO)
+            reason = f"[🌊중기/추세추종 스윙 전략(목표 +15.0%, 손절 -5.5%)] {reason}"
 
         if is_night_session() and action == "BUY":
             alloc_pct = alloc_pct * StrategyPolicy.NIGHT_SESSION_ALLOC_RATIO
@@ -1617,6 +1672,11 @@ class TradingCycleEngine:
                 order_price = entry_price or current_price
             order_price = exchange.adjust_price_to_tick(order_price, side="bid")
             risk_scale = ctx.risk_manager.get_risk_scale_factor()
+            strategy_mode = (
+                "SWING"
+                if (market_inputs.candidate_type == "SWING" or market_inputs.candidate_metadata.get("strategy_mode") == "SWING")
+                else "SCALP"
+            )
             risk_based_budget = calculate_risk_position_size(
                 total_equity=effective_capital,
                 entry_price=order_price,
@@ -1627,6 +1687,7 @@ class TradingCycleEngine:
                 max_position_pct=dyn_max_pos_pct,
                 min_order_krw=min_order_krw,
                 risk_scale_factor=risk_scale,
+                strategy_mode=strategy_mode,
             )
             effective_risk_budget = risk_based_budget if risk_based_budget > 0 else slot_budget
             trade_budget = min(krw_available, slot_budget, effective_risk_budget)
@@ -1635,6 +1696,11 @@ class TradingCycleEngine:
             alloc_pct = alloc_pct or dyn_max_pos_pct
             max_slot_budget = current_total_equity * alloc_pct
             risk_scale = ctx.risk_manager.get_risk_scale_factor()
+            strategy_mode = (
+                "SWING"
+                if (market_inputs.candidate_type == "SWING" or market_inputs.candidate_metadata.get("strategy_mode") == "SWING")
+                else "SCALP"
+            )
             calculated_size = calculate_risk_position_size(
                 total_equity=current_total_equity,
                 entry_price=order_price,
@@ -1642,6 +1708,7 @@ class TradingCycleEngine:
                 max_position_pct=alloc_pct,
                 min_order_krw=min_order_krw,
                 risk_scale_factor=risk_scale,
+                strategy_mode=strategy_mode,
             )
             trade_budget = min(krw_available, max_slot_budget, calculated_size)
 
@@ -1675,12 +1742,15 @@ class TradingCycleEngine:
             logger.info("[%s] [관찰] %s", market, impact_reason)
             audit_decision(market, "OBSERVED", "ORDERBOOK_SLIPPAGE", [impact_reason], impact_details)
 
+        held_swings = getattr(ctx.trailing_tracker, "get_swing_markets", lambda: [])()
         is_safe, rejection_reason = ctx.risk_guard.validate_buy(
             market=market,
             order_krw=trade_budget,
             available_krw=krw_available,
             total_equity=current_total_equity,
             held_markets=market_inputs.held_markets,
+            strategy_mode=strategy_mode,
+            held_swing_markets=held_swings,
         )
         if not is_safe:
             logger.warning(
@@ -1734,7 +1804,10 @@ class TradingCycleEngine:
             "stop_loss": stop_loss,
             # 체결 이후에도 이 포지션이 초입 모멘텀 경로였음을 보존한다.
             "momentum_phase": market_inputs.momentum_phase,
+            "strategy_mode": strategy_mode,
         })
+        if strategy_mode == "SWING" and hasattr(ctx.trailing_tracker, "set_strategy_mode"):
+            ctx.trailing_tracker.set_strategy_mode(market, "SWING")
         position_id = f"{buy_profile.exchange_name}:{market}:{int(time.time() * 1000)}"
         ctx.order_executor.submit(
             exchange,

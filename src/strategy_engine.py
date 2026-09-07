@@ -60,6 +60,20 @@ class StrategyPolicy:
     MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_BULL: int = 60       # 상승장 모멘텀 돌파 알파 (60점)
     MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_BULL: int = 65 # 상승장 심야 모멘텀 돌파 알파 (65점)
 
+    # 1-3. 중기/추세추종 스윙(SWING) 전용 파라미터 (Dual-Track)
+    SWING_STOP_LOSS_PCT: float = 0.055           # 스윙 기본 손절 -5.5% (잔파동 노이즈 방어)
+    SWING_HARD_STOP_PCT: float = 0.080           # 스윙 절대 하드스탑 -8.0% (비상 탈출)
+    SWING_PARTIAL_TP_1_PCT: float = 0.080        # 스윙 1차 익절 +8.0% (수량 40% 실현)
+    SWING_PARTIAL_TP_1_RATIO: float = 0.40       # 스윙 1차 익절 비중 40%
+    SWING_PARTIAL_TP_2_PCT: float = 0.150        # 스윙 2차 익절 +15.0% (수량 30% 실현)
+    SWING_PARTIAL_TP_2_RATIO: float = 0.30       # 스윙 2차 익절 비중 30%
+    SWING_TRAILING_START_PCT: float = 0.080      # +8.0% 도달 시 트레일링 스탑 활성화
+    SWING_TRAILING_DROP_PCT: float = 0.040       # 최고점 대비 4.0% 하락 시 시장가 청산 (눌림목 허용)
+    SWING_BREAKEVEN_STOP_PCT: float = 0.015      # 1차 익절 완료 후 본전 보장 스탑 (+1.5% 안전 마진)
+    SWING_TARGET_PCT: float = 0.150              # 스윙 기본 목표 수익률 +15.0%
+    SWING_ALLOC_RATIO: float = 0.50              # 스윙 포지션 기본 배분 비중
+    SWING_TIME_STOP_ENABLED: bool = False        # 스윙은 시간 기반 타임스탑 미적용 (추세 기반 청산)
+
     # 2. 익절 및 트레일링 스탑 (2~3단계 분할 익절 & 2차 러너 추세 추종)
     PARTIAL_TP_PCT: float = 0.035        # 기본 1차 익절 기준 +3.5%
     PARTIAL_TP_1_PCT: float = 0.035      # 1차 +3.5% 도달 시 분할 익절
@@ -1192,3 +1206,32 @@ def recovery_rebound_signal(
             "alpha_passed": alpha_score >= alpha_threshold,
         },
     }
+
+
+def evaluate_swing_trend_exit(
+    candles_4h: list[dict[str, Any]],
+    current_price: float,
+    buffer_ratio: float = 0.985,
+) -> tuple[bool, str]:
+    """
+    스윙 포지션의 추세 지지선 이탈 기반 청산 (Trend-Stop) 판정
+    - 4시간봉 확정 캔들의 EMA20 대비 buffer_ratio(기본 0.985, -1.5% 하회) 이탈 시 청산
+    - 캔들 부족 시 관망 (Fail-Safe)
+    """
+    if not candles_4h or len(candles_4h) < 20 or current_price <= 0:
+        return False, "4H 캔들 데이터 부족으로 추세 유지"
+
+    completed = select_completed_candles(candles_4h, 20)
+    if not completed:
+        return False, "4H 확정봉 부족으로 추세 유지"
+
+    prices = [float(c.get("trade_price", 0.0)) for c in completed]
+    ema20 = calculate_ema(prices, 20)
+    threshold = ema20 * buffer_ratio
+
+    if current_price < threshold:
+        drop_pct = (current_price - ema20) / ema20 * 100.0
+        return True, f"스윙 추세 이탈 청산: 현재가 {current_price:,.2f}원 < 4H EMA20 {ema20:,.2f}원의 {buffer_ratio*100:.1f}% ({drop_pct:+.2f}%)"
+
+    return False, f"스윙 추세 양호: 현재가 {current_price:,.2f}원 >= 4H EMA20 {ema20:,.2f}원 지지"
+

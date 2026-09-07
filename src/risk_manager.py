@@ -289,6 +289,7 @@ class TrailingStopTracker:
         self.peaks: dict[str, float] = {}
         self.partial_tp_done: dict[str, Any] = {}
         self.entry_times: dict[str, float] = {}
+        self.strategy_modes: dict[str, str] = {}
         self.dynamic_stop_losses: dict[str, float] = {}
         self.dynamic_targets: dict[str, float] = {}
         self.runner_markets: set[str] = set()
@@ -337,6 +338,28 @@ class TrailingStopTracker:
         with self._lock:
             return market.upper() in self._exiting_markets
 
+    def set_strategy_mode(self, market: str, mode: str = "SCALP") -> None:
+        """포지션의 전략 모드 (SCALP 또는 SWING) 설정 및 영속 저장"""
+        with self._lock:
+            m_upper = market.upper()
+            self.strategy_modes[m_upper] = str(mode or "SCALP").upper()
+            self.strategy_modes[market] = self.strategy_modes[m_upper]
+            self._save_state(force=True)
+
+    def get_strategy_mode(self, market: str) -> str:
+        """포지션의 전략 모드 반환 (기본 SCALP)"""
+        with self._lock:
+            return self.strategy_modes.get(market.upper(), self.strategy_modes.get(market, "SCALP"))
+
+    def is_swing_position(self, market: str) -> bool:
+        """스윙 포지션 여부 확인"""
+        return self.get_strategy_mode(market) == "SWING"
+
+    def get_swing_markets(self) -> list[str]:
+        """현재 보유 중인 스윙 종목 목록 반환"""
+        with self._lock:
+            return [m for m, mode in self.strategy_modes.items() if mode == "SWING" and m.startswith("KRW-")]
+
     def _load_state(self):
         with self._lock:
             data = load_json_with_backup_recovery(self.state_file, default={})
@@ -344,6 +367,7 @@ class TrailingStopTracker:
                 self.peaks = data.get("peaks", {})
                 self.partial_tp_done = data.get("partial_tp_done", {})
                 self.entry_times = data.get("entry_times", {})
+                self.strategy_modes = data.get("strategy_modes", {})
 
     def _save_state(self, force: bool = False):
         """주문·체결 경계는 즉시, 최고가 갱신은 의미 있는 변화만 저장한다."""
@@ -361,6 +385,7 @@ class TrailingStopTracker:
                 "peaks": self.peaks,
                 "partial_tp_done": self.partial_tp_done,
                 "entry_times": self.entry_times,
+                "strategy_modes": self.strategy_modes,
             }
             try:
                 write_json_atomically(self.state_file, payload)
@@ -404,6 +429,7 @@ class TrailingStopTracker:
             "partial_tp_stage": stage,
             "peak_price": peak_price,
             "exit_in_progress": exiting,
+            "strategy_mode": self.strategy_modes.get(market_key, self.strategy_modes.get(market, "SCALP")),
         }
 
     def set_btc_regime(self, regime: str) -> None:
@@ -421,11 +447,15 @@ class TrailingStopTracker:
         current_profit_pct = current_profit_rate * 100.0
 
         with self._lock:
+            is_swing = self.is_swing_position(market)
             is_major = is_major_market(market)
             regime = (btc_regime or getattr(self, "current_btc_regime", "NORMAL")).upper()
             is_bull = (regime == "BULL_TREND")
 
-            if is_major:
+            if is_swing:
+                tp_1_target = StrategyPolicy.SWING_PARTIAL_TP_1_PCT
+                tp_2_target = StrategyPolicy.SWING_PARTIAL_TP_2_PCT
+            elif is_major:
                 tp_1_target = StrategyPolicy.MAJOR_PARTIAL_TP_1_PCT
                 tp_2_target = StrategyPolicy.MAJOR_PARTIAL_TP_2_PCT
             elif is_bull:
@@ -435,18 +465,18 @@ class TrailingStopTracker:
                 tp_1_target = StrategyPolicy.PARTIAL_TP_1_PCT
                 tp_2_target = StrategyPolicy.PARTIAL_TP_2_PCT
 
-            # 1. [다단계 분할 익절: 1차(50%) / 2차(25%) / 3차 잔여(25%) 가속 트레일링]
+            # 1. [다단계 분할 익절: 1차 / 2차 / 잔여 러너 가속 트레일링]
             raw_stage = self.partial_tp_done.get(market, 0)
             cur_stage = 1 if raw_stage is True else int(raw_stage or 0)
 
-            # 1-A. 1차 50% 분할 익절 (메이저 +1.8% / 상승장 +3.0% / 일반 +3.5% 도달 시)
+            # 1-A. 1차 분할 익절
             if current_profit_rate >= tp_1_target and cur_stage < 1:
                 self.partial_tp_done[market] = 1
                 self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
                 self._save_state(force=True)
                 return "PARTIAL_TP_1", current_price, current_price, current_profit_pct, current_profit_pct
 
-            # 1-B. 2차 25% 추가 분할 익절 (메이저 +3.5% / 상승장 +6.0% / 일반 +7.0% 도달 시)
+            # 1-B. 2차 추가 분할 익절
             if current_profit_rate >= tp_2_target and cur_stage < 2:
                 self.partial_tp_done[market] = 2
                 self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
@@ -458,6 +488,9 @@ class TrailingStopTracker:
             if self.macro_defensive_mode:
                 effective_start_pct = 0.008
                 base_drop_pct = 0.004
+            elif is_swing:
+                effective_start_pct = StrategyPolicy.SWING_TRAILING_START_PCT  # +8.0%
+                base_drop_pct = StrategyPolicy.SWING_TRAILING_DROP_PCT        # 4.0%
             elif is_major:
                 effective_start_pct = StrategyPolicy.MAJOR_TRAILING_START_PCT  # +1.5%
                 base_drop_pct = StrategyPolicy.MAJOR_TRAILING_DROP_PCT        # 1.0%
@@ -480,6 +513,8 @@ class TrailingStopTracker:
 
                 if self.macro_defensive_mode:
                     active_drop_pct = 0.004  # 비상 방어 모드: 0.4% 극초밀착
+                elif is_swing:
+                    active_drop_pct = StrategyPolicy.SWING_TRAILING_DROP_PCT  # 스윙 4.0%
                 elif is_major:
                     active_drop_pct = min(base_drop_pct, 0.010)  # 메이저: 1.0% 밀착
                 elif is_bull:
@@ -491,12 +526,17 @@ class TrailingStopTracker:
                 elif peak_profit_pct >= 5.0:
                     active_drop_pct = 0.018  # +5% 이상: 1.8% 추적
                 else:
-                    active_drop_pct = base_drop_pct  # 기본 2.0% 버퍼 (노이즈 방어)
+                    active_drop_pct = base_drop_pct  # 기본 버퍼
 
                 trailing_stop_price = current_peak * (1.0 - active_drop_pct)
 
-                # 수수료 및 슬리피지 차감 후 최소 안전 마진 확보 (메이저 +0.3%, 알트 +0.5%)
-                min_buffer = 1.003 if is_major else 1.005
+                # 수수료 및 슬리피지 차감 후 최소 안전 마진 확보 (스윙 +1.5%, 메이저 +0.3%, 알트 +0.5%)
+                if is_swing:
+                    min_buffer = 1.0 + StrategyPolicy.SWING_BREAKEVEN_STOP_PCT
+                elif is_major:
+                    min_buffer = 1.003
+                else:
+                    min_buffer = 1.005
                 min_guaranteed_profit = avg_buy_price * min_buffer
                 trailing_stop_price = max(trailing_stop_price, min_guaranteed_profit)
 
@@ -505,7 +545,7 @@ class TrailingStopTracker:
                 is_time_to_log = (now_ts - self._last_log_ts.get(market, 0.0)) >= 15.0
 
                 if is_new_peak or is_time_to_log:
-                    mode_tag = " [🚨비상방어]" if self.macro_defensive_mode else ""
+                    mode_tag = " [🚨비상방어]" if self.macro_defensive_mode else ("[🌊스윙]" if is_swing else "")
                     logger.info(
                         f"🎯 [{market}]{mode_tag} 가속 트레일링 추적 중: 최고점 {current_peak:,.2f}원 (+{peak_profit_pct:.2f}% | 드롭폭 {active_drop_pct*100:.1f}%) ➜ 익절기준선 {trailing_stop_price:,.2f}원"
                     )
@@ -538,6 +578,8 @@ class TrailingStopTracker:
             self.partial_tp_done.pop(m_upper, None)
             self.entry_times.pop(market, None)
             self.entry_times.pop(m_upper, None)
+            self.strategy_modes.pop(market, None)
+            self.strategy_modes.pop(m_upper, None)
             self.dynamic_stop_losses.pop(m_upper, None)
             self.dynamic_targets.pop(m_upper, None)
             self.runner_markets.discard(m_upper)

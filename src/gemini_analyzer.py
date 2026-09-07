@@ -974,7 +974,15 @@ class GeminiAnalyzer:
             )
 
         # 6. 현재 StrategyPolicy를 AI 요청에도 그대로 주입해 정책 불일치를 방지한다.
-        if normalized_candidate_type == "MOMENTUM_BREAKOUT":
+        if normalized_candidate_type == "SWING":
+            current_alpha_threshold = 60
+            policy_details = (
+                "중기/추세추종 스윙(SWING) 전용 경로입니다. 대형 메이저(BTC/ETH/SOL/XRP) 또는 거래대금 최상위 우량 코인을 대상으로 하며, "
+                "일봉/4시간봉/1시간봉 상위 추세 지지와 주요 매물대 지지 여부를 중점 평가합니다. "
+                "목표 수익률은 +15.0%, 손절선은 -5.5% 기준이며, 단기 120분 타임스탑을 면제하고 추세 추종 홀딩을 유지합니다. "
+                f"기본 배분 비중은 최대 {StrategyPolicy.SWING_ALLOC_RATIO * 100:.0f}%입니다."
+            )
+        elif normalized_candidate_type == "MOMENTUM_BREAKOUT":
             current_alpha_threshold = get_momentum_breakout_alpha_threshold(regime_upper, night_active)
             policy_details = (
                 f"모멘텀 돌파 전용입니다. 최신 확정 5분봉이 직전 {StrategyPolicy.MOMENTUM_BREAKOUT_LOOKBACK_BARS}봉 고점을 돌파하고, "
@@ -982,7 +990,7 @@ class GeminiAnalyzer:
                 f"RSI {StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MIN:.0f}~{StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MAX:.0f}, "
                 f"1시간 EMA20의 {StrategyPolicy.MOMENTUM_BREAKOUT_MTF_EMA20_RATIO:.3f}배 이상을 모두 충족해야 합니다. "
                 f"초기 주문 비중은 최대 종목 비중의 {StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO * 100:.0f}%를 넘지 않습니다. "
-                f"현재 단계는 {normalized_momentum_phase}이며, 신규 BUY는 EARLY 단계에서만 가능합니다."
+                f"현재 단계는 {normalized_momentum_phase}이며, 신규 BUY는 EARLY 단계에서만 가능합니다. (EXTENDED 단계는 로컬 퀀트 통과 및 AI 알파 80점 이상 고확신 확인형 진입 시에만 제한 허용)"
             )
         elif normalized_policy_mode == "RECOVERY_REBOUND":
             current_alpha_threshold = max(
@@ -1099,8 +1107,9 @@ class GeminiAnalyzer:
 }}
 """
 
+        # Groq 인퍼런스 서버의 조기 400(json_validate_failed) 드랍을 회피하고 로컬 2단계 검증을 적용한다.
         provider_result = self.provider.complete_json(
-            prompt, candidate_models, ENTRY_JSON_SCHEMA, context=market, timeout=25.0, max_tokens=4000,
+            prompt, candidate_models, ENTRY_JSON_SCHEMA, context=market, timeout=25.0, max_tokens=4000, strict=False,
         )
         parsed = provider_result.value
         if isinstance(parsed, dict):

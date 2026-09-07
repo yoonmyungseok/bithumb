@@ -607,6 +607,7 @@ class GroqProvider:
 업비트, Gemini, 다른 거래소 데이터·키·계좌·주문 상태를 가정하거나 섞지 마세요. 제공되지 않은 외부 정보, 과거 기억, 추측으로 수치를 보완하지 마세요.
 ACK는 체결이 아닙니다. REST 또는 Private WebSocket의 확정 체결 정보가 없는 한 포지션·손익·쿨다운·주문 완료를 단정하지 마세요.
 신규 진입 데이터가 누락되거나 모순되면 BUY를 제안하지 말고 HOLD를 선택하세요. 보유 포지션 분석도 조언일 뿐 직접 청산을 실행할 수 없습니다.
+단타(SCALP) 및 중기 추세추종(SWING) 경로에 맞춰 제공된 기준(레짐, 세션, 목표/손절선, 알파 승인선)을 엄격히 준수하세요.
 API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·재현하지 마세요. 요청별 출력 스키마·형식·언어를 정확히 따르고, JSON 요청에는 마크다운 없는 유효 JSON만 반환하세요.
 모든 설명과 REASON, 분석 근거(reason, summary, guideline 등 모든 텍스트 값)는 반드시 명확하고 자연스러운 한국어로만 작성하세요. 영어나 다른 언어로 출력하지 마세요."""
 
@@ -635,6 +636,20 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
         except (ValueError, TypeError, AttributeError):
             return ""
 
+    @staticmethod
+    def _safe_error_summary(response: requests.Response) -> str:
+        """Groq 오류 본문에서 키·계정정보 없이 오류 사유 및 요약만 안전하게 추출한다."""
+        try:
+            payload = response.json()
+            error = payload.get("error", {}) if isinstance(payload, dict) else {}
+            msg = str(error.get("message") or "").strip()
+            # 줄바꿈 및 다중 공백 정리, 키나 토큰 형태의 민감 패턴 마스킹
+            msg = re.sub(r"[\r\n\t]+", " ", msg)
+            msg = re.sub(r"(?:gsk_|key|secret|token|bearer)[A-Za-z0-9_\-]+", "***", msg, flags=re.I)
+            return msg[:120]
+        except (ValueError, TypeError, AttributeError):
+            return ""
+
     def _record_fast_entry_safety(self, result: ProviderResult, context: str) -> ProviderResult:
         """FAST JSON 호출 성공 전까지 모든 빗썸 신규 진입을 닫고 성공 후에만 재개한다."""
         is_success = isinstance(result.value, dict) or isinstance(result.value, list)
@@ -654,6 +669,7 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
         status_code: int | None = None
         error_kind = ""
         error_code = ""
+        error_summary = ""
         reset_requests = ""
         try:
             response = requests.post(
@@ -667,6 +683,7 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
             if status_code != 200:
                 error_kind = "rate_limited" if status_code == 429 else "http_error"
                 error_code = self._safe_error_code(response)
+                error_summary = self._safe_error_summary(response)
                 return ProviderResult(None, model, error_kind, status_code, error_code)
             data = response.json()
             choices = data.get("choices", [])
@@ -687,7 +704,10 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
                 (time.monotonic() - started) * 1000.0, error_kind, reset_requests,
             )
             if error_code:
-                logger.warning("[Groq] 안전 오류 코드: HTTP %s, 모델=%s, 목적=%s, 코드=%s", status_code, model, context, error_code)
+                if error_summary:
+                    logger.warning("[Groq] 안전 오류 코드: HTTP %s, 모델=%s, 목적=%s, 코드=%s (%s)", status_code, model, context, error_code, error_summary)
+                else:
+                    logger.warning("[Groq] 안전 오류 코드: HTTP %s, 모델=%s, 목적=%s, 코드=%s", status_code, model, context, error_code)
 
     def complete_json(
         self,
@@ -699,9 +719,9 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
         timeout: float,
         max_tokens: int,
         schema_name: str = "bithumb_trading_result",
-        strict: bool = True,
+        strict: bool = False,
     ) -> ProviderResult:
-        """Groq JSON Schema 강제와 로컬 재검증을 모두 적용합니다."""
+        """Groq JSON Schema 가이던스와 로컬 재검증을 모두 적용합니다."""
         model = self.fast_model
         if not self.is_configured or models != [model]:
             return ProviderResult(None, model, "configuration")
