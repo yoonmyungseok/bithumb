@@ -489,23 +489,25 @@ class BithumbAPI:
             data["client_order_id"] = client_order_id
 
         if ord_type == "limit":
-            if volume is None or price is None:
-                raise ValueError("지정가(limit) 주문은 volume과 price가 모두 필요합니다.")
+            if volume is None or price is None or float(volume) <= 0:
+                raise ValueError("지정가(limit) 주문은 0보다 큰 volume과 price가 모두 필요합니다.")
             
             # 호가 단위 방향별 자동 보정 (매수: 내림, 매도: 올림)
             adjusted_price = self.adjust_price_to_tick(price, side=side)
-            data["volume"] = f"{volume:.8f}".rstrip("0").rstrip(".")
+            formatted_vol = f"{float(volume):.8f}".rstrip("0").rstrip(".") or "0"
+            data["volume"] = formatted_vol
             data["price"] = str(int(adjusted_price) if adjusted_price.is_integer() else adjusted_price)
 
         elif ord_type == "price":  # 시장가 매수 (price = 원화 총 금액)
-            if price is None:
-                raise ValueError("시장가 매수(price)는 총 매수금액(price)이 필요합니다.")
+            if price is None or float(price) <= 0:
+                raise ValueError("시장가 매수(price)는 0보다 큰 총 매수금액(price)이 필요합니다.")
             data["price"] = str(int(price))
 
         elif ord_type == "market":  # 시장가 매도 (volume = 코인 수량)
-            if volume is None:
-                raise ValueError("시장가 매도(market)는 매도수량(volume)이 필요합니다.")
-            data["volume"] = f"{volume:.8f}".rstrip("0").rstrip(".")
+            if volume is None or float(volume) <= 0:
+                raise ValueError("시장가 매도(market)는 0보다 큰 매도수량(volume)이 필요합니다.")
+            formatted_vol = f"{float(volume):.8f}".rstrip("0").rstrip(".") or "0"
+            data["volume"] = formatted_vol
 
         logger.info(f"주문 요청 데이터: {data}")
         return self._request("POST", "/orders", data=data, api_version="v2")

@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -306,8 +307,6 @@ def status_action(exchange: str = "bithumb"):
     print()
 
 
-import signal
-
 def _kill_pid(pid: int | str) -> bool:
     """psutil 또는 OS 명령으로 PID 프로세스를 안전하게 종료시킨다."""
     try:
@@ -387,7 +386,7 @@ def _kill_matching_script_processes(patterns: list[str]) -> list[int]:
                         pid_str = line.strip()
                         if pid_str.isdigit():
                             pid_val = int(pid_str)
-                            if pid_val != my_pid and pid_val not in killed_pids:
+                            if pid_val not in ancestors and pid_val not in killed_pids:
                                 if _kill_pid(pid_val):
                                     killed_pids.append(pid_val)
             except Exception:

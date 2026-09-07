@@ -177,12 +177,11 @@ class MarketScreener:
 
                 # 확인형 후보는 기존 상승률 조건을 그대로 사용한다.
                 if self.min_change_rate <= change_rate <= self.max_change_rate:
-                    # 모멘텀은 상승률이 아니라 최초 포착 단계가 주문 시점을 결정한다.
-                    # 초입은 RS +0.8% 이상부터 별도 경로로 관찰해, +3% 이후의 후발 추격과 구분한다.
+                    # 모멘텀 주도주는 당일 변동률 3% 이상 및 상대강도(RS) 1.5% 이상인 종목으로 판정한다.
                     is_momentum_leader = (
                         self.enable_early_breakout
-                        and change_rate >= self.early_breakout_min_change_rate
-                        and relative_strength >= StrategyPolicy.MOMENTUM_BREAKOUT_RS_MIN
+                        and change_rate >= 0.030
+                        and relative_strength >= 0.015
                     )
                     momentum_phase = (
                         "EARLY"

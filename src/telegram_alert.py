@@ -103,9 +103,21 @@ class TelegramAlert:
             if response.status_code == 200:
                 logger.info("텔레그램 메시지 전송 성공")
                 return True
-            else:
-                logger.error(f"텔레그램 전송 실패 [{response.status_code}]: {response.text}")
+
+            # HTML 파싱 에러(400) 발생 시 parse_mode를 제거하여 일반 텍스트로 폴백 재시도
+            if response.status_code == 400 and parse_mode:
+                logger.warning(f"⚠️ 텔레그램 {parse_mode} 파싱 실패 감지. 일반 텍스트 모드로 재전송 시도...")
+                fallback_payload = dict(payload)
+                fallback_payload.pop("parse_mode", None)
+                fb_resp = requests.post(f"{self.base_url}/sendMessage", json=fallback_payload, timeout=10)
+                if fb_resp.status_code == 200:
+                    logger.info("텔레그램 메시지 일반 텍스트 폴백 전송 성공")
+                    return True
+                logger.error(f"텔레그램 폴백 전송 실패 [{fb_resp.status_code}]: {fb_resp.text}")
                 return False
+
+            logger.error(f"텔레그램 전송 실패 [{response.status_code}]: {response.text}")
+            return False
         except requests.exceptions.RequestException as e:
             logger.error(f"텔레그램 메시지 전송 중 예외 발생: {e}")
             return False

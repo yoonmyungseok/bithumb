@@ -110,14 +110,36 @@ class GeminiAnalyzer:
     def _wait_for_rate_limit(cls) -> None:
         """
         무료 티어 분당 호출 한도(15 RPM)를 안전하게 준수하기 위해 연속 호출 간격을 스로틀링합니다.
+        락 점유 시간을 최소화하기 위해 대기 시간만 락 내부에서 계산하고 슬립은 락 외부에서 수행합니다.
         """
+        sleep_needed = 0.0
         with cls._CLASS_LOCK:
             now = time.time()
             elapsed = now - cls._LAST_CALL_TS
             if elapsed < cls._MIN_CALL_INTERVAL_SEC:
                 sleep_needed = cls._MIN_CALL_INTERVAL_SEC - elapsed
-                time.sleep(sleep_needed)
-            cls._LAST_CALL_TS = time.time()
+                cls._LAST_CALL_TS = now + sleep_needed
+            else:
+                cls._LAST_CALL_TS = now
+        if sleep_needed > 0:
+            time.sleep(sleep_needed)
+
+    @staticmethod
+    def _extract_text_from_response(res_json: dict[str, Any]) -> str | None:
+        """Gemini API 응답 JSON에서 안전하게 텍스트를 추출 (IndexError/KeyError 방어)"""
+        candidates = res_json.get("candidates")
+        if not isinstance(candidates, list) or not candidates:
+            return None
+        content = candidates[0].get("content")
+        if not isinstance(content, dict):
+            return None
+        parts = content.get("parts")
+        if not isinstance(parts, list) or not parts:
+            return None
+        first_part = parts[0]
+        if isinstance(first_part, dict) and "text" in first_part:
+            return str(first_part["text"]).strip()
+        return None
 
     @staticmethod
     def _record_http(
@@ -1027,7 +1049,9 @@ class GeminiAnalyzer:
                 self._record_http(model, market, response=response)
                 if response.status_code == 200:
                     res_json = response.json()
-                    raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    raw_text = self._extract_text_from_response(res_json)
+                    if not raw_text:
+                        raise ValueError(f"Gemini 응답에 유효한 텍스트가 없습니다: {res_json}")
                     logger.info(f"[{model}] Gemini 퀀트 분석 완료:\n{raw_text}")
 
                     try:
@@ -1176,7 +1200,9 @@ class GeminiAnalyzer:
                 self._record_http(model, "macro_or_batch", response=response)
                 if response.status_code == 200:
                     res_json = response.json()
-                    raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    raw_text = self._extract_text_from_response(res_json)
+                    if not raw_text:
+                        continue
                     try:
                         parsed = json.loads(raw_text)
                     except json.JSONDecodeError:

@@ -66,7 +66,7 @@ def calculate_risk_position_size(total_equity: float, entry_price: float, stop_l
     effective_loss_pct = max(0.008, stop_dist_pct + (2.0 * fee_rate) + slippage_rate)
     raw_position_krw = risk_capital / effective_loss_pct
     max_allowed_krw = min(total_equity * max_position_pct * scale, (total_equity / max(1, open_slots)) * scale)
-    if available_krw is not None and available_krw > 0:
-        max_allowed_krw = min(max_allowed_krw, available_krw)
+    if available_krw is not None:
+        max_allowed_krw = min(max_allowed_krw, max(0.0, float(available_krw)))
     final_krw = min(raw_position_krw, max_allowed_krw)
     return round(final_krw, 2) if final_krw >= min_order_krw else 0.0

@@ -66,7 +66,7 @@ BITHUMB_WATCHDOG_PROFILE = ExchangeWatchdogProfile(
     abnormal_exit_log_label="⚠️ [빗썸 봇 비정상 종료 감지]",
     crash_loop_alert_title="빗썸 봇 긴급 알림 - 연속 크래시 감지",
     crash_recovery_alert_title="빗썸 봇 비정상 종료 감지 & 자동 복구",
-    crash_recovery_process_line="업비트 봇 프로세스가 예기치 않게 종료되었습니다.",
+    crash_recovery_process_line="빗썸 봇 프로세스가 예기치 않게 종료되었습니다.",
     crash_restart_label="빗썸 봇",
     duplicate_lock_exit_delay_sec=3.0,
 )

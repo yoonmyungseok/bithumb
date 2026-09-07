@@ -11,8 +11,8 @@ import posixpath
 import stat
 import sys
 import time
+from typing import Any
 from dotenv import load_dotenv
-import paramiko
 
 # UTF-8 출력 보장
 if sys.platform == "win32":
@@ -27,7 +27,13 @@ def _project_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _get_ssh_client() -> tuple[paramiko.SSHClient, paramiko.SFTPClient, str]:
+def _get_ssh_client() -> tuple[Any, Any, str]:
+    try:
+        import paramiko
+    except ImportError:
+        print("❌ 'paramiko' 라이브러리가 설치되어 있지 않습니다. 원격 동기화를 위해 'pip install paramiko'를 실행해 주세요.")
+        sys.exit(1)
+
     load_dotenv(os.path.join(_project_root(), ".env"))
     host = os.getenv("REMOTE_SERVER_HOST", "100.72.97.0")
     port = int(os.getenv("REMOTE_SERVER_PORT", "22"))
@@ -46,7 +52,7 @@ def _get_ssh_client() -> tuple[paramiko.SSHClient, paramiko.SFTPClient, str]:
         sys.exit(1)
 
 
-def _sftp_makedirs(sftp: paramiko.SFTPClient, remote_dir: str):
+def _sftp_makedirs(sftp: Any, remote_dir: str):
     dirs_to_create = []
     current = remote_dir
     while current not in ("", "/", "."):
@@ -68,7 +74,7 @@ IGNORE_DIRS = {".git", "venv", "__pycache__", ".pytest_cache", ".idea", ".vscode
 IGNORE_FILES = {".DS_Store", "desktop.ini", ".watchdog.lock"}
 
 
-def sync_upload_folder(sftp: paramiko.SFTPClient, local_dir: str, remote_dir: str, folder_name: str) -> int:
+def sync_upload_folder(sftp: Any, local_dir: str, remote_dir: str, folder_name: str) -> int:
     local_path = os.path.join(local_dir, folder_name)
     remote_path = posixpath.join(remote_dir, folder_name.replace(os.sep, "/"))
 
@@ -116,7 +122,7 @@ def sync_upload_folder(sftp: paramiko.SFTPClient, local_dir: str, remote_dir: st
     return count
 
 
-def sync_download_folder(sftp: paramiko.SFTPClient, local_dir: str, remote_dir: str, folder_name: str) -> int:
+def sync_download_folder(sftp: Any, local_dir: str, remote_dir: str, folder_name: str) -> int:
     local_path = os.path.join(local_dir, folder_name)
     remote_path = posixpath.join(remote_dir, folder_name.replace(os.sep, "/"))
     os.makedirs(local_path, exist_ok=True)

@@ -301,6 +301,24 @@ class GeminiTelemetry:
             }
 
     @classmethod
+    def reset_for_test(cls) -> None:
+        """단위 테스트 격리를 위한 프로세스 내 카운터 초기화 및 디스크 상태 격리"""
+        import tempfile
+        with cls._lock:
+            cls._storage_path = os.path.join(tempfile.mkdtemp(), "gemini_telemetry_test.json")
+            cls._configured = True
+            cls._by_model.clear()
+            cls._api_calls = 0
+            cls._api_success = 0
+            cls._rate_limited = 0
+            cls._http_errors = 0
+            cls._list_models_calls = 0
+            cls._local_fallback = 0
+            cls._cache_hits = 0
+            cls._last_event_at = 0.0
+            cls._last_event = ""
+
+    @classmethod
     def configure(cls, data_dir: str | None = None) -> None:
         """데이터 디렉토리를 바인딩하고 당일 저장된 텔레메트리 복원"""
         with cls._lock:

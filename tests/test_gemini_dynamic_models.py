@@ -14,15 +14,14 @@ import requests
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 from gemini_analyzer import GeminiAnalyzer
+from gemini_telemetry import GeminiTelemetry
 
 
 class GeminiDynamicModelsTests(unittest.TestCase):
     def setUp(self):
-        # 테스트 격리를 위해 캐시 및 쿨다운 초기화
-        GeminiAnalyzer._CACHED_MODELS = []
-        GeminiAnalyzer._MODELS_CACHED_AT = 0.0
-        GeminiAnalyzer._MODEL_COOLDOWNS = {}
-        GeminiAnalyzer._MODEL_BLACKLIST = {}
+        # 테스트 격리를 위해 전체 AI 캐시, 쿨다운, 블랙리스트, 텔레메트리 초기화
+        GeminiAnalyzer.clear_caches()
+        GeminiTelemetry.reset_for_test()
 
     def test_model_priority_sorting(self):
         """Lite 최우선 및 최신 버전 우선순위 정렬 검증"""
