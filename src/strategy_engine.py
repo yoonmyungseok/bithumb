@@ -153,6 +153,8 @@ class StrategyPolicy:
     MOMENTUM_BREAKOUT_RS_MIN: float = 0.008
     MOMENTUM_BREAKOUT_MTF_EMA20_RATIO: float = 0.990
     MOMENTUM_BREAKOUT_ALLOC_RATIO: float = 0.25
+    # 모멘텀은 초입에서만 첫 주문을 허용한다. 확장 구간은 관찰·보유 관리용으로 남긴다.
+    MOMENTUM_EARLY_MAX_CHANGE_RATE: float = 0.030
 
     # 5. 거시 시장 리스크 및 거래소 비용
     BTC_CRASH_THRESHOLD_PCT: float = 0.015  # BTC 15분 -1.5% 급락 시 차단

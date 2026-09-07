@@ -207,6 +207,8 @@ class MarketEntryInputs:
     now_str: str
     audit_decision: Callable[[str, str, str, list[str], dict[str, Any]], None]
     allow_ai_analysis: bool = True
+    # 같은 5분 사이클의 상관된 후발 모멘텀 동시 추격을 막는 단일 신규 주문 슬롯이다.
+    momentum_entry_slot_available: bool = True
 
 
 @dataclass
@@ -252,6 +254,7 @@ class MarketBuyInputs:
     market: str
     korean_name: str
     candidate_type: str
+    momentum_phase: str
     entry_price: float
     target_price: float
     stop_loss: float
@@ -997,6 +1000,7 @@ class TradingCycleEngine:
         korean_name = market_inputs.korean_name
         candidate_type = market_inputs.candidate_type
         candidate_metadata = market_inputs.candidate_metadata
+        momentum_phase = str(candidate_metadata.get("momentum_phase", "CONFIRMED")).upper()
         analyzer = market_inputs.analyzer
         exchange = market_inputs.exchange
         coin_available = market_inputs.coin_available
@@ -1201,6 +1205,7 @@ class TradingCycleEngine:
                 is_night=night_session_active,
                 candidate_type=candidate_type,
                 entry_policy_mode="RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD",
+                momentum_phase=momentum_phase,
             )
         elif use_momentum_breakout:
             strategy = {
@@ -1317,6 +1322,15 @@ class TradingCycleEngine:
                 target_price = strategy.get("target_price") or selected_entry["target_price"]
                 stop_loss = strategy.get("stop_loss") or selected_entry["stop_loss"]
 
+        if candidate_type == "MOMENTUM_BREAKOUT" and not is_holding:
+            # 확장 구간은 분석·감사는 유지하되, 초입을 놓친 신규 추격 주문은 허용하지 않는다.
+            if momentum_phase != "EARLY":
+                action = "HOLD"
+                reason = f"모멘텀 확장 후반 신규 추격 차단(단계={momentum_phase}) | {reason}"
+            elif not market_inputs.momentum_entry_slot_available:
+                action = "HOLD"
+                reason = f"동일 5분 사이클 모멘텀 신규 주문 1건 제한 | {reason}"
+
         if is_holding:
             entry_price = avg_buy_price
             stop_loss = avg_buy_price * (1.0 - StrategyPolicy.STOP_LOSS_PCT)
@@ -1393,6 +1407,7 @@ class TradingCycleEngine:
             "reason": reason,
             "alpha_score": alpha_score_val,
             "policy_mode": "RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD",
+            "momentum_phase": momentum_phase,
             "allow_buy": allow_buy_val,
             "factor_breakdown": factor_breakdown,
             "target_pct": round(target_pct_val, 2),
@@ -1419,6 +1434,7 @@ class TradingCycleEngine:
                 "btc_regime": btc_regime,
                 "is_loss_recovery_mode": is_cooldown,
                 "candidate": candidate_metadata,
+                "momentum_phase": momentum_phase,
                 "local_checklist": selected_entry.get("checklist_details", {}),
                 "recovery_checklist": recovery_entry.get("recovery_checklist", {}),
             },
@@ -1699,6 +1715,8 @@ class TradingCycleEngine:
             "entry_reason": market_inputs.reason,
             "target_price": market_inputs.target_price,
             "stop_loss": stop_loss,
+            # 체결 이후에도 이 포지션이 초입 모멘텀 경로였음을 보존한다.
+            "momentum_phase": market_inputs.momentum_phase,
         })
         position_id = f"{buy_profile.exchange_name}:{market}:{int(time.time() * 1000)}"
         ctx.order_executor.submit(
@@ -1718,7 +1736,12 @@ class TradingCycleEngine:
             "BUY_SUBMITTED",
             "RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD",
             [],
-            {"order_price": order_price, "volume": formatted_volume, "trade_budget": trade_budget},
+            {
+                "order_price": order_price,
+                "volume": formatted_volume,
+                "trade_budget": trade_budget,
+                "momentum_phase": market_inputs.momentum_phase,
+            },
         )
 
         if buy_profile.render_buy_chart:
@@ -1786,6 +1809,8 @@ class TradingCycleEngine:
         else:
             ai_budget_remaining = max_ai_candidates
 
+        # 모멘텀 종목은 동조성이 높으므로 한 사이클에 초입 1개만 주문 경로로 보낸다.
+        momentum_entry_slot_available = True
         for market in target_markets:
             if self._should_skip_market(market, excluded_markets):
                 logger.warning(f"🛑 [보호 규칙 작동] 관리 제외 종목 ({market}) 분석 건너뜀")
@@ -1859,6 +1884,7 @@ class TradingCycleEngine:
                     now_str=now_str,
                     audit_decision=audit_decision,
                     allow_ai_analysis=allow_ai_for_market,
+                    momentum_entry_slot_available=momentum_entry_slot_available,
                 ))
                 if getattr(entry, "called_ai", False):
                     ai_budget_remaining = max(0, ai_budget_remaining - 1)
@@ -1881,11 +1907,16 @@ class TradingCycleEngine:
                 )):
                     continue
 
+                if entry.action == "BUY" and candidate_type == "MOMENTUM_BREAKOUT":
+                    # ACK 여부와 무관하게 같은 사이클의 복수 모멘텀 주문 제출을 막는다.
+                    momentum_entry_slot_available = False
+
                 if entry.action == "BUY" and self.process_buy_execution(MarketBuyInputs(
                     exchange=exchange,
                     market=market,
                     korean_name=korean_name,
                     candidate_type=candidate_type,
+                    momentum_phase=str(candidate_metadata.get("momentum_phase", "CONFIRMED")).upper(),
                     entry_price=entry.entry_price,
                     target_price=entry.target_price,
                     stop_loss=entry.stop_loss,

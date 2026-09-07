@@ -95,6 +95,30 @@ class MarketScreenerTests(unittest.TestCase):
         ).scan_markets(top_count=1)
         early = next(item for item in enabled if item["market"] == "KRW-EARLY")
         self.assertEqual(early["candidate_type"], "MOMENTUM_BREAKOUT")
+        self.assertEqual(early["momentum_phase"], "EARLY")
+
+    def test_extended_momentum_is_tagged_for_runtime_chase_block(self):
+        """상승 확장 구간 후보도 숨기지 않고 EXTENDED 단계로 전달해야 런타임이 신규 추격을 차단할 수 있다."""
+        class ExtendedMomentumAPI(FakeAPI):
+            def get_all_markets(self):
+                return [{"market": "KRW-BTC"}, {"market": "KRW-EXT"}]
+
+            def get_tickers(self, markets):
+                return [
+                    {"market": "KRW-BTC", "trade_price": "100000", "signed_change_rate": "0.0", "acc_trade_price_24h": "0"},
+                    {"market": "KRW-EXT", "trade_price": "1000", "signed_change_rate": "0.04", "acc_trade_price_24h": "5000000000"},
+                ]
+
+            def get_orderbook(self, market):
+                return {"orderbook_units": [{"ask_price": 1001.0, "bid_price": 1000.0, "bid_size": 30000.0}]}
+
+        selected = MarketScreener(
+            ExtendedMomentumAPI(), min_trade_value_krw=1, min_change_rate=0.01,
+            enable_early_breakout=True,
+        ).scan_markets(top_count=1)
+        extended = next(item for item in selected if item["market"] == "KRW-EXT")
+        self.assertEqual(extended["candidate_type"], "MOMENTUM_BREAKOUT")
+        self.assertEqual(extended["momentum_phase"], "EXTENDED")
 
 
 if __name__ == "__main__":

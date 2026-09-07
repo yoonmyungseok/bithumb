@@ -177,13 +177,17 @@ class MarketScreener:
 
                 # 확인형 후보는 기존 상승률 조건을 그대로 사용한다.
                 if self.min_change_rate <= change_rate <= self.max_change_rate:
-                    # [모멘텀 주도주 돌파] 모멘텀 돌파가 활성화되어 있고, 당일 상승 탄력이 강하면서(+3% 이상)
-                    # 비트코인 대비 독자 랠리(상대강도 RS >= +1.5%)를 펼치는 주도주는
-                    # 눌림목 잣대(%B/저점거리)로 거르지 않고 고점 돌파 로직(MOMENTUM_BREAKOUT)으로 진입하도록 분류한다.
+                    # 모멘텀은 상승률이 아니라 최초 포착 단계가 주문 시점을 결정한다.
+                    # 초입은 RS +0.8% 이상부터 별도 경로로 관찰해, +3% 이후의 후발 추격과 구분한다.
                     is_momentum_leader = (
                         self.enable_early_breakout
-                        and change_rate >= 0.030
-                        and relative_strength >= 0.015
+                        and change_rate >= self.early_breakout_min_change_rate
+                        and relative_strength >= StrategyPolicy.MOMENTUM_BREAKOUT_RS_MIN
+                    )
+                    momentum_phase = (
+                        "EARLY"
+                        if change_rate <= StrategyPolicy.MOMENTUM_EARLY_MAX_CHANGE_RATE
+                        else "EXTENDED"
                     )
 
                     # 상승 초입(+1.5% ~ +6.0%) 종목에 최고 가중치를 부여하고, 이미 많이 오른(+8% 초과) 종목은 감점
@@ -202,6 +206,8 @@ class MarketScreener:
                     score = ((effective_rate * 100.0) * momentum_multiplier * math.log10(max(1.0, acc_price_24h))) + rs_bonus
                     ticker_info["score"] = score
                     ticker_info["candidate_type"] = "MOMENTUM_BREAKOUT" if is_momentum_leader else "CONFIRMED"
+                    # 주문 엔진과 대시보드가 같은 진입 단계로 판단하도록 후보 메타데이터에만 추가한다.
+                    ticker_info["momentum_phase"] = momentum_phase if is_momentum_leader else "CONFIRMED"
                     ticker_info["is_held"] = False
                     qualified_candidates.append(ticker_info)
                     continue
@@ -216,6 +222,7 @@ class MarketScreener:
                     early_score = (change_rate * 100.0 * math.log10(max(1.0, acc_price_24h))) + max(0.0, relative_strength * 80.0)
                     ticker_info["score"] = early_score
                     ticker_info["candidate_type"] = "MOMENTUM_BREAKOUT"
+                    ticker_info["momentum_phase"] = "EARLY"
                     ticker_info["is_held"] = False
                     early_breakout_candidates.append(ticker_info)
 

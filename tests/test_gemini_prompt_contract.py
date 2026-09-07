@@ -51,6 +51,7 @@ class TestGeminiEntryPromptContract(unittest.TestCase):
             avg_buy_price=0.0,
             candidate_type="MOMENTUM_BREAKOUT",
             entry_policy_mode="STANDARD",
+            momentum_phase="EXTENDED",
         )
 
         sent_prompt = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
@@ -59,6 +60,8 @@ class TestGeminiEntryPromptContract(unittest.TestCase):
         self.assertIn("반대 근거", sent_prompt)
         self.assertIn("무효화 조건", sent_prompt)
         self.assertIn("MOMENTUM_BREAKOUT", sent_prompt)
+        self.assertIn("모멘텀 단계: EXTENDED", sent_prompt)
+        self.assertIn("신규 BUY는 EARLY 단계에서만", sent_prompt)
         self.assertIn("RECOVERY_REBOUND", sent_prompt)
         self.assertIn('"ALPHA_SCORE"', sent_prompt)
         self.assertIn('"REASON"', sent_prompt)

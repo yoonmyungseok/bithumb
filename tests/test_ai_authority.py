@@ -181,6 +181,38 @@ class AIAuthorityTests(unittest.TestCase):
             self.assertEqual(res.target_price, 1050.0)
             self.assertEqual(res.stop_loss, 970.0)
 
+    def test_extended_momentum_buy_is_blocked_after_local_and_ai_approval(self):
+        """확장 후반 후보는 로컬·AI가 BUY여도 신규 추격 주문으로 바뀌면 안 된다."""
+        self.mock_analyzer.analyze.return_value = {
+            "status": "ACTIVE", "action": "BUY", "entry_price": 1000.0,
+            "target_price": 1040.0, "stop_loss": 980.0, "alloc_pct": 0.1,
+            "reason": "[gemini-3.5-flash-lite] 모멘텀 확인", "alpha_score": 90,
+        }
+        inputs = MarketEntryInputs(
+            exchange=self.mock_exchange, market="KRW-TEST", korean_name="테스트",
+            candidate_type="MOMENTUM_BREAKOUT",
+            candidate_metadata={"candidate_type": "MOMENTUM_BREAKOUT", "momentum_phase": "EXTENDED", "acc_trade_price_24h": 5_000_000_000.0},
+            analyzer=self.mock_analyzer, coin_available=0.0, avg_buy_price=0.0,
+            current_price=1000.0, coin_value=0.0, krw_available=100000.0,
+            candles_5m=[{"trade_price": 1000.0, "opening_price": 995.0} for _ in range(25)],
+            candles_1h=[{"trade_price": 1000.0} for _ in range(20)],
+            orderbook={"orderbook_units": []}, btc_regime="NORMAL", btc_status_msg="정상",
+            is_btc_crashing=False, is_cooldown=False, is_extreme_fear=False,
+            is_bot_paused=False, is_kill_switch=False, is_entry_ready=True,
+            dyn_max_pos_pct=0.35, now_str="2026-09-07 14:00:00", audit_decision=MagicMock(),
+        )
+        self.mock_ctx.ws_client.get_health_status.return_value = {"is_healthy": True}
+        self.mock_ctx.decision_db.has_recovery_entry_since.return_value = False
+        with patch("trading_runtime.select_completed_candles", side_effect=lambda c, **kw: c), \
+             patch("trading_runtime.entry_signal", return_value={
+                 "allow_buy": True, "reason": "확정봉 돌파 통과", "alpha_score": 90,
+                 "entry_price": 1000.0, "target_price": 1040.0, "stop_loss": 980.0,
+             }):
+            result = self.runtime.process_entry_gating(inputs)
+
+        self.assertEqual(result.action, "HOLD")
+        self.assertIn("확장 후반 신규 추격 차단", result.reason)
+
 
     def test_time_stop_bypassed_when_ai_holds_position(self):
         """

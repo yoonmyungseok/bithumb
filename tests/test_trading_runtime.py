@@ -517,6 +517,7 @@ class TradingRuntimePrefixTests(unittest.TestCase):
             market="KRW-XRP",
             korean_name="리플",
             candidate_type="CONFIRMED",
+            momentum_phase="CONFIRMED",
             entry_price=100.0,
             target_price=110.0,
             stop_loss=95.0,

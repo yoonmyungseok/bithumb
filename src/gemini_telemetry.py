@@ -254,29 +254,34 @@ class GeminiTelemetry:
 
     @classmethod
     def can_call_model(cls, model: str, for_emergency_exit: bool = False) -> bool:
-        """특정 모델 쿼터 그룹의 일일 HTTP 시도 횟수 기반 가드"""
+        """
+        특정 모델 쿼터 그룹의 일일 HTTP 시도 횟수 기반 가드:
+        - 모델별 일일 한도(limit) 대비 안전 마진(평시 85%, 긴급 95%) 초과 시 호출 차단
+        - Flash-Lite (500 RPD): 평시 425회, 긴급 475회
+        - 일반 Flash (20 RPD): 평시 17회, 긴급 19회
+        """
         with cls._lock:
             cls._ensure_configured_locked()
             cls._check_and_rollover()
             bucket = quota_bucket_for_model(model)
-            m_calls = cls._bucket_call_count_locked(bucket)
-            threshold = 490 if for_emergency_exit else 450
             limit = quota_limit_for_bucket(bucket)
             if limit <= 0:
                 return True
+            m_calls = cls._bucket_call_count_locked(bucket)
+            threshold = int(limit * 0.95) if for_emergency_exit else int(limit * 0.85)
             return m_calls < threshold
 
     @classmethod
     def can_make_api_call(cls, for_emergency_exit: bool = False) -> bool:
         """
         일일 쿼터(Flash-Lite 2개 모델 각 500회 = 총 1,000 RPD) 예산 가드:
-        - 신규 매수 분석: 당일 총 HTTP 시도 < 900회 (90%) 일 때 허용
-        - 긴급 탈출/비상 대응: 당일 총 HTTP 시도 < 980회 (98%) 일 때 허용
+        - 신규 매수 분석: 당일 총 HTTP 시도 < 850회 (85%) 일 때 허용 (Google 429 선제 차단)
+        - 긴급 탈출/비상 대응: 당일 총 HTTP 시도 < 950회 (95%) 일 때 허용
         """
         with cls._lock:
             cls._ensure_configured_locked()
             cls._check_and_rollover()
-            threshold = int(cls._quota_limit * 0.98) if for_emergency_exit else int(cls._quota_limit * 0.90)
+            threshold = int(cls._quota_limit * 0.95) if for_emergency_exit else int(cls._quota_limit * 0.85)
             return cls._api_calls < threshold
 
     @classmethod

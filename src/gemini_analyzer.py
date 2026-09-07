@@ -98,9 +98,9 @@ class GeminiAnalyzer:
             cls._HOLDING_EVAL_CACHE.clear()
             cls._ANALYSIS_CACHE.clear()
 
-    # 무료 티어 15 RPM(분당 15회) 준수를 위한 최소 호출 간격 제어
+    # 무료 티어 15 RPM(분당 15회) 준수를 위한 최소 호출 간격 제어 (최대 10 RPM으로 33% 안전 마진 확보)
     _LAST_CALL_TS: ClassVar[float] = 0.0
-    _MIN_CALL_INTERVAL_SEC: ClassVar[float] = 3.5  # 최소 3.5초 간격 유지 (최대 ~17 RPM 수준으로 억제)
+    _MIN_CALL_INTERVAL_SEC: ClassVar[float] = 6.0  # 최소 6.0초 간격 유지 (최대 10 RPM 수준으로 억제)
 
     # 전 모델 쿨다운 시 경고 로그 중복 폭발 억제 (3분당 최대 1회 경고)
     _LAST_ALL_COOLDOWN_LOG_TS: ClassVar[float] = 0.0
@@ -280,20 +280,18 @@ class GeminiAnalyzer:
             active_models = [m for m in cls._CACHED_MODELS if cls._MODEL_BLACKLIST.get(m, 0.0) <= now]
             return active_models if active_models else list(cls.FALLBACK_MODELS)
 
-    def get_candidate_models(self, limit: int = 2) -> list[str]:
+    def get_candidate_models(self, limit: int = 2, for_emergency_exit: bool = False) -> list[str]:
         """
-        현재 시점에 쿨다운이나 블랙리스트가 아니고, 모델별 일일 쿼터(500 RPD) 여유가 있는 최우선 순위 모델 목록을 최대 limit개 반환합니다.
+        현재 시점에 쿨다운이나 블랙리스트가 아니고, 모델별 일일 쿼터 여유가 있는 최우선 순위 모델 목록을 최대 limit개 반환합니다.
+        - 모델별 일일 한도(85% 안전선) 도달 시 Google 429 에러 방지를 위해 빈 리스트 []를 반환합니다 (하드 컷오프).
         """
         now_ts = time.time()
         with self._CLASS_LOCK:
             all_models = self.get_available_models(self.api_key)
             usable = [m for m in all_models if self._MODEL_COOLDOWNS.get(m, 0.0) <= now_ts]
-            # 모델별 일일 쿼터(500회)가 남아있는 모델을 최우선 배치
-            quota_available = [m for m in usable if GeminiTelemetry.can_call_model(m, for_emergency_exit=False)]
-            if quota_available:
-                ordered = quota_available + [m for m in usable if m not in quota_available]
-                return ordered[:limit]
-            return usable[:limit]
+            # 모델별 일일 쿼터(Flash-Lite 425회 / 일반 Flash 17회) 여유가 있는 모델만 선별
+            quota_available = [m for m in usable if GeminiTelemetry.can_call_model(m, for_emergency_exit=for_emergency_exit)]
+            return quota_available[:limit]
 
     @classmethod
     def fetch_available_briefing_models(cls, api_key: str = "") -> list[str]:
@@ -370,24 +368,28 @@ class GeminiAnalyzer:
 
     def get_briefing_candidate_models(self, limit: int = 5) -> list[str]:
         """
-        현재 시점에 쿨다운이나 블랙리스트가 아닌 브리핑 최우선 순위 모델 목록을 최대 limit개 반환합니다.
-        (Pro 모델 완전 제외, 3.8-flash 최우선 ➜ 3.7 ➜ 3.6 ➜ 3.5 ➜ 3-flash ➜ 3.5-flash-lite 순차 폴백)
+        현재 시점에 쿨다운이나 블랙리스트가 아니고, 일일 쿼터 여유가 있는 브리핑 최우선 순위 모델 목록을 최대 limit개 반환합니다.
+        (Pro 모델 완전 제외, 3.8-flash ➜ 3.7 ➜ 3.6 ➜ 3.5 ➜ 3-flash ➜ 3.5-flash-lite 순차 폴백)
         """
         now_ts = time.time()
         with self._CLASS_LOCK:
             all_models = self.get_available_briefing_models(self.api_key)
             usable = [
                 m for m in all_models
-                if self._MODEL_COOLDOWNS.get(m, 0.0) <= now_ts and "pro" not in m.lower()
+                if self._MODEL_COOLDOWNS.get(m, 0.0) <= now_ts
+                and "pro" not in m.lower()
+                and GeminiTelemetry.can_call_model(m, for_emergency_exit=False)
             ]
             if usable:
                 return usable[:limit]
-            # 쿨다운 중이더라도 블랙리스트가 아닌 fallback 모델 반환
+            # 쿨다운/블랙리스트가 아니고 쿼터가 남아있는 fallback 모델 반환
             fallback_usable = [
                 m for m in self.BRIEFING_FALLBACK_MODELS
-                if self._MODEL_BLACKLIST.get(m, 0.0) <= now_ts and "pro" not in m.lower()
+                if self._MODEL_BLACKLIST.get(m, 0.0) <= now_ts
+                and "pro" not in m.lower()
+                and GeminiTelemetry.can_call_model(m, for_emergency_exit=False)
             ]
-            return fallback_usable[:limit] if fallback_usable else list(self.BRIEFING_FALLBACK_MODELS[:limit])
+            return fallback_usable[:limit]
 
     @property
     def _analysis_cache(self) -> dict[str, dict[str, Any]]:
@@ -762,6 +764,7 @@ class GeminiAnalyzer:
         is_night: bool | None = None,
         candidate_type: str = "CONFIRMED",
         entry_policy_mode: str = "STANDARD",
+        momentum_phase: str = "CONFIRMED",
     ) -> dict[str, Any]:
         """
         [7대 팩터 앙상블 + VWAP + MACD 가속도 + MTF + 상대강도(RS) + 호가수급 + ATR 변동성] 퀀트 분석 엔진 v5.1
@@ -781,9 +784,10 @@ class GeminiAnalyzer:
         night_active = is_night if is_night is not None else is_night_session()
         normalized_candidate_type = str(candidate_type or "CONFIRMED").upper()
         normalized_policy_mode = str(entry_policy_mode or "STANDARD").upper()
+        normalized_momentum_phase = str(momentum_phase or "CONFIRMED").upper()
         cache_key = (
             f"{market}:{candle_ts or time_slot}:{regime_upper}:"
-            f"{int(night_active)}:{normalized_candidate_type}:{normalized_policy_mode}"
+            f"{int(night_active)}:{normalized_candidate_type}:{normalized_policy_mode}:{normalized_momentum_phase}"
         )
         if hasattr(self, "_analysis_cache") and cache_key in self._analysis_cache:
             cached_entry = self._analysis_cache[cache_key]
@@ -886,7 +890,8 @@ class GeminiAnalyzer:
                 f"거래량이 최근 20봉 평균의 {StrategyPolicy.MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN:.1f}배 이상, 양봉, "
                 f"RSI {StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MIN:.0f}~{StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MAX:.0f}, "
                 f"1시간 EMA20의 {StrategyPolicy.MOMENTUM_BREAKOUT_MTF_EMA20_RATIO:.3f}배 이상을 모두 충족해야 합니다. "
-                f"초기 주문 비중은 최대 종목 비중의 {StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO * 100:.0f}%를 넘지 않습니다."
+                f"초기 주문 비중은 최대 종목 비중의 {StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO * 100:.0f}%를 넘지 않습니다. "
+                f"현재 단계는 {normalized_momentum_phase}이며, 신규 BUY는 EARLY 단계에서만 가능합니다."
             )
         elif normalized_policy_mode == "RECOVERY_REBOUND":
             current_alpha_threshold = max(
@@ -934,7 +939,7 @@ class GeminiAnalyzer:
 
 ### [0-1. 이번 요청의 실행 정책 — AI가 절대 우회할 수 없음]
 - BTC 레짐: {regime_upper} | 심야 세션(00:00~07:00 KST): {'예' if night_active else '아니오'}
-- 후보 유형: {normalized_candidate_type} | 정책 경로: {normalized_policy_mode}
+- 후보 유형: {normalized_candidate_type} | 모멘텀 단계: {normalized_momentum_phase} | 정책 경로: {normalized_policy_mode}
 - 현재 알파 승인 기준: {current_alpha_threshold}점 이상
 - 경로 조건: {policy_details}
 - AI의 판단은 주문 권한이 아닙니다. 로컬 하드 게이트, 주문 REST 대사 완료, WebSocket 정상, 종목별 쿨다운, 미해결 주문 부재, 리스크 한도, 호가 영향 검증 중 하나라도 불충족하면 시스템은 BUY를 제출하지 않습니다.
@@ -1223,7 +1228,8 @@ class GeminiAnalyzer:
 
         # 손익률 상태에 따른 적응형 스마트 캐시 (횡보 시 900초, 급락/급등 시 60초)
         pnl_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100.0 if avg_buy_price > 0 else 0.0
-        adaptive_ttl = 60.0 if (pnl_pct <= -1.0 or pnl_pct >= 1.5) else 900.0
+        # -2.0% 이하 급락 위기 또는 +2.0% 이상 급등 랠리 시에만 60초 단기 재진단, 평시 횡보 구간(-2.0% ~ +2.0%)은 900초(15분) 캐시 적용
+        adaptive_ttl = 60.0 if (pnl_pct <= -2.0 or pnl_pct >= 2.0) else 900.0
 
         cache_key = f"HOLDING:{market}"
         if hasattr(self, "_holding_eval_cache") and cache_key in self._holding_eval_cache:
@@ -1232,9 +1238,15 @@ class GeminiAnalyzer:
                 GeminiTelemetry.record_cache_hit(market)
                 return dict(cached["result"])
 
-        # 일일 비상 쿼터 가드 (490회 초과 시 긴급 탈출 AI 호출 중단 및 로컬 유지)
+        # 일일 비상 쿼터 가드 (안전 한도 도달 시 긴급 탈출 AI 호출 차단 및 로컬 유지)
         if hasattr(GeminiTelemetry, "can_make_api_call") and not GeminiTelemetry.can_make_api_call(for_emergency_exit=True):
-            logger.info(f"[{market}] 🛑 Gemini AI 일일 비상 쿼터(490회) 도달 ➜ 기보유 포지션 로컬 룰 유지")
+            logger.info(f"[{market}] 🛑 Gemini AI 일일 비상 쿼터 한도 도달 ➜ 기보유 포지션 로컬 룰 유지")
+            return fallback_res
+
+        # 사용 가능한 모델 확인 (일일 쿼터 소진 시 즉시 로컬 룰 유지 및 429 원천 방지)
+        holding_models = self.get_candidate_models(limit=2, for_emergency_exit=True)
+        if not holding_models:
+            logger.info(f"[{market}] 🛑 Gemini AI 가용 모델(쿼터 여유) 없음 ➜ 기보유 포지션 로컬 룰 유지")
             return fallback_res
 
         try:
@@ -1286,7 +1298,7 @@ class GeminiAnalyzer:
   "CONFIDENCE": 85
 }}
 """
-            parsed = self._call_gemini_json(prompt, timeout=8.0)
+            parsed = self._call_gemini_json(prompt, candidate_models=holding_models, timeout=8.0)
             if isinstance(parsed, dict):
                 act = str(parsed.get("ACTION", "HOLD")).upper()
                 if act not in ("HOLD", "EMERGENCY_EXIT", "RUNNER_HOLD", "TIGHTEN_STOP"):
