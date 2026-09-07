@@ -1,6 +1,4 @@
-import json
 import logging
-import math
 import os
 import re
 import threading
@@ -9,28 +7,77 @@ from typing import Any, ClassVar
 
 import requests
 
+from ai_provider import AIProvider, GeminiProvider
 from gemini_telemetry import GeminiTelemetry
 from strategy_engine import (
     StrategyPolicy,
-    calculate_atr as se_calculate_atr,
-    calculate_bollinger_bands as se_calculate_bollinger_bands,
-    calculate_composite_alpha_score as se_calculate_composite_alpha_score,
-    calculate_ema as se_calculate_ema,
-    calculate_macd as se_calculate_macd,
-    calculate_macd_acceleration as se_calculate_macd_acceleration,
-    calculate_rsi as se_calculate_rsi,
-    calculate_vwap as se_calculate_vwap,
     get_alpha_buy_threshold,
     get_momentum_breakout_alpha_threshold,
     is_night_session,
+)
+from strategy_engine import (
+    calculate_atr as se_calculate_atr,
+)
+from strategy_engine import (
+    calculate_bollinger_bands as se_calculate_bollinger_bands,
+)
+from strategy_engine import (
+    calculate_ema as se_calculate_ema,
+)
+from strategy_engine import (
+    calculate_macd as se_calculate_macd,
+)
+from strategy_engine import (
+    calculate_macd_acceleration as se_calculate_macd_acceleration,
+)
+from strategy_engine import (
+    calculate_rsi as se_calculate_rsi,
+)
+from strategy_engine import (
+    calculate_vwap as se_calculate_vwap,
 )
 
 logger = logging.getLogger(__name__)
 
 
+# Groq strict JSON Schema와 분석기 공통 응답 검증에 사용하는 계약이다.
+ENTRY_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False,
+    "required": ["STATUS", "ACTION", "ENTRY_PRICE", "TARGET_PRICE", "STOP_LOSS", "ALLOC_PCT", "ALPHA_SCORE", "REASON"],
+    "properties": {
+        "STATUS": {"type": "string"}, "ACTION": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+        "ENTRY_PRICE": {"type": "number"}, "TARGET_PRICE": {"type": "number"}, "STOP_LOSS": {"type": "number"},
+        "ALLOC_PCT": {"type": "number"}, "ALPHA_SCORE": {"type": "integer"}, "REASON": {"type": "string"},
+    },
+}
+HOLDING_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False,
+    "required": ["ACTION", "ADJUSTED_TARGET_PRICE", "ADJUSTED_STOP_LOSS", "CONFIDENCE", "REASON"],
+    "properties": {
+        "ACTION": {"type": "string", "enum": ["EMERGENCY_EXIT", "RUNNER_HOLD", "TIGHTEN_STOP", "HOLD"]},
+        "ADJUSTED_TARGET_PRICE": {"type": "number"}, "ADJUSTED_STOP_LOSS": {"type": "number"},
+        "CONFIDENCE": {"type": "integer"}, "REASON": {"type": "string"},
+    },
+}
+RANKING_JSON_SCHEMA: dict[str, Any] = {
+    "type": "array", "items": {"type": "object", "additionalProperties": False,
+        "required": ["market", "rank", "tier", "score", "reason"],
+        "properties": {"market": {"type": "string"}, "rank": {"type": "integer"}, "tier": {"type": "string"}, "score": {"type": "number"}, "reason": {"type": "string"}}},
+}
+MACRO_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False,
+    "required": ["regime", "risk_score", "recommended_cash_ratio", "summary", "action_guideline"],
+    "properties": {
+        "regime": {"type": "string", "enum": ["BULL_TREND", "NORMAL", "CAUTION_PULLBACK", "BEAR_REGIME", "CRASH"]},
+        "risk_score": {"type": "integer"}, "recommended_cash_ratio": {"type": "number"},
+        "summary": {"type": "string"}, "action_guideline": {"type": "string"},
+    },
+}
+
+
 class GeminiAnalyzer:
     """
-    Google Gemini API 연동 프로 퀀트 트레이딩 분석 엔진 v5.0
+    AI Provider 연동 프로 퀀트 트레이딩 분석 엔진 v5.0
     - [7대 복합 팩터 앙상블]: MTF 1H + VWAP + MACD 가속도 + RSI + 볼린저 + 수급/오더북 + 볼륨 스파이크
     - [MTF 3중 정렬]: 1시간봉 대세 추세 + 5분봉 정밀 진입 타점 동시 분석
     - [VWAP 기관 수급 & MACD 가속도]: 스마트 머니 평단가 지지 및 모멘텀 확장 구간 정밀 포착
@@ -441,9 +488,16 @@ class GeminiAnalyzer:
     def _last_macro_diag_ts(self, value: float) -> None:
         self.__class__._LAST_MACRO_DIAG_TS = value
 
-    def __init__(self, api_key: str = ""):
-        self.api_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
+    def __init__(self, api_key: str = "", provider: AIProvider | None = None):
+        # 기존 공개 생성자 계약은 유지하되, 빗썸은 Provider가 자격증명을 내부에만 보관한다.
+        self.provider: AIProvider = provider or GeminiProvider((api_key or os.getenv("GEMINI_API_KEY", "")).strip())
+        self.api_key = "provider-configured" if provider is not None else (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
         self._lock = threading.RLock()
+
+    @property
+    def provider_label(self) -> str:
+        """실행 로그는 실제 호출 Provider명을 표시해 거래소별 혼동을 막는다."""
+        return "Groq" if self.provider.name == "groq" else "Gemini"
 
     @staticmethod
     def calculate_rsi(prices: list[float], period: int = 14) -> float:
@@ -625,13 +679,13 @@ class GeminiAnalyzer:
         latest = candles[0]
         o = float(latest.get("opening_price", 0.0))
         h = float(latest.get("high_price", 0.0))
-        l = float(latest.get("low_price", 0.0))
+        low_price = float(latest.get("low_price", 0.0))
         c = float(latest.get("trade_price", 0.0))
 
-        total_range = h - l if h > l else 0.0001
+        total_range = h - low_price if h > low_price else 0.0001
         body = abs(c - o)
         upper_wick = h - max(c, o)
-        lower_wick = min(c, o) - l
+        lower_wick = min(c, o) - low_price
 
         upper_ratio = (upper_wick / total_range) * 100
         lower_ratio = (lower_wick / total_range) * 100
@@ -792,7 +846,7 @@ class GeminiAnalyzer:
         [7대 팩터 앙상블 + VWAP + MACD 가속도 + MTF + 상대강도(RS) + 호가수급 + ATR 변동성] 퀀트 분석 엔진 v5.1
         """
         if not self.api_key:
-            logger.warning("Gemini API Key가 설정되지 않았습니다.")
+            logger.warning("%s API 키가 설정되지 않았습니다.", self.provider_label)
             return {"status": "PAUSE", "action": "HOLD", "reason": "API Key 누락"}
 
         # 0. 동일 5분봉 캔들 분석 캐시 검사 (재시작 및 5분 이내 중복 API 호출 낭비 원천 차단)
@@ -814,7 +868,7 @@ class GeminiAnalyzer:
         if hasattr(self, "_analysis_cache") and cache_key in self._analysis_cache:
             cached_entry = self._analysis_cache[cache_key]
             if (time.time() - float(cached_entry.get("cached_at", 0))) < 540.0:
-                logger.info(f"⚡ [{market}] 동일 5분봉 AI 분석 캐시 재사용 (Gemini 중복 호출 생략, 쿼터 보존)")
+                logger.info(f"⚡ [{market}] 동일 5분봉 AI 분석 캐시 재사용 ({self.provider_label} 중복 호출 생략, 쿼터 보존)")
                 GeminiTelemetry.record_cache_hit(market)
                 return dict(cached_entry["result"])
 
@@ -824,7 +878,6 @@ class GeminiAnalyzer:
         # 1. 종합 기술 지표 및 신규 알파 팩터 연산
         rsi_val = self.calculate_rsi(close_prices, 14) if close_prices else 50.0
         bb = self.calculate_bollinger_bands(close_prices, 20, 2.0)
-        macd = self.calculate_macd(close_prices, 12, 26, 9)
         macd_acc = self.calculate_macd_acceleration(close_prices, 12, 26, 9)
         vwap_info = self.calculate_vwap(candles)
         vol_info = self.analyze_volume_spike(candles)
@@ -873,7 +926,7 @@ class GeminiAnalyzer:
         dynamic_sl = min(support_sl, atr_sl, current_price * 0.985)
 
         # 5. 일일 쿼터 예산 가드 (당일 450회 초과 시 신규 매수 AI 차단 및 로컬 100% 전환)
-        if hasattr(GeminiTelemetry, "can_make_api_call") and not GeminiTelemetry.can_make_api_call(for_emergency_exit=False):
+        if self.provider.name == "gemini" and hasattr(GeminiTelemetry, "can_make_api_call") and not GeminiTelemetry.can_make_api_call(for_emergency_exit=False):
             logger.info(f"[{market}] 🛑 일일 Gemini AI 쿼터 예산(450회) 도달 ➜ [로컬 퀀트 알고리즘 엔진]으로 안전 전환 (긴급 탈출 쿼터 보존)")
             GeminiTelemetry.record_local_fallback(market, "daily quota budget reached (450)")
             return self._run_local_quant_engine(
@@ -882,10 +935,13 @@ class GeminiAnalyzer:
                 vwap_info=vwap_info, macd_acc=macd_acc
             )
 
-        # 6. 동적 모델 라우터 및 쿨다운/블랙리스트 검사 (Flash-Lite 최우선 후보 3개 선정)
-        candidate_models = self.get_candidate_models(limit=3)
+        # 6. Provider별 모델 선택: Groq FAST는 20B 한 모델만 허용하고 승격하지 않는다.
+        candidate_models = self.provider.models_for("trading") or self.get_candidate_models(limit=3)
 
         if not candidate_models:
+            if self.provider.is_entry_fail_closed:
+                return {"status": "PAUSE", "action": "HOLD", "entry_price": current_price, "target_price": dynamic_tp,
+                        "stop_loss": dynamic_sl, "alloc_pct": 0.0, "reason": "Groq FAST_TRADING 모델 구성 오류로 신규 BUY 차단", "alpha_score": 0}
             now_ts = time.time()
             with self._CLASS_LOCK:
                 should_log_warning = (now_ts - self._LAST_ALL_COOLDOWN_LOG_TS) > self._ALL_COOLDOWN_LOG_INTERVAL_SEC
@@ -1030,134 +1086,58 @@ class GeminiAnalyzer:
 }}
 """
 
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.1,
-                "topP": 0.8,
-                "maxOutputTokens": 4000,
-                "responseMimeType": "application/json",
-            },
-        }
-
-        last_error = ""
-        for model in candidate_models:
-            endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
-            try:
-                self._wait_for_rate_limit()
-                response = requests.post(endpoint, json=payload, timeout=25)
-                self._record_http(model, market, response=response)
-                if response.status_code == 200:
-                    res_json = response.json()
-                    raw_text = self._extract_text_from_response(res_json)
-                    if not raw_text:
-                        raise ValueError(f"Gemini 응답에 유효한 텍스트가 없습니다: {res_json}")
-                    logger.info(f"[{model}] Gemini 퀀트 분석 완료:\n{raw_text}")
-
-                    try:
-                        parsed = json.loads(raw_text)
-                    except json.JSONDecodeError:
-                        json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
-                        if json_match:
-                            parsed = json.loads(json_match.group(0))
-                        else:
-                            raise ValueError(f"JSON 디코딩 실패 (원문: {raw_text[:100]})")
-
-                    status = str(parsed.get("STATUS", "ACTIVE")).upper()
-                    action = str(parsed.get("ACTION", "HOLD")).upper()
-                    entry_p = float(parsed.get("ENTRY_PRICE", current_price))
-                    target_p = float(parsed.get("TARGET_PRICE", 0.0))
-                    stop_l = float(parsed.get("STOP_LOSS", 0.0))
-                    alloc_p = float(parsed.get("ALLOC_PCT", 0.3))
-                    reason_t = str(parsed.get("REASON", "Gemini 퀀트 분석"))
-
-                    if entry_p <= 0:
-                        entry_p = current_price
-                    if target_p <= 0:
-                        target_p = dynamic_tp
-                    if stop_l <= 0:
-                        stop_l = dynamic_sl
-
-                    if action == "BUY":
-                        # 단기 과열 하드 가드레일 (Safe Guardrail: 상투 잡기 원천 방어)
-                        overheat_reasons = []
-                        if rsi_val > 65.0:
-                            overheat_reasons.append(f"RSI과열({rsi_val:.1f}>65.0)")
-                        pct_b_val = float(bb.get("pct_b", 0.5))
-                        if pct_b_val > 0.88:
-                            overheat_reasons.append(f"볼린저상단이탈(%B {pct_b_val:.2f}>0.88)")
-                        if disparity_ma20 > 103.5:
-                            overheat_reasons.append(f"MA20이격과열({disparity_ma20:.1f}%>103.5%)")
-                        t_power_val = float(trade_strength.get("trade_power_pct", 100.0))
-                        if t_power_val > 350.0:
-                            overheat_reasons.append(f"체결강도비정상과열({t_power_val:.0f}%>350%)")
-
-                        if overheat_reasons:
-                            logger.warning(
-                                f"🛡️ [{market}] AI 매수 신호에 과열 가드레일 작동 ➜ HOLD 강제 전환: {', '.join(overheat_reasons)}"
-                            )
-                            action = "HOLD"
-                            alloc_p = 0.0
-                            reason_t = f"[과열 가드레일 작동: HOLD 강제 전환 ({', '.join(overheat_reasons)})] {reason_t}"
-                        else:
-                            if target_p <= current_price:
-                                target_p = dynamic_tp
-                            if stop_l >= current_price or stop_l <= 0:
-                                stop_l = dynamic_sl
-                            reward = target_p - current_price
-                            risk = current_price - stop_l
-                            if risk > 0 and (reward / risk) < 1.3:
-                                target_p = current_price + (risk * 1.5)
-
-                    if alloc_p > 1.0:
-                        alloc_p = alloc_p / 100.0
-
-                    if action == "HOLD":
-                        alloc_p = 0.0
-                    elif action == "BUY":
-                        alloc_p = max(0.1, min(alloc_p, 1.0)) if alloc_p > 0 else 0.5
-                    elif action == "SELL":
-                        alloc_p = max(0.1, min(alloc_p, 1.0)) if alloc_p > 0 else 1.0
-
-                    alpha_sc = int(parsed.get("ALPHA_SCORE") or parsed.get("alpha_score", 0) or 0)
-                    res = {
-                        "status": status,
-                        "action": action,
-                        "entry_price": entry_p,
-                        "target_price": target_p,
-                        "stop_loss": stop_l,
-                        "alloc_pct": alloc_p,
-                        "reason": f"[{model}] {reason_t}",
-                        "alpha_score": alpha_sc,
-                    }
-                    if hasattr(self, "_analysis_cache") and cache_key:
-                        self._analysis_cache[cache_key] = {"cached_at": time.time(), "result": res}
-                    return res
-                elif response.status_code == 429:
-                    self._set_model_cooldown(model, 120.0)  # 무료 티어 RPM 리셋을 고려하여 2분(120초) 쿨다운
-                    last_error = f"[{model}] 429 Quota Exceeded (2분 쿨다운 등록)"
-                    logger.warning(f"⚠️ 모델 '{model}' 429 Quota Exceeded 발생 ➜ 2분간 재호출 차단 쿨다운 등록")
-                elif response.status_code in (404, 400):
-                    # 모델 지원 종료(Deprecated) 또는 부존재 ➜ 24시간 블랙리스트 등록 (자기 치유)
-                    self._set_model_blacklist(model, 86400.0)
-                    last_error = f"[{model}] HTTP {response.status_code} Unsupported/Deprecated (24시간 블랙리스트 격리)"
-                    logger.warning(f"⛔ 모델 '{model}' 지원 종료 또는 부존재 감지(HTTP {response.status_code}) ➜ 24시간 블랙리스트 격리")
+        provider_result = self.provider.complete_json(
+            prompt, candidate_models, ENTRY_JSON_SCHEMA, context=market, timeout=25.0, max_tokens=4000,
+        )
+        parsed = provider_result.value
+        if isinstance(parsed, dict):
+            model = provider_result.model
+            status = str(parsed.get("STATUS", "ACTIVE")).upper()
+            action = str(parsed.get("ACTION", "HOLD")).upper()
+            entry_p = float(parsed.get("ENTRY_PRICE", current_price))
+            target_p = float(parsed.get("TARGET_PRICE", 0.0))
+            stop_l = float(parsed.get("STOP_LOSS", 0.0))
+            alloc_p = float(parsed.get("ALLOC_PCT", 0.3))
+            reason_t = str(parsed.get("REASON", "AI 퀀트 분석"))
+            entry_p = entry_p if entry_p > 0 else current_price
+            target_p = target_p if target_p > 0 else dynamic_tp
+            stop_l = stop_l if stop_l > 0 else dynamic_sl
+            if action == "BUY":
+                # Provider와 무관한 과열 하드 가드는 AI BUY보다 항상 우선한다.
+                overheat_reasons = []
+                if rsi_val > 65.0:
+                    overheat_reasons.append(f"RSI과열({rsi_val:.1f}>65.0)")
+                if float(bb.get("pct_b", 0.5)) > 0.88:
+                    overheat_reasons.append(f"볼린저상단이탈(%B {float(bb.get('pct_b', 0.5)):.2f}>0.88)")
+                if disparity_ma20 > 103.5:
+                    overheat_reasons.append(f"MA20이격과열({disparity_ma20:.1f}%>103.5%)")
+                if float(trade_strength.get("trade_power_pct", 100.0)) > 350.0:
+                    overheat_reasons.append("체결강도비정상과열(>350%)")
+                if overheat_reasons:
+                    action, alloc_p = "HOLD", 0.0
+                    reason_t = f"[과열 가드레일 작동: HOLD 강제 전환 ({', '.join(overheat_reasons)})] {reason_t}"
                 else:
-                    last_error = f"[{model}] HTTP {response.status_code}: {response.text[:100]}"
-                    logger.warning(f"모델 '{model}' 호출 실패 ({response.status_code})")
-            except requests.exceptions.Timeout as e:
-                # 일시적인 구글 서버 읽기 타임아웃 ➜ 3분 단기 쿨다운 후 차순위 모델 전환
-                self._record_http(model, market, error_kind="timeout")
-                self._set_model_cooldown(model, 180.0)
-                last_error = f"[{model}] Timeout: {e}"
-                logger.warning(f"⏳ 모델 '{model}' 응답 타임아웃 ➜ 3분 쿨다운 등록 후 차순위 모델 전환")
-            except (requests.exceptions.RequestException, KeyError, ValueError, IndexError) as e:
-                self._record_http(model, market, error_kind="exception")
-                last_error = f"[{model}] Exception: {e}"
-                logger.warning(f"모델 '{model}' 요청 예외: {e}")
+                    target_p = target_p if target_p > current_price else dynamic_tp
+                    stop_l = stop_l if 0 < stop_l < current_price else dynamic_sl
+                    if current_price - stop_l > 0 and (target_p - current_price) / (current_price - stop_l) < 1.3:
+                        target_p = current_price + ((current_price - stop_l) * 1.5)
+            alloc_p = alloc_p / 100.0 if alloc_p > 1.0 else alloc_p
+            alloc_p = 0.0 if action == "HOLD" else (max(0.1, min(alloc_p, 1.0)) if alloc_p > 0 else (0.5 if action == "BUY" else 1.0))
+            res = {"status": status, "action": action, "entry_price": entry_p, "target_price": target_p,
+                   "stop_loss": stop_l, "alloc_pct": alloc_p, "reason": f"[{model}] {reason_t}",
+                   "alpha_score": int(parsed.get("ALPHA_SCORE") or parsed.get("alpha_score", 0) or 0)}
+            if hasattr(self, "_analysis_cache") and cache_key:
+                self._analysis_cache[cache_key] = {"cached_at": time.time(), "result": res}
+            return res
 
-        logger.warning(f"Gemini API 호출 제한({last_error}) ➜ [로컬 퀀트 알고리즘 엔진]으로 즉시 자동 전환합니다.")
-        GeminiTelemetry.record_local_fallback(market, last_error or "api failure")
+        last_error = provider_result.error_kind or "api_failure"
+        if self.provider.is_entry_fail_closed:
+            logger.warning("[%s] Groq FAST_TRADING 호출 실패(%s)로 신규 BUY를 fail-closed 차단합니다.", market, last_error)
+            return {"status": "PAUSE", "action": "HOLD", "entry_price": current_price, "target_price": dynamic_tp,
+                    "stop_loss": dynamic_sl, "alloc_pct": 0.0, "reason": f"Groq FAST_TRADING 실패({last_error}) 신규 BUY 차단", "alpha_score": 0}
+
+        logger.warning(f"{self.provider_label} API 호출 제한({last_error}) ➜ [로컬 퀀트 알고리즘 엔진]으로 즉시 자동 전환합니다.")
+        GeminiTelemetry.record_local_fallback(market, last_error)
         local_res = self._run_local_quant_engine(
             current_price, mtf_1h, disparity_ma20, rsi_val, bb, vol_info, candle_pattern,
             trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct,
@@ -1173,56 +1153,19 @@ class GeminiAnalyzer:
         candidate_models: list[str] | None = None,
         timeout: float = 15.0,
         max_tokens: int = 2000,
+        schema: dict[str, Any] | None = None,
     ) -> dict[str, Any] | list[Any] | None:
-        """Gemini 모델을 순차 호출하여 JSON 응답을 디코딩하는 공통 통신 엔진"""
+        """Provider를 통해 JSON 응답을 받고 공통 호출 계약을 유지합니다."""
         if not self.api_key:
             return None
 
-        models = candidate_models or self.get_candidate_models(limit=3)
+        models = candidate_models or self.provider.models_for("trading") or self.get_candidate_models(limit=3)
         if not models:
             return None
-
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.1,
-                "topP": 0.8,
-                "maxOutputTokens": max_tokens,
-                "responseMimeType": "application/json",
-            },
-        }
-
-        for model in models:
-            endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
-            try:
-                self._wait_for_rate_limit()
-                response = requests.post(endpoint, json=payload, timeout=timeout)
-                self._record_http(model, "macro_or_batch", response=response)
-                if response.status_code == 200:
-                    res_json = response.json()
-                    raw_text = self._extract_text_from_response(res_json)
-                    if not raw_text:
-                        continue
-                    try:
-                        parsed = json.loads(raw_text)
-                    except json.JSONDecodeError:
-                        json_match = re.search(r"(\{.*\}|\[.*\])", raw_text, re.DOTALL)
-                        if json_match:
-                            parsed = json.loads(json_match.group(0))
-                        else:
-                            continue
-                    return parsed
-                elif response.status_code == 429:
-                    self._set_model_cooldown(model, 120.0)
-                elif response.status_code in (404, 400):
-                    self._set_model_blacklist(model, 86400.0)
-            except requests.exceptions.Timeout:
-                self._record_http(model, "macro_or_batch", error_kind="timeout")
-                self._set_model_cooldown(model, 180.0)
-            except Exception as e:
-                self._record_http(model, "macro_or_batch", error_kind="exception")
-                logger.debug(f"모델 '{model}' 호출 예외: {e}")
-        return None
+        result = self.provider.complete_json(
+            prompt, models, schema or {"type": "object"}, context="macro_or_batch", timeout=timeout, max_tokens=max_tokens,
+        )
+        return result.value if isinstance(result.value, (dict, list)) else None
 
     def evaluate_holding_position(
         self,
@@ -1265,12 +1208,12 @@ class GeminiAnalyzer:
                 return dict(cached["result"])
 
         # 일일 비상 쿼터 가드 (안전 한도 도달 시 긴급 탈출 AI 호출 차단 및 로컬 유지)
-        if hasattr(GeminiTelemetry, "can_make_api_call") and not GeminiTelemetry.can_make_api_call(for_emergency_exit=True):
+        if self.provider.name == "gemini" and hasattr(GeminiTelemetry, "can_make_api_call") and not GeminiTelemetry.can_make_api_call(for_emergency_exit=True):
             logger.info(f"[{market}] 🛑 Gemini AI 일일 비상 쿼터 한도 도달 ➜ 기보유 포지션 로컬 룰 유지")
             return fallback_res
 
         # 사용 가능한 모델 확인 (일일 쿼터 소진 시 즉시 로컬 룰 유지 및 429 원천 방지)
-        holding_models = self.get_candidate_models(limit=2, for_emergency_exit=True)
+        holding_models = self.provider.models_for("trading") or self.get_candidate_models(limit=2, for_emergency_exit=True)
         if not holding_models:
             logger.info(f"[{market}] 🛑 Gemini AI 가용 모델(쿼터 여유) 없음 ➜ 기보유 포지션 로컬 룰 유지")
             return fallback_res
@@ -1324,7 +1267,9 @@ class GeminiAnalyzer:
   "CONFIDENCE": 85
 }}
 """
-            parsed = self._call_gemini_json(prompt, candidate_models=holding_models, timeout=8.0)
+            parsed = self._call_gemini_json(
+                prompt, candidate_models=holding_models, timeout=8.0, schema=HOLDING_JSON_SCHEMA,
+            )
             if isinstance(parsed, dict):
                 act = str(parsed.get("ACTION", "HOLD")).upper()
                 if act not in ("HOLD", "EMERGENCY_EXIT", "RUNNER_HOLD", "TIGHTEN_STOP"):
@@ -1358,7 +1303,7 @@ class GeminiAnalyzer:
         btc_change_rate: float = 0.0,
     ) -> list[dict[str, Any]]:
         """
-        [2순위] 1차 스크리닝 통과 종목들을 1회 배치(Batch) 프롬프트로 Gemini에게 전달하여
+        [2순위] 1차 스크리닝 통과 종목들을 1회 배치(Batch) 프롬프트로 AI Provider에게 전달하여
         세력 덤핑/설거지 여부를 여과하고 우선순위 랭킹(Tier 1, 2, 3)을 부여
         """
         if not self.api_key or not candidates or len(candidates) <= 1:
@@ -1386,7 +1331,7 @@ class GeminiAnalyzer:
             if len(top_candidates) >= 2 and cached_count > 0 and (cached_count / len(top_candidates)) >= 0.6 and len(uncached_markets) <= 2:
                 # 60% 이상 유효 캐시 보유 ➜ API 호출 생략하고 캐시 점수 합성
                 GeminiTelemetry.record_cache_hit("RANK")
-                logger.info(f"⚡ [Gemini AI 랭킹] 개별 종목 캐시 재사용 (미평가 {len(uncached_markets)}개 ➜ API 호출 생략, 쿼터 보존)")
+                logger.info(f"⚡ [{self.provider_label} AI 랭킹] 개별 종목 캐시 재사용 (미평가 {len(uncached_markets)}개 ➜ API 호출 생략, 쿼터 보존)")
                 tier_order = {"TIER_1": 1, "TIER_2": 2, "TIER_3": 3, "REJECT": 9}
                 ranked_candidates = []
                 for c in candidates:
@@ -1447,7 +1392,7 @@ class GeminiAnalyzer:
   ...
 ]
 """
-            parsed = self._call_gemini_json(prompt, timeout=8.0)
+            parsed = self._call_gemini_json(prompt, timeout=8.0, schema=RANKING_JSON_SCHEMA)
             if isinstance(parsed, list) and len(parsed) > 0:
                 rank_map = {}
                 for item in parsed:
@@ -1484,7 +1429,7 @@ class GeminiAnalyzer:
                 if hasattr(self, "_screener_rank_cache") and cache_key:
                     self._screener_rank_cache[cache_key] = {"cached_at": now_ts, "result": ranked_candidates}
 
-                logger.info("✨ [Gemini AI 후보 종목 랭킹 완료]")
+                logger.info("✨ [%s AI 후보 종목 랭킹 완료]", self.provider_label)
                 for rk, item in enumerate(ranked_candidates[:5], 1):
                     logger.info(
                         f"  #{rk} {item.get('market')} [{item.get('ai_tier')}] 점수: {item.get('ai_score')}점 - {item.get('ai_reason')}"
@@ -1563,7 +1508,7 @@ class GeminiAnalyzer:
   "action_guideline": "봇 자금 운용 지침 1줄"
 }}
 """
-            parsed = self._call_gemini_json(prompt, timeout=8.0)
+            parsed = self._call_gemini_json(prompt, timeout=8.0, schema=MACRO_JSON_SCHEMA)
             if isinstance(parsed, dict) and "regime" in parsed:
                 rg = str(parsed.get("regime", "NORMAL")).upper()
                 if rg not in ("BULL_TREND", "NORMAL", "CAUTION_PULLBACK", "BEAR_REGIME", "CRASH"):
@@ -1579,7 +1524,7 @@ class GeminiAnalyzer:
                 self._macro_diag_cache = res
                 self._last_macro_diag_ts = now_ts
                 logger.info(
-                    f"🌍 [Gemini 거시 시황 진단] 레짐: {rg} (위험도: {res['risk_score']}/100) ➜ {res['summary']}"
+                    f"🌍 [{self.provider_label} 거시 시황 진단] 레짐: {rg} (위험도: {res['risk_score']}/100) ➜ {res['summary']}"
                 )
                 return res
         except Exception as e:
@@ -1598,7 +1543,7 @@ class GeminiAnalyzer:
         fng_desc: str,
     ) -> str:
         """
-        [3순위] 텔레그램 모닝/정기 브리핑용 Gemini AI 3줄 종합 해설 생성
+        [3순위] 텔레그램 모닝/정기 브리핑용 AI Provider 3줄 종합 해설 생성
         """
         default_comment = f"현재 {exchange_name} 계좌는 {held_positions_desc} 상태이며, 리스크 안전선 내에서 정상 운용 중입니다."
         if not self.api_key:
@@ -1623,77 +1568,21 @@ class GeminiAnalyzer:
    • [전략 제언]: 향후 몇 시간 동안의 안전 운용 지침
 3. 반드시 한국어로 정중하고 명확하게 작성.
 """
-            # 브리핑 전용: gemini-3.8-flash 및 최신 고성능 모델부터 순차 호출
-            models = self.get_briefing_candidate_models(limit=5)
+            # 빗썸 Groq는 DEEP_BRIEFING 120B만 시작점으로 사용하고, 실패 시 20B 요약만 허용한다.
+            models = self.provider.models_for("briefing") or self.get_briefing_candidate_models(limit=5)
             if not models:
                 return default_comment
-
-            for model in models:
-                endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
-                # 3.7 등 하이브리드 추론 모델은 불필요한 Thinking에 토큰이 소진되어 출력이 잘리지 않도록 thinkingBudget=0 적용
-                # 구형 모델과의 호환성을 위해 thinkingConfig를 조건부 적용하며, 400 발생 시 제거 후 1회 폴백 재시도
-                supports_thinking_budget = any(k in model.lower() for k in ("3.7", "thinking", "2.5"))
-                gen_config: dict[str, Any] = {
-                    "temperature": 0.2,
-                    "maxOutputTokens": 3000,
-                }
-                if supports_thinking_budget:
-                    gen_config["thinkingConfig"] = {"thinkingBudget": 0}
-
-                payload = {
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": gen_config,
-                }
-
-                try:
-                    self._wait_for_rate_limit()
-                    resp = requests.post(endpoint, json=payload, timeout=12.0)
-                    self._record_http(model, f"{exchange_name}_briefing", response=resp)
-                    # 만약 thinkingConfig 미지원으로 HTTP 400 반환 시 thinkingConfig 제거 후 1회 재전송
-                    if resp.status_code == 400 and "thinkingConfig" in gen_config:
-                        gen_config_no_thinking = dict(gen_config)
-                        gen_config_no_thinking.pop("thinkingConfig", None)
-                        payload["generationConfig"] = gen_config_no_thinking
-                        resp = requests.post(endpoint, json=payload, timeout=12.0)
-                        self._record_http(model, f"{exchange_name}_briefing_retry", response=resp)
-
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        candidates = data.get("candidates", [])
-                        if candidates:
-                            cand = candidates[0]
-                            finish_reason = cand.get("finishReason", "")
-                            if finish_reason == "MAX_TOKENS":
-                                logger.warning(f"브리핑 모델 {model} 토큰 한도 도달(MAX_TOKENS)로 텍스트 잘림 감지 ➜ 차순위 모델 전환")
-                                continue
-
-                            parts = cand.get("content", {}).get("parts", [])
-                            if parts and "text" in parts[0]:
-                                text = parts[0]["text"].strip()
-                                # 텍스트 완성도 검증: 3개 글머리 기호 중 최소 2개 이상 포함 및 최소 길이 확인
-                                has_bullets = (
-                                    text.count("•") >= 2
-                                    or ("[거시" in text and "[전략" in text)
-                                    or ("[거시" in text and "[계좌" in text)
-                                )
-                                if not has_bullets or len(text) < 40:
-                                    logger.warning(f"브리핑 모델 {model} 불완전/미완성 텍스트 응답({len(text)}자) ➜ 차순위 모델 전환")
-                                    continue
-
-                                logger.info(f"✨ [{exchange_name}] 09:00 종합 시황 브리핑 생성 성공 (모델: {model})")
-                                return text
-                    elif resp.status_code in (429, 503):
-                        logger.warning(f"브리핑 모델 {model} 일시 제한/오류 (HTTP {resp.status_code}) ➜ 차순위 최신 모델로 순차 전환")
-                        self._set_model_cooldown(model, 300.0)
-                    elif resp.status_code == 404:
-                        logger.debug(f"브리핑 모델 {model} 미지원 (HTTP 404) ➜ 차순위 모델로 순차 전환")
-                        self._set_model_blacklist(model, 86400.0)
-                    else:
-                        logger.debug(f"브리핑 모델 {model} 응답 실패: HTTP {resp.status_code}")
-                except Exception as ex:
-                    self._record_http(model, f"{exchange_name}_briefing", error_kind="exception")
-                    logger.debug(f"브리핑 모델 {model} 호출 예외: {ex}")
-                    continue
+            result = self.provider.complete_text(
+                prompt, models, context=f"{exchange_name}_briefing", timeout=12.0, max_tokens=3000,
+            )
+            text = result.value if isinstance(result.value, str) else ""
+            # Provider 응답도 기존 3줄 브리핑 품질 조건을 통과해야만 외부 전송한다.
+            has_bullets = text.count("•") >= 2 or ("[거시" in text and "[전략" in text) or ("[거시" in text and "[계좌" in text)
+            if has_bullets and len(text) >= 40:
+                logger.info("✨ [%s] 09:00 종합 시황 브리핑 생성 성공 (Provider: %s, 모델: %s)", exchange_name, self.provider.name, result.model)
+                return text
+            if text:
+                logger.warning("[%s] AI 브리핑 품질 검증 실패로 기본 브리핑을 사용합니다.", exchange_name)
         except Exception as e:
             logger.debug(f"generate_market_briefing 예외: {e}")
 

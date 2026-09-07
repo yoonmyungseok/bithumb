@@ -133,6 +133,9 @@ class TradingRuntimeConfig:
     is_bot_paused: Callable[[], bool]
     min_order_krw: float
     orderbook_slippage_enforcement: bool = False
+    # 빗썸만 Groq 구성/FAST 실패 시 전체 신규 BUY를 닫는 별도 안전 훅을 주입한다.
+    analyzer_factory: Callable[[], GeminiAnalyzer | None] | None = None
+    new_buy_block_reason: Callable[[], str] | None = None
 
 
 @dataclass
@@ -420,7 +423,8 @@ class TradingCycleEngine:
         self.entry_profile = config.entry_profile
         self.buy_profile = config.buy_profile
         self.analyzer: GeminiAnalyzer | None = (
-            GeminiAnalyzer(api_key=self.config.gemini_api_key) if self.config.gemini_api_key else None
+            self.config.analyzer_factory() if self.config.analyzer_factory else
+            (GeminiAnalyzer(api_key=self.config.gemini_api_key) if self.config.gemini_api_key else None)
         )
 
     def _load_cycle_environment(self) -> None:
@@ -457,8 +461,10 @@ class TradingCycleEngine:
         logger.info("============================================================")
 
         exchange = ctx.create_exchange_client()
-        # analyzer 인스턴스 재사용 (키 갱신 시에만 재생성)
-        if self.config.gemini_api_key:
+        # 빗썸 Provider Factory는 매 사이클 구성 유효성을 다시 읽어 키/모델 누락을 즉시 fail-closed한다.
+        if self.config.analyzer_factory:
+            self.analyzer = self.config.analyzer_factory()
+        elif self.config.gemini_api_key:
             if self.analyzer is None or getattr(self.analyzer, "api_key", "") != self.config.gemini_api_key:
                 self.analyzer = GeminiAnalyzer(api_key=self.config.gemini_api_key)
         else:
@@ -561,7 +567,7 @@ class TradingCycleEngine:
         )
         screener_analyzer = analyzer if allow_ai_candidate_ranking else None
         if analyzer is not None and not allow_ai_candidate_ranking:
-            logger.info("[성능 최적화] 신규 진입 차단 상태라 Gemini 후보 랭킹을 생략합니다.")
+            logger.info("[성능 최적화] 신규 진입 차단 상태라 AI Provider 후보 랭킹을 생략합니다.")
 
         selection_started_at = time.monotonic()
         target_markets = ctx.orchestrator.select_target_markets(
@@ -784,7 +790,7 @@ class TradingCycleEngine:
         hold_duration_sec = time.time() - entry_ts
         pnl_pct_current = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
 
-        # [1순위] Gemini AI 기보유 포지션 동적 관리 (긴급 탈출 / 러너 추세 추종 / 손절선 상향)
+        # [1순위] 거래소별 AI Provider 기보유 포지션 동적 관리 (긴급 탈출 / 러너 추세 추종 / 손절선 상향)
         ai_action = "HOLD"
         analyzer = getattr(market_inputs, "analyzer", None)
         if analyzer is not None and hasattr(analyzer, "evaluate_holding_position") and candles_5m:
@@ -1072,6 +1078,17 @@ class TradingCycleEngine:
             reentry_allowed, reentry_reason = ctx.cooldown_manager.check_reentry_allowed(market, current_price)
 
         is_holding = coin_value >= min_order_krw and avg_buy_price > 0
+        # AI Provider 불확실성은 기존 포지션 보호를 건드리지 않고 신규 BUY 경로만 닫는다.
+        provider_block_reason = ""
+        provider_block_hook = getattr(self.config, "new_buy_block_reason", None)
+        if callable(provider_block_hook):
+            # 테스트/레거시 설정 객체의 동적 Mock 값은 차단 사유로 해석하지 않는다.
+            candidate_reason = provider_block_hook()
+            provider_block_reason = candidate_reason.strip() if isinstance(candidate_reason, str) else ""
+        if provider_block_reason and not is_holding:
+            logger.warning("[%s] %s", market, provider_block_reason)
+            audit_decision(market, "BLOCKED", "AI_PROVIDER", [provider_block_reason], {"btc_regime": btc_regime})
+            return EntryGatingResult(should_continue=True)
         ws_health = (
             ctx.ws_client.get_health_status(market=market)
             if hasattr(ctx.ws_client, "get_health_status")
@@ -1129,7 +1146,7 @@ class TradingCycleEngine:
             rsi_val = GA.calculate_rsi(prices, 14)
             rsi_valid = (35.0 <= rsi_val <= 75.0) or (len(set(prices)) <= 1)
 
-        # 1시간봉(MTF 1H) 대세 추세 사전 필터 (Gemini 7대 팩터 1번 규칙 사전 검증으로 쿼터 낭비 방지)
+        # 1시간봉(MTF 1H) 대세 추세 사전 필터 (AI 7대 팩터 1번 규칙 사전 검증으로 호출 낭비 방지)
         is_1h_trend_valid = True
         if completed_candles_1h and len(completed_candles_1h) >= 20:
             prices_1h = [float(c.get("trade_price", 0)) for c in completed_candles_1h]

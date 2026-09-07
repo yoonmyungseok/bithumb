@@ -610,24 +610,25 @@
     }
 
     const cardBithumb = document.getElementById('api_card_bithumb');
-    const cardBithumbGemini = document.getElementById('api_card_gemini_bithumb');
+    // 기존 DOM 식별자는 외부 UI 호환을 위해 유지하고, 빗썸 카드의 의미는 Groq로 명확히 둔다.
+    const cardBithumbGroq = document.getElementById('api_card_gemini_bithumb');
     const cardUpbit = document.getElementById('api_card_upbit');
     const cardUpbitGemini = document.getElementById('api_card_gemini_upbit');
 
     // 탭별 카드 시각적 강조/흐리게 처리
     if (activeExchange === 'upbit') {
       if (cardBithumb) cardBithumb.classList.add('opacity-30');
-      if (cardBithumbGemini) cardBithumbGemini.classList.add('opacity-30');
+      if (cardBithumbGroq) cardBithumbGroq.classList.add('opacity-30');
       if (cardUpbit) cardUpbit.classList.remove('opacity-30');
       if (cardUpbitGemini) cardUpbitGemini.classList.remove('opacity-30');
     } else if (activeExchange === 'bithumb') {
       if (cardBithumb) cardBithumb.classList.remove('opacity-30');
-      if (cardBithumbGemini) cardBithumbGemini.classList.remove('opacity-30');
+      if (cardBithumbGroq) cardBithumbGroq.classList.remove('opacity-30');
       if (cardUpbit) cardUpbit.classList.add('opacity-30');
       if (cardUpbitGemini) cardUpbitGemini.classList.add('opacity-30');
     } else {
       if (cardBithumb) cardBithumb.classList.remove('opacity-30');
-      if (cardBithumbGemini) cardBithumbGemini.classList.remove('opacity-30');
+      if (cardBithumbGroq) cardBithumbGroq.classList.remove('opacity-30');
       if (cardUpbit) cardUpbit.classList.remove('opacity-30');
       if (cardUpbitGemini) cardUpbitGemini.classList.remove('opacity-30');
     }
@@ -721,24 +722,26 @@
       upLastEl.innerText = upData.last_endpoint ? `${upData.last_endpoint} (${upData.last_status || '-'})` : '-';
     }
 
-    // 3. Gemini AI API 렌더링 (거래소별 독립 카드 지원)
-    let btGeminiData = apiUsage.gemini_bithumb;
-    if (!btGeminiData && activeExchange === 'bithumb') {
-      btGeminiData = apiUsage.gemini;
+    // 3. AI Provider API 렌더링 (빗썸 Groq/업비트 Gemini 분리 카드 지원)
+    // 레거시 응답 키는 유지하되 빗썸 표시 데이터는 Groq로 취급한다.
+    let btGroqData = apiUsage.ai_provider_bithumb || apiUsage.gemini_bithumb;
+    if (!btGroqData && activeExchange === 'bithumb') {
+      btGroqData = apiUsage.gemini;
     }
     let upGeminiData = apiUsage.gemini_upbit;
     if (!upGeminiData && activeExchange === 'upbit') {
       upGeminiData = apiUsage.gemini;
     }
 
-    function renderGeminiCard(prefix, gData, gradientClass) {
+    function renderAiProviderCard(prefix, gData, gradientClass) {
       gData = gData || {};
       const calls = gData.api_calls || 0;
+      const isGroqProvider = gData.provider === 'groq';
       const limit = gData.quota_limit || 1000;
       const pct = gData.quota_used_pct !== undefined ? gData.quota_used_pct : (limit > 0 ? Math.round((calls / limit) * 1000) / 10 : 0);
 
       const ratioEl = document.getElementById(`${prefix}_api_calls_ratio`);
-      if (ratioEl) ratioEl.innerText = `${calls.toLocaleString()} / ${limit.toLocaleString()}회`;
+      if (ratioEl) ratioEl.innerText = isGroqProvider ? `${calls.toLocaleString()}회 · 평균 ${gData.avg_latency_ms || 0}ms` : `${calls.toLocaleString()} / ${limit.toLocaleString()}회`;
 
       const barEl = document.getElementById(`${prefix}_quota_bar`);
       if (barEl) {
@@ -755,7 +758,7 @@
 
       const badgeEl = document.getElementById(`${prefix}_api_badge`);
       if (badgeEl) {
-        badgeEl.innerText = `${pct}% 소진`;
+        badgeEl.innerText = isGroqProvider ? '호출 계측' : `${pct}% 소진`;
         if (pct >= 90) {
           badgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30';
         } else if (pct >= 70) {
@@ -779,21 +782,30 @@
       const lastEl = document.getElementById(`${prefix}_api_last`);
       if (lastEl) lastEl.innerText = gData.last_event || '-';
 
-      // 3.5 / 3.1 모델별 사용량 렌더링
+      // Provider가 달라도 같은 표시 영역에서 모델별 호출량을 안전하게 표시한다.
       const models = gData.models || {};
-      const m35 = models['gemini-3.5-flash-lite'] || {};
-      const m31 = models['gemini-3.1-flash-lite'] || {};
+      const isGroq = gData.provider === 'groq';
+      const m35 = isGroq ? (models['openai/gpt-oss-20b'] || {}) : (models['gemini-3.5-flash-lite'] || {});
+      const m31 = isGroq ? (models['openai/gpt-oss-120b'] || {}) : (models['gemini-3.1-flash-lite'] || {});
+      if (prefix === 'gemini_bithumb') {
+        const titleEl = document.getElementById('bithumb_ai_provider_title');
+        if (titleEl) titleEl.innerText = isGroq ? '빗썸 Groq AI' : '빗썸 AI Provider';
+        const fastNameEl = document.getElementById('gemini_bithumb_m35_name');
+        const deepNameEl = document.getElementById('gemini_bithumb_m31_name');
+        if (fastNameEl) fastNameEl.innerText = isGroq ? 'FAST 20B' : 'FAST_TRADING';
+        if (deepNameEl) deepNameEl.innerText = isGroq ? 'DEEP 120B' : 'DEEP_BRIEFING';
+      }
 
       const m35Calls = m35.calls || 0;
-      const m35Limit = m35.quota_limit || 500;
+      const m35Limit = m35.quota_limit || (isGroq ? 0 : 500);
       const m35Pct = m35.quota_used_pct !== undefined ? m35.quota_used_pct : (m35Limit > 0 ? Math.round((m35Calls / m35Limit) * 1000) / 10 : 0);
 
       const m31Calls = m31.calls || 0;
-      const m31Limit = m31.quota_limit || 500;
+      const m31Limit = m31.quota_limit || (isGroq ? 0 : 500);
       const m31Pct = m31.quota_used_pct !== undefined ? m31.quota_used_pct : (m31Limit > 0 ? Math.round((m31Calls / m31Limit) * 1000) / 10 : 0);
 
       const m35RatioEl = document.getElementById(`${prefix}_m35_ratio`);
-      if (m35RatioEl) m35RatioEl.innerText = `${m35Calls.toLocaleString()} / ${m35Limit.toLocaleString()}회 (${m35Pct}%)`;
+      if (m35RatioEl) m35RatioEl.innerText = isGroq ? `${m35Calls.toLocaleString()}회 · 평균 ${m35.avg_latency_ms || 0}ms` : `${m35Calls.toLocaleString()} / ${m35Limit.toLocaleString()}회 (${m35Pct}%)`;
 
       const m35BarEl = document.getElementById(`${prefix}_m35_bar`);
       if (m35BarEl) {
@@ -802,7 +814,7 @@
       }
 
       const m31RatioEl = document.getElementById(`${prefix}_m31_ratio`);
-      if (m31RatioEl) m31RatioEl.innerText = `${m31Calls.toLocaleString()} / ${m31Limit.toLocaleString()}회 (${m31Pct}%)`;
+      if (m31RatioEl) m31RatioEl.innerText = isGroq ? `${m31Calls.toLocaleString()}회 · 평균 ${m31.avg_latency_ms || 0}ms` : `${m31Calls.toLocaleString()} / ${m31Limit.toLocaleString()}회 (${m31Pct}%)`;
 
       const m31BarEl = document.getElementById(`${prefix}_m31_bar`);
       if (m31BarEl) {
@@ -814,19 +826,27 @@
       const resetInfo = gData.reset_info || {};
       const resetEl = document.getElementById(`${prefix}_api_reset`);
       if (resetEl) {
+        if (isGroqProvider) {
+          // Groq가 반환한 RPD 리셋 헤더만 표시해 고정 시간대를 추정하지 않는다.
+          const groqReset = gData.reset_info || {};
+          const resetAt = groqReset.reset_time_kst || '';
+          const raw = groqReset.raw ? ` (${groqReset.raw})` : '';
+          resetEl.innerText = resetAt ? `${resetAt}${raw}` : 'Groq 응답 헤더 대기';
+          return;
+        }
         const timeKst = resetInfo.reset_time_kst || '16:00 KST';
         const remStr = resetInfo.remaining_str ? ` (${resetInfo.remaining_str})` : '';
         resetEl.innerText = `${timeKst}${remStr}`;
       }
     }
 
-    renderGeminiCard('gemini_bithumb', btGeminiData, 'bg-gradient-to-r from-amber-500 to-orange-500');
-    renderGeminiCard('gemini_upbit', upGeminiData, 'bg-gradient-to-r from-blue-500 to-indigo-500');
+    renderAiProviderCard('gemini_bithumb', btGroqData, 'bg-gradient-to-r from-amber-500 to-orange-500');
+    renderAiProviderCard('gemini_upbit', upGeminiData, 'bg-gradient-to-r from-blue-500 to-indigo-500');
 
     // 하위 호환: 기존 단일 gemini 카드 요소가 남아있을 경우 합산값 렌더링
     const combinedGemini = apiUsage.gemini;
     if (combinedGemini && document.getElementById('gemini_api_calls_ratio')) {
-      renderGeminiCard('gemini', combinedGemini, 'bg-gradient-to-r from-purple-500 to-indigo-500');
+      renderAiProviderCard('gemini', combinedGemini, 'bg-gradient-to-r from-purple-500 to-indigo-500');
     }
   }
 

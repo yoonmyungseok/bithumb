@@ -152,7 +152,7 @@
             <span class="mr-2">⚡</span>API 일일 사용량 & 쿼터 모니터링
           </h2>
           <p class="text-xs text-slate-400 mt-1">
-            KST 자정 리셋 기준 실시간 REST 및 AI API 누적 호출 현황
+            거래소별 실제 응답 한도 기준 실시간 REST 및 AI API 누적 호출 현황
           </p>
         </div>
         <span id="api_usage_date" class="px-3 py-1 rounded-full text-xs font-semibold bg-slate-800 text-slate-300 border border-slate-700">
@@ -191,11 +191,11 @@
           </div>
         </div>
 
-        <!-- 2. 빗썸 Gemini AI 카드 -->
+        <!-- 2. 빗썸 AI Provider 카드 -->
         <div id="api_card_gemini_bithumb" class="rounded-xl border border-slate-800 bg-slate-900/60 p-4 flex flex-col justify-between space-y-3">
           <div class="flex items-center justify-between">
             <span class="font-bold text-purple-400 flex items-center gap-1.5">
-              <span>🟣</span>빗썸 Gemini AI
+              <span>🟣</span><span id="bithumb_ai_provider_title">빗썸 Groq AI</span>
             </span>
             <span id="gemini_bithumb_api_badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30">
               0.0% 소진
@@ -210,11 +210,11 @@
               <div id="gemini_bithumb_quota_bar" class="bg-gradient-to-r from-amber-500 to-orange-500 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
             </div>
           </div>
-          <!-- 모델별 사용량 분리 (3.5 / 3.1) -->
+          <!-- 모델별 호출량 분리 -->
           <div class="bg-slate-950/60 rounded-lg p-2 space-y-1.5 border border-slate-800/60 text-[10px]">
             <div>
               <div class="flex justify-between text-slate-400">
-                <span class="flex items-center gap-1 font-medium text-amber-300/90"><span>⚡</span>3.5 Flash-Lite</span>
+                <span id="gemini_bithumb_m35_name" class="flex items-center gap-1 font-medium text-amber-300/90"><span>⚡</span>FAST_TRADING</span>
                 <span id="gemini_bithumb_m35_ratio" class="font-medium text-slate-300">0 / 500회 (0%)</span>
               </div>
               <div class="w-full bg-slate-800 h-1 rounded-full mt-1 overflow-hidden">
@@ -223,7 +223,7 @@
             </div>
             <div>
               <div class="flex justify-between text-slate-400">
-                <span class="flex items-center gap-1 font-medium text-orange-300/90"><span>⚡</span>3.1 Flash-Lite</span>
+                <span id="gemini_bithumb_m31_name" class="flex items-center gap-1 font-medium text-orange-300/90"><span>⚡</span>DEEP_BRIEFING</span>
                 <span id="gemini_bithumb_m31_ratio" class="font-medium text-slate-300">0 / 500회 (0%)</span>
               </div>
               <div class="w-full bg-slate-800 h-1 rounded-full mt-1 overflow-hidden">
@@ -241,7 +241,7 @@
               <span id="gemini_bithumb_api_fallback" class="font-medium text-slate-300">0 / 429: 0회</span>
             </div>
             <div class="flex justify-between">
-              <span class="text-slate-400">쿼터 리셋(PT):</span>
+              <span class="text-slate-400">Groq 쿼터 리셋:</span>
               <span id="gemini_bithumb_api_reset" class="font-medium text-slate-400">-</span>
             </div>
             <div class="flex justify-between">

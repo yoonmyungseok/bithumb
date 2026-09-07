@@ -7,19 +7,18 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from ai_provider import AIProviderTelemetry
+from bithumb_ai import build_bithumb_analyzer, get_bithumb_ai_entry_block_reason
 from bithumb_api import BithumbAPI
-from db_manager import get_db_manager, get_exchange_db_path
-from exchange_adapter import BithumbAdapter, ExchangeAdapter
 from bot_controller import BotController
 from chart_renderer import ChartRenderer
-from gemini_analyzer import GeminiAnalyzer
-from gemini_telemetry import GeminiTelemetry
+from db_manager import get_db_manager, get_exchange_db_path
+from exchange_adapter import BithumbAdapter, ExchangeAdapter
 from market_screener import MarketScreener
 from order_safety import (
     CooldownManager,
     OrderFillProcessor,
     OrderJournal,
-    OrderStatus,
     RiskGuard,
     SafeOrderExecutor,
     get_dynamic_portfolio_tiers,
@@ -28,7 +27,6 @@ from order_safety import (
 from paper_broker import PaperBroker
 from private_websocket_manager import BithumbPrivateWebSocketClient
 from realtime_engine import RealtimeRiskEngine
-from runtime_config import load_runtime_risk_settings
 from risk_manager import (
     DailyRiskManager,
     StrategyCacheManager,
@@ -36,18 +34,9 @@ from risk_manager import (
     calculate_total_equity,
     get_fear_and_greed_index,
     get_held_markets,
-    get_kst_now,
     get_kst_now_str,
 )
-from strategy_engine import (
-    StrategyPolicy,
-    calculate_relative_strength,
-    calculate_vwap,
-    entry_signal,
-    is_night_session,
-    recovery_rebound_signal,
-    select_completed_candles,
-)
+from runtime_config import load_runtime_risk_settings
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
 from trading_bot_bootstrap import (
@@ -77,8 +66,8 @@ if sys.platform == "win32":
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+AIProviderTelemetry.configure(data_dir=DATA_DIR)
 os.makedirs(DATA_DIR, exist_ok=True)
-GeminiTelemetry.configure(data_dir=DATA_DIR)
 
 # 1. 로깅(Logging) 환경 설정
 LOG_DIR = os.path.join(PROJECT_ROOT, "logs")
@@ -113,8 +102,7 @@ load_dotenv(override=True)
 
 BITHUMB_ACCESS_KEY = os.getenv("BITHUMB_ACCESS_KEY", "")
 BITHUMB_SECRET_KEY = os.getenv("BITHUMB_SECRET_KEY", "")
-# 빗썸 전용 Gemini API 키 (미설정 시 공용 GEMINI_API_KEY 사용)
-GEMINI_API_KEY = (os.getenv("BITHUMB_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "")).strip()
+# 빗썸 AI는 Groq 전용이며, Gemini 환경 변수와 업비트 키를 절대 공유하지 않는다.
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
@@ -329,10 +317,12 @@ cycle_engine = TradingCycleEngine(
         buy_profile=BITHUMB_BUY_PROFILE,
         env_file=None,
         interval_minutes=INTERVAL_MINUTES,
-        gemini_api_key=GEMINI_API_KEY,
+        gemini_api_key="",
         is_bot_paused=get_is_bot_paused,
         min_order_krw=MIN_ORDER_KRW,
         orderbook_slippage_enforcement=ORDERBOOK_SLIPPAGE_ENFORCEMENT,
+        analyzer_factory=build_bithumb_analyzer,
+        new_buy_block_reason=get_bithumb_ai_entry_block_reason,
     ),
     TradingRuntimeContext(
         logger=logger,
@@ -391,7 +381,8 @@ def send_daily_morning_report():
         held_desc = ", ".join(held_names) if held_names else "없음 (100% 현금 보유)"
 
         ai_briefing = ""
-        analyzer = GeminiAnalyzer() if os.getenv("GEMINI_API_KEY") else None
+        # 브리핑도 빗썸 Factory를 거쳐 Groq DEEP_BRIEFING만 사용한다.
+        analyzer = build_bithumb_analyzer()
         if analyzer is not None and hasattr(analyzer, "generate_market_briefing"):
             try:
                 candles_1h = bithumb.get_candles(unit=60, count=30, market="KRW-BTC")
@@ -406,7 +397,7 @@ def send_daily_morning_report():
                     fng_desc=fng.get("desc", ""),
                 )
                 if ai_comment:
-                    ai_briefing = f"\n\n🤖 <b>[Gemini AI 종합 시황 브리핑]</b>\n{ai_comment}"
+                    ai_briefing = f"\n\n🤖 <b>[Groq AI 종합 시황 브리핑]</b>\n{ai_comment}"
             except Exception as e:
                 logger.debug(f"AI 브리핑 생성 예외: {e}")
 

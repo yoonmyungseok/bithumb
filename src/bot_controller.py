@@ -4,7 +4,7 @@ import threading
 import time
 from typing import Any, Callable
 
-from bithumb_api import BithumbAPI
+from ai_provider import AIProviderTelemetry
 from gemini_telemetry import GeminiTelemetry
 from operational_quality import build_slippage_enforcement_readiness
 from order_safety import OrderJournal, SafeOrderExecutor
@@ -476,7 +476,7 @@ class BotController:
 
             # 7. API 일일 사용량 및 텔레메트리
             exchange_telemetry = bithumb.get_telemetry() if hasattr(bithumb, "get_telemetry") else {}
-            gemini_telemetry = GeminiTelemetry.snapshot().to_dict()
+            ai_telemetry = self._get_ai_telemetry()
 
             self.latest_dashboard_data = {
                 "total_equity": int(total_equity),
@@ -508,7 +508,9 @@ class BotController:
                 "daily_stats_history": daily_history_data,
                 "api_usage": {
                     "exchange": exchange_telemetry,
-                    "gemini": gemini_telemetry,
+                    # 기존 gemini 키는 업비트 호환용으로 보존하고, 빗썸은 확장 키로 Groq를 노출한다.
+                    "gemini": ai_telemetry if "업비트" in self.exchange_name else {},
+                    "ai_provider": ai_telemetry,
                 },
             }
             self._last_dashboard_fetch_ts = time.time()
@@ -554,7 +556,7 @@ class BotController:
             exchange=exchange_key,
             data_dir=data_dir,
         )
-        gemini_stats = GeminiTelemetry.snapshot().to_dict()
+        ai_stats = self._get_ai_telemetry()
         exchange_obj = self.get_exchange() if hasattr(self, "get_exchange") else None
         exchange_stats = exchange_obj.get_telemetry() if hasattr(exchange_obj, "get_telemetry") else {}
 
@@ -576,10 +578,12 @@ class BotController:
             "excluded_holdings": sorted(list(excluded)),
             "web_port": self.web_port,
             "exchange_telemetry": exchange_stats,
-            "gemini_telemetry": gemini_stats,
+            "gemini_telemetry": ai_stats,
+            "ai_provider_telemetry": ai_stats,
             "api_usage": {
                 "exchange": exchange_stats,
-                "gemini": gemini_stats,
+                "gemini": ai_stats if "업비트" in self.exchange_name else {},
+                "ai_provider": ai_stats,
             },
             "slippage_enforcement": slippage_readiness.to_dict(),
         }
@@ -607,9 +611,9 @@ class BotController:
             f"• <b>연속 손실 횟수:</b> {diag['consecutive_losses']}회 (자본 배율: {diag['risk_scale_factor']*100:.0f}%)\n"
             f"• <b>최근 평균 슬리피지:</b> {diag['avg_slippage_bps']:.1f} bps\n"
             f"• <b>거래소 API 호출:</b> {ex_calls}회 (429 {ex_429}회{ex_rem_str})\n"
-            f"• <b>Gemini 호출:</b> {diag['gemini_telemetry']['api_calls']}회 "
-            f"(성공 {diag['gemini_telemetry']['api_success']} / 429 {diag['gemini_telemetry']['rate_limited']} / "
-            f"로컬폴백 {diag['gemini_telemetry']['local_fallback']} / 캐시 {diag['gemini_telemetry']['cache_hits']})\n"
+            f"• <b>AI Provider 호출:</b> {diag['gemini_telemetry'].get('api_calls', 0)}회 "
+            f"(성공 {diag['gemini_telemetry'].get('api_success', 0)} / 429 {diag['gemini_telemetry'].get('rate_limited', 0)} / "
+            f"오류 {diag['gemini_telemetry'].get('http_errors', 0)} / 평균 {diag['gemini_telemetry'].get('avg_latency_ms', 0)}ms)\n"
             f"• <b>호가 슬리피지 관찰:</b> {diag['slippage_enforcement']['trading_days_observed']}"
             f"/{diag['slippage_enforcement']['min_trading_days_required']}거래일, "
             f"관찰 {diag['slippage_enforcement']['observed_count']}건, "
@@ -643,3 +647,8 @@ class BotController:
         lines.append(f"• <b>조회 일시:</b> {now_str}")
         return "\n".join(lines)
 
+    def _get_ai_telemetry(self) -> dict[str, Any]:
+        """거래소별 AI Provider를 분리해 빗썸 Groq와 업비트 Gemini를 혼합하지 않습니다."""
+        if "빗썸" in self.exchange_name:
+            return AIProviderTelemetry.snapshot("bithumb")
+        return GeminiTelemetry.snapshot().to_dict()

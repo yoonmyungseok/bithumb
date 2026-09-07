@@ -10,13 +10,13 @@
 
 ## 1. 프로젝트 개요
 
-이 프로젝트는 빗썸(Bithumb)과 업비트(Upbit) 거래소의 실시간 데이터와 Google Gemini AI를 결합하여, 유망한 단타/스윙 종목을 자동으로 탐색하고 매매를 수행하는 **듀얼 거래소 독립형 AI 퀀트 트레이딩 시스템**입니다. 
+이 프로젝트는 빗썸(Bithumb)의 Groq AI와 업비트(Upbit)의 Google Gemini AI를 실시간 데이터와 결합하여, 유망한 단타/스윙 종목을 자동으로 탐색하고 매매를 수행하는 **듀얼 거래소 독립형 AI 퀀트 트레이딩 시스템**입니다.
 
 - **언어 및 환경**: Python 3, Windows 환경 (`.bat` 및 `process_manager.py` 기반 구동)
 - **핵심 기술**: 
   - 빗썸 REST API & WebSocket (v1/v2)
   - 업비트 REST API & WebSocket (Public: 시세/체결, Private: myOrder/myAsset, HS512 JWT + unencoded query string SHA-512 hash, `identifier` 멱등성)
-  - Google Gemini API (Flash 모델군), Telegram API
+  - 빗썸 Groq API / 업비트 Google Gemini API (Flash 모델군), Telegram API
 - **주요 전략 및 아키텍처**: 
   - **다중 시간대(MTF) 분석**: 1시간봉 대세 추세 + 5분봉 정밀 타점 정렬
 - **거래대금 및 모멘텀 기반 동적 시장 스크리닝**: 모멘텀 후보를 `EARLY`(당일 상승률 +3% 이하의 RS 확인 초입)와 `EXTENDED`(확장 후반) 단계로 기록한다. 신규 주문은 `EARLY`에서만 소액으로 허용하고, `EXTENDED`는 분석·감사만 수행해 후발 추격을 방지한다. 동일 5분 사이클에서는 모멘텀 신규 주문을 1건으로 제한한다.
@@ -29,6 +29,17 @@
   - **장중 자금 입출금 자동 보정 (Cashflow Adjustment)**: 입출금 시 시작 기준자산을 자동 보정하여 순수 매매 수익률 보존
   - **완전한 거래소 물리적/논리적 격리**: 빗썸과 업비트의 환경변수, 데이터 디렉터리(`data/upbit/*`), 로그(`logs/trading_upbit.log`), 대시보드 포트(`7979` vs `7980`), 구글 시트, 실행 스크립트 분리
   - **7중 KRW-HOLO 수동 종목 절대 보호망**: 업비트 `KRW-HOLO`는 스크리닝, 주문, 긴급매도, 자산평가, 실시간 청산, 시트, 대시보드에서 100% 영구 제외
+
+### 빗썸 Groq / 업비트 Gemini AI Provider 분리 정책 (v8.27)
+
+- 빗썸 AI 분석은 `BITHUMB_AI_PROVIDER=groq`, `BITHUMB_GROQ_API_KEY`, `BITHUMB_GROQ_FAST_MODEL`, `BITHUMB_GROQ_DEEP_MODEL`을 통해서만 활성화한다. 빗썸은 공용·업비트 Gemini 키를 읽거나 사용하지 않는다.
+- 고정 모델 매핑은 신규 진입 분석·보유 포지션 평가·후보 랭킹·거시 레짐에 `FAST_TRADING=openai/gpt-oss-20b`, 빗썸 일일 시황 브리핑에 `DEEP_BRIEFING=openai/gpt-oss-120b`이다.
+- `FAST_TRADING`의 429, 타임아웃, 5xx, 잘못된 JSON, JSON Schema 오류 또는 구성 누락 시 120B 승격·로컬 BUY 폴백 없이 빗썸 신규 BUY를 fail-closed로 차단한다. 기존 포지션의 주문·체결 대사·리스크 보호·청산은 계속 동작한다.
+- `DEEP_BRIEFING` 실패에 한해서만 `FAST_TRADING` 20B로 요약 브리핑을 한 번 폴백할 수 있다. 브리핑 실패는 주문 정책을 바꾸지 않는다.
+- 업비트는 기존 `UPBIT_GEMINI_API_KEY`와 Gemini Provider만 사용한다. 거래소 REST/Private WebSocket, 주문 실행, 주문 저널 및 확정 체결 대사 계약은 Provider 전환 범위 밖이다.
+- `ai_provider.py`는 Groq strict JSON Schema와 로컬 공통 스키마 검증을 적용하며, Provider·모델·거래소별 호출량·성공/429/오류·평균 지연을 대시보드의 표시 전용 확장으로 분리 계측한다. 인증 키와 응답 원문은 계측·로그에 저장하지 않는다.
+- 빗썸의 실행 로그·대시보드 제목·AI 분석 결과 표기는 `Groq`를 사용한다. 기존 `gemini_*` 대시보드 DOM/API 키와 `GeminiAnalyzer` 클래스명은 업비트 및 외부 응답 하위 호환을 위해 내부 계약으로만 유지하며, 빗썸 사용자 표시에는 노출하지 않는다.
+- 빗썸 Groq 호출 계측은 `data/groq_telemetry.json`에 원자 저장·복원한다. 매 응답의 `x-ratelimit-reset-requests` 헤더를 저장해 실제 RPD 리셋 예정 시각을 대시보드에 표시하며, KST 자정 추정으로 카운터를 초기화하지 않는다. 해당 헤더가 가리킨 시각이 지난 뒤에만 새 쿼터 창으로 전환한다. 계측 파일 오류는 주문·체결·기존 포지션 보호에 영향을 주지 않는다.
 
 ---
 

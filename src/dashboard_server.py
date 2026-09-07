@@ -257,6 +257,7 @@ class UnifiedDashboardServer:
                 "gemini": {},
                 "gemini_bithumb": {},
                 "gemini_upbit": {},
+                "ai_provider_bithumb": {},
             },
         }
 
@@ -509,6 +510,8 @@ class UnifiedDashboardServer:
                 "upbit": upbit_data.get("api_usage", {}).get("exchange", {}),
                 "gemini_bithumb": bithumb_data.get("api_usage", {}).get("gemini", {}),
                 "gemini_upbit": upbit_data.get("api_usage", {}).get("gemini", {}),
+                # 기존 Gemini API 키는 유지하고 빗썸 Provider 계측만 표시 전용으로 추가한다.
+                "ai_provider_bithumb": bithumb_data.get("api_usage", {}).get("ai_provider", {}),
                 "gemini": {
                     "date": bithumb_data.get("api_usage", {}).get("gemini", {}).get("date") or upbit_data.get("api_usage", {}).get("gemini", {}).get("date", ""),
                     "api_calls": (
