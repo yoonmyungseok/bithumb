@@ -8,6 +8,7 @@ import os
 import re
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
@@ -52,12 +53,15 @@ class AIProviderTelemetry:
 
     _lock = threading.RLock()
     _stats: dict[tuple[str, str, str], dict[str, Any]] = {}
+    # 마지막 디스크 동기화 기준값으로, 다른 프로세스의 호출을 중복 합산하지 않는다.
+    _persisted_stats: dict[tuple[str, str, str], dict[str, Any]] = {}
     _storage_path = ""
     _configured = False
     _current_date = ""
     _reset_at = 0.0
     _reset_remaining_raw = ""
     _reset_header_at = 0.0
+    _force_new_window = False
 
     @classmethod
     def _today_kst(cls) -> str:
@@ -78,9 +82,14 @@ class AIProviderTelemetry:
             cls._reset_at = 0.0
             cls._reset_remaining_raw = ""
             cls._reset_header_at = 0.0
+            cls._force_new_window = False
             # 재시작 복원과 테스트 격리에서 이전 메모리 값을 섞지 않는다.
             cls._stats = {}
+            cls._persisted_stats = {}
             cls._load_state_locked()
+            cls._persisted_stats = {
+                key: dict(value) for key, value in cls._stats.items()
+            }
 
     @classmethod
     def _ensure_configured_locked(cls) -> None:
@@ -125,34 +134,118 @@ class AIProviderTelemetry:
 
     @classmethod
     def _save_state_locked(cls) -> None:
-        """교체 가능한 임시 파일을 사용해 재시작 중에도 계측 파일 손상을 막는다."""
+        """프로세스 간 누적값을 병합해 재시작·동시 실행에도 호출량을 보존한다."""
         if not cls._storage_path:
             return
         try:
             os.makedirs(os.path.dirname(cls._storage_path), exist_ok=True)
-            stats = [
-                {
-                    "provider": provider, "exchange": exchange, "model": model,
-                    "calls": stat["calls"], "success": stat["success"],
-                    "rate_limited": stat["rate_limited"], "errors": stat["errors"],
-                    "latency_total_ms": stat["latency_total_ms"],
-                    "last_event": stat["last_event"], "last_event_at": stat["last_event_at"],
-                }
-                for (provider, exchange, model), stat in cls._stats.items()
-            ]
-            temporary_path = f"{cls._storage_path}.tmp"
-            with open(temporary_path, "w", encoding="utf-8") as file:
-                json.dump({
-                    "date": cls._current_date,
-                    "reset_at": cls._reset_at,
-                    "reset_remaining_raw": cls._reset_remaining_raw,
-                    "reset_header_at": cls._reset_header_at,
-                    "stats": stats,
-                }, file, ensure_ascii=False, indent=2)
-            os.replace(temporary_path, cls._storage_path)
+            with cls._storage_file_lock_locked():
+                disk_stats, disk_payload = ({}, {}) if cls._force_new_window else cls._read_disk_stats_locked()
+                merged = cls._merge_new_stats_locked(disk_stats)
+                reset_header_at = max(cls._reset_header_at, float(disk_payload.get("reset_header_at", 0.0) or 0.0))
+                if reset_header_at == cls._reset_header_at:
+                    reset_at = cls._reset_at
+                    reset_raw = cls._reset_remaining_raw
+                else:
+                    reset_at = max(0.0, float(disk_payload.get("reset_at", 0.0) or 0.0))
+                    reset_raw = str(disk_payload.get("reset_remaining_raw", ""))[:64]
+                stats = [
+                    {
+                        "provider": provider, "exchange": exchange, "model": model,
+                        "calls": stat["calls"], "success": stat["success"],
+                        "rate_limited": stat["rate_limited"], "errors": stat["errors"],
+                        "latency_total_ms": stat["latency_total_ms"],
+                        "last_event": stat["last_event"], "last_event_at": stat["last_event_at"],
+                    }
+                    for (provider, exchange, model), stat in merged.items()
+                ]
+                temporary_path = f"{cls._storage_path}.tmp"
+                with open(temporary_path, "w", encoding="utf-8") as file:
+                    json.dump({
+                        "date": cls._current_date,
+                        "reset_at": reset_at,
+                        "reset_remaining_raw": reset_raw,
+                        "reset_header_at": reset_header_at,
+                        "stats": stats,
+                    }, file, ensure_ascii=False, indent=2)
+                os.replace(temporary_path, cls._storage_path)
+                cls._stats = merged
+                cls._persisted_stats = {key: dict(value) for key, value in merged.items()}
+                cls._reset_at = reset_at
+                cls._reset_remaining_raw = reset_raw
+                cls._reset_header_at = reset_header_at
+                cls._force_new_window = False
         except OSError:
             # 사용량 관측 저장 실패는 AI 호출이나 거래 주문을 막지 않는다.
             logger.debug("AI Provider 텔레메트리 저장 실패: %s", cls._storage_path, exc_info=True)
+
+    @classmethod
+    @contextmanager
+    def _storage_file_lock_locked(cls):
+        """Windows와 POSIX에서 계측 파일의 읽기·병합·교체 구간을 하나로 잠근다."""
+        lock_path = f"{cls._storage_path}.lock"
+        with open(lock_path, "a+b") as lock_file:
+            lock_file.seek(0)
+            lock_file.write(b"0")
+            lock_file.flush()
+            lock_file.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    @classmethod
+    def _read_disk_stats_locked(cls) -> tuple[dict[tuple[str, str, str], dict[str, Any]], dict[str, Any]]:
+        """잠금 안에서 최신 파일을 읽어 다른 프로세스의 직전 저장값을 기준으로 삼는다."""
+        try:
+            with open(cls._storage_path, "r", encoding="utf-8") as file:
+                payload = json.load(file)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return {}, {}
+        stats: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for item in payload.get("stats", []):
+            if not isinstance(item, dict):
+                continue
+            key = tuple(str(item.get(name, "")).strip() for name in ("provider", "exchange", "model"))
+            if not all(key):
+                continue
+            stats[key] = {
+                "calls": max(0, int(item.get("calls", 0))), "success": max(0, int(item.get("success", 0))),
+                "rate_limited": max(0, int(item.get("rate_limited", 0))), "errors": max(0, int(item.get("errors", 0))),
+                "latency_total_ms": max(0.0, float(item.get("latency_total_ms", 0.0))),
+                "last_event": str(item.get("last_event", ""))[:200],
+                "last_event_at": max(0.0, float(item.get("last_event_at", 0.0))),
+            }
+        return stats, payload
+
+    @classmethod
+    def _merge_new_stats_locked(cls, disk_stats: dict[tuple[str, str, str], dict[str, Any]]) -> dict[tuple[str, str, str], dict[str, Any]]:
+        """현재 프로세스가 마지막 동기화 뒤 추가한 값만 최신 디스크 통계에 더한다."""
+        merged = {key: dict(value) for key, value in disk_stats.items()}
+        numeric_fields = ("calls", "success", "rate_limited", "errors", "latency_total_ms")
+        for key, stat in cls._stats.items():
+            current = merged.setdefault(key, {"calls": 0, "success": 0, "rate_limited": 0, "errors": 0, "latency_total_ms": 0.0, "last_event": "", "last_event_at": 0.0})
+            baseline = cls._persisted_stats.get(key, {})
+            for field in numeric_fields:
+                delta = float(stat.get(field, 0.0)) - float(baseline.get(field, 0.0))
+                current[field] += max(0.0, delta)
+            if float(stat.get("last_event_at", 0.0)) >= float(current.get("last_event_at", 0.0)):
+                current["last_event"] = str(stat.get("last_event", ""))[:200]
+                current["last_event_at"] = max(0.0, float(stat.get("last_event_at", 0.0)))
+            for field in ("calls", "success", "rate_limited", "errors"):
+                current[field] = int(round(current[field]))
+        return merged
 
     @classmethod
     def _check_header_reset_locked(cls) -> None:
@@ -163,6 +256,9 @@ class AIProviderTelemetry:
             cls._reset_at = 0.0
             cls._reset_remaining_raw = ""
             cls._reset_header_at = 0.0
+            # 새 쿼터 창에서는 이전 창의 디스크 통계를 다시 합산하지 않는다.
+            cls._persisted_stats = {}
+            cls._force_new_window = True
             cls._save_state_locked()
 
     @staticmethod
@@ -184,6 +280,9 @@ class AIProviderTelemetry:
             cls._ensure_configured_locked()
             cls._stats = {}
             if persist:
+                # 테스트 전용 영구 초기화는 이전 창의 통계를 다시 병합하지 않아야 한다.
+                cls._persisted_stats = {}
+                cls._force_new_window = True
                 cls._save_state_locked()
 
     @classmethod
@@ -412,6 +511,13 @@ class GroqProvider:
     is_entry_fail_closed = True
     FAST_TRADING = "openai/gpt-oss-20b"
     DEEP_BRIEFING = "openai/gpt-oss-120b"
+    # 모든 빗썸 Groq 모델에 같은 안전 경계를 전달해 개별 사용자 프롬프트의 누락을 막는다.
+    SYSTEM_INSTRUCTION = """당신은 빗썸 전용 Groq AI 분석 보조자입니다.
+당신의 역할은 서버가 제공한 실시간 수치만 근거로 분석 결과를 만드는 것이며, 주문 제출·취소·체결 확정·잔고 변경 권한은 없습니다.
+업비트, Gemini, 다른 거래소 데이터·키·계좌·주문 상태를 가정하거나 섞지 마세요. 제공되지 않은 외부 정보, 과거 기억, 추측으로 수치를 보완하지 마세요.
+ACK는 체결이 아닙니다. REST 또는 Private WebSocket의 확정 체결 정보가 없는 한 포지션·손익·쿨다운·주문 완료를 단정하지 마세요.
+신규 진입 데이터가 누락되거나 모순되면 BUY를 제안하지 말고 HOLD를 선택하세요. 보유 포지션 분석도 조언일 뿐 직접 청산을 실행할 수 없습니다.
+API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·재현하지 마세요. 요청별 출력 스키마·형식·언어를 정확히 따르고, JSON 요청에는 마크다운 없는 유효 JSON만 반환하세요."""
 
     def __init__(self, api_key: str, fast_model: str, deep_model: str):
         self.api_key = (api_key or "").strip()
@@ -468,7 +574,13 @@ class GroqProvider:
         if not self.is_configured or models != [model]:
             return ProviderResult(None, model, "configuration")
         result = self._post(model, {
-            "model": model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1,
+            "model": model,
+            # 사용자 데이터보다 먼저 시스템 지침을 전달해 20B 분석 경로의 안전 계약을 고정한다.
+            "messages": [
+                {"role": "system", "content": self.SYSTEM_INSTRUCTION},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.1,
             "max_tokens": max_tokens,
             "response_format": {"type": "json_schema", "json_schema": {"name": "bithumb_trading_result", "strict": True, "schema": schema}},
         }, context, timeout)
@@ -486,10 +598,22 @@ class GroqProvider:
         if not self.is_configured or models != [self.deep_model]:
             return ProviderResult(None, self.deep_model, "configuration")
         deep_result = self._post(self.deep_model, {
-            "model": self.deep_model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": max_tokens,
+            "model": self.deep_model,
+            # 120B 브리핑도 같은 거래소 분리·비주문 권한 지침을 반드시 받는다.
+            "messages": [
+                {"role": "system", "content": self.SYSTEM_INSTRUCTION},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.2, "max_tokens": max_tokens,
         }, context, timeout)
         if isinstance(deep_result.value, str):
             return deep_result
         return self._post(self.fast_model, {
-            "model": self.fast_model, "messages": [{"role": "user", "content": prompt}], "temperature": 0.2, "max_tokens": max_tokens,
+            "model": self.fast_model,
+            # 브리핑의 20B 폴백도 원본 120B와 동일한 안전 지침을 사용한다.
+            "messages": [
+                {"role": "system", "content": self.SYSTEM_INSTRUCTION},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.2, "max_tokens": max_tokens,
         }, f"{context}_fast_fallback", timeout)

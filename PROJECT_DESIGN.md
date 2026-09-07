@@ -39,7 +39,8 @@
 - 업비트는 기존 `UPBIT_GEMINI_API_KEY`와 Gemini Provider만 사용한다. 거래소 REST/Private WebSocket, 주문 실행, 주문 저널 및 확정 체결 대사 계약은 Provider 전환 범위 밖이다.
 - `ai_provider.py`는 Groq strict JSON Schema와 로컬 공통 스키마 검증을 적용하며, Provider·모델·거래소별 호출량·성공/429/오류·평균 지연을 대시보드의 표시 전용 확장으로 분리 계측한다. 인증 키와 응답 원문은 계측·로그에 저장하지 않는다.
 - 빗썸의 실행 로그·대시보드 제목·AI 분석 결과 표기는 `Groq`를 사용한다. 기존 `gemini_*` 대시보드 DOM/API 키와 `GeminiAnalyzer` 클래스명은 업비트 및 외부 응답 하위 호환을 위해 내부 계약으로만 유지하며, 빗썸 사용자 표시에는 노출하지 않는다.
-- 빗썸 Groq 호출 계측은 `data/groq_telemetry.json`에 원자 저장·복원한다. 매 응답의 `x-ratelimit-reset-requests` 헤더를 저장해 실제 RPD 리셋 예정 시각을 대시보드에 표시하며, KST 자정 추정으로 카운터를 초기화하지 않는다. 해당 헤더가 가리킨 시각이 지난 뒤에만 새 쿼터 창으로 전환한다. 계측 파일 오류는 주문·체결·기존 포지션 보호에 영향을 주지 않는다.
+- 빗썸 Groq 호출 계측은 `data/groq_telemetry.json`에 원자 저장·복원한다. 저장 시 프로세스 간 파일 잠금 아래 최신 디스크 통계와 현재 프로세스의 미반영 증분만 병합하므로, 재시작 또는 중복 프로세스가 호출량을 0으로 덮어쓰지 않는다. 매 응답의 `x-ratelimit-reset-requests` 헤더를 저장해 실제 RPD 리셋 예정 시각을 대시보드에 표시하며, KST 자정 추정으로 카운터를 초기화하지 않는다. 해당 헤더가 가리킨 시각이 지난 뒤에만 새 쿼터 창으로 전환한다. 계측 파일 오류는 주문·체결·기존 포지션 보호에 영향을 주지 않는다.
+- `GroqProvider.SYSTEM_INSTRUCTION`은 20B의 거래·보유평가·후보랭킹·거시진단과 120B의 브리핑(20B 브리핑 폴백 포함) 모두에 system 메시지로 먼저 전달된다. 이 지침은 빗썸 전용 데이터 격리, 제공 수치만 사용, 분석 보조의 비주문 권한, ACK 비체결, 불확실 신규 BUY의 `HOLD`, 비밀정보 비출력, 요청별 JSON/한국어 형식 준수를 강제한다. 개별 분석 프롬프트는 이 공통 지침을 약화하거나 우회할 수 없다.
 
 ---
 
@@ -149,7 +150,7 @@ c:\AI\bithumb\
 5. **총 자산 및 보유목록 평가**: `calculate_total_equity`, `get_held_markets`, `build_positions_data`에서 계좌에 HOLO가 존재해도 평가금액을 0원으로 처리하고 목록에서 100% 제외.
 6. **실시간 청산 및 긴급 전량매도 (Panic Sell)**: `RealtimeRiskEngine`의 틱 청산 및 `BotController.execute_panic_sell` 실행 시 HOLO는 매도 대상에서 영구 제외되어 사용자 수동 물량을 완벽히 보존.
 - **7대 팩터 앙상블 스코어러 (`calculate_composite_alpha_score`)**: MTF 1H(15점) + VWAP(15점) + MACD 가속도(15점) + RSI 골든존(15점) + 볼린저 밴드(15점) + 수급/호가잔량비(15점) + 볼륨 스파이크(10점)를 100점 만점으로 산출합니다. 실제 승인선은 `StrategyPolicy` 단일 기준을 사용하며, 일반장 NORMAL 60점·BULL_TREND 65점·RISK_OFF 70점, 심야 NORMAL/RISK_OFF 75점·BULL_TREND 70점입니다.
-- **Gemini 매수 분석 프롬프트 동기화**: AI 요청에는 해당 사이클의 BTC 레짐·심야 여부·후보 유형·진입 경로와 `StrategyPolicy`로 계산한 현행 알파 기준을 함께 전달합니다. AI는 판단 보조이며, 로컬 하드 게이트·REST 주문 대사·WebSocket 상태·쿨다운·주문 저널·리스크 한도·호가 영향 검증을 우회할 수 없습니다. 누락 또는 모순 데이터는 `HOLD`로 응답해야 하며, 응답 JSON은 `ALPHA_SCORE`와 근거를 포함합니다.
+- **AI 매수 분석 프롬프트 동기화**: AI 요청에는 해당 사이클의 BTC 레짐·심야 여부·후보 유형·진입 경로와 `StrategyPolicy`로 계산한 현행 알파 기준을 함께 전달합니다. 빗썸 Groq는 공통 시스템 지침과 함께, 업비트 Gemini는 기존 분석 프롬프트 계약과 함께 동작합니다. AI는 판단 보조이며, 로컬 하드 게이트·REST 주문 대사·WebSocket 상태·쿨다운·주문 저널·리스크 한도·호가 영향 검증을 우회할 수 없습니다. 누락 또는 모순 데이터는 `HOLD`로 응답해야 하며, 응답 JSON은 `ALPHA_SCORE`와 근거를 포함합니다.
 
 ### 3.7. 체결 및 마이크로스트럭처 제어 엔진 (Execution & Microstructure Engine)
 - **실시간 슬리피지(Slippage Bps) 정밀 추적기 (`OrderFillProcessor`)**: 주문 시점의 목표 가격(`expected_price`)과 실제 거래소 체결 단가(`effective_price`) 간의 편차를 bps 단위로 실시간 계산하고, 허용 한도(30bps) 초과 시 이상 슬리피지를 감지 및 기록합니다.

@@ -29,8 +29,10 @@ class BithumbGroqProviderTests(unittest.TestCase):
         self.project_root = Path(__file__).resolve().parents[1]
         self.telemetry_storage_filename = "groq_telemetry_test.json"
         self.telemetry_storage_path = self.project_root / "data" / self.telemetry_storage_filename
+        self.telemetry_lock_path = Path(f"{self.telemetry_storage_path}.lock")
         # 모든 Groq 호출 테스트를 운영 계측 파일과 분리한다.
         self.telemetry_storage_path.unlink(missing_ok=True)
+        self.telemetry_lock_path.unlink(missing_ok=True)
         AIProviderTelemetry.configure(
             data_dir=str(self.project_root / "data"), storage_filename=self.telemetry_storage_filename,
         )
@@ -44,6 +46,7 @@ class BithumbGroqProviderTests(unittest.TestCase):
     def tearDown(self):
         # 테스트 중 생성된 계측 파일과 메모리 바인딩을 운영 경로에서 분리한다.
         self.telemetry_storage_path.unlink(missing_ok=True)
+        self.telemetry_lock_path.unlink(missing_ok=True)
         AIProviderTelemetry.configure(data_dir=str(self.project_root / "data"))
         os.environ.clear()
         os.environ.update(self.env)
@@ -68,6 +71,11 @@ class BithumbGroqProviderTests(unittest.TestCase):
         self.assertEqual(payload["model"], GroqProvider.FAST_TRADING)
         self.assertTrue(payload["response_format"]["json_schema"]["strict"])
         self.assertNotIn(GroqProvider.DEEP_BRIEFING, str(payload))
+        # 모든 20B 분석 호출에는 빗썸 전용 안전 지침이 system 메시지로 선행해야 한다.
+        self.assertEqual(payload["messages"][0]["role"], "system")
+        self.assertEqual(payload["messages"][0]["content"], GroqProvider.SYSTEM_INSTRUCTION)
+        self.assertIn("ACK는 체결이 아닙니다", payload["messages"][0]["content"])
+        self.assertIn("업비트, Gemini", payload["messages"][0]["content"])
         snapshot = AIProviderTelemetry.snapshot("bithumb")
         self.assertEqual(snapshot["reset_info"]["raw"], "1h15m")
         self.assertEqual(snapshot["reset_info"]["source"], "x-ratelimit-reset-requests")
@@ -98,6 +106,28 @@ class BithumbGroqProviderTests(unittest.TestCase):
         self.assertEqual(snapshot["reset_info"]["raw"], "2h30m15.5s")
         self.assertGreater(snapshot["reset_info"]["remaining_seconds"], 8_900)
 
+    def test_groq_telemetry_merges_stale_process_delta_without_resetting_calls(self):
+        """늦게 저장하는 재시작 전 프로세스도 최신 파일의 호출량을 0으로 덮어쓰면 안 된다."""
+        AIProviderTelemetry.record(
+            "groq", "bithumb", "openai/gpt-oss-20b", "PROCESS-A", 200, 100.0,
+        )
+
+        # 두 번째 프로세스가 첫 저장 전에 읽은 빈 메모리를 가진 상황을 직접 모사한다.
+        key = ("groq", "bithumb", "openai/gpt-oss-20b")
+        AIProviderTelemetry._stats = {
+            key: {
+                "calls": 1, "success": 1, "rate_limited": 0, "errors": 0,
+                "latency_total_ms": 80.0, "last_event": "PROCESS-B HTTP 200", "last_event_at": 2.0,
+            }
+        }
+        AIProviderTelemetry._persisted_stats = {}
+        AIProviderTelemetry._save_state_locked()
+
+        snapshot = AIProviderTelemetry.snapshot("bithumb")
+        self.assertEqual(snapshot["api_calls"], 2)
+        self.assertEqual(snapshot["api_success"], 2)
+        self.assertEqual(snapshot["models"]["openai/gpt-oss-20b"]["calls"], 2)
+
     @patch("ai_provider.requests.post")
     def test_fast_failure_blocks_buy_without_120b_escalation(self, mock_post):
         """20B 429는 로컬 BUY나 120B 승격 없이 PAUSE/HOLD여야 한다."""
@@ -124,6 +154,10 @@ class BithumbGroqProviderTests(unittest.TestCase):
         self.assertEqual([call.kwargs["json"]["model"] for call in mock_post.call_args_list], [
             GroqProvider.DEEP_BRIEFING, GroqProvider.FAST_TRADING,
         ])
+        # 120B 원본과 20B 폴백도 같은 system 지침을 받는지 함께 검증한다.
+        for call in mock_post.call_args_list:
+            self.assertEqual(call.kwargs["json"]["messages"][0]["role"], "system")
+            self.assertEqual(call.kwargs["json"]["messages"][0]["content"], GroqProvider.SYSTEM_INSTRUCTION)
 
     def test_missing_or_wrong_configuration_blocks_only_bithumb_entry(self):
         """키·고정 모델 누락은 빗썸 분석기를 만들지 않아 신규 BUY만 차단한다."""
