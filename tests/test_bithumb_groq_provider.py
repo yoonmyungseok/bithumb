@@ -10,7 +10,8 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 from ai_provider import AIProviderTelemetry, GroqProvider
-from bithumb_ai import build_bithumb_analyzer, get_bithumb_ai_entry_block_reason
+from bithumb_ai import build_bithumb_analyzer, get_bithumb_ai_config_block_reason, get_bithumb_ai_entry_block_reason
+from gemini_analyzer import GeminiAnalyzer, MACRO_JSON_SCHEMA, RANKING_JSON_SCHEMA
 
 
 def _candles() -> list[dict[str, float | str]]:
@@ -37,6 +38,8 @@ class BithumbGroqProviderTests(unittest.TestCase):
             data_dir=str(self.project_root / "data"), storage_filename=self.telemetry_storage_filename,
         )
         AIProviderTelemetry.reset()
+        # 클래스 단위 분석 캐시는 Provider 안전 상태가 다른 테스트로 전파되지 않게 비운다.
+        GeminiAnalyzer.clear_caches()
         os.environ.update({
             "BITHUMB_AI_PROVIDER": "groq", "BITHUMB_GROQ_API_KEY": "test-secret",
             "BITHUMB_GROQ_FAST_MODEL": "openai/gpt-oss-20b",
@@ -139,6 +142,107 @@ class BithumbGroqProviderTests(unittest.TestCase):
         self.assertEqual(result["action"], "HOLD")
         self.assertEqual(mock_post.call_count, 1)
         self.assertEqual(mock_post.call_args.kwargs["json"]["model"], GroqProvider.FAST_TRADING)
+        safety = AIProviderTelemetry.snapshot("bithumb")["entry_safety"]
+        self.assertTrue(safety["entry_blocked"])
+        self.assertEqual(safety["reason"], "rate_limited")
+
+    @patch("ai_provider.requests.post")
+    def test_fast_http_error_records_safe_code_and_success_reopens_entry(self, mock_post):
+        """HTTP 400 원문을 저장하지 않고 코드만 남기며 정상 FAST 응답 뒤에만 신규 진입을 재개한다."""
+        failed = MagicMock(status_code=400)
+        failed.headers = {}
+        failed.json.return_value = {"error": {"message": "비밀 프롬프트는 저장하지 않는다", "type": "invalid_request_error"}}
+        succeeded = MagicMock(status_code=200)
+        succeeded.headers = {}
+        succeeded.json.return_value = {"choices": [{"message": {"content": (
+            '{"STATUS":"ACTIVE","ACTION":"HOLD","ENTRY_PRICE":100,"TARGET_PRICE":103,'
+            '"STOP_LOSS":98,"ALLOC_PCT":0,"ALPHA_SCORE":0,"REASON":"대기"}'
+        )}}]}
+        mock_post.side_effect = [failed, succeeded]
+        analyzer = build_bithumb_analyzer()
+
+        analyzer.analyze("KRW-TEST", 100.0, _candles(), 1_000_000.0, 0.0, 0.0)
+        blocked = AIProviderTelemetry.snapshot("bithumb")["entry_safety"]
+        self.assertTrue(blocked["entry_blocked"])
+        self.assertEqual(blocked["http_status"], 400)
+        self.assertEqual(blocked["error_code"], "invalid_request_error")
+        self.assertNotIn("비밀", str(blocked))
+
+        analyzer.analyze("KRW-TEST", 100.0, _candles(), 1_000_000.0, 0.0, 0.0)
+        reopened = AIProviderTelemetry.snapshot("bithumb")["entry_safety"]
+        self.assertFalse(reopened["entry_blocked"])
+        self.assertEqual(reopened["status"], "NORMAL")
+
+    def test_entry_safety_restores_after_reconfigure(self):
+        """프로세스 재시작을 모사해도 FAST 장애 신규 BUY 차단 상태가 유지되어야 한다."""
+        AIProviderTelemetry.record_entry_safety(
+            "bithumb", blocked=True, reason="http_error", context="macro_regime",
+            model=GroqProvider.FAST_TRADING, status_code=400, error_code="invalid_request_error",
+        )
+        AIProviderTelemetry.configure(
+            data_dir=str(self.project_root / "data"), storage_filename=self.telemetry_storage_filename,
+        )
+        restored = AIProviderTelemetry.snapshot("bithumb")["entry_safety"]
+        self.assertTrue(restored["entry_blocked"])
+        self.assertEqual(restored["context"], "macro_regime")
+
+    def test_runtime_fast_failure_still_builds_analyzer_for_recovery(self):
+        """FAST 장애 중에도 분석기는 유지되어 재시도로 entry_safety를 해제할 수 있어야 한다."""
+        AIProviderTelemetry.record_entry_safety(
+            "bithumb", blocked=True, reason="http_error", context="macro_regime",
+            model=GroqProvider.FAST_TRADING, status_code=400,
+        )
+        self.assertIn("FAST", get_bithumb_ai_entry_block_reason())
+        self.assertEqual(get_bithumb_ai_config_block_reason(), "")
+        self.assertIsNotNone(build_bithumb_analyzer())
+
+    def test_groq_batch_schemas_use_object_root(self):
+        """Groq strict 모드는 object 루트만 허용하므로 배치 스키마도 래퍼 객체를 사용해야 한다."""
+        self.assertEqual(RANKING_JSON_SCHEMA.get("type"), "object")
+        self.assertIn("rankings", RANKING_JSON_SCHEMA.get("properties", {}))
+        self.assertEqual(MACRO_JSON_SCHEMA.get("type"), "object")
+
+    @patch("ai_provider.requests.post")
+    def test_groq_macro_failure_uses_defensive_unavailable_regime(self, mock_post):
+        """Groq 거시 진단 실패는 NORMAL로 위장하지 않고 방어 레짐과 공통 BUY 차단을 함께 반환한다."""
+        failed = MagicMock(status_code=400)
+        failed.headers = {}
+        failed.json.return_value = {"error": {"type": "invalid_request_error"}}
+        mock_post.return_value = failed
+        analyzer = build_bithumb_analyzer()
+
+        result = analyzer.diagnose_macro_regime(_candles(), fng_index={"desc": "중립"})
+
+        self.assertEqual(result["regime"], "CAUTION_PULLBACK")
+        self.assertEqual(result["provider_status"], "AI_UNAVAILABLE")
+        self.assertTrue(AIProviderTelemetry.snapshot("bithumb")["entry_safety"]["entry_blocked"])
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["response_format"]["json_schema"]["name"], "bithumb_macro_result")
+        self.assertFalse(payload["response_format"]["json_schema"]["strict"])
+
+    @patch("ai_provider.requests.post")
+    def test_groq_macro_success_uses_batch_schema_and_reopens_entry(self, mock_post):
+        """거시 진단 FAST 성공은 best-effort schema로 호출하고 entry_safety를 NORMAL로 복구해야 한다."""
+        AIProviderTelemetry.record_entry_safety(
+            "bithumb", blocked=True, reason="http_error", context="macro_regime",
+            model=GroqProvider.FAST_TRADING, status_code=400,
+        )
+        response = MagicMock(status_code=200)
+        response.headers = {}
+        response.json.return_value = {"choices": [{"message": {"content": (
+            '{"regime":"NORMAL","risk_score":40,"recommended_cash_ratio":0.3,'
+            '"summary":"안정","action_guideline":"정상 운용"}'
+        )}}]}
+        mock_post.return_value = response
+        analyzer = build_bithumb_analyzer()
+
+        result = analyzer.diagnose_macro_regime(_candles(), fng_index={"desc": "중립"})
+
+        self.assertEqual(result["regime"], "NORMAL")
+        self.assertFalse(AIProviderTelemetry.snapshot("bithumb")["entry_safety"]["entry_blocked"])
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["response_format"]["json_schema"]["schema"]["type"], "object")
+        self.assertFalse(payload["response_format"]["json_schema"]["strict"])
 
     @patch("ai_provider.requests.post")
     def test_deep_briefing_only_may_fallback_to_20b(self, mock_post):

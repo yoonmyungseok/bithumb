@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 
 import requests
 
-from ai_provider import AIProvider, GeminiProvider
+from ai_provider import AIProvider, AIProviderTelemetry, GeminiProvider
 from gemini_telemetry import GeminiTelemetry
 from strategy_engine import (
     StrategyPolicy,
@@ -59,10 +59,23 @@ HOLDING_JSON_SCHEMA: dict[str, Any] = {
         "CONFIDENCE": {"type": "integer"}, "REASON": {"type": "string"},
     },
 }
+# Groq strict JSON Schema는 object 루트만 허용하므로 배열 응답은 래퍼 객체로 감싼다.
 RANKING_JSON_SCHEMA: dict[str, Any] = {
-    "type": "array", "items": {"type": "object", "additionalProperties": False,
-        "required": ["market", "rank", "tier", "score", "reason"],
-        "properties": {"market": {"type": "string"}, "rank": {"type": "integer"}, "tier": {"type": "string"}, "score": {"type": "number"}, "reason": {"type": "string"}}},
+    "type": "object", "additionalProperties": False,
+    "required": ["rankings"],
+    "properties": {
+        "rankings": {
+            "type": "array",
+            "items": {
+                "type": "object", "additionalProperties": False,
+                "required": ["market", "rank", "tier", "score", "reason"],
+                "properties": {
+                    "market": {"type": "string"}, "rank": {"type": "integer"}, "tier": {"type": "string"},
+                    "score": {"type": "number"}, "reason": {"type": "string"},
+                },
+            },
+        },
+    },
 }
 MACRO_JSON_SCHEMA: dict[str, Any] = {
     "type": "object", "additionalProperties": False,
@@ -1154,6 +1167,10 @@ class GeminiAnalyzer:
         timeout: float = 15.0,
         max_tokens: int = 2000,
         schema: dict[str, Any] | None = None,
+        *,
+        context: str = "macro_or_batch",
+        schema_name: str = "bithumb_batch_result",
+        strict: bool | None = None,
     ) -> dict[str, Any] | list[Any] | None:
         """Provider를 통해 JSON 응답을 받고 공통 호출 계약을 유지합니다."""
         if not self.api_key:
@@ -1162,8 +1179,20 @@ class GeminiAnalyzer:
         models = candidate_models or self.provider.models_for("trading") or self.get_candidate_models(limit=3)
         if not models:
             return None
+        resolved_schema = schema or {"type": "object", "additionalProperties": False, "required": [], "properties": {}}
+        use_strict = True if strict is None else strict
+        if self.provider.name == "groq" and strict is None:
+            # 거시·보유·랭킹 배치는 strict object 루트 규칙을 지키되, Groq 400 회피를 위해 best-effort를 허용한다.
+            use_strict = False
         result = self.provider.complete_json(
-            prompt, models, schema or {"type": "object"}, context="macro_or_batch", timeout=timeout, max_tokens=max_tokens,
+            prompt,
+            models,
+            resolved_schema,
+            context=context,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            schema_name=schema_name,
+            strict=use_strict,
         )
         return result.value if isinstance(result.value, (dict, list)) else None
 
@@ -1269,6 +1298,7 @@ class GeminiAnalyzer:
 """
             parsed = self._call_gemini_json(
                 prompt, candidate_models=holding_models, timeout=8.0, schema=HOLDING_JSON_SCHEMA,
+                context=f"holding_eval:{market}", schema_name="bithumb_holding_result",
             )
             if isinstance(parsed, dict):
                 act = str(parsed.get("ACTION", "HOLD")).upper()
@@ -1386,16 +1416,25 @@ class GeminiAnalyzer:
 - REJECT: 무거래량 가짜 반등, 고점 피로도 극심, 설거지성 덤핑 의심 종목
 
 ### [JSON 출력 필수 스키마]
-반드시 마크다운 백틱 없이 순수 JSON 배열로만 응답하세요:
-[
-  {{"market": "KRW-XXX", "rank": 1, "tier": "TIER_1", "score": 92, "reason": "거래대금 1위 및 BTC 대비 독자 랠리"}},
-  ...
-]
+반드시 마크다운 백틱 없이 순수 JSON 객체로만 응답하세요:
+{{
+  "rankings": [
+    {{"market": "KRW-XXX", "rank": 1, "tier": "TIER_1", "score": 92, "reason": "거래대금 1위 및 BTC 대비 독자 랠리"}}
+  ]
+}}
 """
-            parsed = self._call_gemini_json(prompt, timeout=8.0, schema=RANKING_JSON_SCHEMA)
-            if isinstance(parsed, list) and len(parsed) > 0:
+            parsed = self._call_gemini_json(
+                prompt, timeout=8.0, schema=RANKING_JSON_SCHEMA, context="screener_rank",
+                schema_name="bithumb_ranking_result",
+            )
+            rank_items: list[Any] = []
+            if isinstance(parsed, dict) and isinstance(parsed.get("rankings"), list):
+                rank_items = parsed["rankings"]
+            elif isinstance(parsed, list):
+                rank_items = parsed
+            if rank_items:
                 rank_map = {}
-                for item in parsed:
+                for item in rank_items:
                     if isinstance(item, dict) and "market" in item:
                         m_code = str(item["market"]).upper()
                         r_info = {
@@ -1466,6 +1505,15 @@ class GeminiAnalyzer:
             "summary": "BTC 정상 안정세 (로컬 규칙)",
             "action_guideline": "정상적인 퀀트 분할 매매 진행",
         }
+        # Groq FAST 실패는 이미 공통 신규 BUY 게이트를 닫지만, 레짐 표기까지 정상으로 보이면 운영 판단을 흐린다.
+        groq_unavailable_diag = {
+            "regime": "CAUTION_PULLBACK",
+            "risk_score": 70,
+            "recommended_cash_ratio": 0.7,
+            "summary": "Groq 거시 진단 불가: 로컬 방어 규칙만 적용하고 신규 BUY는 차단",
+            "action_guideline": "기존 포지션 보호를 유지하고 Groq FAST 정상 응답 전까지 신규 진입 금지",
+            "provider_status": "AI_UNAVAILABLE",
+        }
         if not self.api_key or not btc_candles_1h or len(btc_candles_1h) < 10:
             return fallback_diag
 
@@ -1508,7 +1556,10 @@ class GeminiAnalyzer:
   "action_guideline": "봇 자금 운용 지침 1줄"
 }}
 """
-            parsed = self._call_gemini_json(prompt, timeout=8.0, schema=MACRO_JSON_SCHEMA)
+            parsed = self._call_gemini_json(
+                prompt, timeout=8.0, schema=MACRO_JSON_SCHEMA, context="macro_regime",
+                schema_name="bithumb_macro_result",
+            )
             if isinstance(parsed, dict) and "regime" in parsed:
                 rg = str(parsed.get("regime", "NORMAL")).upper()
                 if rg not in ("BULL_TREND", "NORMAL", "CAUTION_PULLBACK", "BEAR_REGIME", "CRASH"):
@@ -1530,6 +1581,8 @@ class GeminiAnalyzer:
         except Exception as e:
             logger.warning(f"diagnose_macro_regime 예외: {e}")
 
+        if self.provider.name == "groq" and AIProviderTelemetry.get_entry_block_reason("bithumb"):
+            return groq_unavailable_diag
         return fallback_diag
 
     def generate_market_briefing(

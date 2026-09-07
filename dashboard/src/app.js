@@ -758,12 +758,22 @@
 
       const badgeEl = document.getElementById(`${prefix}_api_badge`);
       if (badgeEl) {
-        badgeEl.innerText = isGroqProvider ? '호출 계측' : `${pct}% 소진`;
-        if (pct >= 90) {
+        // 빗썸 Groq FAST 장애는 호출량보다 신규 BUY 차단 여부를 먼저 표시한다.
+        const entrySafety = isGroqProvider ? (gData.entry_safety || {}) : {};
+        if (isGroqProvider && entrySafety.entry_blocked) {
+          badgeEl.innerText = '신규 BUY 차단';
+          badgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30';
+        } else if (isGroqProvider) {
+          badgeEl.innerText = '신규 BUY 가능';
+          badgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+        } else if (pct >= 90) {
+          badgeEl.innerText = `${pct}% 소진`;
           badgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30';
         } else if (pct >= 70) {
+          badgeEl.innerText = `${pct}% 소진`;
           badgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30';
         } else {
+          badgeEl.innerText = `${pct}% 소진`;
           badgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30';
         }
       }
@@ -780,7 +790,19 @@
       }
 
       const lastEl = document.getElementById(`${prefix}_api_last`);
-      if (lastEl) lastEl.innerText = gData.last_event || '-';
+      if (lastEl) {
+        const entrySafety = isGroqProvider ? (gData.entry_safety || {}) : {};
+        // 오류 메시지 원문 대신 서버가 제한한 목적·상태·코드만 표시한다.
+        if (entrySafety.entry_blocked) {
+          const details = [entrySafety.context, entrySafety.http_status ? `HTTP ${entrySafety.http_status}` : '', entrySafety.error_code]
+            .filter(Boolean).join(' · ');
+          lastEl.innerText = details ? `FAST 장애: ${details}` : 'FAST 장애: 신규 BUY 차단';
+          lastEl.className = 'font-medium truncate max-w-[140px] text-rose-400';
+        } else {
+          lastEl.innerText = gData.last_event || '-';
+          lastEl.className = 'font-medium truncate max-w-[140px] text-slate-400';
+        }
+      }
 
       // Provider가 달라도 같은 표시 영역에서 모델별 호출량을 안전하게 표시한다.
       const models = gData.models || {};

@@ -42,6 +42,20 @@
 - 빗썸 Groq 호출 계측은 `data/groq_telemetry.json`에 원자 저장·복원한다. 저장 시 프로세스 간 파일 잠금 아래 최신 디스크 통계와 현재 프로세스의 미반영 증분만 병합하므로, 재시작 또는 중복 프로세스가 호출량을 0으로 덮어쓰지 않는다. 매 응답의 `x-ratelimit-reset-requests` 헤더를 저장해 실제 RPD 리셋 예정 시각을 대시보드에 표시하며, KST 자정 추정으로 카운터를 초기화하지 않는다. 해당 헤더가 가리킨 시각이 지난 뒤에만 새 쿼터 창으로 전환한다. 계측 파일 오류는 주문·체결·기존 포지션 보호에 영향을 주지 않는다.
 - `GroqProvider.SYSTEM_INSTRUCTION`은 20B의 거래·보유평가·후보랭킹·거시진단과 120B의 브리핑(20B 브리핑 폴백 포함) 모두에 system 메시지로 먼저 전달된다. 이 지침은 빗썸 전용 데이터 격리, 제공 수치만 사용, 분석 보조의 비주문 권한, ACK 비체결, 불확실 신규 BUY의 `HOLD`, 비밀정보 비출력, 요청별 JSON/한국어 형식 준수를 강제한다. 개별 분석 프롬프트는 이 공통 지침을 약화하거나 우회할 수 없다.
 
+### 빗썸 Groq FAST 런타임 장애 신규 진입 차단 (v8.32)
+
+- `FAST_TRADING`의 HTTP 4xx/429/5xx, 타임아웃, 네트워크 예외, 빈 응답, 잘못된 JSON 또는 스키마 오류는 `data/groq_telemetry.json`의 `entry_safety`에 원자 저장한다. 프로세스 재시작 뒤에도 마지막 FAST 실패 상태를 복원하며, 이전 계측 파일의 마지막 4xx/5xx도 보수적으로 신규 BUY 차단으로 승격한다.
+- 이 상태는 표준 AI 진입뿐 아니라 `MOMENTUM_BREAKOUT` 직접 진입과 `RECOVERY_REBOUND`에도 공통으로 적용된다. 기존 보유 포지션의 REST 주문 대사, 체결 확인, 손절·트레일링·긴급 청산은 차단하지 않는다.
+- 신규 BUY 차단은 정상적인 FAST JSON Schema 응답이 확인된 경우에만 해제한다. 120B 브리핑 성공·실패는 이 상태를 바꾸지 않으며, FAST 실패 시 120B 승격 또는 로컬 BUY 폴백은 허용하지 않는다.
+- `build_bithumb_analyzer()`는 Groq **설정 오류**가 있을 때만 `None`을 반환한다. FAST 런타임 장애(`entry_safety`)는 `get_bithumb_ai_entry_block_reason()`과 주문 게이트에서만 신규 BUY를 차단하고, 분석기는 유지해 FAST 재시도로 자동 복구할 수 있게 한다.
+- 운영 계측에는 마지막 오류의 목적, 모델, HTTP 상태 및 제한된 오류 코드/타입만 저장한다. API 키, 프롬프트, 오류 메시지 원문, 계좌·주문 식별자는 로그·대시보드·영속 파일에 저장하지 않는다. Groq 거시 진단이 실패하면 `CAUTION_PULLBACK` 방어 상태와 `AI_UNAVAILABLE` 표기를 사용해 정상 레짐으로 오인하지 않는다.
+
+### 빗썸 Groq 배치 JSON Schema 정합화 (v8.33)
+
+- Groq Structured Outputs의 strict 모드는 **object 루트**만 허용한다. 후보 랭킹 응답은 `{"rankings":[...]}` 래퍼 객체로 감싸고, Gemini 경로의 순수 배열 응답도 파싱 호환을 유지한다.
+- 거시 진단·보유 평가·후보 랭킹 FAST 호출은 목적별 `schema_name`(`bithumb_macro_result`, `bithumb_holding_result`, `bithumb_ranking_result`)과 `strict=false` best-effort를 사용하고, 로컬 `_validate_schema`로 재검증한다. **신규 진입 `analyze()`만 `strict=true`를 유지**한다.
+- `_call_gemini_json()`의 빈 스키마 폴백은 Groq 400을 피하도록 `additionalProperties:false`와 `required:[]`를 포함한 object 스키마를 사용한다.
+
 ---
 
 ## 2. 디렉토리 구조 및 주요 파일
@@ -209,6 +223,10 @@ c:\AI\bithumb\
 ## 4. 변경 이력 및 개선 히스토리 (Changelog)
 
 > 성능 경계: 전략 입력의 일괄 ticker·호가 값은 최대 1초만 재사용하며, 주문 직전 검증·체결 대사에는 사용하지 않습니다. 신규 진입 차단 상태에서는 후보용 AI 호출을 생략하지만 보유 포지션 방어는 계속 수행합니다.
+
+| **v8.33** | 2026-09-07 | • **빗썸 Groq 복구 deadlock 및 배치 Schema 400 수정**<br>• **분석기 유지·주문만 차단**: FAST 장애 시 `build_bithumb_analyzer()`는 계속 생성하고 `get_bithumb_ai_entry_block_reason()`만 신규 BUY를 차단해 FAST 재시도로 `entry_safety` 자동 복구<br>• **Groq object 루트 정합화**: 후보 랭킹을 `rankings` 래퍼 객체로 변경하고 거시·보유·랭킹 FAST는 best-effort schema + 로컬 재검증, 신규 진입만 strict 유지<br>• **검증**: 분석기 유지·macro 성공 복구·object 루트 schema 회귀 테스트 추가, live Groq macro/ranking 호출 200 확인 |
+
+| **v8.32** | 2026-09-07 | • **빗썸 Groq FAST 런타임 fail-closed 확장**<br>• **공통 신규 BUY 차단**: 20B의 4xx/429/5xx·타임아웃·JSON/스키마 오류를 영속 안전 상태로 기록하고 표준 AI·`MOMENTUM_BREAKOUT`·`RECOVERY_REBOUND`를 모두 차단<br>• **안전한 오류 진단**: 목적·모델·HTTP 상태·제한된 오류 코드만 대시보드에 표시하고 키·프롬프트·오류 원문·주문 식별자는 제외<br>• **거시 실패 방어**: Groq 거시 진단 실패는 `CAUTION_PULLBACK`/`AI_UNAVAILABLE`로 표시하며 정상 레짐으로 위장하지 않음<br>• **기존 포지션 보호**: REST 대사와 체결 확인, 손절·트레일링·긴급 청산은 계속 수행<br>• **검증**: Groq 안전 상태 복원·400 마스킹·정상 응답 복구·모멘텀 직접 진입 차단 회귀 테스트 추가 |
 
 | **v8.31** | 2026-09-07 | • **상승 초입 참여·후발 동시 추격 방지 (Momentum Phase Entry)**<br>• **후보 단계 분리**: 공용 스크리너가 상대강도 +0.8% 이상인 모멘텀 후보에 `EARLY`(당일 +3% 이하) 또는 `EXTENDED` 단계를 기록하며, 양 거래소의 외부 응답 계약은 유지<br>• **주문 권한 일원화**: 공용 런타임은 확정봉·거래량·RSI·MTF·주문 안전 게이트를 통과해도 `EXTENDED` 단계의 신규 매수를 `HOLD`로 전환. 초입 후보만 최대 포지션의 25% 소액 경로를 사용<br>• **상관 노출 제한**: 한 5분 사이클에서 모멘텀 신규 주문은 1건만 제출해 여러 상승 후반 종목의 동시 추격을 차단. 기존 포지션의 손절·익절·체결 대사 경로는 변경하지 않음<br>• **Gemini 폴백 정합화**: 정상 AI와 401/쿼터 로컬 폴백 모두 모멘텀 단계를 프롬프트·캐시 키에 포함하며, AI 판단은 `EXTENDED` 신규 주문 제한을 우회할 수 없음<br>• **검증**: `test_market_screener.py`, `test_ai_authority.py`, `test_gemini_prompt_contract.py`에 초입/확장·폴백 우회 차단 회귀 테스트 추가 |
 

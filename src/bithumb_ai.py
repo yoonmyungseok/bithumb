@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import os
 
-from ai_provider import GroqProvider
+from ai_provider import AIProviderTelemetry, GroqProvider
 from gemini_analyzer import GeminiAnalyzer
 
 
-def get_bithumb_ai_entry_block_reason() -> str:
-    """Groq 설정이 불완전하면 빗썸 신규 BUY만 차단할 사유를 반환합니다."""
+def get_bithumb_ai_config_block_reason() -> str:
+    """Groq 키·고정 모델·Provider 설정이 불완전할 때만 반환합니다."""
     provider = os.getenv("BITHUMB_AI_PROVIDER", "").strip().lower()
     if provider != "groq":
         return "빗썸 AI Provider가 groq로 설정되지 않아 신규 BUY를 차단합니다."
@@ -22,9 +22,18 @@ def get_bithumb_ai_entry_block_reason() -> str:
     return ""
 
 
+def get_bithumb_ai_entry_block_reason() -> str:
+    """설정 오류 또는 FAST 런타임 장애 시 모든 신규 BUY 경로가 읽는 차단 사유를 반환합니다."""
+    config_reason = get_bithumb_ai_config_block_reason()
+    if config_reason:
+        return config_reason
+    # 구성 오류뿐 아니라 직전 FAST 분석 실패도 모멘텀·반등을 포함한 모든 신규 진입을 닫는다.
+    return AIProviderTelemetry.get_entry_block_reason("bithumb")
+
+
 def build_bithumb_analyzer() -> GeminiAnalyzer | None:
-    """빗썸은 Groq가 완전 구성된 경우에만 Provider 주입 분석기를 생성합니다."""
-    if get_bithumb_ai_entry_block_reason():
+    """빗썸은 Groq 설정이 유효할 때 분석기를 생성하고, FAST 장애는 주문 게이트에서만 차단합니다."""
+    if get_bithumb_ai_config_block_reason():
         return None
     provider = GroqProvider(
         api_key=os.getenv("BITHUMB_GROQ_API_KEY", ""),

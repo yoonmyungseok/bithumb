@@ -28,6 +28,10 @@ class ProviderResult:
     value: dict[str, Any] | list[Any] | str | None
     model: str
     error_kind: str = ""
+    # 오류를 안전 상태와 연결하기 위한 HTTP 상태이며 응답 본문은 보관하지 않는다.
+    status_code: int | None = None
+    # 외부 응답의 코드/타입만 허용하며 메시지 원문은 저장하지 않는다.
+    error_code: str = ""
 
 
 class AIProvider(Protocol):
@@ -40,7 +44,8 @@ class AIProvider(Protocol):
     def models_for(self, purpose: str) -> list[str]: ...
 
     def complete_json(
-        self, prompt: str, models: list[str], schema: dict[str, Any], *, context: str, timeout: float, max_tokens: int
+        self, prompt: str, models: list[str], schema: dict[str, Any], *, context: str, timeout: float, max_tokens: int,
+        schema_name: str = "bithumb_trading_result", strict: bool = True,
     ) -> ProviderResult: ...
 
     def complete_text(
@@ -62,6 +67,8 @@ class AIProviderTelemetry:
     _reset_remaining_raw = ""
     _reset_header_at = 0.0
     _force_new_window = False
+    # 빗썸 FAST 분석 실패는 모든 신규 진입 경로를 닫아야 하므로 호출량과 별도로 영속한다.
+    _entry_safety: dict[str, dict[str, Any]] = {}
 
     @classmethod
     def _today_kst(cls) -> str:
@@ -83,6 +90,7 @@ class AIProviderTelemetry:
             cls._reset_remaining_raw = ""
             cls._reset_header_at = 0.0
             cls._force_new_window = False
+            cls._entry_safety = {}
             # 재시작 복원과 테스트 격리에서 이전 메모리 값을 섞지 않는다.
             cls._stats = {}
             cls._persisted_stats = {}
@@ -90,6 +98,21 @@ class AIProviderTelemetry:
             cls._persisted_stats = {
                 key: dict(value) for key, value in cls._stats.items()
             }
+
+    @staticmethod
+    def _normalize_entry_safety(value: Any) -> dict[str, Any]:
+        """대시보드와 주문 게이트에 노출할 안전한 오류 메타데이터만 복원한다."""
+        source = value if isinstance(value, dict) else {}
+        return {
+            "entry_blocked": bool(source.get("entry_blocked", False)),
+            "status": str(source.get("status", "NORMAL"))[:32] or "NORMAL",
+            "reason": str(source.get("reason", ""))[:120],
+            "context": str(source.get("context", ""))[:80],
+            "model": str(source.get("model", ""))[:120],
+            "http_status": source.get("http_status") if isinstance(source.get("http_status"), int) else None,
+            "error_code": str(source.get("error_code", ""))[:80],
+            "updated_at": max(0.0, float(source.get("updated_at", 0.0) or 0.0)),
+        }
 
     @classmethod
     def _ensure_configured_locked(cls) -> None:
@@ -124,6 +147,24 @@ class AIProviderTelemetry:
                     "last_event_at": max(0.0, float(item.get("last_event_at", 0.0))),
                 }
             cls._stats = restored
+            entry_safety = payload.get("entry_safety", {})
+            if isinstance(entry_safety, dict):
+                cls._entry_safety = {
+                    str(exchange): cls._normalize_entry_safety(state)
+                    for exchange, state in entry_safety.items()
+                    if str(exchange).strip()
+                }
+            # 이전 버전이 남긴 최신 4xx/5xx도 재시작 직후 신규 BUY를 열지 않도록 보수적으로 승격한다.
+            if "bithumb" not in cls._entry_safety:
+                latest = max(restored.values(), key=lambda item: float(item.get("last_event_at", 0.0)), default={})
+                last_event = str(latest.get("last_event", ""))
+                matched = re.search(r"HTTP (4\d\d|5\d\d)", last_event)
+                if matched:
+                    cls._entry_safety["bithumb"] = cls._normalize_entry_safety({
+                        "entry_blocked": True, "status": "BLOCKED", "reason": f"legacy_http_{matched.group(1)}",
+                        "context": last_event.split(" HTTP ", 1)[0], "http_status": int(matched.group(1)),
+                        "updated_at": float(latest.get("last_event_at", 0.0)),
+                    })
             cls._reset_at = max(0.0, float(payload.get("reset_at", 0.0)))
             cls._reset_remaining_raw = str(payload.get("reset_remaining_raw", ""))[:64]
             cls._reset_header_at = max(0.0, float(payload.get("reset_header_at", 0.0)))
@@ -142,6 +183,16 @@ class AIProviderTelemetry:
             with cls._storage_file_lock_locked():
                 disk_stats, disk_payload = ({}, {}) if cls._force_new_window else cls._read_disk_stats_locked()
                 merged = cls._merge_new_stats_locked(disk_stats)
+                disk_entry_safety = disk_payload.get("entry_safety", {}) if isinstance(disk_payload, dict) else {}
+                merged_entry_safety = {
+                    str(exchange): cls._normalize_entry_safety(state)
+                    for exchange, state in disk_entry_safety.items()
+                    if str(exchange).strip()
+                }
+                for exchange, state in cls._entry_safety.items():
+                    current = merged_entry_safety.get(exchange, {})
+                    if float(state.get("updated_at", 0.0)) >= float(current.get("updated_at", 0.0)):
+                        merged_entry_safety[exchange] = cls._normalize_entry_safety(state)
                 reset_header_at = max(cls._reset_header_at, float(disk_payload.get("reset_header_at", 0.0) or 0.0))
                 if reset_header_at == cls._reset_header_at:
                     reset_at = cls._reset_at
@@ -166,6 +217,7 @@ class AIProviderTelemetry:
                         "reset_at": reset_at,
                         "reset_remaining_raw": reset_raw,
                         "reset_header_at": reset_header_at,
+                        "entry_safety": merged_entry_safety,
                         "stats": stats,
                     }, file, ensure_ascii=False, indent=2)
                 os.replace(temporary_path, cls._storage_path)
@@ -174,6 +226,7 @@ class AIProviderTelemetry:
                 cls._reset_at = reset_at
                 cls._reset_remaining_raw = reset_raw
                 cls._reset_header_at = reset_header_at
+                cls._entry_safety = merged_entry_safety
                 cls._force_new_window = False
         except OSError:
             # 사용량 관측 저장 실패는 AI 호출이나 거래 주문을 막지 않는다.
@@ -279,6 +332,7 @@ class AIProviderTelemetry:
         with cls._lock:
             cls._ensure_configured_locked()
             cls._stats = {}
+            cls._entry_safety = {}
             if persist:
                 # 테스트 전용 영구 초기화는 이전 창의 통계를 다시 병합하지 않아야 한다.
                 cls._persisted_stats = {}
@@ -317,6 +371,38 @@ class AIProviderTelemetry:
                 cls._reset_remaining_raw = reset_requests[:64]
                 cls._reset_header_at = time.time()
             cls._save_state_locked()
+
+    @classmethod
+    def record_entry_safety(
+        cls, exchange: str, *, blocked: bool, reason: str = "", context: str = "",
+        model: str = "", status_code: int | None = None, error_code: str = "",
+    ) -> None:
+        """FAST 분석 결과를 신규 BUY 공통 차단 상태로 원자 저장한다."""
+        with cls._lock:
+            cls._ensure_configured_locked()
+            cls._entry_safety[exchange] = cls._normalize_entry_safety({
+                "entry_blocked": blocked,
+                "status": "BLOCKED" if blocked else "NORMAL",
+                "reason": reason if blocked else "",
+                "context": context,
+                "model": model,
+                "http_status": status_code,
+                "error_code": error_code,
+                "updated_at": time.time(),
+            })
+            cls._save_state_locked()
+
+    @classmethod
+    def get_entry_block_reason(cls, exchange: str) -> str:
+        """기존 포지션에는 영향 없이 모든 신규 BUY 경로가 공통으로 읽는 차단 사유다."""
+        with cls._lock:
+            cls._ensure_configured_locked()
+            state = cls._entry_safety.get(exchange, {})
+            if not state.get("entry_blocked"):
+                return ""
+            reason = str(state.get("reason", "provider_failure"))
+            context = str(state.get("context", ""))
+            return f"빗썸 Groq FAST 분석 장애({reason}{f', {context}' if context else ''})로 신규 BUY를 차단합니다."
 
     @classmethod
     def snapshot(cls, exchange: str) -> dict[str, Any]:
@@ -366,6 +452,7 @@ class AIProviderTelemetry:
                     "reset_time_kst": reset_time_kst,
                     "remaining_seconds": remaining_seconds,
                 },
+                "entry_safety": cls._normalize_entry_safety(cls._entry_safety.get(exchange, {})),
             }
 
 
@@ -431,7 +518,10 @@ class GeminiProvider:
         text = parts[0].get("text")
         return str(text).strip() if text else None
 
-    def complete_json(self, prompt: str, models: list[str], schema: dict[str, Any], *, context: str, timeout: float, max_tokens: int) -> ProviderResult:
+    def complete_json(
+        self, prompt: str, models: list[str], schema: dict[str, Any], *, context: str, timeout: float, max_tokens: int,
+        schema_name: str = "bithumb_trading_result", strict: bool = True,
+    ) -> ProviderResult:
         """기존 Google API 요청 구조를 보존해 업비트 호출 계약을 유지합니다."""
         for model in models:
             try:
@@ -532,10 +622,37 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
     def models_for(self, purpose: str) -> list[str]:
         return [self.deep_model] if purpose == "briefing" else [self.fast_model]
 
+    @staticmethod
+    def _safe_error_code(response: requests.Response) -> str:
+        """Groq 오류 본문에서 키·프롬프트 없이 오류 코드/타입만 제한적으로 추출한다."""
+        try:
+            payload = response.json()
+            error = payload.get("error", {}) if isinstance(payload, dict) else {}
+            raw = error.get("code") or error.get("type") or ""
+            # 외부 오류 문자열은 예상치 못한 값을 포함할 수 있어 운영 저장소에는 식별자 형식만 남긴다.
+            return re.sub(r"[^A-Za-z0-9_.:-]", "", str(raw))[:80]
+        except (ValueError, TypeError, AttributeError):
+            return ""
+
+    def _record_fast_entry_safety(self, result: ProviderResult, context: str) -> ProviderResult:
+        """FAST JSON 호출 성공 전까지 모든 빗썸 신규 진입을 닫고 성공 후에만 재개한다."""
+        is_success = isinstance(result.value, dict) or isinstance(result.value, list)
+        AIProviderTelemetry.record_entry_safety(
+            self.exchange,
+            blocked=not is_success,
+            reason=result.error_kind or "invalid_response",
+            context=context,
+            model=result.model or self.fast_model,
+            status_code=result.status_code,
+            error_code=result.error_code,
+        )
+        return result
+
     def _post(self, model: str, payload: dict[str, Any], context: str, timeout: float) -> ProviderResult:
         started = time.monotonic()
         status_code: int | None = None
         error_kind = ""
+        error_code = ""
         reset_requests = ""
         try:
             response = requests.post(
@@ -548,27 +665,41 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
             reset_requests = str(response.headers.get("x-ratelimit-reset-requests", ""))
             if status_code != 200:
                 error_kind = "rate_limited" if status_code == 429 else "http_error"
-                return ProviderResult(None, model, error_kind)
+                error_code = self._safe_error_code(response)
+                return ProviderResult(None, model, error_kind, status_code, error_code)
             data = response.json()
             choices = data.get("choices", [])
             content = choices[0].get("message", {}).get("content") if choices and isinstance(choices[0], dict) else None
             if not isinstance(content, str) or not content.strip():
                 error_kind = "invalid_response"
-                return ProviderResult(None, model, error_kind)
-            return ProviderResult(content.strip(), model)
+                return ProviderResult(None, model, error_kind, status_code, error_code)
+            return ProviderResult(content.strip(), model, status_code=status_code, error_code=error_code)
         except requests.exceptions.Timeout:
             error_kind = "timeout"
-            return ProviderResult(None, model, error_kind)
+            return ProviderResult(None, model, error_kind, status_code, error_code)
         except (requests.exceptions.RequestException, ValueError, KeyError, IndexError, TypeError):
             error_kind = "exception"
-            return ProviderResult(None, model, error_kind)
+            return ProviderResult(None, model, error_kind, status_code, error_code)
         finally:
             AIProviderTelemetry.record(
                 self.name, self.exchange, model, context, status_code,
                 (time.monotonic() - started) * 1000.0, error_kind, reset_requests,
             )
+            if error_code:
+                logger.warning("[Groq] 안전 오류 코드: HTTP %s, 모델=%s, 목적=%s, 코드=%s", status_code, model, context, error_code)
 
-    def complete_json(self, prompt: str, models: list[str], schema: dict[str, Any], *, context: str, timeout: float, max_tokens: int) -> ProviderResult:
+    def complete_json(
+        self,
+        prompt: str,
+        models: list[str],
+        schema: dict[str, Any],
+        *,
+        context: str,
+        timeout: float,
+        max_tokens: int,
+        schema_name: str = "bithumb_trading_result",
+        strict: bool = True,
+    ) -> ProviderResult:
         """Groq JSON Schema 강제와 로컬 재검증을 모두 적용합니다."""
         model = self.fast_model
         if not self.is_configured or models != [model]:
@@ -582,16 +713,19 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
             ],
             "temperature": 0.1,
             "max_tokens": max_tokens,
-            "response_format": {"type": "json_schema", "json_schema": {"name": "bithumb_trading_result", "strict": True, "schema": schema}},
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": schema_name, "strict": strict, "schema": schema},
+            },
         }, context, timeout)
         if not isinstance(result.value, str):
-            return result
+            return self._record_fast_entry_safety(result, context)
         value = _parse_json_text(result.value)
         if value is None:
-            return ProviderResult(None, model, "invalid_json")
+            return self._record_fast_entry_safety(ProviderResult(None, model, "invalid_json", result.status_code, result.error_code), context)
         if not _validate_schema(value, schema):
-            return ProviderResult(None, model, "schema")
-        return ProviderResult(value, model)
+            return self._record_fast_entry_safety(ProviderResult(None, model, "schema", result.status_code, result.error_code), context)
+        return self._record_fast_entry_safety(ProviderResult(value, model, status_code=result.status_code, error_code=result.error_code), context)
 
     def complete_text(self, prompt: str, models: list[str], *, context: str, timeout: float, max_tokens: int) -> ProviderResult:
         """120B 브리핑 실패 시에만 20B 요약 브리핑으로 단일 폴백합니다."""
