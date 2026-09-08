@@ -6,6 +6,9 @@
 .env.*.local
 *.env
 .env.*
+# 운영 비밀값 없이 배포 가능한 설정 템플릿은 추적한다.
+!.env.sample
+!.env.upbit.sample
 
 # 구글 서비스 계정 키 파일 (JSON)
 config/*.json
