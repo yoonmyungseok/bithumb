@@ -4,7 +4,7 @@ import sys
 from typing import Any
 from bithumb_api import BithumbAPI
 from order_safety import calculate_risk_position_size
-from strategy_engine import StrategyPolicy, calculate_chandelier_exit, classify_btc_regime, entry_signal
+from strategy_engine import StrategyPolicy, calculate_chandelier_exit, classify_btc_regime, entry_signal, get_time_stop_bars_5m, select_completed_candles
 
 # 윈도우 cp949 인코딩 표준화
 if sys.platform == "win32":
@@ -53,7 +53,7 @@ class QuantBacktester:
     - 샹들리에 스탑: 직전 확정 봉까지의 최고가/ATR로만 산출 (캔들 내 룩어헤드 제거)
     - MTF(1H) 합성 캔들 및 BTC 레짐 연동 시뮬레이션
     - 1% Fixed Risk Volatility Position Sizing
-    - 손절 후 재진입 쿨다운 (9개 캔들 = 45분) 시뮬레이션
+    - 손절 후 재진입 쿨다운 (StrategyPolicy.COOLDOWN_STOP_LOSS_SEC) 시뮬레이션
     - Paging 기반 대규모 캔들(수백~수천 개) 백테스트 지원
     """
 
@@ -231,7 +231,7 @@ class QuantBacktester:
                     loss_krw = proceeds - (position_vol * entry_price)
                     capital += proceeds
                     in_position = False
-                    cooldown_until_idx = i + int(StrategyPolicy.COOLDOWN_STOP_LOSS_SEC / 300.0)  # 45분(9개 5분봉) 쿨다운
+                    cooldown_until_idx = i + int(StrategyPolicy.COOLDOWN_STOP_LOSS_SEC / 300.0)  # 30분 쿨다운
                     if current_pos_info:
                         current_pos_info["pnl_krw"] += loss_krw
                         current_pos_info["events"].append("STOP_LOSS")
@@ -286,7 +286,7 @@ class QuantBacktester:
                         profit_krw = proceeds - (position_vol * entry_price)
                         capital += proceeds
                         in_position = False
-                        cooldown_until_idx = i + int(StrategyPolicy.COOLDOWN_TP_SEC / 300.0)  # 15분 쿨다운
+                        cooldown_until_idx = i + int(StrategyPolicy.COOLDOWN_TP_SEC / 300.0)  # 5분 쿨다운
                         if current_pos_info:
                             current_pos_info["pnl_krw"] += profit_krw
                             current_pos_info["events"].append("TRAILING_STOP")
@@ -305,12 +305,13 @@ class QuantBacktester:
                         position_vol = 0.0
                         continue
 
-                # D. 동적 본전 보장 타임스탑 (StrategyPolicy.TIME_STOP_BARS_5M = 12개 봉 / 60분 경과 시 실질 본전 이상 청산, 최대 24봉 유예)
+                # D. 동적 본전 보장 타임스탑 (레짐별 profit/max_hold 봉 수 — StrategyPolicy SSOT)
                 be_pct = StrategyPolicy.TIME_STOP_BREAKEVEN_MIN_PNL_PCT * 100.0
                 cur_unrealized_pct = ((cur_price - entry_price) / entry_price) * 100.0
+                profit_stop_bars, max_hold_bars = get_time_stop_bars_5m(curr_btc_regime)
                 should_time_stop = (
-                    (bars_held >= StrategyPolicy.TIME_STOP_BARS_5M and cur_unrealized_pct >= be_pct)
-                    or (bars_held >= StrategyPolicy.TIME_STOP_MAX_HOLD_BARS_5M)
+                    (bars_held >= profit_stop_bars and cur_unrealized_pct >= be_pct)
+                    or (bars_held >= max_hold_bars)
                 )
                 if should_time_stop:
                     exit_p = cur_price * (1.0 - self.slippage_rate)
@@ -319,6 +320,7 @@ class QuantBacktester:
                     profit_krw = proceeds - (position_vol * entry_price)
                     capital += proceeds
                     in_position = False
+                    cooldown_until_idx = i + int(StrategyPolicy.COOLDOWN_TIME_STOP_SEC / 300.0)
                     if current_pos_info:
                         current_pos_info["pnl_krw"] += profit_krw
                         current_pos_info["events"].append("TIME_STOP")
@@ -338,8 +340,11 @@ class QuantBacktester:
             # 2. 미보유 상태: 퀀트 진입 신호 검사 (동적 BTC 레짐 및 합성 1시간봉 MTF 결합)
             elif not in_position and capital >= 10_000 and i >= cooldown_until_idx:
                 candles_1h_synth = synthesize_1h_candles(sorted_candles[: i + 1])
+                completed_window = select_completed_candles(window_desc, minimum_count=25)
+                if not completed_window:
+                    continue
                 signal = entry_signal(
-                    window_desc,
+                    completed_window,
                     candles_1h=candles_1h_synth,
                     btc_regime=curr_btc_regime,
                     market=market,

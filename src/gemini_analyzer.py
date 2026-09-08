@@ -735,6 +735,9 @@ class GeminiAnalyzer:
         pnl_pct: float,
         vwap_info: dict[str, Any] | None = None,
         macd_acc: dict[str, Any] | None = None,
+        btc_regime: str = "NORMAL",
+        is_night: bool | None = None,
+        candidate_type: str = "CONFIRMED",
     ) -> dict[str, Any]:
         """
         AI API 소진(429) 시 100% 자립 작동하는 7대 복합 팩터 앙상블 퀀트 엔진
@@ -803,12 +806,21 @@ class GeminiAnalyzer:
             alpha_score += 5
             reasons.append("거래량 평이(+5)")
 
-        # 판정 (총 100점 만점 중 60점 이상 충족 시 적극 BUY)
+        # 판정: 레짐·경로별 StrategyPolicy 알파 기준을 따른다 (60점 고정 BUY 우회 방지)
+        normalized_candidate_type = str(candidate_type or "CONFIRMED").upper()
+        if normalized_candidate_type == "MOMENTUM_BREAKOUT":
+            buy_threshold = get_momentum_breakout_alpha_threshold(btc_regime, is_night)
+        else:
+            buy_threshold = get_alpha_buy_threshold(btc_regime, is_night)
+
         if not is_holding:
-            if alpha_score >= 60:
+            if alpha_score >= buy_threshold:
                 action = "BUY"
                 alloc_pct = 0.5
-                reason = f"⚡ [로컬 퀀트 앙상블 BUY] 알파 스코어 {alpha_score}/100점: {', '.join(reasons[:3])}"
+                reason = (
+                    f"⚡ [로컬 퀀트 앙상블 BUY] 알파 스코어 {alpha_score}/{buy_threshold}점 이상: "
+                    f"{', '.join(reasons[:3])}"
+                )
             else:
                 action = "HOLD"
                 alloc_pct = 0.0
@@ -945,7 +957,8 @@ class GeminiAnalyzer:
             return self._run_local_quant_engine(
                 current_price, mtf_1h, disparity_ma20, rsi_val, bb, vol_info, candle_pattern,
                 trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct,
-                vwap_info=vwap_info, macd_acc=macd_acc
+                vwap_info=vwap_info, macd_acc=macd_acc,
+                btc_regime=btc_regime, is_night=night_active, candidate_type=normalized_candidate_type,
             )
 
         # 6. Provider별 모델 선택: Groq FAST는 20B 한 모델만 허용하고 승격하지 않는다.
@@ -970,7 +983,8 @@ class GeminiAnalyzer:
             return self._run_local_quant_engine(
                 current_price, mtf_1h, disparity_ma20, rsi_val, bb, vol_info, candle_pattern,
                 trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct,
-                vwap_info=vwap_info, macd_acc=macd_acc
+                vwap_info=vwap_info, macd_acc=macd_acc,
+                btc_regime=btc_regime, is_night=night_active, candidate_type=normalized_candidate_type,
             )
 
         # 6. 현재 StrategyPolicy를 AI 요청에도 그대로 주입해 정책 불일치를 방지한다.
@@ -1128,8 +1142,12 @@ class GeminiAnalyzer:
             if action == "BUY":
                 # Provider와 무관한 과열 하드 가드는 AI BUY보다 항상 우선한다.
                 overheat_reasons = []
-                if rsi_val > 65.0:
-                    overheat_reasons.append(f"RSI과열({rsi_val:.1f}>65.0)")
+                if normalized_candidate_type == "MOMENTUM_BREAKOUT":
+                    rsi_overheat_limit = StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MAX
+                else:
+                    rsi_overheat_limit = 65.0
+                if rsi_val > rsi_overheat_limit:
+                    overheat_reasons.append(f"RSI과열({rsi_val:.1f}>{rsi_overheat_limit:.1f})")
                 if float(bb.get("pct_b", 0.5)) > 0.88:
                     overheat_reasons.append(f"볼린저상단이탈(%B {float(bb.get('pct_b', 0.5)):.2f}>0.88)")
                 if disparity_ma20 > 103.5:
@@ -1165,6 +1183,7 @@ class GeminiAnalyzer:
             current_price, mtf_1h, disparity_ma20, rsi_val, bb, vol_info, candle_pattern,
             trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct,
             vwap_info=vwap_info, macd_acc=macd_acc,
+            btc_regime=btc_regime, is_night=night_active, candidate_type=normalized_candidate_type,
         )
         if hasattr(self, "_analysis_cache") and cache_key:
             self._analysis_cache[cache_key] = {"cached_at": time.time(), "result": local_res}

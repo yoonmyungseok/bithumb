@@ -261,6 +261,26 @@ def get_momentum_breakout_alpha_threshold(btc_regime: str = "NORMAL", is_night: 
     return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NORMAL
 
 
+def get_time_stop_bars_5m(btc_regime: str = "NORMAL", is_night: bool | None = None) -> tuple[int, int]:
+    """백테스트용 레짐·심야별 타임스탑 봉 수 (profit_bars, max_hold_bars) 반환."""
+    regime_upper = str(btc_regime or "NORMAL").upper()
+    night_active = is_night if is_night is not None else is_night_session()
+
+    if night_active:
+        profit_bars = max(1, int(StrategyPolicy.NIGHT_TIME_STOP_SECONDS / 300))
+    elif regime_upper == "RISK_OFF":
+        profit_bars = StrategyPolicy.TIME_STOP_BARS_5M_RISK_OFF
+    elif regime_upper == "BULL_TREND":
+        profit_bars = max(1, int(StrategyPolicy.BULL_TIME_STOP_SECONDS / 300))
+    else:
+        profit_bars = StrategyPolicy.TIME_STOP_BARS_5M
+
+    max_hold_bars = StrategyPolicy.TIME_STOP_MAX_HOLD_BARS_5M
+    if regime_upper == "BULL_TREND":
+        max_hold_bars = max(1, int(StrategyPolicy.BULL_TIME_STOP_MAX_HOLD_SECONDS / 300))
+    return profit_bars, max_hold_bars
+
+
 class OrderbookFlowTracker:
     """
     호가창 단일 스냅샷 왜곡 방지 및 최근 N회 호가 잔량비 롤링 평균 추적기 (과제 E)

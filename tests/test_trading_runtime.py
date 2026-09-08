@@ -386,6 +386,7 @@ class TradingRuntimePrefixTests(unittest.TestCase):
     @patch("trading_runtime.select_completed_candles")
     def test_entry_gating_records_hold_strategy(self, mock_select_candles, _mock_recovery, _mock_entry):
         mock_select_candles.side_effect = lambda candles, minimum_count=25: candles or []
+        candles_4h = [{"trade_price": 100.0 + i} for i in range(21)]
         profile = ExchangeCycleProfile(
             exchange_key="bithumb",
             reconcile_label="",
@@ -421,6 +422,7 @@ class TradingRuntimePrefixTests(unittest.TestCase):
             krw_available=1_000_000.0,
             candles_5m=[{"trade_price": 100.0} for _ in range(25)],
             candles_1h=[{"trade_price": 100.0} for _ in range(20)],
+            candles_4h=candles_4h,
             orderbook={"market": "KRW-XRP"},
             btc_regime="NORMAL",
             btc_status_msg="정상",

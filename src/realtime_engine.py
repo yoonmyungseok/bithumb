@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 from bithumb_api import BithumbAPI
+from position_guard import is_exit_allowed
 from strategy_engine import StrategyPolicy
 from order_safety import (
     CooldownManager,
@@ -323,6 +324,10 @@ class RealtimeRiskEngine:
 
         # P0-2: 이미 진행 중인 청산 주문이 있거나 다른 스레드에서 청산 중인 경우 중복 청산 차단
         if self.order_journal.has_active_exit_order(market) or self.trailing_tracker.is_exiting(market):
+            return
+
+        # 수동·격리 종목은 5분 사이클과 동일하게 실시간 자동 청산을 차단한다.
+        if not is_exit_allowed(market, self.order_journal, self.trailing_tracker):
             return
 
         try:

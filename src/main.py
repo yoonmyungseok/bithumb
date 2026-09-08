@@ -37,6 +37,7 @@ from risk_manager import (
     get_kst_now_str,
 )
 from runtime_config import load_runtime_risk_settings
+from strategy_engine import StrategyPolicy
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
 from trading_bot_bootstrap import (
@@ -158,7 +159,12 @@ chart_renderer = ChartRenderer()
 trade_memory = TradeMemoryManager(exchange_scope="bithumb", legacy_exchange="bithumb")
 order_journal = OrderJournal(exchange_scope="bithumb")
 order_executor = SafeOrderExecutor(order_journal)
-cooldown_manager = CooldownManager()
+cooldown_manager = CooldownManager(
+    default_sl_cooldown=StrategyPolicy.COOLDOWN_STOP_LOSS_SEC,
+    default_tp_cooldown=StrategyPolicy.COOLDOWN_TP_SEC,
+    default_time_stop_cooldown=StrategyPolicy.COOLDOWN_TIME_STOP_SEC,
+    data_dir=DATA_DIR,
+)
 risk_guard = RiskGuard(
     min_order_krw=MIN_ORDER_KRW,
     max_open_positions=MAX_OPEN_POSITIONS,
@@ -193,11 +199,11 @@ def create_exchange_client() -> ExchangeAdapter:
     live_client = BithumbAPI(BITHUMB_ACCESS_KEY, BITHUMB_SECRET_KEY)
 
     if TRADING_MODE != "PAPER":
-        return BithumbAdapter(live_client, data_dir="data", web_port=7979)
+        return BithumbAdapter(live_client, data_dir=DATA_DIR, web_port=7979)
     if paper_broker is None:
         paper_broker = PaperBroker(live_client, PAPER_INITIAL_KRW, PAPER_FEE_RATE)
         logger.warning("🧪 PAPER 모드: 실제 주문은 전송되지 않으며 data/paper_account.json만 갱신됩니다.")
-    return BithumbAdapter(paper_broker, data_dir="data", web_port=7979)
+    return BithumbAdapter(paper_broker, data_dir=DATA_DIR, web_port=7979)
 
 
 # 실시간 리스크 엔진 및 봇 제어기 초기화

@@ -660,35 +660,17 @@ class TradingCycleEngine:
 
     def _is_bot_managed_position(self, market: str) -> bool:
         """주문 저널을 검사하여 해당 종목이 봇의 매수 주문으로 보유 중인 관리 포지션인지 확인."""
+        from position_guard import is_bot_managed_position
+
         journal = getattr(self.context, "order_journal", None)
-        if not journal or not hasattr(journal, "orders"):
-            # 저널이 없거나 간이 Mock 객체인 경우 기본 동작 유지
-            return True
-        with getattr(journal, "_lock", threading.Lock()):
-            for order in reversed(journal.orders):
-                if order.get("market") == market:
-                    side = str(order.get("side", "")).lower()
-                    status = str(order.get("status", "")).upper()
-                    if side in ("bid", "buy"):
-                        if status in ("FILLED", "PARTIALLY_FILLED", "OPEN", "ACKNOWLEDGED"):
-                            return True
-                        return False
-                    elif side in ("ask", "sell"):
-                        exit_reason = str(order.get("exit_reason", "")).upper()
-                        if "PARTIAL" in exit_reason:
-                            return True
-                        if status == "FILLED":
-                            return False
-        # 저널에 마켓 기록이 없는 경우: 트레일링 트래커에 기등록된 포지션인지 확인
         tracker = getattr(self.context, "trailing_tracker", None)
-        if tracker and hasattr(tracker, "get_entry_time"):
-            try:
-                entry_t = float(tracker.get_entry_time(market) or 0.0)
-                if entry_t > 0:
-                    return True
-            except Exception:
-                pass
-        return False
+        # 5분 사이클은 저널 미구성 테스트 호환을 위해 기존 fail-open을 유지한다.
+        return is_bot_managed_position(
+            journal,
+            tracker,
+            market,
+            default_if_journal_missing=True,
+        )
 
     def process_priority_exits(self, market_inputs: MarketExitInputs) -> bool:
         """최우선 청산(분할익절·트레일링·타임스탑) 처리. True면 마켓 루프 continue."""
@@ -1276,15 +1258,15 @@ class TradingCycleEngine:
             btc_candles_5m = exchange.get_candles(
                 unit=self.config.interval_minutes, count=30, market="KRW-BTC",
             )
-            rs_info = calculate_relative_strength(candles_5m, btc_candles_5m)
+            rs_info = calculate_relative_strength(completed_candles_5m, btc_candles_5m)
             strategy = analyzer.analyze(
                 market=market,
                 current_price=current_price,
-                candles=candles_5m,
+                candles=completed_candles_5m,
                 krw_balance=krw_available,
                 coin_balance=coin_available,
                 avg_buy_price=avg_buy_price,
-                candles_1h=candles_1h,
+                candles_1h=completed_candles_1h,
                 orderbook=orderbook,
                 trade_memory_context=feedback_context,
                 btc_context=f"{btc_status_msg} ({'급락 위험 감지' if is_btc_crashing else '정상 안정세'})",

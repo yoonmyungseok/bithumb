@@ -190,7 +190,12 @@ chart_renderer = ChartRenderer()
 trade_memory = TradeMemoryManager(data_dir=DATA_DIR, exchange_scope="upbit")
 order_journal = OrderJournal(data_dir=DATA_DIR, exchange_scope="upbit")
 order_executor = SafeOrderExecutor(order_journal)
-cooldown_manager = CooldownManager(data_dir=DATA_DIR)
+cooldown_manager = CooldownManager(
+    default_sl_cooldown=StrategyPolicy.COOLDOWN_STOP_LOSS_SEC,
+    default_tp_cooldown=StrategyPolicy.COOLDOWN_TP_SEC,
+    default_time_stop_cooldown=StrategyPolicy.COOLDOWN_TIME_STOP_SEC,
+    data_dir=DATA_DIR,
+)
 risk_guard = RiskGuard(
     min_order_krw=MIN_ORDER_KRW,
     max_open_positions=MAX_OPEN_POSITIONS,

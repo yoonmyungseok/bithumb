@@ -13,7 +13,8 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 from backtest import QuantBacktester
-from strategy_engine import OrderbookFlowTracker, StrategyPolicy, entry_signal, recovery_rebound_signal
+from order_safety import CooldownManager
+from strategy_engine import OrderbookFlowTracker, StrategyPolicy, entry_signal, get_time_stop_bars_5m, recovery_rebound_signal, select_completed_candles
 from trade_memory import TradeMemoryManager
 
 
@@ -287,6 +288,38 @@ class StrategyPolicySSOTTests(unittest.TestCase):
             candidate_trade_value=800_000_000.0,
         )
         self.assertFalse(sig_800m["allow_buy"])
+
+    def test_cooldown_manager_defaults_match_strategy_policy(self):
+        """CooldownManager 기본 쿨다운이 StrategyPolicy SSOT와 일치해야 한다."""
+        cd = CooldownManager()
+        self.assertEqual(cd.default_sl_cooldown, StrategyPolicy.COOLDOWN_STOP_LOSS_SEC)
+        self.assertEqual(cd.default_tp_cooldown, StrategyPolicy.COOLDOWN_TP_SEC)
+        self.assertEqual(cd.default_time_stop_cooldown, StrategyPolicy.COOLDOWN_TIME_STOP_SEC)
+
+    def test_get_time_stop_bars_5m_regime_split(self):
+        """백테스트 타임스탑 봉 수가 레짐별로 분기되어야 한다."""
+        normal_profit, normal_max = get_time_stop_bars_5m("NORMAL")
+        risk_off_profit, _ = get_time_stop_bars_5m("RISK_OFF")
+        self.assertEqual(normal_profit, StrategyPolicy.TIME_STOP_BARS_5M)
+        self.assertEqual(risk_off_profit, StrategyPolicy.TIME_STOP_BARS_5M_RISK_OFF)
+        self.assertEqual(normal_max, StrategyPolicy.TIME_STOP_MAX_HOLD_BARS_5M)
+
+    def test_backtest_entry_uses_completed_candles_only(self):
+        """백테스트 진입 신호는 진행 중 봉을 제외한 확정봉만 사용해야 한다."""
+        chronological = []
+        for i in range(30):
+            p = 1000.0 + i
+            chronological.append({
+                "trade_price": p,
+                "opening_price": p - 1.0,
+                "high_price": p + 2.0,
+                "low_price": p - 2.0,
+                "candle_acc_trade_volume": 1000.0,
+            })
+        window_desc = list(reversed(chronological))
+        completed = select_completed_candles(window_desc, minimum_count=25)
+        self.assertEqual(len(completed), len(window_desc) - 1)
+        self.assertNotEqual(completed[0]["trade_price"], window_desc[0]["trade_price"])
 
 
 if __name__ == "__main__":

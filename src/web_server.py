@@ -467,12 +467,12 @@ class DashboardWebServer:
                     <div class="text-slate-200 font-semibold mb-1">🛡️ 7대 팩터 하드 게이트</div>
                     <div>• MTF 1H + VWAP + MACD 가속도</div>
                     <div>• RSI 골든존 + 볼린저 %B + 롤링 호가 잔량비</div>
-                    <div>• 60점(정상장) / 75점(약세장) 미만 진입 차단</div>
+                    <div>• 60점(정상장) / 70점(약세장) 미만 진입 차단</div>
                 </div>
                 <div class="bg-slate-800/40 p-3 rounded-lg border border-slate-800">
                     <div class="text-slate-200 font-semibold mb-1">⏳ 타임스탑 & 쿨다운</div>
                     <div>• 40~60분간 ±1% 횡보 시 순환매 청산</div>
-                    <div>• 손절/타임스탑 후 25분 쿨다운</div>
+                    <div>• 손절 30분 / 익절 5분 / 타임스탑 10분 쿨다운</div>
                     <div>• 일일 계좌 최대 손실 -5.0% 킬스위치</div>
                 </div>
             </div>
@@ -536,7 +536,7 @@ class DashboardWebServer:
 
                     // Update BTC Market Regime Indicators
                     const btcRegime = String(data.btc_regime || 'NORMAL').toUpperCase();
-                    const btcDesc = data.btc_regime_desc || (btcRegime === 'RISK_OFF' ? '🟡 약세 조정장 (진입 75점+)' : (btcRegime === 'CRASH' ? '🚨 급락 경보 (매수 차단)' : '🟢 정상장 (진입 60점+)'));
+                    const btcDesc = data.btc_regime_desc || (btcRegime === 'RISK_OFF' ? '🟡 약세 조정장 (진입 70점+)' : (btcRegime === 'CRASH' ? '🚨 급락 경보 (매수 차단)' : '🟢 정상장 (진입 60점+)'));
                     const btcBadgeCls = (btcRegime === 'RISK_OFF') ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40' : ((btcRegime === 'CRASH') ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40' : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40');
 
                     const regBadgeEl = document.getElementById('btc_regime_badge');

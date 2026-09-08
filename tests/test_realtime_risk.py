@@ -257,6 +257,47 @@ class RealtimeRiskAndIndicatorTests(unittest.TestCase):
         raw_obj = types.SimpleNamespace()
         self.assertEqual(engine._resolve_exchange_name(raw_obj), "bithumb")
 
+    def test_realtime_tick_skips_manual_position(self):
+        from realtime_engine import RealtimeRiskEngine
+
+        submit_calls = []
+
+        class DummyExecutor:
+            def submit(self, *args, **kwargs):
+                submit_calls.append((args, kwargs))
+                return {"uuid": "test"}
+
+        journal = types.SimpleNamespace(
+            orders=[],
+            has_active_exit_order=lambda _m: False,
+            exchange_scope="bithumb",
+        )
+        tracker = types.SimpleNamespace(
+            is_exiting=lambda _m: False,
+            get_entry_time=lambda _m: 0.0,
+        )
+        exchange = types.SimpleNamespace(
+            get_balances=lambda: {
+                "BTC": {"balance": 1.0, "locked": 0.0, "avg_buy_price": 100_000_000.0},
+            },
+            get_korean_name=lambda _m: "비트코인",
+        )
+        engine = RealtimeRiskEngine(
+            exchange_factory=lambda: exchange,
+            order_executor=DummyExecutor(),
+            order_journal=journal,
+            risk_manager=types.SimpleNamespace(),
+            cooldown_manager=types.SimpleNamespace(),
+            trade_memory=types.SimpleNamespace(),
+            trailing_tracker=tracker,
+            telegram=types.SimpleNamespace(),
+            min_order_krw=5000.0,
+            latest_strategies={},
+        )
+
+        engine.on_price_tick("KRW-BTC", 90_000_000.0)
+        self.assertEqual(submit_calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

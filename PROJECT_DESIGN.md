@@ -1,4 +1,4 @@
-# Bithumb & Upbit AI Pro Quant Trading Bot (v8.41)
+# Bithumb & Upbit AI Pro Quant Trading Bot (v8.42)
 
 본 문서는 `c:\AI\bithumb` 디렉토리에 위치한 빗썸(Bithumb) 및 업비트(Upbit) 듀얼 거래소 지원 AI 퀀트 트레이딩 봇의 프로젝트 설명 및 아키텍처 설계서입니다. 이 문서는 다른 AI 에이전트 또는 개발자가 프로젝트의 전반적인 구조와 핵심 로직을 빠르고 명확하게 파악할 수 있도록 작성되었습니다.
 
@@ -32,7 +32,7 @@
   - **약세장 최소 거래대금 제한 하향 (`MIN_TRADE_VALUE_RISK_OFF=10억 원`, v8.41)**: 약세장(RISK_OFF) 및 급락 후 반등(RECOVERY_REBOUND) 후보의 24시간 최소 거래대금 기준을 기존 20억 원에서 일반장 기준과 동일한 10억 원(`1_000_000_000.0`)으로 현실화하여 유망 알트코인의 반등 포착 기회를 확대한다.
   - **2중 호가 안전망 (Fail-Closed)**: 매수/매도 스프레드 $\le 0.35\%$, 상위 5호가 누적 매수 잔량 $\ge 2,000$만 원 검증
   - **결정론적 기술지표 및 6중 리스크 안전 가드**: 볼린저 밴드(일반장 %B 0.20~0.72, `RISK_OFF`는 하드게이트 전체 통과 시 0.75까지), RSI 상한 72.0, 6중 AI 긴급 탈출 가드(15분 초기 보호, -1.20% 미세손실 완화, 1H MTF 우상향 보호), 7대 팩터 복합 알파 게이트 (LLM 환각 및 섣부른 조기 손절 차단)
-  - **0.1초 초저지연 실시간 리스크 엔진**: WebSocket 틱 기반 0.1초 즉각 손절, 1차 50% 분할익절, 잔여 2차(25%) 및 가속 트레일링 스탑
+  - **0.1초 초저지연 실시간 리스크 엔진**: WebSocket 틱 기반 0.1초 즉각 손절, 1차 50% 분할익절, 잔여 2차(25%) 및 가속 트레일링 스탑. `position_guard.is_exit_allowed()`로 수동·격리 종목(`KRW-HOLO` 등)은 5분 사이클과 동일하게 실시간 자동 청산에서 제외한다.
   - **손익비 최적화 및 조기 본전 보장(Break-Even)**: 1차 분할익절 도달 즉시 잔여 수량 손절선을 평단가+0.3%(수수료 보장)로 락인
   - **대세 상승장(BULL_TREND) 파라미터 정상화**: 과다 손절 방어(손절 -2.0%), 선제적 조기 익절(+3.0%), 알파 65점 엄선, 타임스탑 120분 적용
   - **자산 연동형 3단계 스마트 Auto-Scaling**: 계좌 총 자산 규모에 따른 보유 슬롯(2~4개) 및 비중(25~50%) 자동 전환
@@ -187,6 +187,8 @@ c:\AI\bithumb\
 - **동적 최우선 호가 추적 재정정 (`RealtimeRiskEngine.requote_pending_orders`)**: 미체결 매수 주문이 시세 상승으로 뒤처질 때 유효 범위(+0.8% 이내) 내에서 최우선 매수 호가로 자동 정정하여 체결 기회 상실을 방지합니다.
 
 ### 3.8. 백테스팅 및 데이터 엄밀성 검증 체계 (Backtesting & Data Rigor Engine)
+- **확정봉 진입 SSOT**: `QuantBacktester`는 `select_completed_candles()`로 진행 중 5분봉을 제외한 뒤 `entry_signal()`을 호출한다(실거래 `TradingCycleEngine`과 동일).
+- **레짐별 타임스탑·쿨다운**: 백테스트 타임스탑은 `get_time_stop_bars_5m()`·`StrategyPolicy.COOLDOWN_*`를 사용한다. MOMENTUM/SWING/AI/4H 필수 게이트는 1차 범위 밖(별도 확장 예정).
 - **Walk-Forward 시계열 롤링 전진 검증 (`QuantBacktester.run_walk_forward_backtest`)**: 캔들 데이터를 N개 롤링 윈도우로 분할하여 In-Sample 훈련 및 Out-of-Sample 전진 검증을 반복함으로써 전략의 시계열 과최적화를 차단하고 견고성 지표(Robustness Score)를 측정합니다.
 - **몬테카를로(Monte Carlo) 1,000회 부트스트랩 리샘플링 (`QuantBacktester.run_monte_carlo_simulation`)**: 체결 손익의 무작위 셔플링을 통해 95% 신뢰수준 최대 낙폭(MDD VaR 95%)과 최악의 시나리오 및 파산 위험률(Risk of Ruin)을 통계적으로 산출합니다.
 - **파라미터 민감도 그리드 분석기 (`QuantBacktester.run_sensitivity_analysis`)**: 리스크 비율 및 청산 파라미터 변화에 따른 계좌 성능 민감도를 비교 평가합니다.
@@ -197,9 +199,10 @@ c:\AI\bithumb\
 
 ### 3.10. 재진입 쿨다운, 당일 손실 한도 및 청산 가격 필터링 (`CooldownManager`)
 - **시간 및 가격 2중 쿨다운**: 포지션 청산의 **REST 확정 체결 증가분** 뒤에만 기록합니다. 따라서 주문 ACK·미체결·불완전 WebSocket 이벤트가 손익·쿨다운을 앞당기지 않으며, 타임스탑 횡보 및 트레일링 익절 후 고점 추격 휩쏘를 방어합니다.
+- **StrategyPolicy SSOT 쿨다운**: `CooldownManager` 기본값은 `COOLDOWN_STOP_LOSS_SEC=1800`(30분), `COOLDOWN_TP_SEC=300`(5분), `COOLDOWN_TIME_STOP_SEC=600`(10분)을 따른다. `main.py`·`main_upbit.py`는 동일 상수를 명시 주입한다.
 - **손절 후 30분 쿨다운 및 떨어지는 칼날 방어**: 손절(STOP_LOSS, HARD_STOP, 손절 방어, AI 비상탈출) 청산 발생 시 기본 30분(1,800초)의 재진입 쿨다운을 적용합니다. 또한 쿨다운 만료 후라도 직전 손절가 대비 -1.5% 미만으로 추가 하락 중인 경우(칼날 잡기) 지지선 확인 전까지 진입을 차단합니다.
 - **당일 동일 종목 2회 손절 시 당일 거래 완전 차단 (Daily Market Blacklist)**: 당일 특정 종목에서 손절이 2회 누적되면 금일 23:59:59 KST 자정까지 해당 종목에 대한 신규 진입을 전면 차단하여 FLOCK/CHIP 등의 연속 손실 누적을 원천 방어합니다.
-- **Gemini AI 단기 과열 하드 가드레일**: AI가 `ACTION: BUY`를 제시하더라도 5분봉 기술 지표(RSI > 65.0, 볼린저 %B > 0.88, MA20 이격도 > 103.5%, 체결강도 > 350%) 과열 감지 시 시스템이 `HOLD`로 강제 오버라이드하여 상투 추격 매수를 원천 차단합니다.
+- **Gemini AI 단기 과열 하드 가드레일**: AI가 `ACTION: BUY`를 제시하더라도 5분봉 기술 지표 과열 감지 시 `HOLD`로 강제 오버라이드한다. 일반 경로는 RSI > 65.0·볼린저 %B > 0.88·MA20 이격도 > 103.5%·체결강도 > 350%를 사용하고, `MOMENTUM_BREAKOUT`은 RSI 상한을 `MOMENTUM_BREAKOUT_RSI_MAX`(78.0)까지 허용한다. Gemini API 실패 시 로컬 폴백은 `get_alpha_buy_threshold()`·`get_momentum_breakout_alpha_threshold()`를 따른다(60점 고정 BUY 금지).
 - **트레일링 청산 뒤 회복 확인**: 트레일링 청산 뒤에는 청산가 대비 최소 +1.5% 회복 전까지 재진입을 차단합니다. 청산가보다 낮은 가격의 재진입도 하락 재개 추격으로 간주해 허용하지 않습니다.
 - **영속 저장 및 메모리 동기화**: `cooldown_state.json`에 일일 손절 횟수 및 쿨다운 상태가 영구 기록되어 봇 재시작 시에도 지속 유지되며, KST 자정 시 일일 손절 카운트가 자동 초기화됩니다.
 - **연속 손실 리스크 관리**: 연속 손절 시 `get_risk_scale_factor()`(1회: 0.8, 2회 이상: 0.5) 자본 디스케일링 및 종목별 당일 한도 통제가 유기적으로 결합되어 계좌 리스크를 철저히 방어합니다.

@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from state_store import load_json_with_backup_recovery, write_json_atomically
+from strategy_engine import StrategyPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +45,9 @@ class CooldownManager:
 
     def __init__(
         self,
-        default_sl_cooldown: float = 1800.0,  # 기본 손절 쿨다운 30분 (연속 손절 방지)
-        default_tp_cooldown: float = 1800.0,  # 익절 쿨다운 30분
-        default_time_stop_cooldown: float = 2700.0,  # 타임스탑 쿨다운 45분
+        default_sl_cooldown: float = StrategyPolicy.COOLDOWN_STOP_LOSS_SEC,
+        default_tp_cooldown: float = StrategyPolicy.COOLDOWN_TP_SEC,
+        default_time_stop_cooldown: float = StrategyPolicy.COOLDOWN_TIME_STOP_SEC,
         max_daily_losses_per_market: int = 2,  # 당일 종목당 최대 허용 손절 횟수 (2회 이상 시 당일 차단)
         state_file: str | None = None,
         data_dir: str | None = None,
