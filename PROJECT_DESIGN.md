@@ -1,4 +1,4 @@
-# Bithumb & Upbit AI Pro Quant Trading Bot (v8.49)
+# Bithumb & Upbit AI Pro Quant Trading Bot (v8.50)
 
 본 문서는 `c:\AI\bithumb` 디렉토리에 위치한 빗썸(Bithumb) 및 업비트(Upbit) 듀얼 거래소 지원 AI 퀀트 트레이딩 봇의 프로젝트 설명 및 아키텍처 설계서입니다. 이 문서는 다른 AI 에이전트 또는 개발자가 프로젝트의 전반적인 구조와 핵심 로직을 빠르고 명확하게 파악할 수 있도록 작성되었습니다.
 
@@ -10,13 +10,13 @@
 
 ## 1. 프로젝트 개요
 
-이 프로젝트는 빗썸(Bithumb)의 Groq AI와 업비트(Upbit)의 Google Gemini AI를 실시간 데이터와 결합하여, 유망한 단타/스윙 종목을 자동으로 탐색하고 매매를 수행하는 **듀얼 거래소 독립형 AI 퀀트 트레이딩 시스템**입니다.
+이 프로젝트는 빗썸(Bithumb)과 업비트(Upbit)의 서로 분리된 Google Gemini AI를 실시간 데이터와 결합하여, 유망한 단타/스윙 종목을 자동으로 탐색하고 매매를 수행하는 **듀얼 거래소 독립형 AI 퀀트 트레이딩 시스템**입니다.
 
 - **언어 및 환경**: Python 3, Windows 환경 (`.bat` 및 `process_manager.py` 기반 구동)
 - **핵심 기술**: 
   - 빗썸 REST API & WebSocket (v1/v2)
   - 업비트 REST API & WebSocket (Public: 시세/체결, Private: myOrder/myAsset, HS512 JWT + unencoded query string SHA-512 hash, `identifier` 멱등성)
-  - 빗썸 Groq API / 업비트 Google Gemini API (Flash 모델군), Telegram API
+  - 빗썸·업비트 분리 Google Gemini API (Flash-Lite 모델군), Telegram API
 - **주요 전략 및 아키텍처**: 
   - **다중 시간대(MTF) 분석**: 1시간봉 대세 추세 + 5분봉 정밀 타점 정렬
 - **거래대금 및 모멘텀 기반 동적 시장 스크리닝**: 모멘텀 후보를 `EARLY`(당일 상승률 +3% 이하의 RS 확인 초입)와 `EXTENDED`(확장 후반) 단계로 기록한다. 신규 주문은 `EARLY`에서만 소액으로 허용하고, `EXTENDED`는 분석·감사만 수행해 후발 추격을 방지한다. 동일 5분 사이클에서는 모멘텀 신규 주문을 1건으로 제한한다.
@@ -42,32 +42,32 @@
   - **7중 KRW-HOLO 수동 종목 절대 보호망**: 업비트 `KRW-HOLO`는 스크리닝, 주문, 긴급매도, 자산평가, 실시간 청산, 시트, 대시보드에서 100% 영구 제외
   - **대시보드 비정상 운영 로그 역방향 청크 스캔 (v8.40)**: 트레이딩 봇의 정상 사이클(`INFO`) 로그가 대량 누적되어도 이전 WARNING/ERROR/CRITICAL이 누락되지 않도록 파일 끝에서 역방향으로 256KB 단위 청크 스캔(최대 10MB, 소스당 최소 20건 목표)을 수행하여 최신 비정상 운영 로그를 확실히 수집 및 최신순 노출한다.
 
-### 빗썸 Groq / 업비트 Gemini AI Provider 분리 정책 (v8.27)
+### 빗썸 / 업비트 Gemini AI Provider 분리 정책 (v8.50)
 
-- 빗썸 AI 분석은 `BITHUMB_AI_PROVIDER=groq`, `BITHUMB_GROQ_API_KEY`, `BITHUMB_GROQ_FAST_MODEL`, `BITHUMB_GROQ_DEEP_MODEL`을 통해서만 활성화한다. 빗썸은 공용·업비트 Gemini 키를 읽거나 사용하지 않는다.
-- 고정 모델 매핑은 신규 진입 분석·보유 포지션 평가·후보 랭킹·거시 레짐에 `FAST_TRADING=openai/gpt-oss-20b`, 빗썸 일일 시황 브리핑에 `DEEP_BRIEFING=openai/gpt-oss-120b`이다.
-- `FAST_TRADING`의 429, 타임아웃, 5xx, 잘못된 JSON, JSON Schema 오류 또는 구성 누락 시 120B 승격·로컬 BUY 폴백 없이 빗썸 신규 BUY를 fail-closed로 차단한다. 기존 포지션의 주문·체결 대사·리스크 보호·청산은 계속 동작한다.
-- `DEEP_BRIEFING` 실패에 한해서만 `FAST_TRADING` 20B로 요약 브리핑을 한 번 폴백할 수 있다. 브리핑 실패는 주문 정책을 바꾸지 않는다.
-- 업비트는 기존 `UPBIT_GEMINI_API_KEY`와 Gemini Provider만 사용한다. 거래소 REST/Private WebSocket, 주문 실행, 주문 저널 및 확정 체결 대사 계약은 Provider 전환 범위 밖이다.
-- `ai_provider.py`는 Groq strict JSON Schema와 로컬 공통 스키마 검증을 적용하며, Provider·모델·거래소별 호출량·성공/429/오류·평균 지연을 대시보드의 표시 전용 확장으로 분리 계측한다. 인증 키와 응답 원문은 계측·로그에 저장하지 않는다.
-- 빗썸의 실행 로그·대시보드 제목·AI 분석 결과 표기는 `Groq`를 사용한다. 기존 `gemini_*` 대시보드 DOM/API 키와 `GeminiAnalyzer` 클래스명은 업비트 및 외부 응답 하위 호환을 위해 내부 계약으로만 유지하며, 빗썸 사용자 표시에는 노출하지 않는다.
-- 빗썸 Groq 호출 계측은 `data/groq_telemetry.json`에 원자 저장·복원한다. 저장 시 프로세스 간 파일 잠금 아래 최신 디스크 통계와 현재 프로세스의 미반영 증분만 병합하므로, 재시작 또는 중복 프로세스가 호출량을 0으로 덮어쓰지 않는다. 매 응답의 `x-ratelimit-reset-requests` 헤더를 저장해 실제 RPD 리셋 예정 시각을 대시보드에 표시하며, KST 자정 추정으로 카운터를 초기화하지 않는다. 해당 헤더가 가리킨 시각이 지난 뒤에만 새 쿼터 창으로 전환한다. 계측 파일 오류는 주문·체결·기존 포지션 보호에 영향을 주지 않는다.
-- `GroqProvider.SYSTEM_INSTRUCTION`은 20B의 거래·보유평가·후보랭킹·거시진단과 120B의 브리핑(20B 브리핑 폴백 포함) 모두에 system 메시지로 먼저 전달된다. 이 지침은 빗썸 전용 데이터 격리, 제공 수치만 사용, 분석 보조의 비주문 권한, ACK 비체결, 불확실 신규 BUY의 `HOLD`, 비밀정보 비출력, 요청별 JSON/한국어 형식 준수를 강제한다. 개별 분석 프롬프트는 이 공통 지침을 약화하거나 우회할 수 없다.
+- 빗썸 AI 분석은 `BITHUMB_AI_PROVIDER=gemini`와 `BITHUMB_GEMINI_API_KEY`를 통해서만 활성화한다. 공용 `GEMINI_API_KEY`, `UPBIT_GEMINI_API_KEY`, Groq 키는 fallback으로도 읽거나 사용하지 않는다.
+- `BithumbGeminiProvider`는 업비트 `GeminiProvider`와 별도 인스턴스·키·모델 캐시·사용량 파일을 사용한다. 빗썸 분석 모델은 업비트와 같은 `gemini-3.5-flash-lite`로 고정하며, Google Generative Language API의 `ListModels`에 해당 모델의 `generateContent` 지원이 확인될 때만 선택한다. 목록 조회 실패 또는 해당 모델 부재 시 latest 별칭·다른 모델로 대체 호출하지 않는다.
+- 구성 누락, ListModels 실패, 429/4xx/5xx, 타임아웃·네트워크 예외, 빈 응답, 잘못된 JSON 또는 로컬 JSON Schema 오류는 일반 후보·`MOMENTUM_BREAKOUT`·`RECOVERY_REBOUND`·`NEW_LISTING`을 포함한 모든 빗썸 신규 BUY를 fail-closed로 차단한다. 다른 모델 승격·로컬 BUY 폴백·다른 거래소 키 재사용은 허용하지 않는다. 기존 포지션의 주문·체결 대사·리스크 보호·청산은 계속 동작한다.
+- 업비트는 `UPBIT_GEMINI_API_KEY`와 `GeminiProvider`만 사용한다. HTTP 4xx/429/5xx, 타임아웃·네트워크 예외, 빈/스키마 오류, 가용 모델 없음 및 신규 진입용 쿼터 소진은 `data/upbit/gemini_entry_safety.json`에 기록하고 모든 신규 BUY를 fail-closed로 차단한다. 로컬 퀀트는 기존 보유 포지션의 보호·청산 보조에만 사용하며 로컬 BUY fallback은 허용하지 않는다. 거래소 REST/Private WebSocket, 주문 실행, 주문 저널 및 확정 체결 대사 계약은 Provider 전환 범위 밖이다.
+- 빗썸 Gemini 호출 계측은 `data/gemini_bithumb_telemetry.json`에 원자 저장·복원한다. 모델별 호출량·성공·429·오류·캐시·마지막 신규 BUY 안전 상태를 분리 보관하며, PT 자정 쿼터 리셋 정보를 표시한다. 저장 실패는 주문·체결·기존 포지션 보호를 막지 않는다.
+- `BithumbGeminiProvider.SYSTEM_INSTRUCTION`은 거래소 데이터·키 격리, 제공 수치만 사용, 비주문 권한, ACK 비체결, 불확실 BUY의 `HOLD`, 레짐·후보 경로·신규상장 정책·안전 차단, JSON·한국어 응답 및 비밀정보 비출력을 강제한다. 기존 `gemini_*` 대시보드 DOM/API 키는 하위 호환을 위해 유지하되 표시는 `빗썸 Gemini AI`를 사용한다.
 
-### 빗썸 Groq FAST 런타임 장애 신규 진입 차단 (v8.32)
+### 빗썸 Gemini 런타임 장애 신규 진입 차단 (v8.50)
 
-- `FAST_TRADING`의 HTTP 4xx/429/5xx, 타임아웃, 네트워크 예외, 빈 응답, 잘못된 JSON 또는 스키마 오류는 `data/groq_telemetry.json`의 `entry_safety`에 원자 저장한다. 프로세스 재시작 뒤에도 마지막 FAST 실패 상태를 복원하며, 이전 계측 파일의 마지막 4xx/5xx도 보수적으로 신규 BUY 차단으로 승격한다.
+- Gemini `ListModels` 또는 Flash-Lite `generateContent`의 HTTP 4xx/429/5xx, 타임아웃, 네트워크 예외, 빈 응답, 잘못된 JSON 또는 스키마 오류는 `data/gemini_bithumb_telemetry.json`의 `entry_safety`에 원자 저장한다. 프로세스 재시작 뒤에도 마지막 실패 상태를 복원한다.
 - 이 상태는 표준 AI 진입뿐 아니라 `MOMENTUM_BREAKOUT` 직접 진입과 `RECOVERY_REBOUND`에도 공통으로 적용된다. 기존 보유 포지션의 REST 주문 대사, 체결 확인, 손절·트레일링·긴급 청산은 차단하지 않는다.
-- 신규 BUY 차단은 정상적인 FAST JSON Schema 응답이 확인된 경우에만 해제한다. 120B 브리핑 성공·실패는 이 상태를 바꾸지 않으며, FAST 실패 시 120B 승격 또는 로컬 BUY 폴백은 허용하지 않는다.
-- `build_bithumb_analyzer()`는 Groq **설정 오류**가 있을 때만 `None`을 반환한다. FAST 런타임 장애(`entry_safety`)는 `get_bithumb_ai_entry_block_reason()`과 주문 게이트에서만 신규 BUY를 차단하고, 분석기는 유지해 FAST 재시도로 자동 복구할 수 있게 한다.
-- 운영 계측에는 마지막 오류의 목적, 모델, HTTP 상태 및 제한된 오류 코드/타입만 저장한다. API 키, 프롬프트, 오류 메시지 원문, 계좌·주문 식별자는 로그·대시보드·영속 파일에 저장하지 않는다. Groq 거시 진단이 실패하면 `CAUTION_PULLBACK` 방어 상태와 `AI_UNAVAILABLE` 표기를 사용해 정상 레짐으로 오인하지 않는다.
+- 신규 BUY 차단은 정상적인 Gemini JSON Schema 응답이 확인된 경우에만 해제한다. 브리핑 성공·실패는 이 상태를 바꾸지 않으며, 실패 시 고위 모델 승격 또는 로컬 BUY 폴백은 허용하지 않는다.
+- `build_bithumb_analyzer()`는 Gemini **설정 오류**가 있을 때만 `None`을 반환한다. 런타임 장애(`entry_safety`)는 `get_bithumb_ai_entry_block_reason()`과 주문 게이트에서만 신규 BUY를 차단하고, 분석기는 유지해 다음 정상 분석으로 자동 복구할 수 있게 한다.
+- 운영 계측에는 마지막 오류의 목적, 모델, HTTP 상태 및 제한된 오류 코드/타입만 저장한다. API 키, 프롬프트, 오류 메시지 원문, 계좌·주문 식별자는 로그·대시보드·영속 파일에 저장하지 않는다. Gemini 거시 진단이 실패하면 `CAUTION_PULLBACK` 방어 상태와 `AI_UNAVAILABLE` 표기를 사용해 정상 레짐으로 오인하지 않는다.
 
-### 빗썸 Groq JSON Schema 안정화 및 진단 로깅 보강 (v8.35)
+### 업비트 Gemini 런타임 장애 신규 진입 차단 (v8.50)
 
-- Groq Structured Outputs의 strict 모드는 **object 루트**만 허용한다. 후보 랭킹 응답은 `{"rankings":[...]}` 래퍼 객체로 감싸고, Gemini 경로의 순수 배열 응답도 파싱 호환을 유지한다.
-- Groq 인퍼런스 서버의 조기 HTTP 400(`json_validate_failed`) 드랍을 방지하기 위해, 신규 진입 `analyze_market()`을 포함한 모든 FAST JSON Schema 호출(`complete_json`)에 `strict=false` (best-effort 가이던스)를 일관되게 적용한다. 수신된 JSON은 로컬 `_parse_json_text()` 및 `_validate_schema()`를 통해 필수 필드와 타입을 엄격히 재검증하며, 검증 실패 시 fail-closed로 신규 BUY를 안전 차단한다.
-- `_call_gemini_json()`의 빈 스키마 폴백은 Groq 400을 피하도록 `additionalProperties:false`와 `required:[]`를 포함한 object 스키마를 사용한다.
-- Groq HTTP 4xx 오류 발생 시 `error.code` 외에 민감정보(API 키, 토큰, 계정정보 등)가 마스킹된 안전한 오류 요약(`_safe_error_summary`)을 로그에 함께 기록하여 신속한 원인 진단을 지원한다.
+- 업비트도 Gemini HTTP 4xx/429/5xx, 타임아웃·네트워크 예외, 빈/스키마 오류와 가용 모델 부재에서 `GeminiProvider.is_entry_fail_closed`를 적용한다. 실패는 `data/upbit/gemini_entry_safety.json`에 기록하며, `TradingRuntimeConfig.new_buy_block_reason`이 표준·모멘텀·반등·신규상장을 포함한 모든 신규 BUY 경로를 차단한다.
+- 신규 진입용 AI 쿼터가 소진된 경우도 로컬 퀀트 BUY로 전환하지 않고 `HOLD`로 끝낸다. 기존 보유 포지션의 손절·트레일링·청산·REST/Private WebSocket 체결 대사는 계속 동작하며, AI 보유 평가 실패 시의 로컬 보호 규칙은 유지한다.
+
+### 빗썸 Gemini JSON Schema 검증 및 진단 로깅 (v8.50)
+
+- Gemini `generateContent`의 수신 JSON은 로컬 `_parse_json_text()` 및 `_validate_schema()`를 통해 필수 필드와 타입을 엄격히 재검증하며, 검증 실패 시 fail-closed로 신규 BUY를 안전 차단한다.
+- Gemini HTTP 오류에서는 오류 코드/상태만 제한적으로 기록하며 API 키, 토큰, 계정정보, 프롬프트·응답 원문을 로그·대시보드·저장 파일에 남기지 않는다.
 
 ---
 
@@ -177,7 +177,7 @@ c:\AI\bithumb\
 5. **총 자산 및 보유목록 평가**: `calculate_total_equity`, `get_held_markets`, `build_positions_data`에서 계좌에 HOLO가 존재해도 평가금액을 0원으로 처리하고 목록에서 100% 제외.
 6. **실시간 청산 및 긴급 전량매도 (Panic Sell)**: `RealtimeRiskEngine`의 틱 청산 및 `BotController.execute_panic_sell` 실행 시 HOLO는 매도 대상에서 영구 제외되어 사용자 수동 물량을 완벽히 보존.
 - **7대 팩터 앙상블 스코어러 (`calculate_composite_alpha_score`)**: MTF 1H(15점) + VWAP(15점) + MACD 가속도(15점) + RSI 골든존(15점) + 볼린저 밴드(15점) + 수급/호가잔량비(15점) + 볼륨 스파이크(10점)를 100점 만점으로 산출합니다. 실제 승인선은 `StrategyPolicy` 단일 기준을 사용하며, 일반장 NORMAL 60점·BULL_TREND 65점·RISK_OFF 70점, 심야 NORMAL/RISK_OFF 75점·BULL_TREND 70점입니다.
-- **AI 매수 분석 프롬프트 동기화**: AI 요청에는 해당 사이클의 BTC 레짐·심야 여부·후보 유형·진입 경로와 `StrategyPolicy`로 계산한 현행 알파 기준을 함께 전달합니다. 빗썸 Groq는 공통 시스템 지침과 함께, 업비트 Gemini는 기존 분석 프롬프트 계약과 함께 동작합니다. AI는 판단 보조이며, 로컬 하드 게이트·REST 주문 대사·WebSocket 상태·쿨다운·주문 저널·리스크 한도·호가 영향 검증을 우회할 수 없습니다. 누락 또는 모순 데이터는 `HOLD`로 응답해야 하며, 응답 JSON은 `ALPHA_SCORE`와 근거를 포함합니다.
+- **AI 매수 분석 프롬프트 동기화**: AI 요청에는 해당 사이클의 BTC 레짐·심야 여부·후보 유형·진입 경로와 `StrategyPolicy`로 계산한 현행 알파 기준을 함께 전달합니다. 빗썸 Gemini는 전용 공통 시스템 지침과 함께, 업비트 Gemini는 기존 분석 프롬프트 계약과 함께 동작합니다. AI는 판단 보조이며, 로컬 하드 게이트·REST 주문 대사·WebSocket 상태·쿨다운·주문 저널·리스크 한도·호가 영향 검증을 우회할 수 없습니다. 누락 또는 모순 데이터는 `HOLD`로 응답해야 하며, 응답 JSON은 `ALPHA_SCORE`와 근거를 포함합니다.
 
 ### 3.7. 체결 및 마이크로스트럭처 제어 엔진 (Execution & Microstructure Engine)
 - **실시간 슬리피지(Slippage Bps) 정밀 추적기 (`OrderFillProcessor`)**: 주문 시점의 목표 가격(`expected_price`)과 실제 거래소 체결 단가(`effective_price`) 간의 편차를 bps 단위로 실시간 계산하고, 허용 한도(30bps) 초과 시 이상 슬리피지를 감지 및 기록합니다.

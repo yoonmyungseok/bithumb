@@ -2047,9 +2047,12 @@ class TradingCycleEngine:
         is_bot_paused = self.config.is_bot_paused()
         is_entry_ready = ctx.order_journal.is_entry_ready()
 
-        # [무료 티어 500 RPD 쿼터 가드] 당일 누적 사용량에 따른 사이클당 AI 심층 분석 예산 배정
-        from gemini_telemetry import GeminiTelemetry
-        quota_budget = GeminiTelemetry.get_daily_quota_budget()
+        # 업비트 쿼터 가드와 빗썸 Gemini 전용 계측을 섞지 않는다.
+        if getattr(profile, "exchange_key", "") == "bithumb":
+            quota_budget = {"is_critical": False, "is_tight": False}
+        else:
+            from gemini_telemetry import GeminiTelemetry
+            quota_budget = GeminiTelemetry.get_daily_quota_budget()
         if quota_budget.get("is_critical"):
             max_ai_candidates = 0
             logger.info("🛑 [AI 쿼터 가드] 일일 호출 450회(90%) 도달 ➜ 신규 매수 AI 분석 차단 (100% 로컬 퀀트 엔진 가동)")

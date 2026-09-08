@@ -191,6 +191,7 @@ class TestGeminiTelemetry(unittest.TestCase):
         self.assertIn("gemini-3.1-flash-lite-preview", snap["models_by_id"])
         self.assertIn("gemini-3.7-flash", snap["models_by_id"])
         self.assertIn("list_models", snap["models_by_id"])
+        self.assertEqual(sum(item["calls"] for item in snap["models_by_id"].values()), snap["api_calls"])
         self.assertEqual(snap["models"]["gemini-3.1-flash-lite"]["calls"], 1)
         self.assertEqual(snap["quota_buckets"]["gemini-3.7-flash"]["calls"], 1)
 

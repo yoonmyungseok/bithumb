@@ -539,8 +539,8 @@ class BotController:
                 "daily_stats_history": daily_history_data,
                 "api_usage": {
                     "exchange": exchange_telemetry,
-                    # 기존 gemini 키는 업비트 호환용으로 보존하고, 빗썸은 확장 키로 Groq를 노출한다.
-                    "gemini": ai_telemetry if "업비트" in self.exchange_name else {},
+                    # 기존 API 키와 응답 구조를 유지하면서 거래소별 Gemini 계측을 각자 노출한다.
+                    "gemini": ai_telemetry,
                     "ai_provider": ai_telemetry,
                 },
             }
@@ -620,7 +620,7 @@ class BotController:
             "ai_provider_telemetry": ai_stats,
             "api_usage": {
                 "exchange": exchange_stats,
-                "gemini": ai_stats if "업비트" in self.exchange_name else {},
+                "gemini": ai_stats,
                 "ai_provider": ai_stats,
             },
             "slippage_enforcement": slippage_readiness.to_dict(),
@@ -702,7 +702,7 @@ class BotController:
         return "\n".join(lines)
 
     def _get_ai_telemetry(self) -> dict[str, Any]:
-        """거래소별 AI Provider를 분리해 빗썸 Groq와 업비트 Gemini를 혼합하지 않습니다."""
+        """거래소별 AI Provider를 분리해 빗썸·업비트 Gemini 계측을 혼합하지 않습니다."""
         if "빗썸" in self.exchange_name:
             return AIProviderTelemetry.snapshot("bithumb")
         return GeminiTelemetry.snapshot().to_dict()

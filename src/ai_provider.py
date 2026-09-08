@@ -76,14 +76,14 @@ class AIProviderTelemetry:
         return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
 
     @classmethod
-    def configure(cls, data_dir: str | None = None, storage_filename: str = "groq_telemetry.json") -> None:
-        """빗썸 데이터 경로를 바인딩하고 Groq가 준 쿼터 창의 누적 사용량을 복원한다."""
+    def configure(cls, data_dir: str | None = None, storage_filename: str = "gemini_bithumb_telemetry.json") -> None:
+        """빗썸 전용 데이터 경로를 바인딩하고 Provider 사용량·안전 상태를 복원한다."""
         with cls._lock:
             if data_dir:
                 cls._storage_path = os.path.join(data_dir, storage_filename)
             else:
                 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-                cls._storage_path = os.path.join(project_root, "data", "groq_telemetry.json")
+                cls._storage_path = os.path.join(project_root, "data", "gemini_bithumb_telemetry.json")
             cls._configured = True
             cls._current_date = cls._today_kst()
             cls._reset_at = 0.0
@@ -122,7 +122,7 @@ class AIProviderTelemetry:
 
     @classmethod
     def _load_state_locked(cls) -> None:
-        """KST 자정이 아닌 Groq 응답 헤더의 쿼터 창을 기준으로 기록을 복원한다."""
+        """Provider가 알려 준 쿼터 창 또는 Gemini PT 자정 기준 기록을 복원한다."""
         if not cls._storage_path or not os.path.exists(cls._storage_path):
             return
         try:
@@ -142,6 +142,7 @@ class AIProviderTelemetry:
                     "success": max(0, int(item.get("success", 0))),
                     "rate_limited": max(0, int(item.get("rate_limited", 0))),
                     "errors": max(0, int(item.get("errors", 0))),
+                    "cache_hits": max(0, int(item.get("cache_hits", 0))),
                     "latency_total_ms": max(0.0, float(item.get("latency_total_ms", 0.0))),
                     "last_event": str(item.get("last_event", ""))[:200],
                     "last_event_at": max(0.0, float(item.get("last_event_at", 0.0))),
@@ -205,6 +206,7 @@ class AIProviderTelemetry:
                         "provider": provider, "exchange": exchange, "model": model,
                         "calls": stat["calls"], "success": stat["success"],
                         "rate_limited": stat["rate_limited"], "errors": stat["errors"],
+                        "cache_hits": stat.get("cache_hits", 0),
                         "latency_total_ms": stat["latency_total_ms"],
                         "last_event": stat["last_event"], "last_event_at": stat["last_event_at"],
                     }
@@ -276,6 +278,7 @@ class AIProviderTelemetry:
             stats[key] = {
                 "calls": max(0, int(item.get("calls", 0))), "success": max(0, int(item.get("success", 0))),
                 "rate_limited": max(0, int(item.get("rate_limited", 0))), "errors": max(0, int(item.get("errors", 0))),
+                "cache_hits": max(0, int(item.get("cache_hits", 0))),
                 "latency_total_ms": max(0.0, float(item.get("latency_total_ms", 0.0))),
                 "last_event": str(item.get("last_event", ""))[:200],
                 "last_event_at": max(0.0, float(item.get("last_event_at", 0.0))),
@@ -286,9 +289,9 @@ class AIProviderTelemetry:
     def _merge_new_stats_locked(cls, disk_stats: dict[tuple[str, str, str], dict[str, Any]]) -> dict[tuple[str, str, str], dict[str, Any]]:
         """현재 프로세스가 마지막 동기화 뒤 추가한 값만 최신 디스크 통계에 더한다."""
         merged = {key: dict(value) for key, value in disk_stats.items()}
-        numeric_fields = ("calls", "success", "rate_limited", "errors", "latency_total_ms")
+        numeric_fields = ("calls", "success", "rate_limited", "errors", "cache_hits", "latency_total_ms")
         for key, stat in cls._stats.items():
-            current = merged.setdefault(key, {"calls": 0, "success": 0, "rate_limited": 0, "errors": 0, "latency_total_ms": 0.0, "last_event": "", "last_event_at": 0.0})
+            current = merged.setdefault(key, {"calls": 0, "success": 0, "rate_limited": 0, "errors": 0, "cache_hits": 0, "latency_total_ms": 0.0, "last_event": "", "last_event_at": 0.0})
             baseline = cls._persisted_stats.get(key, {})
             for field in numeric_fields:
                 delta = float(stat.get(field, 0.0)) - float(baseline.get(field, 0.0))
@@ -296,13 +299,13 @@ class AIProviderTelemetry:
             if float(stat.get("last_event_at", 0.0)) >= float(current.get("last_event_at", 0.0)):
                 current["last_event"] = str(stat.get("last_event", ""))[:200]
                 current["last_event_at"] = max(0.0, float(stat.get("last_event_at", 0.0)))
-            for field in ("calls", "success", "rate_limited", "errors"):
+            for field in ("calls", "success", "rate_limited", "errors", "cache_hits"):
                 current[field] = int(round(current[field]))
         return merged
 
     @classmethod
     def _check_header_reset_locked(cls) -> None:
-        """Groq가 알려 준 RPD 리셋 시각이 지난 경우에만 누적 관측값을 초기화한다."""
+        """Provider 쿼터 창 또는 Gemini PT 자정이 지난 경우 누적 관측값을 초기화한다."""
         if cls._reset_at > 0.0 and time.time() >= cls._reset_at:
             cls._current_date = cls._today_kst()
             cls._stats = {}
@@ -351,6 +354,7 @@ class AIProviderTelemetry:
             cls._check_header_reset_locked()
             stat = cls._stats.setdefault(key, {
                 "calls": 0, "success": 0, "rate_limited": 0, "errors": 0,
+                "cache_hits": 0,
                 "latency_total_ms": 0.0, "last_event": "", "last_event_at": 0.0,
             })
             stat["calls"] += 1
@@ -370,6 +374,29 @@ class AIProviderTelemetry:
                 cls._reset_at = time.time() + reset_seconds
                 cls._reset_remaining_raw = reset_requests[:64]
                 cls._reset_header_at = time.time()
+            elif provider == "gemini" and exchange == "bithumb":
+                # Gemini 무료 쿼터는 PT 날짜를 기준으로 관리하므로, 응답 헤더 추측 없이 다음 PT 자정을 표시한다.
+                now_pt = datetime.now(ZoneInfo("America/Los_Angeles"))
+                next_pt = now_pt.replace(hour=0, minute=0, second=0, microsecond=0)
+                if next_pt <= now_pt:
+                    from datetime import timedelta
+                    next_pt += timedelta(days=1)
+                cls._reset_at = next_pt.timestamp()
+                cls._reset_remaining_raw = "PT_MIDNIGHT"
+                cls._reset_header_at = time.time()
+            cls._save_state_locked()
+
+    @classmethod
+    def record_cache_hit(cls, provider: str, exchange: str, model: str, context: str) -> None:
+        """외부 호출 없이 재사용한 모델 목록 캐시도 거래소별로 분리 계측한다."""
+        key = (provider, exchange, model)
+        with cls._lock:
+            cls._ensure_configured_locked()
+            stat = cls._stats.setdefault(key, {"calls": 0, "success": 0, "rate_limited": 0, "errors": 0,
+                                               "cache_hits": 0, "latency_total_ms": 0.0, "last_event": "", "last_event_at": 0.0})
+            stat["cache_hits"] += 1
+            stat["last_event"] = f"{context} {model} CACHE"
+            stat["last_event_at"] = time.time()
             cls._save_state_locked()
 
     @classmethod
@@ -402,7 +429,7 @@ class AIProviderTelemetry:
                 return ""
             reason = str(state.get("reason", "provider_failure"))
             context = str(state.get("context", ""))
-            return f"빗썸 Groq FAST 분석 장애({reason}{f', {context}' if context else ''})로 신규 BUY를 차단합니다."
+            return f"빗썸 Gemini 분석 장애({reason}{f', {context}' if context else ''})로 신규 BUY를 차단합니다."
 
     @classmethod
     def snapshot(cls, exchange: str) -> dict[str, Any]:
@@ -411,7 +438,7 @@ class AIProviderTelemetry:
             cls._ensure_configured_locked()
             cls._check_header_reset_locked()
             models: dict[str, dict[str, Any]] = {}
-            total = {"api_calls": 0, "api_success": 0, "rate_limited": 0, "http_errors": 0, "latency_total_ms": 0.0}
+            total = {"api_calls": 0, "api_success": 0, "rate_limited": 0, "http_errors": 0, "cache_hits": 0, "latency_total_ms": 0.0}
             providers: set[str] = set()
             last_event = ""
             last_event_at = 0.0
@@ -423,12 +450,14 @@ class AIProviderTelemetry:
                 models[model] = {
                     "provider": provider, "calls": calls, "success": int(stat["success"]),
                     "rate_limited": int(stat["rate_limited"]), "errors": int(stat["errors"]),
+                    "cache_hits": int(stat.get("cache_hits", 0)),
                     "avg_latency_ms": round(float(stat["latency_total_ms"]) / calls, 1) if calls else 0.0,
                 }
                 total["api_calls"] += calls
                 total["api_success"] += int(stat["success"])
                 total["rate_limited"] += int(stat["rate_limited"])
                 total["http_errors"] += int(stat["errors"])
+                total["cache_hits"] += int(stat.get("cache_hits", 0))
                 total["latency_total_ms"] += float(stat["latency_total_ms"])
                 if float(stat["last_event_at"]) >= last_event_at:
                     last_event_at = float(stat["last_event_at"])
@@ -444,9 +473,10 @@ class AIProviderTelemetry:
                 "provider": ",".join(sorted(providers)) or "unconfigured", "exchange": exchange,
                 "api_calls": calls, "api_success": total["api_success"], "rate_limited": total["rate_limited"],
                 "http_errors": total["http_errors"], "avg_latency_ms": round(total["latency_total_ms"] / calls, 1) if calls else 0.0,
+                "cache_hits": total["cache_hits"],
                 "models": models, "last_event": last_event, "last_event_at": last_event_at,
                 "reset_info": {
-                    "source": "x-ratelimit-reset-requests" if cls._reset_at else "",
+                    "source": ("pt_midnight" if cls._reset_remaining_raw == "PT_MIDNIGHT" else "x-ratelimit-reset-requests") if cls._reset_at else "",
                     "raw": cls._reset_remaining_raw,
                     "reset_at": cls._reset_at,
                     "reset_time_kst": reset_time_kst,
@@ -494,11 +524,12 @@ def _validate_schema(value: Any, schema: dict[str, Any]) -> bool:
 
 
 class GeminiProvider:
-    """업비트 기존 Gemini 통신 형식을 유지하는 호환 Provider입니다."""
+    """업비트 Gemini 장애 시 신규 BUY를 닫는 Provider입니다."""
 
     name = "gemini"
     exchange = "upbit"
-    is_entry_fail_closed = False
+    # AI 확인이 필수인 신규 진입에서 통신 실패를 로컬 BUY 승인으로 대체하지 않는다.
+    is_entry_fail_closed = True
 
     def __init__(self, api_key: str):
         self.api_key = (api_key or "").strip()
@@ -522,7 +553,7 @@ class GeminiProvider:
         self, prompt: str, models: list[str], schema: dict[str, Any], *, context: str, timeout: float, max_tokens: int,
         schema_name: str = "bithumb_trading_result", strict: bool = True,
     ) -> ProviderResult:
-        """기존 Google API 요청 구조를 보존해 업비트 호출 계약을 유지합니다."""
+        """정상 JSON 스키마 응답만 신규 BUY 차단을 해제한다."""
         for model in models:
             try:
                 response = requests.post(
@@ -534,17 +565,37 @@ class GeminiProvider:
                 GeminiTelemetry.record_http_attempt(model, context, "generate_content", response.status_code)
                 if response.status_code == 200:
                     value = _parse_json_text(self._extract_text(response.json()) or "")
-                    if value is not None:
+                    if value is not None and _validate_schema(value, schema):
+                        AIProviderTelemetry.record_entry_safety(
+                            self.exchange, blocked=False, context=context, model=model, status_code=response.status_code,
+                        )
                         return ProviderResult(value, model)
-                    return ProviderResult(None, model, "invalid_json")
-                return ProviderResult(None, model, "rate_limited" if response.status_code == 429 else "http_error")
+                    error_kind = "invalid_json" if value is None else "schema"
+                    AIProviderTelemetry.record_entry_safety(
+                        self.exchange, blocked=True, reason=error_kind, context=context, model=model,
+                        status_code=response.status_code,
+                    )
+                    return ProviderResult(None, model, error_kind)
+                error_kind = "rate_limited" if response.status_code == 429 else "http_error"
+                AIProviderTelemetry.record_entry_safety(
+                    self.exchange, blocked=True, reason=error_kind, context=context, model=model,
+                    status_code=response.status_code,
+                )
+                return ProviderResult(None, model, error_kind)
             except requests.exceptions.Timeout:
                 GeminiTelemetry.record_http_attempt(model, context, "generate_content", None, "timeout")
+                AIProviderTelemetry.record_entry_safety(
+                    self.exchange, blocked=True, reason="timeout", context=context, model=model,
+                )
                 return ProviderResult(None, model, "timeout")
             except (requests.exceptions.RequestException, ValueError, KeyError, IndexError):
                 GeminiTelemetry.record_http_attempt(model, context, "generate_content", None, "exception")
+                AIProviderTelemetry.record_entry_safety(
+                    self.exchange, blocked=True, reason="exception", context=context, model=model,
+                )
                 return ProviderResult(None, model, "exception")
 
+        AIProviderTelemetry.record_entry_safety(self.exchange, blocked=True, reason="no_model", context=context)
         return ProviderResult(None, "", "no_model")
 
     def complete_text(self, prompt: str, models: list[str], *, context: str, timeout: float, max_tokens: int) -> ProviderResult:
@@ -591,6 +642,178 @@ class GeminiProvider:
                 GeminiTelemetry.record_http_attempt(model, context, "generate_content", None, "exception")
                 last_error = "exception"
         return ProviderResult(None, "", last_error)
+
+
+class BithumbGeminiProvider:
+    """빗썸 전용 Gemini 경계이며 업비트 키·텔레메트리와 절대로 공유하지 않습니다."""
+
+    name = "gemini"
+    exchange = "bithumb"
+    is_entry_fail_closed = True
+    # 업비트 실거래 분석과 같은 구체 모델만 허용해 latest 별칭의 비가시적 변경을 막는다.
+    TRADING_MODEL = "gemini-3.5-flash-lite"
+    # Flash-Lite만 탐색해 고비용 모델 승격과 암묵적 모델 폴백을 금지한다.
+    SYSTEM_INSTRUCTION = """당신은 빗썸 전용 Gemini AI 분석 보조자입니다.
+빗썸에서 제공한 데이터만 사용하고 업비트·다른 거래소 데이터, API 키, 계좌, 주문 상태를 절대로 혼합하지 마세요. 제공된 수치 외에는 추측하지 마세요.
+ACK는 체결이 아닙니다. REST 또는 Private WebSocket의 확정 체결 전에는 포지션·손익·쿨다운·주문 완료를 단정하지 마세요.
+불확실하거나 데이터가 누락·모순되면 BUY가 아닌 HOLD를 선택하세요. 주문 실행·취소·체결 확정 권한은 없습니다.
+현재 레짐, 후보 경로(SCALP, SWING, MOMENTUM_BREAKOUT, RECOVERY_REBOUND, NEW_LISTING), 신규상장 정책과 안전 차단 조건을 준수하세요. CRASH에서는 신규 진입을 제안하지 마세요.
+API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·재현하지 마세요. JSON 요청에는 마크다운 없는 유효 JSON만 반환하고, 모든 설명 텍스트는 자연스러운 한국어로만 작성하세요."""
+
+    def __init__(self, api_key: str):
+        # 호출자에서 전달받은 전용 키만 보관하며 환경 변수 fallback을 의도적으로 두지 않는다.
+        self.api_key = (api_key or "").strip()
+        self._models: list[str] | None = None
+
+    @property
+    def is_configured(self) -> bool:
+        """빗썸 Gemini 전용 키가 있을 때만 모델 탐색과 분석을 허용한다."""
+        return bool(self.api_key)
+
+    @staticmethod
+    def _safe_error_code(response: requests.Response) -> str:
+        """외부 오류에서 식별자 형식 코드만 추출해 원문 노출을 막는다."""
+        try:
+            payload = response.json()
+            error = payload.get("error", {}) if isinstance(payload, dict) else {}
+            return re.sub(r"[^A-Za-z0-9_.:-]", "", str(error.get("status") or error.get("code") or ""))[:80]
+        except (ValueError, TypeError, AttributeError):
+            return ""
+
+    def _record_entry_safety(self, result: ProviderResult, context: str) -> ProviderResult:
+        """정상 JSON 스키마 검증을 마친 호출만 신규 BUY 차단을 해제한다."""
+        AIProviderTelemetry.record_entry_safety(
+            self.exchange, blocked=not isinstance(result.value, (dict, list)),
+            reason=result.error_kind or "invalid_response", context=context,
+            model=result.model, status_code=result.status_code, error_code=result.error_code,
+        )
+        return result
+
+    def _discover_models(self) -> list[str]:
+        """업비트와 같은 구체 Flash-Lite 모델이 있을 때만 분석을 허용한다."""
+        if not self.is_configured:
+            self._record_entry_safety(ProviderResult(None, "", "configuration"), "list_models")
+            return []
+        started = time.monotonic()
+        status_code: int | None = None
+        error_kind = ""
+        error_code = ""
+        try:
+            response = requests.get(
+                f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}", timeout=10.0,
+            )
+            status_code = response.status_code
+            if status_code != 200:
+                error_kind = "rate_limited" if status_code == 429 else "http_error"
+                error_code = self._safe_error_code(response)
+                self._record_entry_safety(ProviderResult(None, "", error_kind, status_code, error_code), "list_models")
+                return []
+            payload = response.json()
+            models = [
+                str(item.get("name", "")).replace("models/", "").strip()
+                for item in payload.get("models", []) if isinstance(item, dict)
+                and "generateContent" in item.get("supportedGenerationMethods", [])
+                and "flash-lite" in str(item.get("name", "")).lower()
+            ]
+            if not models:
+                self._record_entry_safety(ProviderResult(None, "", "no_flash_lite", status_code), "list_models")
+                return []
+            if self.TRADING_MODEL not in models:
+                # 최신 별칭·다른 버전으로 대체하면 업비트와 실제 모델 계약이 달라지므로 신규 BUY를 닫는다.
+                self._record_entry_safety(
+                    ProviderResult(None, "", "required_model_unavailable", status_code), "list_models"
+                )
+                return []
+            return [self.TRADING_MODEL]
+        except requests.exceptions.Timeout:
+            error_kind = "timeout"
+        except (requests.exceptions.RequestException, ValueError, TypeError, KeyError, IndexError):
+            error_kind = "exception"
+        finally:
+            AIProviderTelemetry.record(self.name, self.exchange, "list_models", "list_models", status_code,
+                                       (time.monotonic() - started) * 1000.0, error_kind)
+        self._record_entry_safety(ProviderResult(None, "", error_kind or "exception", status_code, error_code), "list_models")
+        return []
+
+    def models_for(self, purpose: str) -> list[str]:
+        """탐색 실패 시에는 추정 모델을 쓰지 않고 빈 목록으로 fail-closed 처리한다."""
+        if self._models is None:
+            self._models = self._discover_models()
+        elif self._models:
+            # 프로세스 내 모델 목록 재사용도 빗썸 전용 텔레메트리에만 기록한다.
+            AIProviderTelemetry.record_cache_hit(self.name, self.exchange, self._models[0], "list_models")
+        return self._models[:1]
+
+    def complete_json(self, prompt: str, models: list[str], schema: dict[str, Any], *, context: str,
+                      timeout: float, max_tokens: int, schema_name: str = "bithumb_trading_result",
+                      strict: bool = True) -> ProviderResult:
+        """Gemini generateContent 응답을 로컬 JSON 스키마 검증 뒤에만 정상 처리한다."""
+        model = models[0] if len(models) == 1 else ""
+        if not self.is_configured or not model:
+            return self._record_entry_safety(ProviderResult(None, model, "configuration"), context)
+        started = time.monotonic()
+        status_code: int | None = None
+        error_kind = ""
+        error_code = ""
+        try:
+            response = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}",
+                json={"systemInstruction": {"parts": [{"text": self.SYSTEM_INSTRUCTION}]},
+                      "contents": [{"parts": [{"text": prompt}]}],
+                      "generationConfig": {"temperature": 0.1, "topP": 0.8, "maxOutputTokens": max_tokens,
+                                           "responseMimeType": "application/json"}}, timeout=timeout,
+            )
+            status_code = response.status_code
+            if status_code != 200:
+                error_kind = "rate_limited" if status_code == 429 else "http_error"
+                error_code = self._safe_error_code(response)
+                return self._record_entry_safety(ProviderResult(None, model, error_kind, status_code, error_code), context)
+            value = _parse_json_text(GeminiProvider._extract_text(response.json()) or "")
+            if value is None:
+                return self._record_entry_safety(ProviderResult(None, model, "invalid_json", status_code), context)
+            if not _validate_schema(value, schema):
+                return self._record_entry_safety(ProviderResult(None, model, "schema", status_code), context)
+            return self._record_entry_safety(ProviderResult(value, model, status_code=status_code), context)
+        except requests.exceptions.Timeout:
+            error_kind = "timeout"
+        except (requests.exceptions.RequestException, ValueError, TypeError, KeyError, IndexError):
+            error_kind = "exception"
+        finally:
+            AIProviderTelemetry.record(self.name, self.exchange, model or "unavailable", context, status_code,
+                                       (time.monotonic() - started) * 1000.0, error_kind)
+        return self._record_entry_safety(ProviderResult(None, model, error_kind or "exception", status_code, error_code), context)
+
+    def complete_text(self, prompt: str, models: list[str], *, context: str, timeout: float, max_tokens: int) -> ProviderResult:
+        """브리핑은 신규 BUY 게이트와 독립된 텍스트 보조 경로로만 제공한다."""
+        model = models[0] if len(models) == 1 else ""
+        if not self.is_configured or not model:
+            return ProviderResult(None, model, "configuration")
+        started = time.monotonic()
+        status_code: int | None = None
+        error_kind = ""
+        error_code = ""
+        try:
+            response = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}",
+                json={"systemInstruction": {"parts": [{"text": self.SYSTEM_INSTRUCTION}]},
+                      "contents": [{"parts": [{"text": prompt}]}],
+                      "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens}}, timeout=timeout,
+            )
+            status_code = response.status_code
+            if status_code != 200:
+                error_kind = "rate_limited" if status_code == 429 else "http_error"
+                error_code = self._safe_error_code(response)
+                return ProviderResult(None, model, error_kind, status_code, error_code)
+            text = GeminiProvider._extract_text(response.json())
+            return ProviderResult(text, model, status_code=status_code) if text else ProviderResult(None, model, "invalid_response", status_code)
+        except requests.exceptions.Timeout:
+            error_kind = "timeout"
+        except (requests.exceptions.RequestException, ValueError, TypeError, KeyError, IndexError):
+            error_kind = "exception"
+        finally:
+            AIProviderTelemetry.record(self.name, self.exchange, model or "unavailable", context, status_code,
+                                       (time.monotonic() - started) * 1000.0, error_kind)
+        return ProviderResult(None, model, error_kind or "exception", status_code, error_code)
 
 
 class GroqProvider:

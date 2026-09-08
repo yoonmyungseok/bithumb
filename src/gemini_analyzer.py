@@ -214,6 +214,20 @@ class GeminiAnalyzer:
         status_code = response.status_code if response is not None else None
         GeminiTelemetry.record_http_attempt(model, context, endpoint, status_code, error_kind)
 
+    def _uses_upbit_gemini_telemetry(self) -> bool:
+        """빗썸 전용 Provider는 업비트 Gemini 쿼터·캐시 계측을 공유하지 않는다."""
+        return getattr(self.provider, "exchange", "upbit") == "upbit"
+
+    def _record_cache_hit(self, market: str) -> None:
+        """업비트 기존 캐시 계측만 유지하고 빗썸은 전용 Provider 호출 계측으로 분리한다."""
+        if self._uses_upbit_gemini_telemetry():
+            GeminiTelemetry.record_cache_hit(market)
+
+    def _record_local_fallback(self, market: str, reason: str) -> None:
+        """빗썸 fail-closed에서는 로컬 BUY 폴백을 기록하거나 실행하지 않는다."""
+        if self._uses_upbit_gemini_telemetry():
+            GeminiTelemetry.record_local_fallback(market, reason)
+
     @classmethod
     def _model_priority_key(cls, name: str) -> tuple[int, float, int, int, str]:
         """
@@ -897,7 +911,7 @@ class GeminiAnalyzer:
             cached_entry = self._analysis_cache[cache_key]
             if (time.time() - float(cached_entry.get("cached_at", 0))) < 540.0:
                 logger.info(f"⚡ [{market}] 동일 5분봉 AI 분석 캐시 재사용 ({self.provider_label} 중복 호출 생략, 쿼터 보존)")
-                GeminiTelemetry.record_cache_hit(market)
+                self._record_cache_hit(market)
                 return dict(cached_entry["result"])
 
         currency = market.split("-")[-1] if "-" in market else market
@@ -953,24 +967,22 @@ class GeminiAnalyzer:
         atr_sl = current_price - sl_delta
         dynamic_sl = min(support_sl, atr_sl, current_price * 0.985)
 
-        # 5. 일일 쿼터 예산 가드 (당일 450회 초과 시 신규 매수 AI 차단 및 로컬 100% 전환)
-        if self.provider.name == "gemini" and hasattr(GeminiTelemetry, "can_make_api_call") and not GeminiTelemetry.can_make_api_call(for_emergency_exit=False):
-            logger.info(f"[{market}] 🛑 일일 Gemini AI 쿼터 예산(450회) 도달 ➜ [로컬 퀀트 알고리즘 엔진]으로 안전 전환 (긴급 탈출 쿼터 보존)")
-            GeminiTelemetry.record_local_fallback(market, "daily quota budget reached (450)")
-            return self._run_local_quant_engine(
-                current_price, mtf_1h, disparity_ma20, rsi_val, bb, vol_info, candle_pattern,
-                trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct,
-                vwap_info=vwap_info, macd_acc=macd_acc,
-                btc_regime=btc_regime, is_night=night_active, candidate_type=normalized_candidate_type,
-            )
+        # 5. 일일 쿼터 예산 가드: 신규 BUY는 닫고 기존 포지션 보호만 로컬 규칙을 유지한다.
+        if self._uses_upbit_gemini_telemetry() and self.provider.name == "gemini" and hasattr(GeminiTelemetry, "can_make_api_call") and not GeminiTelemetry.can_make_api_call(for_emergency_exit=False):
+            if not is_holding:
+                logger.warning("[%s] Gemini AI 쿼터 예산 도달로 신규 BUY를 fail-closed 차단합니다.", market)
+                return {"status": "PAUSE", "action": "HOLD", "entry_price": current_price, "target_price": dynamic_tp,
+                        "stop_loss": dynamic_sl, "alloc_pct": 0.0, "reason": "Gemini AI 쿼터 도달 신규 BUY 차단", "alpha_score": 0}
 
-        # 6. Provider별 모델 선택: Groq FAST는 20B 한 모델만 허용하고 승격하지 않는다.
-        candidate_models = self.provider.models_for("trading") or self.get_candidate_models(limit=3)
+        # Provider의 모델 목록이 비어도 업비트 동적 모델 탐색은 유지하되 로컬 BUY 폴백은 허용하지 않는다.
+        provider_models = self.provider.models_for("trading")
+        candidate_models = provider_models or self.get_candidate_models(limit=3)
 
         if not candidate_models:
             if self.provider.is_entry_fail_closed:
+                AIProviderTelemetry.record_entry_safety(self.provider.exchange, blocked=True, reason="no_model", context="trading")
                 return {"status": "PAUSE", "action": "HOLD", "entry_price": current_price, "target_price": dynamic_tp,
-                        "stop_loss": dynamic_sl, "alloc_pct": 0.0, "reason": "Groq FAST_TRADING 모델 구성 오류로 신규 BUY 차단", "alpha_score": 0}
+                        "stop_loss": dynamic_sl, "alloc_pct": 0.0, "reason": f"{self.provider_label} 가용 모델 없음으로 신규 BUY 차단", "alpha_score": 0}
             now_ts = time.time()
             with self._CLASS_LOCK:
                 should_log_warning = (now_ts - self._LAST_ALL_COOLDOWN_LOG_TS) > self._ALL_COOLDOWN_LOG_INTERVAL_SEC
@@ -982,7 +994,7 @@ class GeminiAnalyzer:
             else:
                 logger.debug(f"[{market}] Gemini AI Lite 모델 쿨다운 지속 중 ➜ [로컬 퀀트 알고리즘 엔진] 전환")
 
-            GeminiTelemetry.record_local_fallback(market, "all models cooling down")
+            self._record_local_fallback(market, "all models cooling down")
             return self._run_local_quant_engine(
                 current_price, mtf_1h, disparity_ma20, rsi_val, bb, vol_info, candle_pattern,
                 trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct,
@@ -1218,12 +1230,12 @@ class GeminiAnalyzer:
 
         last_error = provider_result.error_kind or "api_failure"
         if self.provider.is_entry_fail_closed:
-            logger.warning("[%s] Groq FAST_TRADING 호출 실패(%s)로 신규 BUY를 fail-closed 차단합니다.", market, last_error)
+            logger.warning("[%s] %s 호출 실패(%s)로 신규 BUY를 fail-closed 차단합니다.", market, self.provider_label, last_error)
             return {"status": "PAUSE", "action": "HOLD", "entry_price": current_price, "target_price": dynamic_tp,
-                    "stop_loss": dynamic_sl, "alloc_pct": 0.0, "reason": f"Groq FAST_TRADING 실패({last_error}) 신규 BUY 차단", "alpha_score": 0}
+                    "stop_loss": dynamic_sl, "alloc_pct": 0.0, "reason": f"{self.provider_label} 실패({last_error}) 신규 BUY 차단", "alpha_score": 0}
 
         logger.warning(f"{self.provider_label} API 호출 제한({last_error}) ➜ [로컬 퀀트 알고리즘 엔진]으로 즉시 자동 전환합니다.")
-        GeminiTelemetry.record_local_fallback(market, last_error)
+        self._record_local_fallback(market, last_error)
         local_res = self._run_local_quant_engine(
             current_price, mtf_1h, disparity_ma20, rsi_val, bb, vol_info, candle_pattern,
             trade_strength, ob_info, dynamic_tp, dynamic_sl, is_holding, pnl_pct,
@@ -1250,7 +1262,9 @@ class GeminiAnalyzer:
         if not self.api_key:
             return None
 
-        models = candidate_models or self.provider.models_for("trading") or self.get_candidate_models(limit=3)
+        provider_models = candidate_models or self.provider.models_for("trading")
+        # 동적 모델 탐색은 분석 호출 수단일 뿐 BUY fallback이 아니므로 fail-closed와 병행한다.
+        models = provider_models or self.get_candidate_models(limit=3)
         if not models:
             return None
         resolved_schema = schema or {"type": "object", "additionalProperties": False, "required": [], "properties": {}}
@@ -1307,16 +1321,17 @@ class GeminiAnalyzer:
         if hasattr(self, "_holding_eval_cache") and cache_key in self._holding_eval_cache:
             cached = self._holding_eval_cache[cache_key]
             if (time.time() - float(cached.get("cached_at", 0))) < adaptive_ttl:
-                GeminiTelemetry.record_cache_hit(market)
+                self._record_cache_hit(market)
                 return dict(cached["result"])
 
         # 일일 비상 쿼터 가드 (안전 한도 도달 시 긴급 탈출 AI 호출 차단 및 로컬 유지)
-        if self.provider.name == "gemini" and hasattr(GeminiTelemetry, "can_make_api_call") and not GeminiTelemetry.can_make_api_call(for_emergency_exit=True):
+        if self._uses_upbit_gemini_telemetry() and self.provider.name == "gemini" and hasattr(GeminiTelemetry, "can_make_api_call") and not GeminiTelemetry.can_make_api_call(for_emergency_exit=True):
             logger.info(f"[{market}] 🛑 Gemini AI 일일 비상 쿼터 한도 도달 ➜ 기보유 포지션 로컬 룰 유지")
             return fallback_res
 
         # 사용 가능한 모델 확인 (일일 쿼터 소진 시 즉시 로컬 룰 유지 및 429 원천 방지)
-        holding_models = self.provider.models_for("trading") or self.get_candidate_models(limit=2, for_emergency_exit=True)
+        provider_models = self.provider.models_for("trading")
+        holding_models = provider_models or self.get_candidate_models(limit=2, for_emergency_exit=True)
         if not holding_models:
             logger.info(f"[{market}] 🛑 Gemini AI 가용 모델(쿼터 여유) 없음 ➜ 기보유 포지션 로컬 룰 유지")
             return fallback_res
@@ -1420,7 +1435,7 @@ class GeminiAnalyzer:
         if hasattr(self, "_screener_rank_cache") and cache_key in self._screener_rank_cache:
             cached = self._screener_rank_cache[cache_key]
             if (now_ts - float(cached.get("cached_at", 0))) < 900.0:
-                GeminiTelemetry.record_cache_hit("RANK")
+                self._record_cache_hit("RANK")
                 return list(cached["result"])
 
         # 개별 종목 점수 캐시(_MARKET_AI_SCORE_CACHE) 활용: 이미 60% 이상 캐시되어 있고 미평가 신규 종목이 2개 이하이면 API 호출 생략 및 캐시 합성
@@ -1434,7 +1449,7 @@ class GeminiAnalyzer:
             uncached_markets = [c.get("market", "").upper() for c in top_candidates if c.get("market", "").upper() not in valid_cached]
             if len(top_candidates) >= 2 and cached_count > 0 and (cached_count / len(top_candidates)) >= 0.6 and len(uncached_markets) <= 2:
                 # 60% 이상 유효 캐시 보유 ➜ API 호출 생략하고 캐시 점수 합성
-                GeminiTelemetry.record_cache_hit("RANK")
+                self._record_cache_hit("RANK")
                 logger.info(f"⚡ [{self.provider_label} AI 랭킹] 개별 종목 캐시 재사용 (미평가 {len(uncached_markets)}개 ➜ API 호출 생략, 쿼터 보존)")
                 tier_order = {"TIER_1": 1, "TIER_2": 2, "TIER_3": 3, "REJECT": 9}
                 ranked_candidates = []
@@ -1569,7 +1584,7 @@ class GeminiAnalyzer:
             and self._macro_diag_cache
             and (now_ts - getattr(self, "_last_macro_diag_ts", 0.0) < 1800.0)
         ):
-            GeminiTelemetry.record_cache_hit("MACRO")
+            self._record_cache_hit("MACRO")
             return dict(self._macro_diag_cache)
 
         fallback_diag = {
@@ -1695,8 +1710,9 @@ class GeminiAnalyzer:
    • [전략 제언]: 향후 몇 시간 동안의 안전 운용 지침
 3. 반드시 한국어로 정중하고 명확하게 작성.
 """
-            # 빗썸 Groq는 DEEP_BRIEFING 120B만 시작점으로 사용하고, 실패 시 20B 요약만 허용한다.
-            models = self.provider.models_for("briefing") or self.get_briefing_candidate_models(limit=5)
+            # 빗썸 Gemini 모델 탐색 실패 시 다른 모델·업비트 쿼터로 브리핑을 우회하지 않는다.
+            provider_models = self.provider.models_for("briefing")
+            models = provider_models if self.provider.is_entry_fail_closed else (provider_models or self.get_briefing_candidate_models(limit=5))
             if not models:
                 return default_comment
             result = self.provider.complete_text(

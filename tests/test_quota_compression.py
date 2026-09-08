@@ -63,8 +63,8 @@ class TestQuotaCompression(unittest.TestCase):
         self.assertFalse(GeminiTelemetry.can_make_api_call(for_emergency_exit=False))
         self.assertFalse(GeminiTelemetry.can_make_api_call(for_emergency_exit=True))
 
-    def test_analyzer_respects_daily_quota_guard(self):
-        """GeminiAnalyzer.analyze가 900회 도달 시 API 호출을 즉시 건너뛰고 로컬 엔진으로 폴백하는지 검증"""
+    def test_analyzer_blocks_new_buy_when_daily_quota_is_exhausted(self):
+        """신규 진입용 쿼터 소진은 로컬 BUY 폴백 없이 HOLD로 끝나야 한다."""
         analyzer = GeminiAnalyzer(api_key="fake-key")
         GeminiTelemetry._api_calls = 900  # 900회 한도 도달
 
@@ -86,7 +86,7 @@ class TestQuotaCompression(unittest.TestCase):
                 coin_balance=0.0,
                 avg_buy_price=0.0,
             )
-            self.assertTrue(mock_local.called)
+            self.assertFalse(mock_local.called)
             self.assertEqual(res["action"], "HOLD")
 
     def test_holding_evaluation_adaptive_caching(self):

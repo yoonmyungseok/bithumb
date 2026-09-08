@@ -22,6 +22,7 @@ def _candles() -> list[dict[str, float | str]]:
     } for _ in range(30)]
 
 
+@unittest.skip("빗썸 AI 공급자가 Gemini 전용으로 전환되어 상세 회귀는 test_bithumb_gemini_provider.py에서 수행한다.")
 class BithumbGroqProviderTests(unittest.TestCase):
     """빗썸 전용 Groq 경계가 주문 경계 밖에서 fail-closed되는지 확인한다."""
 

@@ -16,6 +16,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from ai_provider import AIProviderTelemetry
 from bot_controller import BotController
 from chart_renderer import ChartRenderer
 from db_manager import get_db_manager, get_exchange_db_path
@@ -182,6 +183,8 @@ PAPER_FEE_RATE = float(os.getenv("PAPER_FEE_RATE", "0.0005"))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data", "upbit")
 os.makedirs(DATA_DIR, exist_ok=True)
 GeminiTelemetry.configure(data_dir=DATA_DIR)
+# 업비트의 마지막 AI 분석 실패를 별도 파일로 보관해 모든 신규 진입 경로를 공통 차단한다.
+AIProviderTelemetry.configure(data_dir=DATA_DIR, storage_filename="gemini_entry_safety.json")
 
 # 봇 일시정지 상태 플래그
 IS_BOT_PAUSED = False
@@ -410,6 +413,7 @@ cycle_engine = TradingCycleEngine(
         is_bot_paused=get_is_bot_paused,
         min_order_krw=MIN_ORDER_KRW,
         orderbook_slippage_enforcement=ORDERBOOK_SLIPPAGE_ENFORCEMENT,
+        new_buy_block_reason=lambda: AIProviderTelemetry.get_entry_block_reason("upbit"),
     ),
     TradingRuntimeContext(
         logger=logger,

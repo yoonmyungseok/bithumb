@@ -646,25 +646,25 @@
     }
 
     const cardBithumb = document.getElementById('api_card_bithumb');
-    // 기존 DOM 식별자는 외부 UI 호환을 위해 유지하고, 빗썸 카드의 의미는 Groq로 명확히 둔다.
-    const cardBithumbGroq = document.getElementById('api_card_gemini_bithumb');
+    // 기존 DOM 식별자는 외부 UI 호환을 위해 유지하고, 빗썸 카드만 Gemini 전용 데이터로 표시한다.
+    const cardBithumbGemini = document.getElementById('api_card_gemini_bithumb');
     const cardUpbit = document.getElementById('api_card_upbit');
     const cardUpbitGemini = document.getElementById('api_card_gemini_upbit');
 
     // 탭별 카드 시각적 강조/흐리게 처리
     if (activeExchange === 'upbit') {
       if (cardBithumb) cardBithumb.classList.add('opacity-30');
-      if (cardBithumbGroq) cardBithumbGroq.classList.add('opacity-30');
+      if (cardBithumbGemini) cardBithumbGemini.classList.add('opacity-30');
       if (cardUpbit) cardUpbit.classList.remove('opacity-30');
       if (cardUpbitGemini) cardUpbitGemini.classList.remove('opacity-30');
     } else if (activeExchange === 'bithumb') {
       if (cardBithumb) cardBithumb.classList.remove('opacity-30');
-      if (cardBithumbGroq) cardBithumbGroq.classList.remove('opacity-30');
+      if (cardBithumbGemini) cardBithumbGemini.classList.remove('opacity-30');
       if (cardUpbit) cardUpbit.classList.add('opacity-30');
       if (cardUpbitGemini) cardUpbitGemini.classList.add('opacity-30');
     } else {
       if (cardBithumb) cardBithumb.classList.remove('opacity-30');
-      if (cardBithumbGroq) cardBithumbGroq.classList.remove('opacity-30');
+      if (cardBithumbGemini) cardBithumbGemini.classList.remove('opacity-30');
       if (cardUpbit) cardUpbit.classList.remove('opacity-30');
       if (cardUpbitGemini) cardUpbitGemini.classList.remove('opacity-30');
     }
@@ -758,11 +758,10 @@
       upLastEl.innerText = upData.last_endpoint ? `${upData.last_endpoint} (${upData.last_status || '-'})` : '-';
     }
 
-    // 3. AI Provider API 렌더링 (빗썸 Groq/업비트 Gemini 분리 카드 지원)
-    // 레거시 응답 키는 유지하되 빗썸 표시 데이터는 Groq로 취급한다.
-    let btGroqData = apiUsage.ai_provider_bithumb || apiUsage.gemini_bithumb;
-    if (!btGroqData && activeExchange === 'bithumb') {
-      btGroqData = apiUsage.gemini;
+    // 3. 빗썸·업비트 Gemini 카드는 같은 UI 계약으로 렌더링하되 원본 계측 데이터는 분리한다.
+    let btGeminiData = apiUsage.gemini_bithumb || apiUsage.ai_provider_bithumb;
+    if (!btGeminiData && activeExchange === 'bithumb') {
+      btGeminiData = apiUsage.gemini;
     }
     let upGeminiData = apiUsage.gemini_upbit;
     if (!upGeminiData && activeExchange === 'upbit') {
@@ -772,12 +771,11 @@
     function renderAiProviderCard(prefix, gData, gradientClass) {
       gData = gData || {};
       const calls = gData.api_calls || 0;
-      const isGroqProvider = gData.provider === 'groq';
       const limit = gData.quota_limit || 1000;
       const pct = gData.quota_used_pct !== undefined ? gData.quota_used_pct : (limit > 0 ? Math.round((calls / limit) * 1000) / 10 : 0);
 
       const ratioEl = document.getElementById(`${prefix}_api_calls_ratio`);
-      if (ratioEl) ratioEl.innerText = isGroqProvider ? `${calls.toLocaleString()}회 · 평균 ${gData.avg_latency_ms || 0}ms` : `${calls.toLocaleString()} / ${limit.toLocaleString()}회`;
+      if (ratioEl) ratioEl.innerText = `${calls.toLocaleString()} / ${limit.toLocaleString()}회`;
 
       const barEl = document.getElementById(`${prefix}_quota_bar`);
       if (barEl) {
@@ -794,12 +792,12 @@
 
       const badgeEl = document.getElementById(`${prefix}_api_badge`);
       if (badgeEl) {
-        // 빗썸 Groq FAST 장애는 호출량보다 신규 BUY 차단 여부를 먼저 표시한다.
-        const entrySafety = isGroqProvider ? (gData.entry_safety || {}) : {};
-        if (isGroqProvider && entrySafety.entry_blocked) {
+        // 두 거래소 모두 Gemini 장애 시 쿼터보다 신규 BUY 차단 상태를 우선 표시한다.
+        const entrySafety = gData.entry_safety || {};
+        if (entrySafety.entry_blocked) {
           badgeEl.innerText = '신규 BUY 차단';
           badgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30';
-        } else if (isGroqProvider) {
+        } else if (gData.provider === 'gemini') {
           badgeEl.innerText = '신규 BUY 가능';
           badgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
         } else if (pct >= 90) {
@@ -827,12 +825,12 @@
 
       const lastEl = document.getElementById(`${prefix}_api_last`);
       if (lastEl) {
-        const entrySafety = isGroqProvider ? (gData.entry_safety || {}) : {};
+        const entrySafety = gData.entry_safety || {};
         // 오류 메시지 원문 대신 서버가 제한한 목적·상태·코드만 표시한다.
         if (entrySafety.entry_blocked) {
           const details = [entrySafety.context, entrySafety.http_status ? `HTTP ${entrySafety.http_status}` : '', entrySafety.error_code]
             .filter(Boolean).join(' · ');
-          lastEl.innerText = details ? `FAST 장애: ${details}` : 'FAST 장애: 신규 BUY 차단';
+          lastEl.innerText = details ? `Gemini 장애: ${details}` : 'Gemini 장애: 신규 BUY 차단';
           lastEl.className = 'font-medium truncate max-w-[140px] text-rose-400';
         } else {
           lastEl.innerText = gData.last_event || '-';
@@ -840,65 +838,62 @@
         }
       }
 
-      // Provider가 달라도 같은 표시 영역에서 모델별 호출량을 안전하게 표시한다.
-      const models = gData.models || {};
-      const isGroq = gData.provider === 'groq';
-      const m35 = isGroq ? (models['openai/gpt-oss-20b'] || {}) : (models['gemini-3.5-flash-lite'] || {});
-      const m31 = isGroq ? (models['openai/gpt-oss-120b'] || {}) : (models['gemini-3.1-flash-lite'] || {});
-      if (prefix === 'gemini_bithumb') {
-        const titleEl = document.getElementById('bithumb_ai_provider_title');
-        if (titleEl) titleEl.innerText = isGroq ? '빗썸 Groq AI' : '빗썸 AI Provider';
-        const fastNameEl = document.getElementById('gemini_bithumb_m35_name');
-        const deepNameEl = document.getElementById('gemini_bithumb_m31_name');
-        if (fastNameEl) fastNameEl.innerText = isGroq ? 'FAST 20B' : 'FAST_TRADING';
-        if (deepNameEl) deepNameEl.innerText = isGroq ? 'DEEP 120B' : 'DEEP_BRIEFING';
-      }
+      // 실제 모델 ID와 ListModels 호출을 함께 표시해 하위 행의 합계가 총 호출 수와 같도록 한다.
+      const modelListEl = document.getElementById(`${prefix}_models_list`);
+      if (modelListEl) {
+        const sourceModels = gData.models_by_id || gData.models || {};
+        const rows = Object.entries(sourceModels)
+          .filter(([, stat]) => Number(stat?.calls || 0) > 0)
+          .sort(([, left], [, right]) => Number(right.calls || 0) - Number(left.calls || 0));
+        const countedCalls = rows.reduce((sum, [, stat]) => sum + Number(stat.calls || 0), 0);
+        const unclassifiedCalls = Math.max(0, calls - countedCalls);
 
-      const m35Calls = m35.calls || 0;
-      const m35Limit = m35.quota_limit || (isGroq ? 0 : 500);
-      const m35Pct = m35.quota_used_pct !== undefined ? m35.quota_used_pct : (m35Limit > 0 ? Math.round((m35Calls / m35Limit) * 1000) / 10 : 0);
+        // 구버전 영속 파일처럼 모델별 상세가 일부 없더라도 총계와 화면 합계가 달라지지 않게 보정한다.
+        if (unclassifiedCalls > 0) rows.push(['unclassified', { calls: unclassifiedCalls }]);
+        if (!rows.length) rows.push(['empty', { calls: 0 }]);
 
-      const m31Calls = m31.calls || 0;
-      const m31Limit = m31.quota_limit || (isGroq ? 0 : 500);
-      const m31Pct = m31.quota_used_pct !== undefined ? m31.quota_used_pct : (m31Limit > 0 ? Math.round((m31Calls / m31Limit) * 1000) / 10 : 0);
+        modelListEl.replaceChildren();
+        rows.forEach(([model, stat]) => {
+          const row = document.createElement('div');
+          const label = document.createElement('div');
+          const name = document.createElement('span');
+          const ratio = document.createElement('span');
+          const barWrap = document.createElement('div');
+          const bar = document.createElement('div');
+          const modelCalls = Number(stat.calls || 0);
+          const quotaLimit = Number(stat.quota_limit || 0);
+          const quotaPct = quotaLimit > 0 ? Math.min(100, Math.max(0, (modelCalls / quotaLimit) * 100)) : 0;
 
-      const m35RatioEl = document.getElementById(`${prefix}_m35_ratio`);
-      if (m35RatioEl) m35RatioEl.innerText = isGroq ? `${m35Calls.toLocaleString()}회 · 평균 ${m35.avg_latency_ms || 0}ms` : `${m35Calls.toLocaleString()} / ${m35Limit.toLocaleString()}회 (${m35Pct}%)`;
-
-      const m35BarEl = document.getElementById(`${prefix}_m35_bar`);
-      if (m35BarEl) {
-        m35BarEl.style.width = `${Math.min(100, Math.max(0, m35Pct))}%`;
-        m35BarEl.className = m35Pct >= 90 ? 'bg-rose-500 h-1 rounded-full transition-all duration-500' : (m35Pct >= 70 ? 'bg-amber-400 h-1 rounded-full transition-all duration-500' : 'bg-amber-400 h-1 rounded-full transition-all duration-500');
-      }
-
-      const m31RatioEl = document.getElementById(`${prefix}_m31_ratio`);
-      if (m31RatioEl) m31RatioEl.innerText = isGroq ? `${m31Calls.toLocaleString()}회 · 평균 ${m31.avg_latency_ms || 0}ms` : `${m31Calls.toLocaleString()} / ${m31Limit.toLocaleString()}회 (${m31Pct}%)`;
-
-      const m31BarEl = document.getElementById(`${prefix}_m31_bar`);
-      if (m31BarEl) {
-        m31BarEl.style.width = `${Math.min(100, Math.max(0, m31Pct))}%`;
-        m31BarEl.className = m31Pct >= 90 ? 'bg-rose-500 h-1 rounded-full transition-all duration-500' : (m31Pct >= 70 ? 'bg-orange-400 h-1 rounded-full transition-all duration-500' : 'bg-orange-400 h-1 rounded-full transition-all duration-500');
+          row.className = 'space-y-1';
+          label.className = 'flex justify-between gap-2 text-slate-400';
+          name.className = 'min-w-0 truncate font-medium text-amber-300/90';
+          ratio.className = 'shrink-0 font-medium text-slate-300';
+          name.textContent = model === 'list_models' ? '모델 목록 조회' : (model === 'unclassified' ? '기타 API 요청' : (model === 'empty' ? '모델 호출 기록 없음' : model));
+          ratio.textContent = quotaLimit > 0
+            ? `${modelCalls.toLocaleString()} / ${quotaLimit.toLocaleString()}회 (${quotaPct.toFixed(1)}%)`
+            : `${modelCalls.toLocaleString()}회`;
+          barWrap.className = 'w-full bg-slate-800 h-1 rounded-full overflow-hidden';
+          bar.className = quotaPct >= 90 ? 'bg-rose-500 h-1 rounded-full transition-all duration-500' : 'bg-amber-400 h-1 rounded-full transition-all duration-500';
+          bar.style.width = `${quotaPct}%`;
+          label.append(name, ratio);
+          barWrap.appendChild(bar);
+          row.append(label, barWrap);
+          modelListEl.appendChild(row);
+        });
       }
 
       // 리셋 정보 렌더링
       const resetInfo = gData.reset_info || {};
       const resetEl = document.getElementById(`${prefix}_api_reset`);
       if (resetEl) {
-        if (isGroqProvider) {
-          // Groq가 반환한 RPD 리셋 헤더만 표시해 고정 시간대를 추정하지 않는다.
-          const groqReset = gData.reset_info || {};
-          const resetAt = groqReset.reset_time_kst || '';
-          const raw = groqReset.raw ? ` (${groqReset.raw})` : '';
-          resetEl.innerText = resetAt ? `${resetAt}${raw}` : 'Groq 응답 헤더 대기';
-          return;
-        }
+        // Google Gemini의 일일 쿼터 기준은 두 거래소에 동일하게 적용한다.
         const timeKst = resetInfo.reset_time_kst || '16:00 KST';
         const remStr = resetInfo.remaining_str ? ` (${resetInfo.remaining_str})` : '';
         resetEl.innerText = `${timeKst}${remStr}`;
       }
     }
 
-    renderAiProviderCard('gemini_bithumb', btGroqData, 'bg-gradient-to-r from-amber-500 to-orange-500');
+    renderAiProviderCard('gemini_bithumb', btGeminiData, 'bg-gradient-to-r from-blue-500 to-indigo-500');
     renderAiProviderCard('gemini_upbit', upGeminiData, 'bg-gradient-to-r from-blue-500 to-indigo-500');
 
     // 하위 호환: 기존 단일 gemini 카드 요소가 남아있을 경우 합산값 렌더링

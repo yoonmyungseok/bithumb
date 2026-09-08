@@ -67,7 +67,8 @@ if sys.platform == "win32":
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
-AIProviderTelemetry.configure(data_dir=DATA_DIR)
+# 빗썸 Gemini 계측은 업비트 파일과 분리해 재시작 뒤에도 신규 BUY 안전 상태를 복원한다.
+AIProviderTelemetry.configure(data_dir=DATA_DIR, storage_filename="gemini_bithumb_telemetry.json")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # 1. 로깅(Logging) 환경 설정
@@ -103,7 +104,7 @@ load_dotenv(override=True)
 
 BITHUMB_ACCESS_KEY = os.getenv("BITHUMB_ACCESS_KEY", "")
 BITHUMB_SECRET_KEY = os.getenv("BITHUMB_SECRET_KEY", "")
-# 빗썸 AI는 Groq 전용이며, Gemini 환경 변수와 업비트 키를 절대 공유하지 않는다.
+# 빗썸 AI는 전용 Gemini 키만 사용하며 공용·업비트 키를 절대 공유하지 않는다.
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
@@ -407,7 +408,7 @@ def send_daily_morning_report():
         held_desc = ", ".join(held_names) if held_names else "없음 (100% 현금 보유)"
 
         ai_briefing = ""
-        # 브리핑도 빗썸 Factory를 거쳐 Groq DEEP_BRIEFING만 사용한다.
+        # 브리핑도 빗썸 Factory를 거쳐 전용 Gemini 키만 사용한다.
         analyzer = build_bithumb_analyzer()
         if analyzer is not None and hasattr(analyzer, "generate_market_briefing"):
             try:
@@ -423,7 +424,7 @@ def send_daily_morning_report():
                     fng_desc=fng.get("desc", ""),
                 )
                 if ai_comment:
-                    ai_briefing = f"\n\n🤖 <b>[Groq AI 종합 시황 브리핑]</b>\n{ai_comment}"
+                    ai_briefing = f"\n\n🤖 <b>[빗썸 Gemini AI 종합 시황 브리핑]</b>\n{ai_comment}"
             except Exception as e:
                 logger.debug(f"AI 브리핑 생성 예외: {e}")
 
