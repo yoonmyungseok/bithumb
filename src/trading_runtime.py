@@ -1919,14 +1919,72 @@ class TradingCycleEngine:
             max_ai_candidates = 1
             logger.info("⚠️ [AI 쿼터 가드] 일일 호출 350회(70%) 도달 ➜ 사이클당 AI 심층 분석 상위 1개 종목으로 압축")
         else:
-            default_max_ai = int(os.getenv("MAX_AI_CANDIDATES_PER_CYCLE", "2"))
-            max_ai_candidates = max(1, default_max_ai)  # 정상 상태: 사이클당 상위 최대 N개 종목만 AI 심층 분석 (기본 2)
+            default_max_ai = int(os.getenv("MAX_AI_CANDIDATES_PER_CYCLE", "4"))
+            max_ai_candidates = max(1, default_max_ai)  # 정상 상태: 사이클당 상위 최대 N개 종목만 AI 심층 분석 (기본 4)
 
         # 확실한 진입 차단 상태에서는 개별 신규 진입 AI 분석도 수행하지 않는다.
         if is_bot_paused or is_kill_switch or is_btc_crashing or not is_entry_ready:
             ai_budget_remaining = 0
         else:
             ai_budget_remaining = max_ai_candidates
+
+        # [AI 분석 우선순위 큐 정렬]
+        # 단순 스크리너 순위로 AI 예산이 조기 소진되는 현상을 방지하기 위해,
+        # 로컬 퀀트 알파 점수 및 매수 적격성(allow_buy)이 우수한 종목이 최우선으로 AI 심층 분석을 받도록 정렬한다.
+        snapshot_cache: dict[str, Any] = {}
+        if ai_budget_remaining > 0 and len(target_markets) > 1:
+            def _eval_ai_priority(market: str) -> tuple[int, int, int]:
+                if market in held_markets:
+                    return (0, 0, target_markets.index(market))
+                try:
+                    snap = snapshot_cache.get(market)
+                    if snap is None:
+                        snap = ctx.orchestrator.load_market_snapshot(
+                            exchange,
+                            market,
+                            interval_minutes,
+                            prefix.prefetched_market_inputs.get(market),
+                        )
+                        snapshot_cache[market] = snap
+                    c_5m = select_completed_candles(snap.candles_5m, minimum_count=25)
+                    c_1h = select_completed_candles(snap.candles_1h, minimum_count=20)
+                    if not c_5m or not c_1h:
+                        return (9, 0, target_markets.index(market))
+                    c_meta = screened_candidate_metadata.get(market, {})
+                    c_type = str(c_meta.get("candidate_type", "CONFIRMED")).upper()
+                    c_rs = float(c_meta.get("relative_strength", 0.0) or 0.0)
+                    l_entry = entry_signal(
+                        candles=c_5m,
+                        candles_1h=c_1h,
+                        btc_regime=btc_regime,
+                        orderbook=snap.orderbook,
+                        market=market,
+                        exchange=profile.decision_exchange,
+                        entry_type=c_type,
+                        is_night=is_night_session(),
+                        relative_strength=c_rs,
+                    )
+                    l_allow_buy = l_entry.get("allow_buy", False)
+                    l_alpha = int(l_entry.get("alpha_score", 0) or 0)
+                    l_hard = l_entry.get("checklist", {}).get("hard_gates", {}).get("all_passed", False)
+                    if l_allow_buy:
+                        tier = 1  # 1순위: 로컬 퀀트 즉시 매수 적격
+                    elif l_hard and l_alpha >= 50:
+                        tier = 2  # 2순위: 하드게이트 통과 유망 후보
+                    else:
+                        tier = 3  # 3순위: 관망/게이트 미달
+                    return (tier, -l_alpha, target_markets.index(market))
+                except Exception as exc:
+                    logger.debug("[%s] AI 우선순위 사전 평가 예외: %s", market, exc)
+                    return (8, 0, target_markets.index(market))
+
+            original_order = list(target_markets)
+            target_markets = sorted(target_markets, key=_eval_ai_priority)
+            if target_markets != original_order:
+                logger.info(
+                    "📊 [AI 분석 우선순위 큐 정렬] 로컬 퀀트 알파/적격성 기반 재정렬 완료: %s",
+                    target_markets,
+                )
 
         # 모멘텀 종목은 동조성이 높으므로 한 사이클에 초입 1개만 주문 경로로 보낸다.
         momentum_entry_slot_available = True
@@ -1938,12 +1996,14 @@ class TradingCycleEngine:
             try:
                 candidate_metadata = screened_candidate_metadata.get(market, {})
                 candidate_type = str(candidate_metadata.get("candidate_type", "CONFIRMED")).upper()
-                market_snapshot = ctx.orchestrator.load_market_snapshot(
-                    exchange,
-                    market,
-                    interval_minutes,
-                    prefix.prefetched_market_inputs.get(market),
-                )
+                market_snapshot = snapshot_cache.get(market)
+                if market_snapshot is None:
+                    market_snapshot = ctx.orchestrator.load_market_snapshot(
+                        exchange,
+                        market,
+                        interval_minutes,
+                        prefix.prefetched_market_inputs.get(market),
+                    )
                 korean_name = market_snapshot.korean_name
                 logger.info(
                     f"--- [{korean_name} / {market} {profile.market_analysis_log_label}] ---"

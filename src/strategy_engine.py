@@ -108,8 +108,8 @@ class StrategyPolicy:
     ALPHA_BUY_THRESHOLD_NORMAL: int = 60 # 정상장 7대 팩터 복합 알파 승인 점수
     ALPHA_BUY_THRESHOLD_RISK_OFF: int = 70 # RISK_OFF 약세장 엄선 승인 점수 (75 -> 70점으로 현실화)
     RS_MIN_RISK_OFF: float = 0.008       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+0.8% 초과 상승)
-    MIN_TRADE_VALUE_RISK_OFF: float = 2_000_000_000.0  # 약세장 최소 24시간 거래대금 20억 원
-    MIN_ASSET_PRICE_KRW: float = 10.0    # 10원 미만 극초저가 코인 차단
+    MIN_TRADE_VALUE_RISK_OFF: float = 1_000_000_000.0  # 약세장 최소 24시간 거래대금 10억 원 (기존 20억 -> 10억 하향)
+    MIN_ASSET_PRICE_KRW: float = float(os.getenv("MIN_ASSET_PRICE_KRW", "0.0001"))  # 초저가 코인 제한 전면 해제 (기본 0.0001원, 0원 이하만 차단)
     RSI_MIN_NORMAL: float = 42.0         # 정상장 저점 반등 확인용 RSI 최소치
     RSI_MAX_NORMAL: float = 60.0         # 정상장 고점 추격 방지용 RSI 최대치
     RSI_MIN_RISK_OFF: float = 42.0       # RISK_OFF 저점 반등 확인용 RSI 최소치
@@ -837,7 +837,7 @@ def entry_signal(
     if cur_check < StrategyPolicy.MIN_ASSET_PRICE_KRW:
         return {
             "allow_buy": False,
-            "reason": f"초저가 종목 호가 갭 위험 차단 (현재가 {cur_check:,.2f}원 < {StrategyPolicy.MIN_ASSET_PRICE_KRW:,.1f}원)",
+            "reason": f"유효하지 않은 가격 차단 (현재가 {cur_check:,.4f}원 < {StrategyPolicy.MIN_ASSET_PRICE_KRW:,.4f}원)",
         }
 
     regime_upper = btc_regime.upper()
@@ -1078,12 +1078,14 @@ def entry_signal(
     if normalized_entry_type == "MOMENTUM_BREAKOUT":
         reasons.append(f"모멘텀 돌파 {momentum_breakout_reason}")
 
+    final_target_price = round(target_price, 4 if current < 1.0 else 2)
+    final_stop_loss = round(stop_loss, 4 if current < 1.0 else 2)
     return {
         "allow_buy": allowed,
         "reason": ", ".join(reasons),
         "entry_price": current,
-        "target_price": round(target_price, 2),
-        "stop_loss": round(stop_loss, 2),
+        "target_price": final_target_price,
+        "stop_loss": final_stop_loss,
         "atr": volatility,
         "atr_pct": atr_pct,
         "rsi": rsi,
@@ -1123,8 +1125,8 @@ def entry_signal(
                 "orderbook_sample_count": alpha_res["factor_breakdown"].get("orderbook_sample_count", 0),
             },
             "entry_reason": ", ".join(reasons),
-            "target_price": round(target_price, 2),
-            "stop_loss": round(stop_loss, 2),
+            "target_price": final_target_price,
+            "stop_loss": final_stop_loss,
         },
         "factor_breakdown": alpha_res["factor_breakdown"],
         "checklist": checklist_details,

@@ -324,6 +324,38 @@ class UnifiedDashboardServerTests(unittest.TestCase):
         self.assertIn('id="tab-bithumb"', fallback_html)
         self.assertIn('id="tab-upbit"', fallback_html)
 
+    def test_read_recent_lines_backward_chunk_scan_captures_alerts_beyond_first_chunk(self):
+        """대량의 INFO 로그가 쌓여 첫 청크 범위를 벗어난 이전 WARNING도 역방향 스캔으로 정상 포착해야 한다."""
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False) as f:
+            temp_path = f.name
+            # 앞부분에 과거 WARNING 기록
+            f.write("2026-09-08 04:00:00 [WARNING] 소켓 연결 끊김 테스트\n")
+            # 청크 크기(1024 바이트)를 훌쩍 넘는 대량의 INFO 로그 추가 (약 10KB)
+            for i in range(150):
+                f.write(f"2026-09-08 05:00:{i%60:02d} [INFO] 사이클 정상 실행 중 {i}\n")
+
+        try:
+            # chunk_size를 1024 바이트로 작게 주입하여 역방향 청크 탐색 동작 강제
+            lines = UnifiedDashboardServer._read_recent_lines(
+                temp_path,
+                chunk_size=1024,
+                max_bytes=100 * 1024,
+                min_alert_matches=1,
+            )
+            # 앞쪽의 WARNING 라인이 누락되지 않고 수집되었는지 검증
+            warning_lines = [line for line in lines if "[WARNING]" in line]
+            self.assertEqual(len(warning_lines), 1)
+            self.assertIn("소켓 연결 끊김 테스트", warning_lines[0])
+
+            # 존재하지 않는 파일이나 빈 파일도 크래시 없이 빈 리스트 반환 검증
+            self.assertEqual(UnifiedDashboardServer._read_recent_lines("non_existent_file.log"), [])
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -67,6 +67,48 @@ class TestGeminiEntryPromptContract(unittest.TestCase):
         self.assertIn('"REASON"', sent_prompt)
         self.assertIn("반드시 한국어로", sent_prompt)
 
+    @patch("requests.post")
+    def test_recovery_rebound_prompt_mentions_1b_min_trade_value(self, mock_post):
+        """RECOVERY_REBOUND 모드에서 프롬프트에 10억 원 이상 거래대금 조건이 명시되는지 검증"""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": (
+                '{"STATUS":"ACTIVE","ACTION":"HOLD","ENTRY_PRICE":1000,'
+                '"TARGET_PRICE":1030,"STOP_LOSS":980,"ALLOC_PCT":0,'
+                '"ALPHA_SCORE":0,"REASON":"판정불가"}'
+            )}]}}]
+        }
+        mock_post.return_value = mock_response
+
+        analyzer = GeminiAnalyzer(api_key="test-key")
+        candles = [
+            {
+                "trade_price": 1000.0,
+                "opening_price": 995.0,
+                "high_price": 1010.0,
+                "low_price": 990.0,
+                "candle_acc_trade_volume": 100.0,
+                "candle_date_time_utc": "2026-09-06T00:00:00",
+            }
+            for _ in range(30)
+        ]
+
+        analyzer.analyze(
+            market="KRW-TEST",
+            current_price=1000.0,
+            candles=candles,
+            krw_balance=1_000_000.0,
+            coin_balance=0.0,
+            avg_buy_price=0.0,
+            btc_regime="RISK_OFF",
+            entry_policy_mode="RECOVERY_REBOUND",
+        )
+
+        sent_prompt = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
+        self.assertIn("24시간 거래대금 10억 원 이상", sent_prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
+

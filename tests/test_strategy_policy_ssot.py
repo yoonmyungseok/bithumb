@@ -13,7 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 from backtest import QuantBacktester
-from strategy_engine import OrderbookFlowTracker, StrategyPolicy, entry_signal
+from strategy_engine import OrderbookFlowTracker, StrategyPolicy, entry_signal, recovery_rebound_signal
 from trade_memory import TradeMemoryManager
 
 
@@ -268,6 +268,27 @@ class StrategyPolicySSOTTests(unittest.TestCase):
         self.assertEqual(alpha_stats["80+"]["sample_count"], 1)
         self.assertEqual(alpha_stats["80+"]["win_rate_pct"], 100.0)
 
+    def test_min_trade_value_risk_off_lowered_to_1b(self):
+        """약세장 최소 24시간 거래대금 기준이 10억 원으로 하향되었는지 검증"""
+        self.assertEqual(StrategyPolicy.MIN_TRADE_VALUE_RISK_OFF, 1_000_000_000.0)
+
+        candles = self._generate_mock_candles(count=30, base_price=1000.0, trend=1.0)
+        candles_1h = self._generate_mock_candles(count=25, base_price=1000.0, trend=1.0)
+
+        # 8억 원: 10억 원 미만이므로 recovery_rebound_signal에서 차단
+        sig_800m = recovery_rebound_signal(
+            candles=candles,
+            candles_1h=candles_1h,
+            btc_regime="RISK_OFF",
+            orderbook=None,
+            market="KRW-TEST",
+            exchange="bithumb",
+            relative_strength=0.02,
+            candidate_trade_value=800_000_000.0,
+        )
+        self.assertFalse(sig_800m["allow_buy"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

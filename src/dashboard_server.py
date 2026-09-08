@@ -77,6 +77,9 @@ ALERT_LOG_SOURCES = {
 ALERT_LEVEL_PATTERN = re.compile(r"\[(WARNING|ERROR|CRITICAL)\]", re.IGNORECASE)
 ALERT_TIMESTAMP_PATTERN = re.compile(r"^\[?(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})")
 ALERT_TAIL_BYTES = 256 * 1024
+ALERT_SCAN_CHUNK_BYTES = 256 * 1024
+ALERT_MAX_SCAN_BYTES = 10 * 1024 * 1024  # 파일당 최대 역방향 탐색 바이트 (10MB)
+ALERT_TARGET_PER_SOURCE = 20  # 소스당 최소 확보 목표 경고 건수
 ALERT_LIMIT = 100
 
 
@@ -141,21 +144,58 @@ class UnifiedDashboardServer:
         )
 
     @staticmethod
-    def _read_recent_lines(path: str, max_bytes: int = ALERT_TAIL_BYTES) -> list[str]:
-        """대용량 로그도 마지막 일부만 읽어 대시보드 응답 지연을 제한한다."""
+    def _read_recent_lines(
+        path: str,
+        max_bytes: int = ALERT_MAX_SCAN_BYTES,
+        chunk_size: int = ALERT_SCAN_CHUNK_BYTES,
+        min_alert_matches: int = ALERT_TARGET_PER_SOURCE,
+    ) -> list[str]:
+        """대용량 로그도 끝에서부터 역방향으로 청크 단위 스캔하여,
+        경고(WARNING 이상) 로그를 최소 min_alert_matches건 확보하거나
+        최대 max_bytes까지 거슬러 올라가며 최근 라인들을 반환한다.
+        """
         try:
             with open(path, "rb") as log_stream:
                 log_stream.seek(0, os.SEEK_END)
                 size = log_stream.tell()
-                log_stream.seek(max(0, size - max_bytes))
-                chunk = log_stream.read()
+                if size == 0:
+                    return []
+
+                collected_lines: list[str] = []
+                alert_count = 0
+                pos = size
+                remainder = b""
+
+                while pos > 0 and (size - pos) < max_bytes and alert_count < min_alert_matches:
+                    read_size = min(chunk_size, pos)
+                    pos -= read_size
+                    log_stream.seek(pos)
+                    raw_chunk = log_stream.read(read_size) + remainder
+                    chunk_lines = raw_chunk.split(b"\n")
+
+                    if pos > 0:
+                        # 첫 번째 조각은 앞선 청크의 줄과 합쳐질 수 있으므로 다음 청크의 remainder로 보관
+                        remainder = chunk_lines[0]
+                        valid_chunk_lines = chunk_lines[1:]
+                    else:
+                        remainder = b""
+                        valid_chunk_lines = chunk_lines
+
+                    decoded_chunk: list[str] = []
+                    for raw_line in valid_chunk_lines:
+                        line_str = raw_line.decode("utf-8", errors="replace").rstrip("\r")
+                        if not line_str.strip():
+                            continue
+                        decoded_chunk.append(line_str)
+                        if ALERT_LEVEL_PATTERN.search(line_str):
+                            alert_count += 1
+
+                    # collected_lines의 앞쪽에 누적하여 시간 순서 보존
+                    collected_lines = decoded_chunk + collected_lines
+
+                return collected_lines
         except (OSError, ValueError):
             return []
-
-        text = chunk.decode("utf-8", errors="replace")
-        lines = text.splitlines()
-        # 중간부터 읽은 경우 첫 행은 잘린 레코드이므로 제외한다.
-        return lines if size <= max_bytes else lines[1:]
 
     def get_alert_logs(self, exchange_target: str = "combined") -> dict[str, Any]:
         """선택한 거래소 범위의 WARNING 이상 로그만 최신순으로 반환한다."""
