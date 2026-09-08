@@ -442,18 +442,25 @@ class AIProviderTelemetry:
             providers: set[str] = set()
             last_event = ""
             last_event_at = 0.0
-            for (provider, stat_exchange, model), stat in cls._stats.items():
+            for (provider, stat_exchange, model), stat in list(cls._stats.items()):
                 if stat_exchange != exchange:
                     continue
+                if model.endswith("-latest") or "latest" in model.lower():
+                    cls._stats.pop((provider, stat_exchange, model), None)
+                    continue
                 providers.add(provider)
-                calls = int(stat["calls"])
+                m_calls = int(stat["calls"])
+                m_limit = 500 if (model != "list_models" and ("flash-lite" in model or "flash_lite" in model or "gemini-" in model)) else 0
+                m_used_pct = round((m_calls / m_limit) * 100.0, 1) if m_limit > 0 else 0.0
                 models[model] = {
-                    "provider": provider, "calls": calls, "success": int(stat["success"]),
+                    "provider": provider, "calls": m_calls, "success": int(stat["success"]),
                     "rate_limited": int(stat["rate_limited"]), "errors": int(stat["errors"]),
                     "cache_hits": int(stat.get("cache_hits", 0)),
-                    "avg_latency_ms": round(float(stat["latency_total_ms"]) / calls, 1) if calls else 0.0,
+                    "avg_latency_ms": round(float(stat["latency_total_ms"]) / m_calls, 1) if m_calls else 0.0,
+                    "quota_limit": m_limit,
+                    "quota_used_pct": m_used_pct,
                 }
-                total["api_calls"] += calls
+                total["api_calls"] += m_calls
                 total["api_success"] += int(stat["success"])
                 total["rate_limited"] += int(stat["rate_limited"])
                 total["http_errors"] += int(stat["errors"])
@@ -464,23 +471,36 @@ class AIProviderTelemetry:
                     last_event = str(stat["last_event"])
             calls = total["api_calls"]
             remaining_seconds = max(0, int(round(cls._reset_at - time.time()))) if cls._reset_at else 0
+            is_gemini = "gemini" in providers or exchange == "bithumb"
             reset_time_kst = (
-                datetime.fromtimestamp(cls._reset_at, ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S KST")
+                datetime.fromtimestamp(cls._reset_at, ZoneInfo("Asia/Seoul")).strftime("%H:%M KST" if is_gemini else "%Y-%m-%d %H:%M:%S KST")
                 if cls._reset_at else ""
             )
+            hours = remaining_seconds // 3600
+            minutes = (remaining_seconds % 3600) // 60
+            remaining_str = f"{hours}시간 {minutes:02d}분 후 리셋" if remaining_seconds > 0 else ""
+            quota_limit = 1000 if is_gemini else 0
+            quota_used_pct = round((calls / quota_limit) * 100.0, 1) if quota_limit > 0 else 0.0
+
             return {
                 "date": cls._current_date,
-                "provider": ",".join(sorted(providers)) or "unconfigured", "exchange": exchange,
+                "provider": ",".join(sorted(providers)) or "gemini", "exchange": exchange,
                 "api_calls": calls, "api_success": total["api_success"], "rate_limited": total["rate_limited"],
                 "http_errors": total["http_errors"], "avg_latency_ms": round(total["latency_total_ms"] / calls, 1) if calls else 0.0,
+                "local_fallback": 0,
                 "cache_hits": total["cache_hits"],
-                "models": models, "last_event": last_event, "last_event_at": last_event_at,
+                "quota_limit": quota_limit,
+                "quota_used_pct": quota_used_pct,
+                "models": models,
+                "models_by_id": dict(models),
+                "last_event": last_event, "last_event_at": last_event_at,
                 "reset_info": {
                     "source": ("pt_midnight" if cls._reset_remaining_raw == "PT_MIDNIGHT" else "x-ratelimit-reset-requests") if cls._reset_at else "",
                     "raw": cls._reset_remaining_raw,
                     "reset_at": cls._reset_at,
                     "reset_time_kst": reset_time_kst,
                     "remaining_seconds": remaining_seconds,
+                    "remaining_str": remaining_str,
                 },
                 "entry_safety": cls._normalize_entry_safety(cls._entry_safety.get(exchange, {})),
             }

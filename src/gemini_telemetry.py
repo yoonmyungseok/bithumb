@@ -195,8 +195,28 @@ class GeminiTelemetrySnapshot:
                 "quota_used_pct": round((calls / limit) * 100.0, 1) if limit > 0 else 0.0,
             }
 
+        entry_safety = {
+            "entry_blocked": False,
+            "status": "NORMAL",
+            "reason": "",
+            "context": "",
+            "model": "",
+            "http_status": None,
+            "error_code": "",
+            "updated_at": 0.0,
+        }
+        try:
+            from src.ai_provider import AIProviderTelemetry
+            up_safety = AIProviderTelemetry.snapshot("upbit").get("entry_safety")
+            if isinstance(up_safety, dict) and up_safety:
+                entry_safety = up_safety
+        except Exception:
+            pass
+
         return {
             "date": self.date,
+            "provider": "gemini",
+            "exchange": "upbit",
             "api_calls": self.api_calls,
             "api_success": self.api_success,
             "rate_limited": self.rate_limited,
@@ -214,6 +234,7 @@ class GeminiTelemetrySnapshot:
             "fallback_rate_pct": round((self.local_fallback / max(1, self.api_calls)) * 100.0, 1),
             "last_event": self.last_event,
             "last_event_at": self.last_event_at,
+            "entry_safety": entry_safety,
         }
 
 

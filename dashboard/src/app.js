@@ -797,9 +797,7 @@
         if (entrySafety.entry_blocked) {
           badgeEl.innerText = '신규 BUY 차단';
           badgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30';
-        } else if (gData.provider === 'gemini') {
-          badgeEl.innerText = '신규 BUY 가능';
-          badgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+
         } else if (pct >= 90) {
           badgeEl.innerText = `${pct}% 소진`;
           badgeEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30';
@@ -843,7 +841,7 @@
       if (modelListEl) {
         const sourceModels = gData.models_by_id || gData.models || {};
         const rows = Object.entries(sourceModels)
-          .filter(([, stat]) => Number(stat?.calls || 0) > 0)
+          .filter(([model, stat]) => Number(stat?.calls || 0) > 0 && !model.includes('latest'))
           .sort(([, left], [, right]) => Number(right.calls || 0) - Number(left.calls || 0));
         const countedCalls = rows.reduce((sum, [, stat]) => sum + Number(stat.calls || 0), 0);
         const unclassifiedCalls = Math.max(0, calls - countedCalls);
@@ -861,14 +859,21 @@
           const barWrap = document.createElement('div');
           const bar = document.createElement('div');
           const modelCalls = Number(stat.calls || 0);
-          const quotaLimit = Number(stat.quota_limit || 0);
+          let quotaLimit = Number(stat.quota_limit || 0);
+          if (!quotaLimit && model !== 'list_models' && (model.includes('flash-lite') || model.includes('flash_lite') || model.includes('gemini-'))) {
+            quotaLimit = 500;
+          }
           const quotaPct = quotaLimit > 0 ? Math.min(100, Math.max(0, (modelCalls / quotaLimit) * 100)) : 0;
 
           row.className = 'space-y-1';
           label.className = 'flex justify-between gap-2 text-slate-400';
-          name.className = 'min-w-0 truncate font-medium text-amber-300/90';
+          name.className = 'min-w-0 truncate font-medium text-amber-300/90 flex items-center gap-1';
           ratio.className = 'shrink-0 font-medium text-slate-300';
-          name.textContent = model === 'list_models' ? '모델 목록 조회' : (model === 'unclassified' ? '기타 API 요청' : (model === 'empty' ? '모델 호출 기록 없음' : model));
+          const iconSpan = document.createElement('span');
+          iconSpan.textContent = model === 'list_models' ? '📋' : '⚡';
+          const textSpan = document.createElement('span');
+          textSpan.textContent = model === 'list_models' ? '모델 목록 조회' : (model === 'unclassified' ? '기타 API 요청' : (model === 'empty' ? '모델 호출 기록 없음' : model));
+          name.append(iconSpan, textSpan);
           ratio.textContent = quotaLimit > 0
             ? `${modelCalls.toLocaleString()} / ${quotaLimit.toLocaleString()}회 (${quotaPct.toFixed(1)}%)`
             : `${modelCalls.toLocaleString()}회`;
@@ -887,8 +892,17 @@
       const resetEl = document.getElementById(`${prefix}_api_reset`);
       if (resetEl) {
         // Google Gemini의 일일 쿼터 기준은 두 거래소에 동일하게 적용한다.
-        const timeKst = resetInfo.reset_time_kst || '16:00 KST';
-        const remStr = resetInfo.remaining_str ? ` (${resetInfo.remaining_str})` : '';
+        let timeKst = resetInfo.reset_time_kst || '16:00 KST';
+        const timeMatch = timeKst.match(/(\d{2}:\d{2})(?::\d{2})?\s*KST/i);
+        if (timeMatch) {
+          timeKst = `${timeMatch[1]} KST`;
+        }
+        let remStr = resetInfo.remaining_str ? ` (${resetInfo.remaining_str})` : '';
+        if (!remStr && resetInfo.remaining_seconds) {
+          const remH = Math.floor(resetInfo.remaining_seconds / 3600);
+          const remM = Math.floor((resetInfo.remaining_seconds % 3600) / 60);
+          remStr = ` (${remH}시간 ${remM.toString().padStart(2, '0')}분 후 리셋)`;
+        }
         resetEl.innerText = `${timeKst}${remStr}`;
       }
     }

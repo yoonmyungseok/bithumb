@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from ai_provider import AIProviderTelemetry, BithumbGeminiProvider
 from bithumb_ai import build_bithumb_analyzer, get_bithumb_ai_config_block_reason, get_bithumb_ai_entry_block_reason
 from gemini_analyzer import ENTRY_JSON_SCHEMA, GeminiProvider
+from gemini_telemetry import GeminiTelemetry
 
 
 class BithumbGeminiProviderTests(unittest.TestCase):
@@ -142,16 +143,34 @@ class BithumbGeminiProviderTests(unittest.TestCase):
         self.assertIn("gemini_bithumb", dashboard_js)
 
     def test_bithumb_card_uses_the_same_gemini_display_contract_as_upbit(self):
-        """빗썸 카드가 Groq 잔재 없이 업비트와 같은 Gemini 모델·색상 계약을 사용한다."""
+        """빗썸 카드가 Groq 잔재 없이 업비트와 같은 Gemini 모델·색상·마크업·텔레메트리 계약을 사용한다."""
         dashboard_html = (self.root / "dashboard" / "index.html").read_text(encoding="utf-8")
         dashboard_js = (self.root / "dashboard" / "src" / "app.js").read_text(encoding="utf-8")
 
         self.assertIn('id="gemini_bithumb_quota_bar" class="bg-gradient-to-r from-blue-500 to-indigo-500', dashboard_html)
         self.assertIn('id="gemini_bithumb_models_list"', dashboard_html)
         self.assertIn('id="gemini_upbit_models_list"', dashboard_html)
+        self.assertIn('id="bithumb_ai_provider_title"', dashboard_html)
+        self.assertIn('id="upbit_ai_provider_title"', dashboard_html)
         self.assertIn("renderAiProviderCard('gemini_bithumb', btGeminiData, 'bg-gradient-to-r from-blue-500 to-indigo-500')", dashboard_js)
+        self.assertIn("renderAiProviderCard('gemini_upbit', upGeminiData, 'bg-gradient-to-r from-blue-500 to-indigo-500')", dashboard_js)
         self.assertIn('gData.models_by_id || gData.models || {}', dashboard_js)
         self.assertNotIn("빗썸 Groq AI", dashboard_js)
+
+        # 빗썸 AI Provider 스냅샷이 업비트와 동일한 쿼터 스키마를 제공하는지 검증
+        AIProviderTelemetry.record("gemini", "bithumb", "gemini-3.5-flash-lite", "test", 200, 10.0)
+        bt_snap = AIProviderTelemetry.snapshot("bithumb")
+        self.assertEqual(bt_snap["quota_limit"], 1000)
+        self.assertIn("gemini-3.5-flash-lite", bt_snap["models"])
+        self.assertEqual(bt_snap["models"]["gemini-3.5-flash-lite"]["quota_limit"], 500)
+        self.assertIn("models_by_id", bt_snap)
+        self.assertIn("remaining_str", bt_snap["reset_info"])
+
+        # 업비트 Gemini 텔레메트리도 동일한 provider와 entry_safety를 제공하는지 검증
+        up_snap = GeminiTelemetry.snapshot().to_dict()
+        self.assertEqual(up_snap["provider"], "gemini")
+        self.assertEqual(up_snap["exchange"], "upbit")
+        self.assertIn("entry_safety", up_snap)
 
     def test_telemetry_file_is_separate_from_upbit_path(self):
         """빗썸 사용량·안전 상태 파일이 업비트 운영 파일과 겹치지 않아야 한다."""
