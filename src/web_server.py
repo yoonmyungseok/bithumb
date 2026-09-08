@@ -574,6 +574,10 @@ class DashboardWebServer:
                         if (a === 'TRAILING_STOP') return '트레일링 익절';
                         if (a === 'TIME_STOP') return '타임스탑 청산';
                         if (a === 'MOMENTUM_EARLY_EXIT' || a === 'MOMENTUM_EXIT') return '모멘텀 조기탈출';
+                        if (a === 'NEW_LISTING_EARLY_EXIT') return '신규상장 조기탈출 (30분)';
+                        if (a === 'NEW_LISTING_TIME_STOP') return '신규상장 타임스탑 (60분)';
+                        if (a === 'SWING_TREND_STOP') return '스윙 추세 이탈';
+                        if (a === 'NEW_LISTING') return '신규상장 단타';
                         if (a === 'PANIC_SELL') return '긴급 전량매도';
                         if (a === 'PROFIT_TAKE' || a === 'TAKE_PROFIT') return '전량 익절';
                         return action;
@@ -592,6 +596,9 @@ class DashboardWebServer:
                         if (s === 'STOP_LOSS') return '손절';
                         if (s === 'TIME_STOP') return '타임스탑 청산';
                         if (s === 'MOMENTUM_EARLY_EXIT' || s.includes('MOMENTUM') || s.includes('모멘텀')) return '모멘텀 조기탈출';
+                        if (s === 'NEW_LISTING_EARLY_EXIT' || s.includes('NEW_LISTING_EARLY')) return '신규상장 조기탈출';
+                        if (s === 'NEW_LISTING_TIME_STOP' || s.includes('NEW_LISTING_TIME')) return '신규상장 타임스탑';
+                        if (s === 'SWING_TREND_STOP' || s.includes('SWING_TREND')) return '스윙 추세 이탈';
                         if (s === 'PANIC_SELL') return '긴급 전량매도';
                         if (s === 'PROFIT_TAKE' || s === 'TAKE_PROFIT') return '전량 익절';
                         return side;
@@ -624,6 +631,10 @@ class DashboardWebServer:
                             .replace(/TIGHTENED_STOP/g, '손절선 상향 방어')
                             .replace(/TIGHTEN_STOP/g, '손절선 상향 방어')
                             .replace(/RUNNER_HOLD/g, '추세 추종 홀딩')
+                            .replace(/NEW_LISTING_EARLY_EXIT/g, '신규상장 조기탈출 (30분)')
+                            .replace(/NEW_LISTING_TIME_STOP/g, '신규상장 타임스탑 (60분)')
+                            .replace(/SWING_TREND_STOP/g, '스윙 추세 이탈')
+                            .replace(/NEW_LISTING/g, '신규상장 단타')
                             .replace(/MOMENTUM_EARLY_EXIT/g, '모멘텀 조기 본전탈출')
                             .replace(/MOMENTUM_EXIT/g, '모멘텀 조기탈출')
                             .replace(/MANUAL_EXIT/g, '수동 청산')

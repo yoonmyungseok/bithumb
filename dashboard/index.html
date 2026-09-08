@@ -154,6 +154,10 @@
           <div class="text-slate-400 mb-1">주문 상태 집계</div>
           <div id="order_status_counts" class="text-slate-200">상태 수신 대기</div>
         </div>
+        <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-3 lg:col-span-2">
+          <div class="text-slate-400 mb-1">신규상장 운영 슬롯</div>
+          <div id="new_listing_slot_status" class="text-amber-200">슬롯 상태 수신 대기</div>
+        </div>
       </div>
       <!-- 통합 화면에서는 거래소별 원인을 분리해, 한쪽 장애를 다른 거래소 문제로 오인하지 않게 한다. -->
       <div id="safety_exchange_detail" class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3" aria-label="거래소별 안전 상태"></div>
@@ -585,7 +589,7 @@
       <div class="font-bold text-slate-300 mb-2 flex items-center">
         <span class="mr-1.5">💡</span> AI 퀀트 트레이딩 핵심 전략 정책 (Strategy Policy SSOT)
       </div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+      <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
         <div class="bg-slate-800/40 p-3 rounded-xl border border-slate-800">
           <div class="text-slate-200 font-semibold mb-1">🎯 3단계 분할 익절 & 락인</div>
           <div id="policy_partial_tp_1">• 정책 값 수신 대기</div>
@@ -609,6 +613,13 @@
           <div id="policy_time_stop">• 정책 값 수신 대기</div>
           <div>• 체결 확정 전에는 보유 시간·쿨다운을 시작하지 않음</div>
           <div>• 일일 계좌 최대 손실 -5.0% 킬스위치</div>
+        </div>
+        <div class="bg-slate-800/40 p-3 rounded-xl border border-amber-800/60">
+          <div class="text-amber-200 font-semibold mb-1">🆕 신규상장 단타 (NEW_LISTING)</div>
+          <div id="policy_new_listing_alloc">• 정책 값 수신 대기</div>
+          <div id="policy_new_listing_stop">• 정책 값 수신 대기</div>
+          <div id="policy_new_listing_time">• 정책 값 수신 대기</div>
+          <div id="policy_new_listing_alpha">• 정책 값 수신 대기</div>
         </div>
       </div>
     </div>

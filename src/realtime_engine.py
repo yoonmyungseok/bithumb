@@ -351,11 +351,14 @@ class RealtimeRiskEngine:
             ).upper()
             is_bull_regime = (curr_regime == "BULL_TREND")
             is_swing = getattr(self.trailing_tracker, "is_swing_position", lambda m: False)(market)
+            is_new_listing = getattr(self.trailing_tracker, "is_new_listing_position", lambda m: False)(market)
 
             raw_stop_loss = float(strat.get("STOP_LOSS", 0.0) or strat.get("stop_loss", 0.0))
             # 진입 직후 털림 방지: 손절선은 평단가 대비 레짐/전략별 기본 손절 이하로 안전 마진 보장
             if is_swing:
                 base_sl_pct = StrategyPolicy.SWING_STOP_LOSS_PCT
+            elif is_new_listing:
+                base_sl_pct = StrategyPolicy.NEW_LISTING_STOP_LOSS_PCT
             elif is_bull_regime:
                 base_sl_pct = StrategyPolicy.BULL_STOP_LOSS_PCT
             else:
@@ -372,8 +375,13 @@ class RealtimeRiskEngine:
                 effective_stop_loss = max(effective_stop_loss, breakeven_sl)
             now_str = get_kst_now_str()
 
-            # 0. 단일 종목 절대 손실 하드 스탑 (스윙 -8.0%, 단타 -4.5% 도달 시 즉각 청산)
-            hard_stop_pct = StrategyPolicy.SWING_HARD_STOP_PCT if is_swing else 0.045
+            # 0. 단일 종목 절대 손실 하드 스탑 (스윙 -8.0%, 신규상장 -4.0%, 단타 -4.5% 도달 시 즉각 청산)
+            if is_swing:
+                hard_stop_pct = StrategyPolicy.SWING_HARD_STOP_PCT
+            elif is_new_listing:
+                hard_stop_pct = StrategyPolicy.NEW_LISTING_HARD_STOP_PCT
+            else:
+                hard_stop_pct = 0.045
             hard_stop_price = avg_buy_price * (1.0 - hard_stop_pct)
             is_hard_stop = current_price <= hard_stop_price
 
@@ -453,8 +461,12 @@ class RealtimeRiskEngine:
                 is_stage2 = (action_type == "PARTIAL_TP_2")
                 stage = 2 if is_stage2 else 1
                 original_filled = self.order_journal.get_latest_confirmed_entry_volume(market) if is_swing else 0.0
-                # 단타는 기존 1차 50%, 2차 잔여 50% 계약을 유지한다.
-                scalp_ratio = 0.50 if is_stage2 else StrategyPolicy.PARTIAL_TP_1_RATIO
+                if is_new_listing:
+                    scalp_ratio = StrategyPolicy.NEW_LISTING_PARTIAL_TP_RATIO
+                elif is_stage2:
+                    scalp_ratio = 0.50
+                else:
+                    scalp_ratio = StrategyPolicy.PARTIAL_TP_1_RATIO
                 sell_vol = calculate_partial_take_profit_volume(
                     is_swing=is_swing,
                     stage=stage,

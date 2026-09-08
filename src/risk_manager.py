@@ -161,6 +161,9 @@ def build_positions_data(
             reason = strat.get("reason") or strat.get("REASON") or "보유 중 (AI 실시간 관망 및 모니터링)"
             alpha_score = int(strat.get("alpha_score", 0) or 0)
             factor_breakdown = strat.get("factor_breakdown", {})
+            strategy_mode = str(strat.get("strategy_mode", "") or "")
+            candidate_type = str(strat.get("candidate_type", "") or "")
+            listing_maturity = str(strat.get("listing_maturity", "") or "")
             target_pct = float(strat.get("target_pct") or (((target_price - price) / price * 100) if price > 0 and target_price > 0 else 0.0))
             stop_pct = float(strat.get("stop_pct") or (((stop_loss - price) / price * 100) if price > 0 and stop_loss > 0 else 0.0))
             rr_denom = max(1e-6, price - stop_loss)
@@ -182,6 +185,9 @@ def build_positions_data(
                 "reason": reason,
                 "alpha_score": alpha_score,
                 "factor_breakdown": factor_breakdown,
+                "strategy_mode": strategy_mode,
+                "candidate_type": candidate_type,
+                "listing_maturity": listing_maturity,
                 "target_pct": round(target_pct, 2),
                 "stop_pct": round(stop_pct, 2),
                 "risk_reward_ratio": round(rr_ratio, 2),
@@ -239,6 +245,8 @@ def build_candidates_data(
             updated_at = strat.get("updated_at", "")
             candidate_type = str(strat.get("candidate_type", "CONFIRMED") or "CONFIRMED")
             momentum_breakout = strat.get("momentum_breakout", {})
+            strategy_mode = str(strat.get("strategy_mode", "") or "")
+            listing_maturity = str(strat.get("listing_maturity", "") or "")
 
             target_pct = float(strat.get("target_pct") or (((target_price - curr_price) / curr_price * 100) if curr_price > 0 and target_price > 0 else 0.0))
             stop_pct = float(strat.get("stop_pct") or (((stop_loss - curr_price) / curr_price * 100) if curr_price > 0 and stop_loss > 0 else 0.0))
@@ -261,6 +269,8 @@ def build_candidates_data(
                 "allow_buy": allow_buy,
                 "factor_breakdown": factor_breakdown,
                 "candidate_type": candidate_type,
+                "strategy_mode": strategy_mode,
+                "listing_maturity": listing_maturity,
                 "momentum_breakout": momentum_breakout,
                 "target_pct": round(target_pct, 2),
                 "stop_pct": round(stop_pct, 2),
@@ -339,7 +349,7 @@ class TrailingStopTracker:
             return market.upper() in self._exiting_markets
 
     def set_strategy_mode(self, market: str, mode: str = "SCALP") -> None:
-        """포지션의 전략 모드 (SCALP 또는 SWING) 설정 및 영속 저장"""
+        """포지션의 전략 모드 (SCALP, SWING, NEW_LISTING) 설정 및 영속 저장"""
         with self._lock:
             m_upper = market.upper()
             self.strategy_modes[m_upper] = str(mode or "SCALP").upper()
@@ -355,10 +365,22 @@ class TrailingStopTracker:
         """스윙 포지션 여부 확인"""
         return self.get_strategy_mode(market) == "SWING"
 
+    def is_new_listing_position(self, market: str) -> bool:
+        """신규 상장 단타(NEW_LISTING) 포지션 여부 확인"""
+        return self.get_strategy_mode(market) == "NEW_LISTING"
+
     def get_swing_markets(self) -> list[str]:
         """현재 보유 중인 스윙 종목 목록 반환"""
         with self._lock:
             return [m for m, mode in self.strategy_modes.items() if mode == "SWING" and m.startswith("KRW-")]
+
+    def get_new_listing_markets(self) -> list[str]:
+        """현재 보유 중인 신규상장 단타 종목 목록 반환"""
+        with self._lock:
+            return [
+                m for m, mode in self.strategy_modes.items()
+                if mode == "NEW_LISTING" and m.startswith("KRW-")
+            ]
 
     def _load_state(self):
         with self._lock:
@@ -448,6 +470,7 @@ class TrailingStopTracker:
 
         with self._lock:
             is_swing = self.is_swing_position(market)
+            is_new_listing = self.is_new_listing_position(market)
             is_major = is_major_market(market)
             regime = (btc_regime or getattr(self, "current_btc_regime", "NORMAL")).upper()
             is_bull = (regime == "BULL_TREND")
@@ -455,6 +478,10 @@ class TrailingStopTracker:
             if is_swing:
                 tp_1_target = StrategyPolicy.SWING_PARTIAL_TP_1_PCT
                 tp_2_target = StrategyPolicy.SWING_PARTIAL_TP_2_PCT
+            elif is_new_listing:
+                # 신규상장은 1차 분할익절(+3.0%, 50%)만 적용하고 2차 단계는 사용하지 않는다.
+                tp_1_target = StrategyPolicy.NEW_LISTING_PARTIAL_TP_PCT
+                tp_2_target = 10.0
             elif is_major:
                 tp_1_target = StrategyPolicy.MAJOR_PARTIAL_TP_1_PCT
                 tp_2_target = StrategyPolicy.MAJOR_PARTIAL_TP_2_PCT
@@ -491,6 +518,9 @@ class TrailingStopTracker:
             elif is_swing:
                 effective_start_pct = StrategyPolicy.SWING_TRAILING_START_PCT  # +8.0%
                 base_drop_pct = StrategyPolicy.SWING_TRAILING_DROP_PCT        # 4.0%
+            elif is_new_listing:
+                effective_start_pct = StrategyPolicy.NEW_LISTING_TRAILING_START_PCT  # +4.0%
+                base_drop_pct = StrategyPolicy.NEW_LISTING_TRAILING_DROP_PCT        # 2.0%
             elif is_major:
                 effective_start_pct = StrategyPolicy.MAJOR_TRAILING_START_PCT  # +1.5%
                 base_drop_pct = StrategyPolicy.MAJOR_TRAILING_DROP_PCT        # 1.0%
@@ -515,6 +545,8 @@ class TrailingStopTracker:
                     active_drop_pct = 0.004  # 비상 방어 모드: 0.4% 극초밀착
                 elif is_swing:
                     active_drop_pct = StrategyPolicy.SWING_TRAILING_DROP_PCT  # 스윙 4.0%
+                elif is_new_listing:
+                    active_drop_pct = StrategyPolicy.NEW_LISTING_TRAILING_DROP_PCT  # 신규상장 2.0%
                 elif is_major:
                     active_drop_pct = min(base_drop_pct, 0.010)  # 메이저: 1.0% 밀착
                 elif is_bull:
@@ -533,6 +565,8 @@ class TrailingStopTracker:
                 # 수수료 및 슬리피지 차감 후 최소 안전 마진 확보 (스윙 +1.5%, 메이저 +0.3%, 알트 +0.5%)
                 if is_swing:
                     min_buffer = 1.0 + StrategyPolicy.SWING_BREAKEVEN_STOP_PCT
+                elif is_new_listing:
+                    min_buffer = 1.0 + StrategyPolicy.BREAKEVEN_STOP_PCT
                 elif is_major:
                     min_buffer = 1.003
                 else:
@@ -545,7 +579,14 @@ class TrailingStopTracker:
                 is_time_to_log = (now_ts - self._last_log_ts.get(market, 0.0)) >= 15.0
 
                 if is_new_peak or is_time_to_log:
-                    mode_tag = " [🚨비상방어]" if self.macro_defensive_mode else ("[🌊스윙]" if is_swing else "")
+                    if self.macro_defensive_mode:
+                        mode_tag = " [🚨비상방어]"
+                    elif is_swing:
+                        mode_tag = "[🌊스윙]"
+                    elif is_new_listing:
+                        mode_tag = "[🆕신규상장]"
+                    else:
+                        mode_tag = ""
                     logger.info(
                         f"🎯 [{market}]{mode_tag} 가속 트레일링 추적 중: 최고점 {current_peak:,.2f}원 (+{peak_profit_pct:.2f}% | 드롭폭 {active_drop_pct*100:.1f}%) ➜ 익절기준선 {trailing_stop_price:,.2f}원"
                     )

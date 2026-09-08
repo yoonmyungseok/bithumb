@@ -50,6 +50,10 @@ class DashboardFrontendKoreanTests(unittest.TestCase):
             'PANIC_SELL',
             'MANUAL_EXIT',
             'MOMENTUM_BREAKOUT',
+            'NEW_LISTING',
+            'NEW_LISTING_TIME_STOP',
+            'NEW_LISTING_EARLY_EXIT',
+            'SWING_TREND_STOP',
             'ORDERBOOK_IMBALANCE',
             'DAILY_LOSS_LIMIT',
             'MARKET_COOLDOWN'
@@ -81,6 +85,10 @@ class DashboardFrontendKoreanTests(unittest.TestCase):
         self.assertIn("긴급 전량매도", results["PANIC_SELL"])
         self.assertIn("수동 청산", results["MANUAL_EXIT"])
         self.assertIn("모멘텀 돌파", results["MOMENTUM_BREAKOUT"])
+        self.assertIn("신규상장 단타", results["NEW_LISTING"])
+        self.assertIn("신규상장 타임스탑", results["NEW_LISTING_TIME_STOP"])
+        self.assertIn("신규상장 조기탈출", results["NEW_LISTING_EARLY_EXIT"])
+        self.assertIn("스윙 추세 이탈", results["SWING_TREND_STOP"])
         self.assertIn("호가 불균형", results["ORDERBOOK_IMBALANCE"])
         self.assertIn("일일 손실 한도", results["DAILY_LOSS_LIMIT"])
         self.assertIn("재진입 쿨다운", results["MARKET_COOLDOWN"])
@@ -95,7 +103,10 @@ class DashboardFrontendKoreanTests(unittest.TestCase):
             tightened: formatTradeSideBadge('AI_TIGHTENED_STOP'),
             trailing: formatTradeSideBadge('TRAILING_STOP'),
             panic: formatTradeSideBadge('PANIC_SELL'),
-            buy: formatTradeSideBadge('BID')
+            buy: formatTradeSideBadge('BID'),
+            new_listing_time_stop: formatTradeSideBadge('NEW_LISTING_TIME_STOP'),
+            new_listing_early_exit: formatTradeSideBadge('NEW_LISTING_EARLY_EXIT'),
+            swing_trend_stop: formatTradeSideBadge('SWING_TREND_STOP')
         }};
         console.log(JSON.stringify(results));
         """
@@ -113,6 +124,33 @@ class DashboardFrontendKoreanTests(unittest.TestCase):
         self.assertIn("트레일링", results["trailing"])
         self.assertIn("긴급매도", results["panic"])
         self.assertIn("매수", results["buy"])
+        self.assertIn("신규상장타임스탑", results["new_listing_time_stop"])
+        self.assertIn("신규상장조기탈출", results["new_listing_early_exit"])
+        self.assertIn("스윙추세이탈", results["swing_trend_stop"])
+
+    def test_format_strategy_mode_label_korean(self):
+        """formatStrategyModeLabel이 NEW_LISTING strategy_mode를 한글 라벨로 변환하는지 검증"""
+        func_code = self._extract_function("formatStrategyModeLabel")
+        js_code = f"""
+        {func_code}
+        const results = {{
+            newListing: formatStrategyModeLabel('NEW_LISTING'),
+            swing: formatStrategyModeLabel('SWING'),
+            scalp: formatStrategyModeLabel('SCALP')
+        }};
+        console.log(JSON.stringify(results));
+        """
+        proc = subprocess.run(
+            ["node", "-e", js_code],
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding="utf-8",
+        )
+        results = json.loads(proc.stdout)
+        self.assertIn("신규상장 단타", results["newListing"])
+        self.assertIn("스윙", results["swing"])
+        self.assertIn("단타", results["scalp"])
 
     def test_render_action_badge_korean(self):
         """renderActionBadge가 비상탈출 및 손절상향 액션을 한글 뱃지로 변환하는지 검증"""

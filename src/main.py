@@ -121,6 +121,18 @@ MAX_SWING_POSITIONS = min(
     MAX_OPEN_POSITIONS,
     max(0, int(os.getenv("BITHUMB_MAX_SWING_POSITIONS", os.getenv("MAX_SWING_POSITIONS", "1")))),
 )
+MAX_NEW_LISTING_POSITIONS = min(
+    MAX_OPEN_POSITIONS,
+    max(
+        0,
+        int(
+            os.getenv(
+                "BITHUMB_MAX_NEW_LISTING_POSITIONS",
+                os.getenv("MAX_NEW_LISTING_POSITIONS", str(StrategyPolicy.NEW_LISTING_MAX_OPEN_POSITIONS)),
+            )
+        ),
+    ),
+)
 # 관찰 기간에는 차단 후보만 기록하고, 검증 후 환경 변수로 신규 매수 차단을 활성화한다.
 ORDERBOOK_SLIPPAGE_ENFORCEMENT = os.getenv("ORDERBOOK_SLIPPAGE_ENFORCEMENT", "false").strip().lower() in {"1", "true", "yes", "on"}
 # 모멘텀 돌파는 확정봉·호가·주문 안전 검증을 모두 통과한 소수 후보만 직접 진입한다.
@@ -172,6 +184,7 @@ risk_guard = RiskGuard(
     max_total_exposure_pct=MAX_TOTAL_EXPOSURE_PCT,
     max_order_krw=MAX_ORDER_KRW,
     max_swing_positions=MAX_SWING_POSITIONS,
+    max_new_listing_positions=MAX_NEW_LISTING_POSITIONS,
 )
 trailing_tracker = TrailingStopTracker(
     start_profit_pct=TRAILING_START_PCT, trailing_drop_pct=TRAILING_STOP_PCT
@@ -233,6 +246,7 @@ bot_controller = BotController(
     latest_strategies=LATEST_STRATEGIES,
     # 지연 평가 람다로 웹소켓 생성 이후에도 최신 건강 상태를 대시보드에 제공한다.
     get_feed_health=lambda: ws_client.get_health_status(),
+    risk_guard=risk_guard,
 )
 
 strategy_cache_mgr = StrategyCacheManager(exchange_name="bithumb")

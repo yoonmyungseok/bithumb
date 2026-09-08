@@ -8,6 +8,7 @@ from ai_provider import AIProviderTelemetry
 from gemini_telemetry import GeminiTelemetry
 from operational_quality import build_slippage_enforcement_readiness
 from order_safety import OrderJournal, SafeOrderExecutor
+from risk_controls import RiskGuard
 from risk_manager import (
     DailyRiskManager,
     TrailingStopTracker,
@@ -19,7 +20,7 @@ from risk_manager import (
     get_held_markets,
     get_kst_now_str,
 )
-from strategy_engine import StrategyPolicy
+from strategy_engine import StrategyPolicy, get_new_listing_alpha_threshold
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
 
@@ -47,6 +48,7 @@ class BotController:
         exchange_name: str = "빗썸",
         web_port: int = 7979,
         get_feed_health: Callable[[], dict[str, Any]] | None = None,
+        risk_guard: RiskGuard | None = None,
     ):
         self.get_exchange = exchange_factory
         self.order_executor = order_executor
@@ -62,6 +64,7 @@ class BotController:
         self.web_port = web_port
         # 웹소켓 구현에 직접 결합하지 않고, 호출자가 제공한 읽기 전용 상태만 사용한다.
         self.get_feed_health = get_feed_health
+        self.risk_guard = risk_guard
         self.start_time = time.time()
         self._last_dashboard_fetch_ts: float = 0.0
         self._dashboard_cache_lock = threading.Lock()
@@ -160,6 +163,15 @@ class BotController:
             "stop_loss_pct": StrategyPolicy.STOP_LOSS_PCT,
             "alpha_buy_threshold_normal": StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL,
             "alpha_buy_threshold_risk_off": StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF,
+            "new_listing_alloc_ratio": StrategyPolicy.NEW_LISTING_ALLOC_RATIO,
+            "new_listing_stop_loss_pct": StrategyPolicy.NEW_LISTING_STOP_LOSS_PCT,
+            "new_listing_hard_stop_pct": StrategyPolicy.NEW_LISTING_HARD_STOP_PCT,
+            "new_listing_time_stop_seconds": StrategyPolicy.NEW_LISTING_TIME_STOP_SECONDS,
+            "new_listing_early_exit_seconds": StrategyPolicy.NEW_LISTING_EARLY_EXIT_SECONDS,
+            "new_listing_alpha_threshold_normal": get_new_listing_alpha_threshold("NORMAL", is_night=False),
+            "new_listing_alpha_threshold_night": get_new_listing_alpha_threshold("NORMAL", is_night=True),
+            "new_listing_reentry_cooldown_sec": StrategyPolicy.NEW_LISTING_REENTRY_COOLDOWN_SEC,
+            "new_listing_max_open_positions": StrategyPolicy.NEW_LISTING_MAX_OPEN_POSITIONS,
         }
 
     def cancel_bot_open_orders(self, market: str | None = None) -> int:
@@ -385,10 +397,18 @@ class BotController:
             positions_data = build_positions_data(balances, bithumb, self.latest_strategies)
             # 확정 체결 기반 보유 시간과 익절 단계를 덧붙인다. 수동 보유분에는 시간을 추정하지 않는다.
             for position in positions_data:
-                position["risk_state"] = self.trailing_tracker.get_position_dashboard_state(
-                    str(position.get("market", "")), now=now
-                )
+                market_key = str(position.get("market", "") or "")
+                position["risk_state"] = self.trailing_tracker.get_position_dashboard_state(market_key, now=now)
+                risk_state = position.get("risk_state") or {}
+                position["strategy_mode"] = risk_state.get("strategy_mode") or position.get("strategy_mode") or "SCALP"
             candidates_data = build_candidates_data(balances, bithumb, self.latest_strategies)
+
+            new_listing_markets = self.trailing_tracker.get_new_listing_markets()
+            new_listing_slot_max = (
+                self.risk_guard.max_new_listing_positions
+                if self.risk_guard is not None
+                else StrategyPolicy.NEW_LISTING_MAX_OPEN_POSITIONS
+            )
 
             # 2. 최근 완료 거래 내역
             recent_trades_data = []
@@ -468,6 +488,11 @@ class BotController:
             pos_stats = self.trade_memory.get_position_level_stats() if hasattr(self.trade_memory, "get_position_level_stats") else {}
             unknown_count = sum(1 for o in self.order_journal.orders if o.get("status") == "UNKNOWN")
             safety_data = self._build_safety_data(self.order_journal.orders)
+            safety_data["new_listing_slot_used"] = len(new_listing_markets)
+            safety_data["new_listing_slot_max"] = new_listing_slot_max
+            safety_data["new_listing_markets"] = new_listing_markets
+            safety_data["new_listing_enabled"] = StrategyPolicy.is_new_listing_enabled()
+            safety_data["new_listing_enforcement"] = StrategyPolicy.is_new_listing_enforcement_enabled()
 
             # 6. BTC 시장 레짐 정보
             btc_regime = "NORMAL"
@@ -496,6 +521,11 @@ class BotController:
                 "unknown_orders_count": unknown_count,
                 "safety": safety_data,
                 "policy": self._build_policy_data(),
+                "new_listing_markets": new_listing_markets,
+                "new_listing_slot_used": len(new_listing_markets),
+                "new_listing_slot_max": new_listing_slot_max,
+                "new_listing_enabled": StrategyPolicy.is_new_listing_enabled(),
+                "new_listing_enforcement": StrategyPolicy.is_new_listing_enforcement_enabled(),
                 "fear_and_greed": fng.get("desc", str(fng)) if isinstance(fng, dict) else str(fng),
                 "btc_regime": btc_regime,
                 "btc_regime_desc": btc_regime_desc,
@@ -561,6 +591,13 @@ class BotController:
         exchange_obj = self.get_exchange() if hasattr(self, "get_exchange") else None
         exchange_stats = exchange_obj.get_telemetry() if hasattr(exchange_obj, "get_telemetry") else {}
 
+        new_listing_markets = self.trailing_tracker.get_new_listing_markets()
+        new_listing_slot_max = (
+            self.risk_guard.max_new_listing_positions
+            if self.risk_guard is not None
+            else StrategyPolicy.NEW_LISTING_MAX_OPEN_POSITIONS
+        )
+
         return {
             "exchange": self.exchange_name,
             "pid": os.getpid(),
@@ -587,6 +624,11 @@ class BotController:
                 "ai_provider": ai_stats,
             },
             "slippage_enforcement": slippage_readiness.to_dict(),
+            "new_listing_markets": new_listing_markets,
+            "new_listing_slot_used": len(new_listing_markets),
+            "new_listing_slot_max": new_listing_slot_max,
+            "new_listing_enabled": StrategyPolicy.is_new_listing_enabled(),
+            "new_listing_enforcement": StrategyPolicy.is_new_listing_enforcement_enabled(),
         }
 
     def get_diagnostics_message(self) -> str:
@@ -603,12 +645,23 @@ class BotController:
         ex_rem_sec = ex_stats.get("remaining_sec")
         ex_rem_str = f" / 잔여초당 {ex_rem_sec}" if ex_rem_sec is not None else ""
 
+        nl_used = diag.get("new_listing_slot_used", 0)
+        nl_max = diag.get("new_listing_slot_max", 0)
+        nl_mode = "차단 활성" if diag.get("new_listing_enforcement") else "관찰 모드"
+        nl_line = (
+            f"• <b>신규상장 슬롯:</b> {nl_used}/{nl_max} "
+            f"({'비활성' if not diag.get('new_listing_enabled') else nl_mode})"
+        )
+        if diag.get("new_listing_markets"):
+            nl_line += f" · 보유: {', '.join(diag['new_listing_markets'])}"
+
         return (
             f"🩺 <b>[{self.exchange_name} AI 트레이딩 시스템 정밀 진단 리포트]</b>\n\n"
             f"• <b>운영 상태:</b> {state_icon}\n"
             f"• <b>시스템 Uptime:</b> {diag['uptime_str']} (PID: {diag['pid']})\n"
             f"• <b>활성 스레드:</b> {diag['active_threads']}개 스레드\n"
             f"• <b>일일 킬스위치:</b> {ks_icon}\n"
+            f"{nl_line}\n"
             f"• <b>연속 손실 횟수:</b> {diag['consecutive_losses']}회 (자본 배율: {diag['risk_scale_factor']*100:.0f}%)\n"
             f"• <b>최근 평균 슬리피지:</b> {diag['avg_slippage_bps']:.1f} bps\n"
             f"• <b>거래소 API 호출:</b> {ex_calls}회 (429 {ex_429}회{ex_rem_str})\n"

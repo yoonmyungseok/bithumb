@@ -172,6 +172,24 @@ class TestTradeImprovementGuards(unittest.TestCase):
         self.assertIn("현재 알파 승인 기준: 75점 이상", momentum_prompt)
         self.assertIn("최대 종목 비중의 25%", momentum_prompt)
 
+        analyzer.analyze(
+            market="KRW-TEST",
+            current_price=100.0,
+            candles=candles,
+            krw_balance=100000.0,
+            coin_balance=0.0,
+            avg_buy_price=0.0,
+            btc_regime="NORMAL",
+            is_night=False,
+            candidate_type="NEW_LISTING",
+            entry_policy_mode="STANDARD",
+        )
+        new_listing_prompt = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
+        self.assertEqual(mock_post.call_count, 3)
+        self.assertIn("후보 유형: NEW_LISTING", new_listing_prompt)
+        self.assertIn("현재 알파 승인 기준: 75점 이상", new_listing_prompt)
+        self.assertIn("4H/1H MTF 게이트는 면제", new_listing_prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

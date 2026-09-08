@@ -13,6 +13,7 @@ from strategy_engine import (
     StrategyPolicy,
     get_alpha_buy_threshold,
     get_momentum_breakout_alpha_threshold,
+    get_new_listing_alpha_threshold,
     is_night_session,
 )
 from strategy_engine import (
@@ -810,6 +811,8 @@ class GeminiAnalyzer:
         normalized_candidate_type = str(candidate_type or "CONFIRMED").upper()
         if normalized_candidate_type == "MOMENTUM_BREAKOUT":
             buy_threshold = get_momentum_breakout_alpha_threshold(btc_regime, is_night)
+        elif normalized_candidate_type == "NEW_LISTING":
+            buy_threshold = get_new_listing_alpha_threshold(btc_regime, is_night)
         else:
             buy_threshold = get_alpha_buy_threshold(btc_regime, is_night)
 
@@ -1007,6 +1010,36 @@ class GeminiAnalyzer:
                 f"현재 단계는 {normalized_momentum_phase}이며, 신규 BUY는 EARLY 단계에서만 가능합니다(당일 변동률 +{StrategyPolicy.get_momentum_early_max_change_rate() * 100:.1f}% 이하). "
                 f"(EXTENDED 단계는 로컬 퀀트 통과 및 AI 알파 80점 이상 고확신 확인형 진입 시에만 제한 허용)"
             )
+        elif normalized_candidate_type == "NEW_LISTING":
+            current_alpha_threshold = get_new_listing_alpha_threshold(regime_upper, night_active)
+            max_age_hours = StrategyPolicy.get_new_listing_max_age_hours()
+            policy_details = (
+                f"신규 상장 단타(NEW_LISTING) 전용 경로입니다. 4H/1H MTF 게이트는 면제되며 확정 5분봉 최소 "
+                f"{StrategyPolicy.NEW_LISTING_MIN_5M_COMPLETED}개만 필요합니다. "
+                f"상장 후 {max_age_hours}시간 이내 종목만 대상이며, 24시간 거래대금은 일반 "
+                f"{StrategyPolicy.NEW_LISTING_MIN_TRADE_VALUE_24H / 100_000_000:.0f}억 원 / RISK_OFF "
+                f"{StrategyPolicy.NEW_LISTING_MIN_TRADE_VALUE_24H_RISK_OFF / 100_000_000:.0f}억 원 이상, "
+                f"당일 상승률은 일반 {StrategyPolicy.NEW_LISTING_MIN_CHANGE_RATE * 100:.1f}%~"
+                f"{StrategyPolicy.NEW_LISTING_MAX_CHANGE_RATE * 100:.0f}% / RISK_OFF "
+                f"{StrategyPolicy.NEW_LISTING_MIN_CHANGE_RATE_RISK_OFF * 100:.1f}%~"
+                f"{StrategyPolicy.NEW_LISTING_MAX_CHANGE_RATE_RISK_OFF * 100:.1f}%, "
+                f"BTC 대비 RS는 일반 +{StrategyPolicy.NEW_LISTING_MIN_RS * 100:.1f}% / RISK_OFF "
+                f"+{StrategyPolicy.NEW_LISTING_MIN_RS_RISK_OFF * 100:.1f}% 이상이어야 합니다. "
+                f"BTC 레짐이 CRASH이면 신규 진입이 차단되며, RISK_OFF에서는 위 엄격 기준을 적용합니다. "
+                f"1차 퀀트 new_listing_entry_signal() 통과 후에만 AI 분석이 호출되며, AI BUY 확인이 필수입니다"
+                "기본 관찰 모드이며, 해당 거래소의 NEW_LISTING_ENFORCEMENT=true 명시 설정 전에는 실주문이 금지됩니다. "
+                f"초기 주문 비중은 최대 종목 비중의 {StrategyPolicy.NEW_LISTING_ALLOC_RATIO * 100:.0f}%를 넘지 않습니다. "
+                f"목표 수익률은 +{StrategyPolicy.NEW_LISTING_TARGET_PCT * 100:.1f}%, 손절선은 -"
+                f"{StrategyPolicy.NEW_LISTING_STOP_LOSS_PCT * 100:.1f}% 기준이며, "
+                f"청산은 하드스탑 -{StrategyPolicy.NEW_LISTING_HARD_STOP_PCT * 100:.0f}%, "
+                f"분할익절 +{StrategyPolicy.NEW_LISTING_PARTIAL_TP_PCT * 100:.1f}%"
+                f"({StrategyPolicy.NEW_LISTING_PARTIAL_TP_RATIO * 100:.0f}%), "
+                f"트레일링 +{StrategyPolicy.NEW_LISTING_TRAILING_START_PCT * 100:.0f}%/드롭 "
+                f"{StrategyPolicy.NEW_LISTING_TRAILING_DROP_PCT * 100:.0f}%, "
+                f"{StrategyPolicy.NEW_LISTING_EARLY_EXIT_SECONDS // 60}분 조기탈출, "
+                f"{StrategyPolicy.NEW_LISTING_TIME_STOP_SECONDS // 60}분 타임스탑을 적용합니다. "
+                "MOMENTUM_BREAKOUT/RECOVERY_REBOUND/CONFIRMED 근거로 NEW_LISTING 조건을 대체하지 마세요."
+            )
         elif normalized_policy_mode == "RECOVERY_REBOUND":
             current_alpha_threshold = max(
                 StrategyPolicy.RECOVERY_REBOUND_ALPHA_THRESHOLD,
@@ -1027,7 +1060,17 @@ class GeminiAnalyzer:
             )
 
         if regime_upper == "RISK_OFF":
-            if normalized_policy_mode == "RECOVERY_REBOUND":
+            if normalized_candidate_type == "NEW_LISTING":
+                risk_off_instruction = (
+                    f"약세장 신규 상장 단타(NEW_LISTING) 경로입니다. 24시간 거래대금 "
+                    f"{StrategyPolicy.NEW_LISTING_MIN_TRADE_VALUE_24H_RISK_OFF / 100_000_000:.0f}억 원 이상, "
+                    f"당일 상승률 {StrategyPolicy.NEW_LISTING_MIN_CHANGE_RATE_RISK_OFF * 100:.1f}%~"
+                    f"{StrategyPolicy.NEW_LISTING_MAX_CHANGE_RATE_RISK_OFF * 100:.1f}%, "
+                    f"BTC 대비 RS +{StrategyPolicy.NEW_LISTING_MIN_RS_RISK_OFF * 100:.1f}% 이상, "
+                    f"알파 승인선 {current_alpha_threshold}점 이상과 독자 수급이 모두 확인된 경우에만 "
+                    "제한적으로 BUY를 검토하세요."
+                )
+            elif normalized_policy_mode == "RECOVERY_REBOUND":
                 risk_off_instruction = (
                     f"반등 전용 경로이므로 BTC 대비 RS +{StrategyPolicy.RECOVERY_REBOUND_RS_MIN * 100:.1f}% 이상과 "
                     "독자 수급이 확인되지 않으면 HOLD를 반환하세요."
@@ -1063,7 +1106,7 @@ class GeminiAnalyzer:
 아래 순서를 생략하거나 임의의 외부 정보·추측으로 보완하지 마세요.
 1. 제공된 수치만 사용해 7대 팩터 각각을 `충족`, `미충족`, `판정불가`로 분류하세요. 수치가 없거나 서로 모순되면 `판정불가`이며 해당 팩터는 0점입니다.
 2. 각 충족 판정에는 이 요청에 포함된 수치 또는 상태를 하나씩 근거로 사용하세요. 단일 강한 신호가 다른 필수 팩터의 미충족을 상쇄할 수 없습니다.
-3. 후보 유형과 정책 경로에 맞는 경로 조건이 하나라도 미충족이면 BUY가 아니라 HOLD입니다. `MOMENTUM_BREAKOUT`은 돌파 추격을 일반 눌림목 근거로, `RECOVERY_REBOUND`는 반등 기대를 일반 상승장 근거로 바꾸어 해석하지 마세요.
+3. 후보 유형과 정책 경로에 맞는 경로 조건이 하나라도 미충족이면 BUY가 아니라 HOLD입니다. `MOMENTUM_BREAKOUT`은 돌파 추격을 일반 눌림목 근거로, `RECOVERY_REBOUND`는 반등 기대를 일반 상승장 근거로, `NEW_LISTING`은 신규상장 초기 수급을 일반 확인형·모멘텀·반등 근거로 바꾸어 해석하지 마세요.
 4. `ALPHA_SCORE`는 위 7대 팩터의 검증 결과만 반영한 0~100 정수입니다. BUY는 현재 알파 승인 기준 이상이고, 모든 필수 조건이 확인되며, 아래 손익비 규칙을 만족할 때만 선택하세요.
 5. 결론을 내리기 전에 가장 강한 반대 근거 1개와 매수 가설의 무효화 조건 1개를 확인하세요. 둘 중 하나라도 신규 매수 위험을 높이면 HOLD를 선택하세요.
 
@@ -1144,6 +1187,8 @@ class GeminiAnalyzer:
                 overheat_reasons = []
                 if normalized_candidate_type == "MOMENTUM_BREAKOUT":
                     rsi_overheat_limit = StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MAX
+                elif normalized_candidate_type == "NEW_LISTING":
+                    rsi_overheat_limit = StrategyPolicy.NEW_LISTING_RSI_MAX
                 else:
                     rsi_overheat_limit = 65.0
                 if rsi_val > rsi_overheat_limit:

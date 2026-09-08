@@ -2,7 +2,7 @@ import math
 import os
 import threading
 from datetime import datetime, timezone, timedelta
-from typing import Any
+from typing import Any, Literal
 
 KST = timezone(timedelta(hours=9))
 
@@ -74,6 +74,102 @@ class StrategyPolicy:
     SWING_ALLOC_RATIO: float = 0.50              # 스윙 포지션 기본 배분 비중
     SWING_TIME_STOP_ENABLED: bool = False        # 스윙은 시간 기반 타임스탑 미적용 (추세 기반 청산)
     SWING_4H_DATA_UNAVAILABLE_MAX_HOLD_SECONDS: int = 43200  # 4H 대사 불가가 12시간 지속되면 무기한 보유 방지 보호 청산
+
+    # 1-4. 신규 상장 단타(NEW_LISTING) 전용 파라미터 — 4H/1H 이력 부족 시 소액 단타 경로
+    # 기본값은 후보 분석·감사만 수행하는 관찰 모드다. 실주문은 거래소별 명시 설정이 있어야 한다.
+    NEW_LISTING_ENABLED: bool = True
+    NEW_LISTING_ENFORCEMENT: bool = False
+    NEW_LISTING_MIN_5M_COMPLETED: int = 5
+    NEW_LISTING_MAX_AGE_HOURS: int = 72
+    NEW_LISTING_MIN_TRADE_VALUE_24H: float = 2_000_000_000.0
+    NEW_LISTING_MIN_TRADE_VALUE_24H_RISK_OFF: float = 3_000_000_000.0
+    NEW_LISTING_MIN_CHANGE_RATE: float = 0.015
+    NEW_LISTING_MAX_CHANGE_RATE: float = 0.080
+    NEW_LISTING_MIN_CHANGE_RATE_RISK_OFF: float = 0.020
+    NEW_LISTING_MAX_CHANGE_RATE_RISK_OFF: float = 0.060
+    NEW_LISTING_MIN_RS: float = 0.010
+    NEW_LISTING_MIN_RS_RISK_OFF: float = 0.015
+    NEW_LISTING_ALPHA_THRESHOLD_NORMAL: int = 75
+    NEW_LISTING_ALPHA_THRESHOLD_NIGHT: int = 80
+    NEW_LISTING_ALPHA_THRESHOLD_RISK_OFF: int = 80
+    NEW_LISTING_ALPHA_THRESHOLD_NIGHT_RISK_OFF: int = 85
+    NEW_LISTING_ALLOC_RATIO: float = 0.15
+    NEW_LISTING_STOP_LOSS_PCT: float = 0.025
+    NEW_LISTING_HARD_STOP_PCT: float = 0.040
+    NEW_LISTING_TARGET_PCT: float = 0.050
+    NEW_LISTING_PARTIAL_TP_PCT: float = 0.030
+    NEW_LISTING_PARTIAL_TP_RATIO: float = 0.50
+    NEW_LISTING_TRAILING_START_PCT: float = 0.040
+    NEW_LISTING_TRAILING_DROP_PCT: float = 0.020
+    NEW_LISTING_TIME_STOP_SECONDS: int = 3600
+    NEW_LISTING_EARLY_EXIT_SECONDS: int = 1800
+    NEW_LISTING_EARLY_EXIT_MIN_PNL_PCT: float = -0.50  # 조기탈출 손익률 하한 (% 표시 단위)
+    NEW_LISTING_EARLY_EXIT_MAX_PNL_PCT: float = 0.30   # 조기탈출 손익률 상한 (% 표시 단위)
+    NEW_LISTING_MAX_PER_CYCLE: int = 1
+    NEW_LISTING_MAX_OPEN_POSITIONS: int = 1
+    NEW_LISTING_REENTRY_COOLDOWN_SEC: float = 3600.0
+    NEW_LISTING_VOLUME_RATIO_MIN: float = 1.2
+    NEW_LISTING_RSI_MIN: float = 50.0
+    NEW_LISTING_RSI_MAX: float = 82.0
+    NEW_LISTING_BREAKOUT_LOOKBACK_BARS: int = 3
+
+    @classmethod
+    def _get_new_listing_env_value(cls, setting: str, exchange: str | None = None) -> str:
+        """거래소별 설정을 우선해 다른 거래소의 실주문 정책이 섞이지 않게 한다."""
+        exchange_key = str(exchange or "").strip().upper()
+        if exchange_key in {"BITHUMB", "UPBIT"}:
+            exchange_value = os.getenv(f"{exchange_key}_{setting}", "").strip()
+            if exchange_value:
+                return exchange_value.lower()
+        return os.getenv(setting, "").strip().lower()
+
+    @classmethod
+    def is_new_listing_enabled(cls, exchange: str | None = None) -> bool:
+        """신규상장 후보 분석 활성 여부를 반환한다. 거래소별 설정이 공통 설정보다 우선한다."""
+        env_val = cls._get_new_listing_env_value("NEW_LISTING_ENABLED", exchange)
+        if env_val in ("true", "1", "yes", "y", "on", "enable", "enabled"):
+            return True
+        if env_val in ("false", "0", "no", "n", "off", "disable", "disabled"):
+            return False
+        return cls.NEW_LISTING_ENABLED
+
+    @classmethod
+    def is_new_listing_enforcement_enabled(cls, exchange: str | None = None) -> bool:
+        """명시 설정 전에는 신규상장 진입을 관찰 모드로 유지하고 실주문을 차단한다."""
+        env_val = cls._get_new_listing_env_value("NEW_LISTING_ENFORCEMENT", exchange)
+        if env_val in ("true", "1", "yes", "y", "on", "enable", "enabled"):
+            return True
+        if env_val in ("false", "0", "no", "n", "off", "disable", "disabled"):
+            return False
+        return cls.NEW_LISTING_ENFORCEMENT
+
+    @classmethod
+    def get_new_listing_max_age_hours(cls) -> int:
+        raw = os.getenv("NEW_LISTING_MAX_AGE_HOURS", "").strip()
+        if raw:
+            try:
+                val = int(raw)
+                if val > 0:
+                    return val
+            except ValueError:
+                pass
+        return cls.NEW_LISTING_MAX_AGE_HOURS
+
+    @classmethod
+    def get_new_listing_min_trade_value_24h(cls, btc_regime: str = "NORMAL") -> float:
+        regime_upper = str(btc_regime or "NORMAL").upper()
+        env_key = "NEW_LISTING_MIN_TRADE_VALUE_24H"
+        raw = os.getenv(env_key, "").strip()
+        if raw:
+            try:
+                val = float(raw)
+                if val > 0:
+                    return val
+            except ValueError:
+                pass
+        if regime_upper == "RISK_OFF":
+            return cls.NEW_LISTING_MIN_TRADE_VALUE_24H_RISK_OFF
+        return cls.NEW_LISTING_MIN_TRADE_VALUE_24H
 
     # 2. 익절 및 트레일링 스탑 (2~3단계 분할 익절 & 2차 러너 추세 추종)
     PARTIAL_TP_PCT: float = 0.035        # 기본 1차 익절 기준 +3.5%
@@ -241,6 +337,19 @@ def is_ai_direct_entry_eligible(
         # 점수 누락·형식 오류는 AI 단독 매수의 근거가 될 수 없으므로 fail-closed 처리한다.
         return False
     return normalized_score >= get_alpha_buy_threshold(btc_regime, is_night)
+
+
+def get_new_listing_alpha_threshold(btc_regime: str = "NORMAL", is_night: bool | None = None) -> int:
+    """신규 상장 단타 전용 알파 기준을 레짐·세션별로 반환한다."""
+    regime_upper = str(btc_regime or "NORMAL").upper()
+    night_active = is_night if is_night is not None else is_night_session()
+    if night_active:
+        if regime_upper == "RISK_OFF":
+            return StrategyPolicy.NEW_LISTING_ALPHA_THRESHOLD_NIGHT_RISK_OFF
+        return StrategyPolicy.NEW_LISTING_ALPHA_THRESHOLD_NIGHT
+    if regime_upper == "RISK_OFF":
+        return StrategyPolicy.NEW_LISTING_ALPHA_THRESHOLD_RISK_OFF
+    return StrategyPolicy.NEW_LISTING_ALPHA_THRESHOLD_NORMAL
 
 
 def get_momentum_breakout_alpha_threshold(btc_regime: str = "NORMAL", is_night: bool | None = None) -> int:
@@ -831,6 +940,160 @@ def calculate_composite_alpha_score(
     }
 
 
+def calculate_new_listing_alpha_score(
+    candles: list[dict[str, Any]],
+    orderbook: dict[str, Any] | None = None,
+    relative_strength: float = 0.0,
+) -> dict[str, Any]:
+    """신규상장 단타용 축소 알파 점수(5분봉 5개 이상)를 계산한다."""
+    min_count = StrategyPolicy.NEW_LISTING_MIN_5M_COMPLETED
+    if not candles or len(candles) < min_count:
+        return {"total_score": 0, "factor_breakdown": {}, "reason": "신규상장 5분봉 부족"}
+
+    prices = [float(c.get("trade_price", 0.0)) for c in candles]
+    current = prices[0]
+    rsi = calculate_rsi(prices)
+    vols = [float(c.get("candle_acc_trade_volume", 0.0) or 0.0) for c in candles]
+    average_volume = (sum(vols[1:]) / len(vols[1:])) if len(vols) > 1 else 0.0
+    current_volume = vols[0] if vols else 0.0
+    volume_ratio = (current_volume / average_volume) if average_volume > 0 else 0.0
+
+    score_volume = 25 if volume_ratio >= StrategyPolicy.NEW_LISTING_VOLUME_RATIO_MIN else 8
+    score_rsi = (
+        25
+        if StrategyPolicy.NEW_LISTING_RSI_MIN <= rsi <= StrategyPolicy.NEW_LISTING_RSI_MAX
+        else 5
+    )
+    score_rs = min(25, max(0, int(relative_strength * 1000)))
+    score_orderflow = 10
+    if orderbook:
+        total_ask = float(orderbook.get("total_ask_size", 1.0) or 1.0)
+        total_bid = float(orderbook.get("total_bid_size", 1.0) or 1.0)
+        bid_ask_ratio = total_bid / total_ask if total_ask > 0 else 1.0
+        if bid_ask_ratio >= 1.2:
+            score_orderflow = 20
+        elif bid_ask_ratio < 0.7:
+            score_orderflow = 3
+
+    total_score = score_volume + score_rsi + score_rs + score_orderflow
+    return {
+        "total_score": total_score,
+        "factor_breakdown": {
+            "volume_score": score_volume,
+            "rsi_score": score_rsi,
+            "rs_score": score_rs,
+            "orderflow_score": score_orderflow,
+            "volume_ratio": round(volume_ratio, 3),
+            "rsi": rsi,
+            "relative_strength": round(relative_strength, 4),
+        },
+        "reason": (
+            f"신규상장 알파 {total_score}점 "
+            f"(거래량 {volume_ratio:.2f}x, RSI {rsi:.1f}, RS {relative_strength * 100:.2f}%)"
+        ),
+    }
+
+
+def new_listing_entry_signal(
+    candles: list[dict[str, Any]],
+    btc_regime: str = "NORMAL",
+    orderbook: dict[str, Any] | None = None,
+    market: str = "",
+    relative_strength: float = 0.0,
+    is_night: bool | None = None,
+) -> dict[str, Any]:
+    """4H/1H 이력이 부족한 신규상장 종목 전용 5분봉 돌파 진입 신호."""
+    min_count = StrategyPolicy.NEW_LISTING_MIN_5M_COMPLETED
+    if len(candles) < min_count:
+        return {"allow_buy": False, "reason": "신규상장 5분 확정봉 부족"}
+
+    current = float(candles[0].get("trade_price", 0.0) or 0.0)
+    if current < StrategyPolicy.MIN_ASSET_PRICE_KRW:
+        return {
+            "allow_buy": False,
+            "reason": f"유효하지 않은 가격 차단 (현재가 {current:,.4f}원)",
+        }
+
+    regime_upper = str(btc_regime or "NORMAL").upper()
+    if regime_upper in ("CRASH", "BEAR_VOLATILE"):
+        return {"allow_buy": False, "reason": f"신규상장 진입 불가 BTC 레짐({btc_regime})"}
+
+    night_active = is_night if is_night is not None else is_night_session()
+    alpha_res = calculate_new_listing_alpha_score(
+        candles=candles,
+        orderbook=orderbook,
+        relative_strength=relative_strength,
+    )
+    total_score = int(alpha_res.get("total_score", 0) or 0)
+    alpha_threshold = get_new_listing_alpha_threshold(btc_regime, night_active)
+
+    prices = [float(c.get("trade_price", 0.0)) for c in candles]
+    rsi = calculate_rsi(prices)
+    lookback = StrategyPolicy.NEW_LISTING_BREAKOUT_LOOKBACK_BARS
+    previous_candles = candles[1:lookback + 1]
+    previous_high = max(
+        (float(c.get("high_price", c.get("trade_price", 0.0)) or 0.0) for c in previous_candles),
+        default=0.0,
+    )
+    vols = [float(c.get("candle_acc_trade_volume", 0.0) or 0.0) for c in candles]
+    average_volume = (sum(vols[1:]) / len(vols[1:])) if len(vols) > 1 else 0.0
+    current_volume = vols[0] if vols else 0.0
+    current_open = float(candles[0].get("opening_price", current) or current)
+    volume_confirmed = (
+        average_volume > 0
+        and current_volume >= average_volume * StrategyPolicy.NEW_LISTING_VOLUME_RATIO_MIN
+    )
+    price_breakout = previous_high > 0 and current > previous_high
+    bullish_candle = current >= current_open
+    rsi_passed = StrategyPolicy.NEW_LISTING_RSI_MIN <= rsi <= StrategyPolicy.NEW_LISTING_RSI_MAX
+    rs_passed = relative_strength >= StrategyPolicy.NEW_LISTING_MIN_RS
+
+    breakout_passed = price_breakout and volume_confirmed and bullish_candle and rsi_passed and rs_passed
+    allowed = breakout_passed and total_score >= alpha_threshold
+    breakout_reason = (
+        f"직전 {lookback}봉 고점 돌파={'통과' if price_breakout else '차단'}, "
+        f"거래량배수={(current_volume / average_volume) if average_volume > 0 else 0.0:.2f}, "
+        f"양봉={'통과' if bullish_candle else '차단'}, "
+        f"RSI={'통과' if rsi_passed else '차단'}, "
+        f"RS={'통과' if rs_passed else '차단'}"
+    )
+    target_price = round(current * (1.0 + StrategyPolicy.NEW_LISTING_TARGET_PCT), 4 if current < 1.0 else 2)
+    stop_loss = round(current * (1.0 - StrategyPolicy.NEW_LISTING_STOP_LOSS_PCT), 4 if current < 1.0 else 2)
+    reason = (
+        f"신규상장 5분 돌파 {breakout_reason}, "
+        f"알파 {total_score}/{alpha_threshold}점"
+    )
+    return {
+        "allow_buy": allowed,
+        "reason": reason,
+        "entry_price": current,
+        "target_price": target_price,
+        "stop_loss": stop_loss,
+        "atr": 0.0,
+        "atr_pct": 0.0,
+        "rsi": rsi,
+        "alpha_score": total_score,
+        "entry_type": "NEW_LISTING",
+        "factor_breakdown": alpha_res.get("factor_breakdown", {}),
+        "checklist_details": {
+            "alpha_score": total_score,
+            "alpha_threshold": alpha_threshold,
+            "entry_type": "NEW_LISTING",
+            "new_listing_breakout": {"pass": breakout_passed, "detail": breakout_reason},
+            "factor_breakdown": alpha_res.get("factor_breakdown", {}),
+        },
+        "strategy_snapshot": {
+            "entry_btc_regime": btc_regime,
+            "entry_type": "NEW_LISTING",
+            "alpha_score": total_score,
+            "factor_breakdown": dict(alpha_res.get("factor_breakdown", {})),
+            "entry_reason": reason,
+            "target_price": target_price,
+            "stop_loss": stop_loss,
+        },
+    }
+
+
 def entry_signal(
     candles: list[dict[str, Any]],
     candles_1h: list[dict[str, Any]] | None = None,
@@ -849,6 +1112,16 @@ def entry_signal(
     - 7대 팩터 복합 알파 소프트 스코어 결합
     - ATR 기반 동적 목표가/손절가 일원화 산출
     """
+    if (entry_type or "CONFIRMED").upper() == "NEW_LISTING":
+        return new_listing_entry_signal(
+            candles=candles,
+            btc_regime=btc_regime,
+            orderbook=orderbook,
+            market=market,
+            relative_strength=relative_strength,
+            is_night=is_night,
+        )
+
     if len(candles) < 25:
         return {"allow_buy": False, "reason": "캔들 데이터 부족"}
 
@@ -1252,6 +1525,156 @@ def recovery_rebound_signal(
 def has_confirmed_swing_trend_candles(candles_4h: list[dict[str, Any]] | None) -> bool:
     """스윙 EMA20 판정에 필요한 4시간 확정봉 20개가 있는지 확인한다."""
     return bool(select_completed_candles(candles_4h or [], 20))
+
+
+ListingMaturity = Literal["MATURE", "NEW_LISTING", "INSUFFICIENT"]
+
+# 성숙(MATURE) 경로 1차 퀀트 게이트용 최소 원시 5분봉 개수
+MATURE_MIN_RAW_5M_CANDLES = 20
+
+
+def get_minimum_raw_5m_candles(maturity: ListingMaturity) -> int:
+    """경로별 5분봉 최소 원시 개수. classify_listing_maturity() 판정 이후 사용."""
+    if maturity == "NEW_LISTING":
+        return StrategyPolicy.NEW_LISTING_MIN_5M_COMPLETED + 1
+    if maturity == "MATURE":
+        return MATURE_MIN_RAW_5M_CANDLES
+    return 0
+
+
+def should_block_for_minimum_candles(
+    require_minimum_candles: bool,
+    maturity: ListingMaturity,
+    candles_5m: list[dict[str, Any]] | None,
+) -> bool:
+    """업비트 등 require_minimum_candles 프로필에서 경로별 최소 봉 수 미달 시 True."""
+    if not require_minimum_candles or maturity == "INSUFFICIENT":
+        return False
+    min_raw = get_minimum_raw_5m_candles(maturity)
+    if min_raw <= 0:
+        return False
+    return not candles_5m or len(candles_5m) < min_raw
+
+
+def _parse_candle_timestamp_kst(candle: dict[str, Any]) -> datetime | None:
+    """캔들 시각 필드를 KST datetime으로 변환한다. 파싱 실패 시 None."""
+    raw = candle.get("candle_date_time_kst") or candle.get("candle_date_time_utc")
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=KST)
+    return parsed.astimezone(KST)
+
+
+def get_oldest_candle_age_hours(candles: list[dict[str, Any]] | None) -> float | None:
+    """최신순 캔들 목록에서 가장 오래된 봉의 경과 시간(시간)을 반환한다."""
+    if not candles:
+        return None
+    oldest_ts = _parse_candle_timestamp_kst(candles[-1])
+    if oldest_ts is None:
+        return None
+    age = get_kst_now() - oldest_ts
+    return max(0.0, age.total_seconds() / 3600.0)
+
+
+def is_within_new_listing_age_window(
+    candles_4h: list[dict[str, Any]] | None,
+    *,
+    max_age_hours: int | None = None,
+) -> bool:
+    """4H 이력이 부족한 종목이 신규상장 윈도우 안에 있는지 확인한다."""
+    limit_hours = max_age_hours if max_age_hours is not None else StrategyPolicy.get_new_listing_max_age_hours()
+    age_hours = get_oldest_candle_age_hours(candles_4h)
+    if age_hours is None:
+        # 빈 응답·파싱 실패는 상장 직후 증거가 아니므로 신규 진입을 fail-closed한다.
+        return False
+    return age_hours <= float(limit_hours)
+
+
+def classify_listing_maturity(
+    candles_4h: list[dict[str, Any]] | None,
+    candles_1h: list[dict[str, Any]] | None,
+    candles_5m: list[dict[str, Any]] | None,
+    four_hour_history_status: str | None = None,
+) -> ListingMaturity:
+    """
+    캔들 이력으로 성숙(MATURE)·신규상장(NEW_LISTING)·부족(INSUFFICIENT)을 판정한다.
+    - MATURE: 4H 확정 20개 이상 → 기존 CONFIRMED/모멘텀/스윙 경로
+    - NEW_LISTING: 신뢰 가능한 희소 4H 이력 + 5분 확정봉 최소 충족 + 상장 윈도우 내
+    - INSUFFICIENT: 5분봉도 부족하거나 상장 윈도우 초과
+    """
+    # 빈 배열·예외·형식 오류는 상장 이력 부족과 구분해야 한다. 구분할 수 없으면 매수를 막는다.
+    history_status = str(four_hour_history_status or ("AVAILABLE" if candles_4h else "UNAVAILABLE")).upper()
+    if history_status != "AVAILABLE" or not candles_4h:
+        return "INSUFFICIENT"
+
+    if has_confirmed_swing_trend_candles(candles_4h):
+        return "MATURE"
+
+    min_5m = StrategyPolicy.NEW_LISTING_MIN_5M_COMPLETED
+    completed_5m = select_completed_candles(candles_5m or [], min_5m)
+    if len(completed_5m) < min_5m:
+        return "INSUFFICIENT"
+
+    if not is_within_new_listing_age_window(candles_4h):
+        return "INSUFFICIENT"
+
+    return "NEW_LISTING"
+
+
+def is_new_listing_eligible(
+    maturity: ListingMaturity,
+    *,
+    acc_trade_price_24h: float,
+    change_rate: float,
+    relative_strength: float,
+    btc_regime: str = "NORMAL",
+    exchange: str | None = None,
+) -> tuple[bool, str]:
+    """NEW_LISTING 경로 후보가 하드 안전 조건을 충족하는지 검증한다."""
+    if maturity != "NEW_LISTING":
+        return False, f"신규상장 경로 아님(maturity={maturity})"
+    if not StrategyPolicy.is_new_listing_enabled(exchange):
+        return False, "신규상장 경로 비활성화(NEW_LISTING_ENABLED=false)"
+
+    regime_upper = str(btc_regime or "NORMAL").upper()
+    if regime_upper == "CRASH":
+        return False, f"신규상장 진입 불가 BTC 레짐({regime_upper})"
+
+    min_trade_value = StrategyPolicy.get_new_listing_min_trade_value_24h(regime_upper)
+    trade_value = float(acc_trade_price_24h or 0.0)
+    if trade_value < min_trade_value:
+        return False, (
+            f"24h 거래대금 부족({trade_value:,.0f}원 < {min_trade_value:,.0f}원)"
+        )
+
+    if regime_upper == "RISK_OFF":
+        min_change = StrategyPolicy.NEW_LISTING_MIN_CHANGE_RATE_RISK_OFF
+        max_change = StrategyPolicy.NEW_LISTING_MAX_CHANGE_RATE_RISK_OFF
+        min_rs = StrategyPolicy.NEW_LISTING_MIN_RS_RISK_OFF
+    else:
+        min_change = StrategyPolicy.NEW_LISTING_MIN_CHANGE_RATE
+        max_change = StrategyPolicy.NEW_LISTING_MAX_CHANGE_RATE
+        min_rs = StrategyPolicy.NEW_LISTING_MIN_RS
+    change = float(change_rate or 0.0)
+    rs = float(relative_strength or 0.0)
+
+    if change < min_change:
+        return False, f"당일 상승률 부족({change * 100:.2f}% < {min_change * 100:.1f}%)"
+    if change > max_change:
+        return False, f"당일 상승률 과열({change * 100:.2f}% > {max_change * 100:.1f}%)"
+    if rs < min_rs:
+        return False, f"BTC 대비 RS 부족({rs * 100:.2f}% < {min_rs * 100:.1f}%)"
+
+    return True, "신규상장 단타 후보 자격 충족"
 
 
 def should_force_swing_data_unavailable_exit(hold_duration_sec: float) -> bool:

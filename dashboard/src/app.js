@@ -178,6 +178,15 @@
     </span>`;
   }
 
+  // 전략 모드 표시 라벨 (내부 strategy_mode 값은 유지)
+  function formatStrategyModeLabel(mode) {
+    const normalized = String(mode || '').toUpperCase();
+    if (normalized === 'NEW_LISTING') return '🆕 신규상장 단타';
+    if (normalized === 'SWING') return '🌊 스윙 추세';
+    if (normalized === 'SCALP') return '⚡ 단타';
+    return mode || '';
+  }
+
   // AI 행동 뱃지
   function renderActionBadge(action) {
     const act = (action || '').toUpperCase();
@@ -228,6 +237,9 @@
       .replace(/TIGHTEN_STOP/gi, '🛡️ 손절선 상향 방어')
       .replace(/RUNNER_HOLD/gi, '🏃 추세 추종 홀딩')
       // 탈출/청산 사유
+      .replace(/NEW_LISTING_EARLY_EXIT/gi, '⚡ 신규상장 조기탈출 (30분)')
+      .replace(/NEW_LISTING_TIME_STOP/gi, '⏳ 신규상장 타임스탑 (60분)')
+      .replace(/SWING_TREND_STOP/gi, '🌊 스윙 추세 이탈')
       .replace(/MOMENTUM_EARLY_EXIT/gi, '⚡ 모멘텀 조기 본전탈출')
       .replace(/MOMENTUM_EXIT/gi, '⚡ 모멘텀 조기 탈출')
       .replace(/TIME_STOP/gi, '⏳ 타임스탑 (횡보 청산)')
@@ -247,6 +259,7 @@
       .replace(/REGIME_CRASH/gi, '🚨 BTC 급락 경보 청산')
       // 진입 및 전략 팩터 관련
       .replace(/MOMENTUM_BREAKOUT/gi, '💥 모멘텀 돌파')
+      .replace(/NEW_LISTING/gi, '🆕 신규상장 단타')
       .replace(/MOMENTUM_PULLBACK/gi, '🌊 눌림목 반등')
       .replace(/VOLATILITY_BREAKOUT/gi, '💥 변동성 돌파')
       .replace(/EARLY_BREAKOUT/gi, '🌱 초기 돌파')
@@ -326,6 +339,15 @@
     }
     if (s.includes('AI_TIGHTENED') || s.includes('TIGHTEN')) {
       return '<span class="px-2 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 whitespace-nowrap">🛡️ AI손절상향</span>';
+    }
+    if (s.includes('NEW_LISTING_EARLY_EXIT') || s.includes('신규상장 조기')) {
+      return '<span class="px-2 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 whitespace-nowrap">신규상장조기탈출</span>';
+    }
+    if (s.includes('NEW_LISTING_TIME_STOP') || s.includes('신규상장 타임스탑')) {
+      return '<span class="px-2 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 whitespace-nowrap">신규상장타임스탑</span>';
+    }
+    if (s.includes('SWING_TREND_STOP') || s.includes('스윙 추세')) {
+      return '<span class="px-2 py-0.5 rounded text-xs font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 whitespace-nowrap">스윙추세이탈</span>';
     }
     if (s.includes('TIME_STOP') || s.includes('타임스탑')) {
       return '<span class="px-2 py-0.5 rounded text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 whitespace-nowrap">타임스탑</span>';
@@ -555,6 +577,20 @@
         .map(([status, count]) => `${orderStatusLabels[String(status).toUpperCase()] || String(status)} ${count}건`)
         .join(' · ');
       countsEl.textContent = text || '최근 주문 없음';
+    }
+
+    const nlSlotEl = document.getElementById('new_listing_slot_status');
+    if (nlSlotEl) {
+      const used = Number(data.new_listing_slot_used || 0);
+      const max = Number(data.new_listing_slot_max || 0);
+      const enabled = data.new_listing_enabled === true;
+      const enforcement = data.new_listing_enforcement === true;
+      const modeLabel = !enabled
+        ? '비활성'
+        : (enforcement ? '차단 활성' : '관찰 모드(ENFORCEMENT=false)');
+      nlSlotEl.textContent = enabled
+        ? `신규상장 슬롯 ${used}/${max} · ${modeLabel}`
+        : '신규상장 경로 비활성(NEW_LISTING_ENABLED=false)';
     }
 
     // 통합 탭은 거래소별 안전 원인을 나란히 보여 주되, 개별 탭에서는 현재 거래소 하나만 표시한다.
@@ -888,6 +924,25 @@
     const normalMinutes = Math.round(Number(policy.time_stop_seconds_normal || 0) / 60);
     const riskOffMinutes = Math.round(Number(policy.time_stop_seconds_risk_off || 0) / 60);
     setText('policy_time_stop', `• 정상장 ${normalMinutes}분 / 약세장 ${riskOffMinutes}분 타임스탑 기준`);
+    const nlPct = value => `${(Number(value || 0) * 100).toFixed(1)}%`;
+    setText(
+      'policy_new_listing_alloc',
+      `• 진입 비중 ${nlPct(policy.new_listing_alloc_ratio)} (단타 슬롯 내 소액)`,
+    );
+    setText(
+      'policy_new_listing_stop',
+      `• 손절 ${nlPct(policy.new_listing_stop_loss_pct)} / 하드스탑 ${nlPct(policy.new_listing_hard_stop_pct)}`,
+    );
+    const nlTimeMin = Math.round(Number(policy.new_listing_time_stop_seconds || 0) / 60);
+    const nlEarlyMin = Math.round(Number(policy.new_listing_early_exit_seconds || 0) / 60);
+    setText(
+      'policy_new_listing_time',
+      `• ${nlEarlyMin}분 조기탈출 / ${nlTimeMin}분 타임스탑 · 재진입 ${Math.round(Number(policy.new_listing_reentry_cooldown_sec || 0) / 60)}분`,
+    );
+    setText(
+      'policy_new_listing_alpha',
+      `• 알파 ${policy.new_listing_alpha_threshold_normal ?? '-'}점(주간) / ${policy.new_listing_alpha_threshold_night ?? '-'}점(야간)`,
+    );
   }
 
   function formatHoldSeconds(seconds) {
@@ -902,7 +957,11 @@
     const state = (riskState && typeof riskState === 'object') ? riskState : {};
     const stage = Number(state.partial_tp_stage || 0);
     const peak = Number(state.peak_price || 0);
-    const parts = [`보유: ${formatHoldSeconds(state.hold_seconds)}`, `분할익절: ${stage}단계`];
+    const parts = [];
+    if (state.strategy_mode) {
+      parts.push(formatStrategyModeLabel(state.strategy_mode));
+    }
+    parts.push(`보유: ${formatHoldSeconds(state.hold_seconds)}`, `분할익절: ${stage}단계`);
     if (peak > 0) parts.push(`고점: ${formatPrice(peak)}원`);
     if (state.exit_in_progress === true) parts.push('청산 주문 진행 중');
     return `<div class="mt-1 text-[11px] text-amber-200">${parts.join(' · ')}</div>`;
@@ -1084,7 +1143,14 @@
       botStateEl.innerText = d.bot_state || '🟢 정상 가동 중';
     }
 
-    renderSafetyPanel(d.safety);
+    const safetyWithSlots = Object.assign({}, d.safety || {}, {
+      new_listing_slot_used: d.new_listing_slot_used,
+      new_listing_slot_max: d.new_listing_slot_max,
+      new_listing_enabled: d.new_listing_enabled,
+      new_listing_enforcement: d.new_listing_enforcement,
+      new_listing_markets: d.new_listing_markets,
+    });
+    renderSafetyPanel(safetyWithSlots);
     renderPolicyGuide(d.policy);
     renderApiUsagePanel(d.api_usage, state.activeExchange);
 
@@ -1138,7 +1204,7 @@
             <div class="font-bold text-slate-100 flex items-center gap-1.5 cursor-pointer hover:text-blue-400" onclick="window.showChartModal('${pos.market}')">
               <span>${pos.korean_name || pos.market}</span>
               <span class="text-xs text-slate-400 font-normal">(${pos.market})</span>
-              <span class="text-xs text-blue-400">📈</span>
+              ${pos.strategy_mode ? `<span class="text-xs text-amber-300">${formatStrategyModeLabel(pos.strategy_mode)}</span>` : '<span class="text-xs text-blue-400">📈</span>'}
             </div>
           </td>
           <td class="p-3 whitespace-nowrap">
@@ -1195,6 +1261,12 @@
     tbody.innerHTML = candidates.map((cand, idx) => {
       const candidateTypeBadge = cand.candidate_type === 'EARLY_BREAKOUT'
         ? '<span class="text-xs text-emerald-400">🌱 초기 돌파</span>'
+        : cand.candidate_type === 'NEW_LISTING'
+        ? '<span class="text-xs text-amber-400">🆕 신규상장 단타</span>'
+        : cand.candidate_type === 'MOMENTUM_BREAKOUT'
+        ? '<span class="text-xs text-purple-400">💥 모멘텀 돌파</span>'
+        : cand.candidate_type === 'SWING'
+        ? '<span class="text-xs text-cyan-400">🌊 스윙 추세</span>'
         : '<span class="text-xs text-blue-400">📈 확인형</span>';
       const rawRr = Number(cand.risk_reward_ratio || cand.rr_ratio || 0);
       let rrDisplay = rawRr;

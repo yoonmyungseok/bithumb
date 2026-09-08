@@ -111,7 +111,7 @@ class OrderFillProcessor:
                     if prev_processed_vol == 0.0 and self.trailing_tracker:
                         self.trailing_tracker.set_entry_time(market)
                         # 주문 ACK/거절에는 전략 슬롯 상태를 남기지 않는다. 실제 첫 매수
-                        # 체결만 해당 포지션의 스윙/단타 모드를 확정한다.
+                        # 체결만 해당 포지션의 스윙/신규상장/단타 모드를 확정한다.
                         entry_mode = str((order.get("entry_strategy_snapshot") or {}).get("strategy_mode") or "SCALP")
                         self.trailing_tracker.set_strategy_mode(market, entry_mode)
                     logger.info(
@@ -232,9 +232,9 @@ class OrderFillProcessor:
                         self.risk_manager.add_realized_trade(pnl_krw, is_win=is_win)
 
                     if self.cooldown_manager:
-                        # 부분 체결도 실제 포지션 축소이므로 확인된 체결가만 쿨다운 기준으로 사용한다.
+                        # 쿨다운은 원본 청산 사유 코드를 사용해 신규상장·타임스탑 분기를 보존한다.
                         self.cooldown_manager.record_exit(
-                            market, refined_exit_reason, exit_price=effective_price,
+                            market, stored_exit_reason, exit_price=effective_price,
                         )
 
                     entry_order = self.order_journal.get_entry_order_for_exit(order)

@@ -24,9 +24,13 @@ from strategy_engine import (
     calculate_ema,
     calculate_relative_strength,
     calculate_vwap,
+    classify_listing_maturity,
     entry_signal,
+    should_block_for_minimum_candles,
     evaluate_swing_trend_exit,
+    get_new_listing_alpha_threshold,
     has_confirmed_swing_trend_candles,
+    is_new_listing_eligible,
     is_ai_direct_entry_eligible,
     is_night_session,
     recovery_rebound_signal,
@@ -218,6 +222,8 @@ class MarketEntryInputs:
     momentum_entry_slot_available: bool = True
     # 4H 데이터 부재는 모든 신규 BUY를 fail-closed로 막기 위한 별도 입력이다.
     candles_4h: list[dict[str, Any]] = field(default_factory=list)
+    # 조회 장애와 실제 희소 상장 이력을 구분해 빈 응답이 신규상장 경로로 우회하지 못하게 한다.
+    four_hour_history_status: str | None = None
 
 
 @dataclass
@@ -232,6 +238,8 @@ class EntryGatingResult:
     reason: str = ""
     use_recovery_rebound: bool = False
     use_momentum_breakout: bool = False
+    use_new_listing: bool = False
+    effective_candidate_type: str = ""
     selected_entry: dict[str, Any] = field(default_factory=dict)
     recovery_entry: dict[str, Any] = field(default_factory=dict)
     local_entry: dict[str, Any] = field(default_factory=dict)
@@ -288,6 +296,8 @@ class MarketBuyInputs:
     dyn_max_pos_pct: float
     now_str: str
     audit_decision: Callable[[str, str, str, list[str], dict[str, Any]], None]
+    # 주문 실행 경계는 후보 메타데이터를 다시 해석하지 않고 상위 게이트가 확정한 전략 모드만 사용한다.
+    strategy_mode: str = "SCALP"
 
 
 @dataclass
@@ -708,8 +718,14 @@ class TradingCycleEngine:
             is_stage2 = action_type == "PARTIAL_TP_2"
             stage = 2 if is_stage2 else 1
             is_swing = ctx.trailing_tracker.is_swing_position(market)
+            is_new_listing = getattr(ctx.trailing_tracker, "is_new_listing_position", lambda m: False)(market)
             original_filled = ctx.order_journal.get_latest_confirmed_entry_volume(market) if is_swing else 0.0
-            scalp_ratio = exit_profile.partial_tp_stage2_ratio if is_stage2 else StrategyPolicy.PARTIAL_TP_1_RATIO
+            if is_new_listing:
+                scalp_ratio = StrategyPolicy.NEW_LISTING_PARTIAL_TP_RATIO
+            elif is_stage2:
+                scalp_ratio = exit_profile.partial_tp_stage2_ratio
+            else:
+                scalp_ratio = StrategyPolicy.PARTIAL_TP_1_RATIO
             sell_vol = calculate_partial_take_profit_volume(
                 is_swing=is_swing,
                 stage=stage,
@@ -968,6 +984,51 @@ class TradingCycleEngine:
                     ctx.trailing_tracker.release_exit_lock(market)
             return False
 
+        is_new_listing = getattr(ctx.trailing_tracker, "is_new_listing_position", lambda m: False)(market)
+        if is_new_listing:
+            # 신규상장 단타: 60분 타임스탑·30분 조기탈출만 적용하고 일반 120분/모멘텀 조기탈출은 사용하지 않는다.
+            is_early_new_listing_exit = (
+                hold_duration_sec >= StrategyPolicy.NEW_LISTING_EARLY_EXIT_SECONDS
+                and StrategyPolicy.NEW_LISTING_EARLY_EXIT_MIN_PNL_PCT <= pnl_pct_current <= StrategyPolicy.NEW_LISTING_EARLY_EXIT_MAX_PNL_PCT
+            )
+            is_time_stop_trigger = (
+                hold_duration_sec >= StrategyPolicy.NEW_LISTING_TIME_STOP_SECONDS
+                or is_early_new_listing_exit
+            )
+            if exit_profile.time_stop_recheck_active_exit:
+                is_time_stop_trigger = is_time_stop_trigger and not ctx.order_journal.has_active_exit_order(market)
+
+            if not is_time_stop_trigger:
+                return False
+
+            exit_reason_label = "NEW_LISTING_EARLY_EXIT" if is_early_new_listing_exit else "NEW_LISTING_TIME_STOP"
+            if ctx.trailing_tracker.acquire_exit_lock(market):
+                try:
+                    exit_desc = (
+                        f"{StrategyPolicy.NEW_LISTING_EARLY_EXIT_SECONDS / 60:.0f}분 조기 횡보 탈출"
+                        if is_early_new_listing_exit
+                        else f"{StrategyPolicy.NEW_LISTING_TIME_STOP_SECONDS / 60:.0f}분 신규상장 타임스탑"
+                    )
+                    logger.info(
+                        f"⏳ [{korean_name} / {market}] {exit_profile.time_stop_log_prefix}{exit_desc} 발동! "
+                        f"(레짐: {btc_regime}, 손익률: {pnl_pct_current:+.2f}%, 보유시간: {hold_duration_sec / 60:.0f}분) "
+                        f"➜ {exit_profile.time_stop_close_suffix}"
+                    )
+                    ctx.cancel_bot_open_orders(exchange, market)
+                    ctx.order_executor.submit(
+                        exchange,
+                        market=market,
+                        side="ask",
+                        volume=coin_available,
+                        ord_type="market",
+                        position_id=market,
+                        exit_reason=exit_reason_label,
+                        avg_buy_price=avg_buy_price,
+                    )
+                finally:
+                    ctx.trailing_tracker.release_exit_lock(market)
+            return True
+
         is_holding_support = False
         is_trend_broken = False
         is_above_vwap = True
@@ -1046,6 +1107,7 @@ class TradingCycleEngine:
         """1차 퀀트 게이트 -> 반등/모멘텀/AI 전략 산출 및 audit 기록."""
         ctx = self.context
         entry_profile = self.entry_profile
+        buy_profile = self.buy_profile
         logger = ctx.logger
         min_order_krw = self.config.min_order_krw
 
@@ -1098,23 +1160,76 @@ class TradingCycleEngine:
                 )
                 return EntryGatingResult(should_continue=True)
 
-        if entry_profile.require_minimum_candles and (not candles_5m or len(candles_5m) < 20):
-            logger.warning(f"[{market}] 캔들 데이터 부족으로 진입 생략")
+        listing_maturity = classify_listing_maturity(
+            candles_4h, candles_1h, candles_5m, market_inputs.four_hour_history_status,
+        )
+        if should_block_for_minimum_candles(
+            entry_profile.require_minimum_candles,
+            listing_maturity,
+            candles_5m,
+        ):
+            logger.warning("[%s] 캔들 데이터 부족으로 진입 생략", market)
             return EntryGatingResult(should_continue=True)
-
-        if not has_confirmed_swing_trend_candles(candles_4h):
-            logger.warning("[%s] 4H 확정봉 데이터 부족 또는 조회 실패로 신규 BUY 차단", market)
-            return EntryGatingResult(should_continue=True)
-
-        completed_candles_5m = select_completed_candles(candles_5m, minimum_count=25)
-        completed_candles_1h = select_completed_candles(candles_1h, minimum_count=20)
-        if not completed_candles_5m or not completed_candles_1h:
-            logger.warning("[%s] 5분/1시간 확정봉 데이터가 부족하거나 불일치하여 신규 매수 차단", market)
-            return EntryGatingResult(should_continue=True)
-
+        effective_candidate_type = candidate_type
+        use_new_listing_path = False
+        completed_candles_1h: list[dict[str, Any]] | None = None
         night_session_active = is_night_session()
         candidate_trade_value = float(candidate_metadata.get("acc_trade_price_24h", 0.0) or 0.0)
         candidate_relative_strength = float(candidate_metadata.get("relative_strength", 0.0) or 0.0)
+
+        if listing_maturity == "INSUFFICIENT":
+            logger.warning("[%s] 캔들 데이터 부족으로 진입 생략", market)
+            audit_decision(
+                market, "BLOCKED", "INSUFFICIENT_CANDLES",
+                ["신규상장·성숙 경로 모두 캔들 부족"],
+                {"btc_regime": btc_regime},
+            )
+            return EntryGatingResult(should_continue=True)
+
+        if listing_maturity == "NEW_LISTING":
+            if not StrategyPolicy.is_new_listing_enabled(buy_profile.exchange_name):
+                logger.warning("[%s] 신규상장 경로 비활성화로 신규 BUY 차단", market)
+                return EntryGatingResult(should_continue=True)
+            eligible, eligibility_reason = is_new_listing_eligible(
+                listing_maturity,
+                acc_trade_price_24h=candidate_trade_value,
+                change_rate=float(candidate_metadata.get("change_rate", 0.0) or 0.0),
+                relative_strength=candidate_relative_strength,
+                btc_regime=btc_regime,
+                exchange=buy_profile.exchange_name,
+            )
+            if not eligible:
+                logger.warning("[%s] 신규상장 후보 자격 미충족: %s", market, eligibility_reason)
+                audit_decision(
+                    market, "BLOCKED", "NEW_LISTING_INELIGIBLE",
+                    [eligibility_reason],
+                    {"btc_regime": btc_regime, "listing_maturity": listing_maturity},
+                )
+                return EntryGatingResult(should_continue=True)
+            completed_candles_5m = select_completed_candles(
+                candles_5m,
+                minimum_count=StrategyPolicy.NEW_LISTING_MIN_5M_COMPLETED,
+            )
+            if not completed_candles_5m:
+                logger.warning("[%s] 신규상장 5분 확정봉 부족으로 신규 BUY 차단", market)
+                return EntryGatingResult(should_continue=True)
+            use_new_listing_path = True
+            effective_candidate_type = "NEW_LISTING"
+            logger.info(
+                "[%s] 신규상장 단타 경로 활성화(4H/1H 게이트 면제, 5분 확정 %d개)",
+                market,
+                len(completed_candles_5m),
+            )
+        else:
+            if not has_confirmed_swing_trend_candles(candles_4h):
+                logger.warning("[%s] 4H 확정봉 데이터 부족 또는 조회 실패로 신규 BUY 차단", market)
+                return EntryGatingResult(should_continue=True)
+            completed_candles_5m = select_completed_candles(candles_5m, minimum_count=25)
+            completed_candles_1h = select_completed_candles(candles_1h, minimum_count=20)
+            if not completed_candles_5m or not completed_candles_1h:
+                logger.warning("[%s] 5분/1시간 확정봉 데이터가 부족하거나 불일치하여 신규 매수 차단", market)
+                return EntryGatingResult(should_continue=True)
+
         local_entry = entry_signal(
             candles=completed_candles_5m,
             candles_1h=completed_candles_1h,
@@ -1122,7 +1237,7 @@ class TradingCycleEngine:
             orderbook=orderbook,
             market=market,
             exchange=entry_profile.signal_exchange,
-            entry_type=candidate_type,
+            entry_type=effective_candidate_type,
             is_night=night_session_active,
             relative_strength=candidate_relative_strength,
         )
@@ -1168,7 +1283,8 @@ class TradingCycleEngine:
         use_recovery_rebound = (
             StrategyPolicy.RECOVERY_REBOUND_LIVE_ENABLED
             and is_cooldown and not is_btc_crashing and ws_healthy
-            and candidate_type != "MOMENTUM_BREAKOUT"
+            and effective_candidate_type != "MOMENTUM_BREAKOUT"
+            and not use_new_listing_path
             and not local_entry.get("allow_buy", False)
             and recovery_entry.get("allow_buy", False) and recovery_slot_available
         )
@@ -1181,7 +1297,7 @@ class TradingCycleEngine:
             and current_price >= StrategyPolicy.MIN_ASSET_PRICE_KRW
         )
         use_momentum_breakout = (
-            candidate_type == "MOMENTUM_BREAKOUT"
+            effective_candidate_type == "MOMENTUM_BREAKOUT"
             and base_safety_passed
             and local_entry.get("allow_buy", False)
         )
@@ -1200,9 +1316,9 @@ class TradingCycleEngine:
             rsi_val = GA.calculate_rsi(prices, 14)
             rsi_valid = (35.0 <= rsi_val <= 75.0) or (len(set(prices)) <= 1)
 
-        # 1시간봉(MTF 1H) 대세 추세 사전 필터 (AI 7대 팩터 1번 규칙 사전 검증으로 호출 낭비 방지)
+        # 1시간봉(MTF 1H) 대세 추세 사전 필터 (신규상장 경로는 1H 이력이 없어 면제)
         is_1h_trend_valid = True
-        if completed_candles_1h and len(completed_candles_1h) >= 20:
+        if not use_new_listing_path and completed_candles_1h and len(completed_candles_1h) >= 20:
             prices_1h = [float(c.get("trade_price", 0)) for c in completed_candles_1h]
             from gemini_analyzer import GeminiAnalyzer as GA
             ema20_1h = GA.calculate_ema(prices_1h, 20)
@@ -1227,6 +1343,12 @@ class TradingCycleEngine:
             and allow_ai
             and (
                 selected_entry.get("allow_buy", False)
+                or (
+                    use_new_listing_path
+                    and pre_qualification_passed
+                    and local_entry.get("allow_buy", False)
+                    and is_quality_promising
+                )
                 or (
                     allow_ai_direct
                     and pre_qualification_passed
@@ -1274,8 +1396,11 @@ class TradingCycleEngine:
                 rs_context=rs_info.get("desc", ""),
                 btc_regime=btc_regime,
                 is_night=night_session_active,
-                candidate_type=candidate_type,
-                entry_policy_mode="RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD",
+                candidate_type=effective_candidate_type,
+                entry_policy_mode=(
+                    "NEW_LISTING" if use_new_listing_path
+                    else ("RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD")
+                ),
                 momentum_phase=momentum_phase,
             )
         elif use_momentum_breakout:
@@ -1346,7 +1471,13 @@ class TradingCycleEngine:
         is_ai_buy_signal = (
             analyzer is not None
             and strategy.get("action") == "BUY"
-            and any(m in strategy.get("reason", "") for m in ["gemini", "Gemini", "AI", "Flash", "flash", "flash-lite"])
+            and (
+                called_ai_flag
+                or any(
+                    marker in strategy.get("reason", "")
+                    for marker in ("gemini", "Gemini", "AI", "Flash", "flash", "flash-lite", "Groq", "gpt-oss")
+                )
+            )
         )
         ai_alpha = int(strategy.get("alpha_score", 0) or selected_entry.get("alpha_score", 0) or 0)
 
@@ -1393,7 +1524,7 @@ class TradingCycleEngine:
                 target_price = strategy.get("target_price") or selected_entry["target_price"]
                 stop_loss = strategy.get("stop_loss") or selected_entry["stop_loss"]
 
-        if candidate_type == "MOMENTUM_BREAKOUT" and not is_holding:
+        if effective_candidate_type == "MOMENTUM_BREAKOUT" and not is_holding:
             # 확장 구간은 단순 돌파 추격 주문을 차단하되, 1차 퀀트 하드게이트 통과 및 AI 심층 분석에서 고득점(알파 80점 이상) 확인형 승인을 받은 특급 주도주는 허용한다.
             if momentum_phase != "EARLY":
                 is_high_conviction_ai_entry = (
@@ -1437,11 +1568,31 @@ class TradingCycleEngine:
         if is_extreme_fear and action == "BUY":
             alloc_pct = min(alloc_pct, 0.4)
 
-        if candidate_type == "MOMENTUM_BREAKOUT" and action == "BUY":
+        if use_new_listing_path and not is_holding:
+            if momentum_phase == "EXTENDED":
+                action = "HOLD"
+                reason = f"신규상장 확장 후반 추격 차단(단계={momentum_phase}) | {reason}"
+            elif action == "BUY" and not is_ai_buy_signal:
+                action = "HOLD"
+                reason = f"신규상장 경로는 AI BUY 확인 필수 | {reason}"
+            elif action == "BUY" and not StrategyPolicy.is_new_listing_enforcement_enabled(buy_profile.exchange_name):
+                action = "HOLD"
+                reason = f"신규상장 관찰 모드(NEW_LISTING_ENFORCEMENT=false) | {reason}"
+            elif action == "BUY" and not market_inputs.momentum_entry_slot_available:
+                action = "HOLD"
+                reason = f"동일 5분 사이클 신규상장/모멘텀 신규 주문 1건 제한 | {reason}"
+
+        if effective_candidate_type == "MOMENTUM_BREAKOUT" and action == "BUY":
             alloc_pct = min(alloc_pct, dyn_max_pos_pct * StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO)
             reason = f"[⚡모멘텀 돌파 최초 소액] {reason}"
 
-        if (candidate_type == "SWING" or candidate_metadata.get("strategy_mode") == "SWING") and action == "BUY":
+        if use_new_listing_path and action == "BUY":
+            target_price = entry_price * (1.0 + StrategyPolicy.NEW_LISTING_TARGET_PCT)
+            stop_loss = entry_price * (1.0 - StrategyPolicy.NEW_LISTING_STOP_LOSS_PCT)
+            alloc_pct = min(alloc_pct, dyn_max_pos_pct * StrategyPolicy.NEW_LISTING_ALLOC_RATIO)
+            reason = f"[🆕신규상장 단타 소액(목표 +{StrategyPolicy.NEW_LISTING_TARGET_PCT * 100:.1f}%, 손절 -{StrategyPolicy.NEW_LISTING_STOP_LOSS_PCT * 100:.1f}%)] {reason}"
+
+        if (effective_candidate_type == "SWING" or candidate_metadata.get("strategy_mode") == "SWING") and action == "BUY":
             target_price = entry_price * (1.0 + StrategyPolicy.SWING_TARGET_PCT)
             stop_loss = entry_price * (1.0 - StrategyPolicy.SWING_STOP_LOSS_PCT)
             alloc_pct = min(dyn_max_pos_pct, StrategyPolicy.SWING_ALLOC_RATIO)
@@ -1506,14 +1657,18 @@ class TradingCycleEngine:
             "REASON": reason,
         }
         if entry_profile.include_candidate_metadata_in_latest:
-            latest_strategy_record["candidate_type"] = candidate_type
+            latest_strategy_record["candidate_type"] = effective_candidate_type
+            latest_strategy_record["listing_maturity"] = listing_maturity
             latest_strategy_record["momentum_breakout"] = selected_entry.get("momentum_breakout", {})
 
         ctx.latest_strategies[market] = latest_strategy_record
 
         audit_decision(
             market, "BUY_APPROVED" if action == "BUY" else "HOLD",
-            "RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD",
+            (
+                "NEW_LISTING" if use_new_listing_path
+                else ("RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD")
+            ),
             [] if action == "BUY" else [reason],
             {
                 "current_price": current_price,
@@ -1521,6 +1676,7 @@ class TradingCycleEngine:
                 "is_loss_recovery_mode": is_cooldown,
                 "candidate": candidate_metadata,
                 "momentum_phase": momentum_phase,
+                "listing_maturity": listing_maturity,
                 "local_checklist": selected_entry.get("checklist_details", {}),
                 "recovery_checklist": recovery_entry.get("recovery_checklist", {}),
             },
@@ -1540,6 +1696,8 @@ class TradingCycleEngine:
             reason=reason,
             use_recovery_rebound=use_recovery_rebound,
             use_momentum_breakout=use_momentum_breakout,
+            use_new_listing=use_new_listing_path,
+            effective_candidate_type=effective_candidate_type,
             selected_entry=selected_entry,
             recovery_entry=recovery_entry,
             local_entry=local_entry,
@@ -1685,11 +1843,7 @@ class TradingCycleEngine:
                 order_price = entry_price or current_price
             order_price = exchange.adjust_price_to_tick(order_price, side="bid")
             risk_scale = ctx.risk_manager.get_risk_scale_factor()
-            strategy_mode = (
-                "SWING"
-                if (market_inputs.candidate_type == "SWING" or market_inputs.candidate_metadata.get("strategy_mode") == "SWING")
-                else "SCALP"
-            )
+            strategy_mode = str(market_inputs.strategy_mode or "SCALP").upper()
             risk_based_budget = calculate_risk_position_size(
                 total_equity=effective_capital,
                 entry_price=order_price,
@@ -1709,11 +1863,7 @@ class TradingCycleEngine:
             alloc_pct = alloc_pct or dyn_max_pos_pct
             max_slot_budget = current_total_equity * alloc_pct
             risk_scale = ctx.risk_manager.get_risk_scale_factor()
-            strategy_mode = (
-                "SWING"
-                if (market_inputs.candidate_type == "SWING" or market_inputs.candidate_metadata.get("strategy_mode") == "SWING")
-                else "SCALP"
-            )
+            strategy_mode = str(market_inputs.strategy_mode or "SCALP").upper()
             calculated_size = calculate_risk_position_size(
                 total_equity=current_total_equity,
                 entry_price=order_price,
@@ -1756,6 +1906,7 @@ class TradingCycleEngine:
             audit_decision(market, "OBSERVED", "ORDERBOOK_SLIPPAGE", [impact_reason], impact_details)
 
         held_swings = getattr(ctx.trailing_tracker, "get_swing_markets", lambda: [])()
+        held_new_listings = getattr(ctx.trailing_tracker, "get_new_listing_markets", lambda: [])()
         is_safe, rejection_reason = ctx.risk_guard.validate_buy(
             market=market,
             order_krw=trade_budget,
@@ -1764,6 +1915,7 @@ class TradingCycleEngine:
             held_markets=market_inputs.held_markets,
             strategy_mode=strategy_mode,
             held_swing_markets=held_swings,
+            held_new_listing_markets=held_new_listings,
         )
         if not is_safe:
             logger.warning(
@@ -1794,9 +1946,13 @@ class TradingCycleEngine:
                 buy_profile.entry_label_recovery
                 if use_recovery_rebound
                 else (
-                    buy_profile.entry_label_momentum
-                    if candidate_type == "MOMENTUM_BREAKOUT"
-                    else buy_profile.entry_label_default
+                    "신규상장 단타"
+                    if candidate_type == "NEW_LISTING"
+                    else (
+                        buy_profile.entry_label_momentum
+                        if candidate_type == "MOMENTUM_BREAKOUT"
+                        else buy_profile.entry_label_default
+                    )
                 )
             )
             logger.info(
@@ -1928,13 +2084,27 @@ class TradingCycleEngine:
                             prefix.prefetched_market_inputs.get(market),
                         )
                         snapshot_cache[market] = snap
-                    c_5m = select_completed_candles(snap.candles_5m, minimum_count=25)
-                    c_1h = select_completed_candles(snap.candles_1h, minimum_count=20)
-                    if not c_5m or not c_1h:
-                        return (9, 0, target_markets.index(market))
                     c_meta = screened_candidate_metadata.get(market, {})
-                    c_type = str(c_meta.get("candidate_type", "CONFIRMED")).upper()
                     c_rs = float(c_meta.get("relative_strength", 0.0) or 0.0)
+                    listing_maturity = snap.listing_maturity
+                    if (
+                    listing_maturity == "NEW_LISTING"
+                        and StrategyPolicy.is_new_listing_enabled(profile.exchange_key)
+                    ):
+                        c_5m = select_completed_candles(
+                            snap.candles_5m,
+                            minimum_count=StrategyPolicy.NEW_LISTING_MIN_5M_COMPLETED,
+                        )
+                        if not c_5m:
+                            return (9, 0, target_markets.index(market))
+                        c_type = "NEW_LISTING"
+                        c_1h = None
+                    else:
+                        c_5m = select_completed_candles(snap.candles_5m, minimum_count=25)
+                        c_1h = select_completed_candles(snap.candles_1h, minimum_count=20)
+                        if not c_5m or not c_1h:
+                            return (9, 0, target_markets.index(market))
+                        c_type = str(c_meta.get("candidate_type", "CONFIRMED")).upper()
                     l_entry = entry_signal(
                         candles=c_5m,
                         candles_1h=c_1h,
@@ -2035,6 +2205,7 @@ class TradingCycleEngine:
                     candles_5m=candles_5m,
                     candles_1h=candles_1h,
                     candles_4h=candles_4h,
+                    four_hour_history_status=market_snapshot.four_hour_history_status,
                     orderbook=orderbook,
                     btc_regime=btc_regime,
                     btc_status_msg=btc_status_msg,
@@ -2071,15 +2242,28 @@ class TradingCycleEngine:
                 )):
                     continue
 
-                if entry.action == "BUY" and candidate_type == "MOMENTUM_BREAKOUT":
-                    # ACK 여부와 무관하게 같은 사이클의 복수 모멘텀 주문 제출을 막는다.
+                if entry.action == "BUY" and (
+                    candidate_type == "MOMENTUM_BREAKOUT"
+                    or entry.use_new_listing
+                    or entry.effective_candidate_type == "NEW_LISTING"
+                ):
+                    # ACK 여부와 무관하게 같은 사이클의 복수 모멘텀/신규상장 주문 제출을 막는다.
                     momentum_entry_slot_available = False
 
+                buy_candidate_type = entry.effective_candidate_type or candidate_type
+                # 매수 실행 경계가 후보 메타데이터를 재참조하지 않도록 전략 모드를 여기서 확정한다.
+                strategy_mode = (
+                    "SWING"
+                    if (buy_candidate_type == "SWING" or candidate_metadata.get("strategy_mode") == "SWING")
+                    else "NEW_LISTING"
+                    if buy_candidate_type == "NEW_LISTING"
+                    else "SCALP"
+                )
                 if entry.action == "BUY" and self.process_buy_execution(MarketBuyInputs(
                     exchange=exchange,
                     market=market,
                     korean_name=korean_name,
-                    candidate_type=candidate_type,
+                    candidate_type=buy_candidate_type,
                     momentum_phase=str(candidate_metadata.get("momentum_phase", "CONFIRMED")).upper(),
                     entry_price=entry.entry_price,
                     target_price=entry.target_price,
@@ -2105,6 +2289,7 @@ class TradingCycleEngine:
                     dyn_max_pos_pct=dyn_max_pos_pct,
                     now_str=now_str,
                     audit_decision=audit_decision,
+                    strategy_mode=strategy_mode,
                 )):
                     continue
             except Exception as exc:

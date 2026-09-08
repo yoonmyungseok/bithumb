@@ -103,6 +103,12 @@ class TradingRuntimePrefixTests(unittest.TestCase):
             def update_subscriptions(self, markets):
                 outer.ws_subscriptions.append(list(markets))
 
+            def get_whale_flow_summary(self, market):
+                return ""
+
+            def get_health_status(self, market=None):
+                return {"is_healthy": True, "status": "OK"}
+
         self.exchange = BithumbAdapter(FakeExchangeClient(), data_dir=self.tmp_dir.name, web_port=7979)
         self.journal = Journal()
         self.order_executor = OrderExecutor()
@@ -603,6 +609,238 @@ class TradingRuntimePrefixTests(unittest.TestCase):
         self.assertTrue(engine._should_skip_market("KRW-HOLO", frozenset({"KRW-HOLO", "HOLO"})))
         self.assertTrue(engine._should_skip_market("HOLO", frozenset({"KRW-HOLO", "HOLO"})))
         self.assertFalse(engine._should_skip_market("KRW-XRP", frozenset({"KRW-HOLO", "HOLO"})))
+
+    @patch("trading_runtime.recovery_rebound_signal", return_value={"allow_buy": False})
+    @patch("trading_runtime.entry_signal")
+    @patch("trading_runtime.select_completed_candles")
+    def test_new_listing_path_activates_without_four_hour_gate(self, mock_select_candles, mock_entry_signal, _mock_recovery):
+        mock_select_candles.side_effect = (
+            lambda candles, minimum_count=25: candles[1:1 + minimum_count]
+            if len(candles) >= minimum_count + 1 else []
+        )
+        mock_entry_signal.return_value = {
+            "allow_buy": True,
+            "reason": "신규상장 5분 돌파 테스트",
+            "entry_price": 328.0,
+            "target_price": 344.0,
+            "stop_loss": 320.0,
+            "alpha_score": 82,
+            "checklist_details": {"alpha_score": 82},
+        }
+        profile = ExchangeCycleProfile(
+            exchange_key="bithumb",
+            reconcile_label="",
+            decision_exchange="bithumb",
+            log_prefix="",
+            extra_excluded_markets=frozenset(),
+            create_screener=self.create_screener,
+            cycle_start_label="5분 AI 퀀트 트레이딩",
+            tier_label="스마트 자산 티어",
+            tier_top_wording="스크리닝 상위",
+            summary_label="자산 요약",
+            btc_crash_label="비트코인 급락 위험 감지",
+        )
+        engine = self._build_engine(profile)
+        audit_calls: list[tuple] = []
+
+        class FakeAnalyzer:
+            def analyze(self, **kwargs):
+                return {
+                    "status": "ACTIVE",
+                    "action": "BUY",
+                    "entry_price": 328.0,
+                    "target_price": 344.0,
+                    "stop_loss": 320.0,
+                    "alloc_pct": 0.15,
+                    "reason": "Groq AI 신규상장 승인",
+                    "alpha_score": 82,
+                }
+
+        candles_5m = [
+            {
+                "trade_price": 320.0 + idx,
+                "opening_price": 319.0 + idx,
+                "high_price": 321.0 + idx,
+                "candle_acc_trade_volume": 1000.0 * (idx + 1),
+            }
+            for idx in range(7)
+        ]
+        result = engine.process_entry_gating(MarketEntryInputs(
+            exchange=self.exchange,
+            market="KRW-USELESS",
+            korean_name="유쓸리스",
+            candidate_type="MOMENTUM_BREAKOUT",
+            candidate_metadata={
+                "acc_trade_price_24h": 3_100_000_000.0,
+                "change_rate": 0.0615,
+                "relative_strength": 0.069,
+                "momentum_phase": "EARLY",
+            },
+            analyzer=FakeAnalyzer(),
+            coin_available=0.0,
+            avg_buy_price=0.0,
+            current_price=328.0,
+            coin_value=0.0,
+            krw_available=1_000_000.0,
+            candles_5m=candles_5m,
+            candles_1h=[{"trade_price": 300.0}],
+            candles_4h=[{"trade_price": 300.0, "candle_date_time_kst": "2026-09-08T12:00:00"}],
+            orderbook={"market": "KRW-USELESS", "total_bid_size": 2000.0, "total_ask_size": 1000.0},
+            btc_regime="NORMAL",
+            btc_status_msg="정상",
+            is_btc_crashing=False,
+            is_cooldown=False,
+            is_extreme_fear=False,
+            is_bot_paused=False,
+            is_kill_switch=False,
+            is_entry_ready=True,
+            dyn_max_pos_pct=0.35,
+            now_str="2026-09-08 14:40:49",
+            audit_decision=lambda *args, **kwargs: audit_calls.append(args),
+        ))
+
+        self.assertFalse(result.should_continue)
+        self.assertEqual(result.action, "BUY")
+        self.assertTrue(result.use_new_listing)
+        self.assertEqual(result.effective_candidate_type, "NEW_LISTING")
+
+    @patch("trading_runtime.recovery_rebound_signal", return_value={"allow_buy": False})
+    @patch("trading_runtime.entry_signal", return_value={"allow_buy": False, "reason": "관망", "entry_price": 100.0, "target_price": 103.0, "stop_loss": 98.0})
+    def test_insufficient_candles_block_before_entry_signal(self, _mock_entry, _mock_recovery):
+        profile = ExchangeCycleProfile(
+            exchange_key="bithumb",
+            reconcile_label="",
+            decision_exchange="bithumb",
+            log_prefix="",
+            extra_excluded_markets=frozenset(),
+            create_screener=self.create_screener,
+            cycle_start_label="5분 AI 퀀트 트레이딩",
+            tier_label="스마트 자산 티어",
+            tier_top_wording="스크리닝 상위",
+            summary_label="자산 요약",
+            btc_crash_label="비트코인 급락 위험 감지",
+        )
+        engine = self._build_engine(profile)
+        result = engine.process_entry_gating(MarketEntryInputs(
+            exchange=self.exchange,
+            market="KRW-XRP",
+            korean_name="리플",
+            candidate_type="CONFIRMED",
+            candidate_metadata={},
+            analyzer=None,
+            coin_available=0.0,
+            avg_buy_price=0.0,
+            current_price=100.0,
+            coin_value=0.0,
+            krw_available=1_000_000.0,
+            candles_5m=[{"trade_price": 100.0} for _ in range(3)],
+            candles_1h=[{"trade_price": 100.0}],
+            candles_4h=[{"trade_price": 100.0}],
+            orderbook={"market": "KRW-XRP"},
+            btc_regime="NORMAL",
+            btc_status_msg="정상",
+            is_btc_crashing=False,
+            is_cooldown=False,
+            is_extreme_fear=False,
+            is_bot_paused=False,
+            is_kill_switch=False,
+            is_entry_ready=True,
+            dyn_max_pos_pct=0.35,
+            now_str="2026-09-08 14:40:49",
+            audit_decision=lambda *args, **kwargs: None,
+        ))
+
+        self.assertTrue(result.should_continue)
+        _mock_entry.assert_not_called()
+
+    @patch("trading_runtime.recovery_rebound_signal", return_value={"allow_buy": False})
+    @patch("trading_runtime.entry_signal")
+    @patch("trading_runtime.select_completed_candles")
+    def test_upbit_new_listing_bypasses_twenty_candle_gate(
+        self, mock_select_candles, mock_entry_signal, _mock_recovery,
+    ):
+        """업비트 require_minimum_candles=True에서도 신규상장(5분 11개)은 20개 게이트를 우회한다."""
+        mock_select_candles.side_effect = (
+            lambda candles, minimum_count=25: candles[1:1 + minimum_count]
+            if len(candles) >= minimum_count + 1 else []
+        )
+        mock_entry_signal.return_value = {
+            "allow_buy": False,
+            "reason": "신규상장 관망",
+            "entry_price": 28.9,
+            "target_price": 30.0,
+            "stop_loss": 28.0,
+            "alpha_score": 60,
+        }
+        profile = ExchangeCycleProfile(
+            exchange_key="upbit",
+            reconcile_label="업비트 ",
+            decision_exchange="upbit",
+            log_prefix="업비트 ",
+            extra_excluded_markets=frozenset(),
+            create_screener=self.create_screener,
+            cycle_start_label="업비트 5분 AI 퀀트 트레이딩",
+            tier_label="업비트 스마트 자산 티어",
+            tier_top_wording="상위",
+            summary_label="업비트 자산 요약",
+            btc_crash_label="업비트 비트코인 급락 위험 감지",
+        )
+        entry_profile = ExchangeEntryProfile(
+            signal_exchange="upbit",
+            recovery_db_exchange="upbit",
+            enforce_pre_entry_safety_gates=True,
+            block_on_reentry_denied=True,
+            require_minimum_candles=True,
+        )
+        engine = self._build_engine(profile, entry_profile=entry_profile)
+        candles_5m = [
+            {
+                "trade_price": 28.0 + idx * 0.1,
+                "opening_price": 27.9 + idx * 0.1,
+                "high_price": 28.2 + idx * 0.1,
+                "candle_acc_trade_volume": 1000.0 * (idx + 1),
+                "candle_date_time_kst": f"2026-09-08T15:{30 - idx:02d}:00",
+            }
+            for idx in range(11)
+        ]
+        result = engine.process_entry_gating(MarketEntryInputs(
+            exchange=self.exchange,
+            market="KRW-CP",
+            korean_name="클러스터프로토콜",
+            candidate_type="MOMENTUM_BREAKOUT",
+            candidate_metadata={
+                "acc_trade_price_24h": 33_800_000_000.0,
+                "change_rate": 0.050,
+                "relative_strength": 0.0239,
+                "momentum_phase": "EARLY",
+            },
+            analyzer=None,
+            coin_available=0.0,
+            avg_buy_price=0.0,
+            current_price=28.9,
+            coin_value=0.0,
+            krw_available=1_000_000.0,
+            candles_5m=candles_5m,
+            candles_1h=[{"trade_price": 28.0}],
+            candles_4h=[{"trade_price": 28.0, "candle_date_time_kst": "2026-09-08T12:00:00"}],
+            orderbook={"market": "KRW-CP", "total_bid_size": 2000.0, "total_ask_size": 1000.0},
+            btc_regime="NORMAL",
+            btc_status_msg="정상",
+            is_btc_crashing=False,
+            is_cooldown=False,
+            is_extreme_fear=False,
+            is_bot_paused=False,
+            is_kill_switch=False,
+            is_entry_ready=True,
+            dyn_max_pos_pct=0.35,
+            now_str="2026-09-08 15:26:38",
+            audit_decision=lambda *args, **kwargs: None,
+        ))
+
+        mock_entry_signal.assert_called_once()
+        call_kwargs = mock_entry_signal.call_args.kwargs
+        self.assertEqual(call_kwargs.get("entry_type"), "NEW_LISTING")
+        self.assertEqual(result.action, "HOLD")
 
 
 if __name__ == "__main__":

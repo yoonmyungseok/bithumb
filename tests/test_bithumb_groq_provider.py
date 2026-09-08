@@ -79,6 +79,7 @@ class BithumbGroqProviderTests(unittest.TestCase):
         self.assertEqual(payload["messages"][0]["content"], GroqProvider.SYSTEM_INSTRUCTION)
         self.assertIn("ACK는 체결이 아닙니다", payload["messages"][0]["content"])
         self.assertIn("업비트, Gemini", payload["messages"][0]["content"])
+        self.assertIn("NEW_LISTING", payload["messages"][0]["content"])
         self.assertIn("한국어로만 작성", payload["messages"][0]["content"])
         self.assertIn("반드시 한국어로", payload["messages"][1]["content"])
         snapshot = AIProviderTelemetry.snapshot("bithumb")
@@ -90,6 +91,13 @@ class BithumbGroqProviderTests(unittest.TestCase):
         analyzer = build_bithumb_analyzer()
         self.assertIsNotNone(analyzer)
         self.assertEqual(analyzer.provider_label, "Groq")
+
+    def test_groq_system_instruction_mentions_new_listing_path(self):
+        """빗썸 Groq system 지침에 신규상장 단타(NEW_LISTING) 경로가 명시되어야 한다."""
+        self.assertIn("NEW_LISTING", GroqProvider.SYSTEM_INSTRUCTION)
+        self.assertIn("SCALP", GroqProvider.SYSTEM_INSTRUCTION)
+        self.assertIn("SWING", GroqProvider.SYSTEM_INSTRUCTION)
+        self.assertIn("CRASH", GroqProvider.SYSTEM_INSTRUCTION)
 
     def test_groq_telemetry_restores_after_reconfigure(self):
         """동일 KST 날짜의 Groq 호출량은 프로세스 재시작 뒤에도 복원되어야 한다."""

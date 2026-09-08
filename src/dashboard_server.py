@@ -518,6 +518,24 @@ class UnifiedDashboardServer:
             "by_exchange": safety_by_exchange,
             "feed": combined_feed,
         }
+        combined_new_listing_used = int(bithumb_data.get("new_listing_slot_used", 0) or 0) + int(
+            upbit_data.get("new_listing_slot_used", 0) or 0
+        )
+        combined_new_listing_max = int(bithumb_data.get("new_listing_slot_max", 0) or 0) + int(
+            upbit_data.get("new_listing_slot_max", 0) or 0
+        )
+        combined_new_listing_markets = list(bithumb_data.get("new_listing_markets", []) or []) + list(
+            upbit_data.get("new_listing_markets", []) or []
+        )
+        combined_safety["new_listing_slot_used"] = combined_new_listing_used
+        combined_safety["new_listing_slot_max"] = combined_new_listing_max
+        combined_safety["new_listing_markets"] = combined_new_listing_markets
+        combined_safety["new_listing_enabled"] = bool(
+            bithumb_data.get("new_listing_enabled") or upbit_data.get("new_listing_enabled")
+        )
+        combined_safety["new_listing_enforcement"] = bool(
+            bithumb_data.get("new_listing_enforcement") or upbit_data.get("new_listing_enforcement")
+        )
 
         combined = {
             "title": "Bithumb & Upbit AI 퀀트 트레이딩 Pro (통합)",
@@ -534,6 +552,11 @@ class UnifiedDashboardServer:
             "safety": combined_safety,
             # 전략 정책은 양 거래소가 공유하므로 정상 응답을 우선 사용한다.
             "policy": bithumb_data.get("policy") or upbit_data.get("policy") or {},
+            "new_listing_markets": combined_new_listing_markets,
+            "new_listing_slot_used": combined_new_listing_used,
+            "new_listing_slot_max": combined_new_listing_max,
+            "new_listing_enabled": combined_safety["new_listing_enabled"],
+            "new_listing_enforcement": combined_safety["new_listing_enforcement"],
             "positions": combined_positions,
             "candidates": combined_candidates,
             "recent_trades": combined_recent_trades,

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from exchange_adapter import ExchangeAdapter
-from strategy_engine import classify_btc_regime
+from strategy_engine import classify_btc_regime, classify_listing_maturity
 
 
 class TradingOrchestrator:
@@ -239,6 +239,9 @@ class TradingOrchestrator:
         )
         prefetched_price = float((prefetched_input or {}).get("price", 0.0) or 0.0)
         prefetched_orderbook = (prefetched_input or {}).get("orderbook")
+        candles_5m = exchange.get_candles(unit=interval_minutes, count=30, market=market)
+        candles_1h = exchange.get_candles(unit=60, count=50, market=market)
+        four_hour_history = self._load_swing_candles_safely(exchange, market)
         snapshot = MarketSnapshot(
             market=market,
             currency=currency,
@@ -248,23 +251,30 @@ class TradingOrchestrator:
             coin_available=float(coin.get("balance", 0.0)),
             avg_buy_price=float(coin.get("avg_buy_price", 0.0)),
             current_price=prefetched_price if is_fresh_prefetch and prefetched_price > 0 else exchange.get_current_price(market),
-            candles_5m=exchange.get_candles(unit=interval_minutes, count=30, market=market),
-            candles_1h=exchange.get_candles(unit=60, count=50, market=market),
-            # 4H 조회 실패는 전체 스냅샷을 버리지 않고 신규 BUY 차단/기존 보호 경계로 전달한다.
-            candles_4h=self._load_swing_candles_safely(exchange, market),
+            candles_5m=candles_5m,
+            candles_1h=candles_1h,
+            candles_4h=four_hour_history.candles,
+            four_hour_history_status=four_hour_history.status,
             orderbook=prefetched_orderbook if is_fresh_prefetch and isinstance(prefetched_orderbook, dict) else exchange.get_orderbook(market),
+            listing_maturity=classify_listing_maturity(
+                four_hour_history.candles, candles_1h, candles_5m, four_hour_history.status,
+            ),
         )
         self.record_latency("market_snapshot", time.monotonic() - started_at)
         return snapshot
 
     @staticmethod
-    def _load_swing_candles_safely(exchange: ExchangeAdapter, market: str) -> list[dict[str, Any]]:
-        """4시간봉 조회 오류를 빈 데이터로 표준화해 상위 런타임이 fail-closed 처리하게 한다."""
+    def _load_swing_candles_safely(exchange: ExchangeAdapter, market: str) -> "FourHourHistoryResult":
+        """4시간봉 실제 희소 이력과 조회 장애를 분리해 신규 진입 오판을 막는다."""
         try:
             candles = exchange.get_candles(unit=240, count=25, market=market)
-            return candles if isinstance(candles, list) else []
+            if not isinstance(candles, list) or not candles:
+                return FourHourHistoryResult([], "UNAVAILABLE")
+            if not all(isinstance(candle, dict) for candle in candles):
+                return FourHourHistoryResult([], "UNAVAILABLE")
+            return FourHourHistoryResult(candles, "AVAILABLE")
         except Exception:
-            return []
+            return FourHourHistoryResult([], "UNAVAILABLE")
 
     def classify_market_regime(
         self,
@@ -333,6 +343,14 @@ class PortfolioSnapshot:
 
 
 @dataclass(frozen=True)
+class FourHourHistoryResult:
+    """4시간봉 응답의 신뢰 상태를 보존한다. 빈 응답은 신규상장 증거가 아니다."""
+
+    candles: list[dict[str, Any]]
+    status: str
+
+
+@dataclass(frozen=True)
 class MarketSnapshot:
     market: str
     currency: str
@@ -346,3 +364,5 @@ class MarketSnapshot:
     candles_1h: list[dict[str, Any]]
     candles_4h: list[dict[str, Any]]
     orderbook: dict[str, Any]
+    four_hour_history_status: str = "UNAVAILABLE"
+    listing_maturity: str = "MATURE"

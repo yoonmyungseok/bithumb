@@ -247,6 +247,29 @@ def _get_heartbeat_age(heartbeat_path: str) -> float | None:
         return None
 
 
+def inspect_runtime_status(exchange: str, *, now: float | None = None) -> dict[str, object]:
+    """상태 파일을 읽기만 하여 워치독 PID와 하트비트를 독립적으로 판정한다."""
+    pid_file, heartbeat_file = _runtime_paths(exchange)
+    owner_file = os.path.join(os.path.dirname(heartbeat_file), ".watchdog.lock.owner.json")
+    watchdog_pid = _read_pid_file(pid_file)
+    owner_pid = _read_pid_file(owner_file)
+    heartbeat_age = _get_heartbeat_age(heartbeat_file)
+    timestamp_now = time.time() if now is None else now
+    # heartbeat_age는 실제 파일의 timestamp 기준이며, status는 어떤 파일도 삭제·보정하지 않는다.
+    heartbeat_fresh = heartbeat_age is not None and heartbeat_age < 600.0
+    return {
+        "watchdog_pid": watchdog_pid,
+        "watchdog_alive": _is_pid_alive(watchdog_pid),
+        "owner_pid": owner_pid,
+        "owner_alive": _is_pid_alive(owner_pid),
+        "heartbeat_age": heartbeat_age,
+        "heartbeat_fresh": heartbeat_fresh,
+        "checked_at": timestamp_now,
+        "pid_file_exists": os.path.exists(pid_file),
+        "heartbeat_file_exists": os.path.exists(heartbeat_file),
+    }
+
+
 def status_action(exchange: str = "bithumb"):
     ex = exchange.lower()
     if ex == "all":
@@ -280,13 +303,16 @@ def status_action(exchange: str = "bithumb"):
     print(f" [{ex_name} AI Pro Quant Trading Bot 실행 및 진단 상태] ")
     print("======================================================")
 
-    pids = find_bot_processes(exchange)
-    heartbeat_age = _get_heartbeat_age(hb_file)
-    if pids:
-        for pid in pids:
-            print(f"🟢 [{ex_name} 봇 가동 중] PID: {pid}")
-    elif heartbeat_age is not None and heartbeat_age < 600.0:
-        print(f"🟡 [{ex_name} 봇 추정 가동 중] 신선한 하트비트가 있으나 PID 파일이 없습니다.")
+    runtime_status = inspect_runtime_status(exchange)
+    if runtime_status["watchdog_alive"]:
+        print(f"🟢 [{ex_name} 워치독 가동 확인] PID: {runtime_status['watchdog_pid']}")
+    elif runtime_status["owner_alive"]:
+        print(
+            f"🟡 [{ex_name} 워치독 잠금 소유자만 확인] PID: {runtime_status['owner_pid']} "
+            "(정식 PID 파일 부재로 봇 가동은 미확인)"
+        )
+    elif runtime_status["heartbeat_fresh"]:
+        print(f"⚪ [{ex_name} 봇 가동 미확인] 신선한 하트비트만 있으며 실행 중인 PID가 없습니다.")
     else:
         print(f"⚪ [중지됨] PID 파일에서 실행 중인 {ex_name} 워치독을 확인하지 못했습니다.")
 

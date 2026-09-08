@@ -174,7 +174,9 @@ class CooldownManager:
                 return
 
             etype_upper = exit_type.upper()
-            if "TIME" in etype_upper:
+            if "NEW_LISTING" in etype_upper:
+                duration = StrategyPolicy.NEW_LISTING_REENTRY_COOLDOWN_SEC
+            elif "TIME" in etype_upper:
                 duration = self.default_time_stop_cooldown
             else:
                 duration = self.default_tp_cooldown
@@ -256,6 +258,8 @@ class CooldownManager:
 
             if expire_at > now:
                 cd_rem = expire_at - now
+                if "NEW_LISTING" in exit_type_upper:
+                    return False, f"🆕 신규상장 재진입 쿨다운 대기 중 ({cd_rem/60:.1f}분 남음)"
                 return False, f"⏳ {exit_type} 쿨다운 대기 중 ({cd_rem/60:.1f}분 남음)"
 
             ts = float(rec.get("timestamp", 0.0))

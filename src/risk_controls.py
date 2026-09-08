@@ -7,6 +7,7 @@ be tested and evolved without touching order lifecycle code.
 from __future__ import annotations
 
 from market_policy import is_protected_market
+from strategy_engine import StrategyPolicy
 
 
 def get_dynamic_portfolio_tiers(total_equity: float, custom_max_positions: int | None = None) -> tuple[int, float, int]:
@@ -31,6 +32,7 @@ class RiskGuard:
         max_total_exposure_pct: float,
         max_order_krw: float,
         max_swing_positions: int = 0,
+        max_new_listing_positions: int = 0,
     ):
         self.min_order_krw = min_order_krw
         self.max_open_positions = max_open_positions
@@ -38,6 +40,7 @@ class RiskGuard:
         self.max_total_exposure_pct = max_total_exposure_pct
         self.max_order_krw = max_order_krw
         self.max_swing_positions = max_swing_positions
+        self.max_new_listing_positions = max_new_listing_positions
 
     def update_limits(
         self,
@@ -45,6 +48,7 @@ class RiskGuard:
         max_position_pct: float | None = None,
         max_total_exposure_pct: float | None = None,
         max_swing_positions: int | None = None,
+        max_new_listing_positions: int | None = None,
     ) -> None:
         if max_open_positions is not None:
             self.max_open_positions = max_open_positions
@@ -54,6 +58,8 @@ class RiskGuard:
             self.max_total_exposure_pct = max_total_exposure_pct
         if max_swing_positions is not None:
             self.max_swing_positions = max_swing_positions
+        if max_new_listing_positions is not None:
+            self.max_new_listing_positions = max_new_listing_positions
 
     def validate_buy(
         self,
@@ -64,6 +70,7 @@ class RiskGuard:
         held_markets: list[str],
         strategy_mode: str = "SCALP",
         held_swing_markets: list[str] | None = None,
+        held_new_listing_markets: list[str] | None = None,
     ) -> tuple[bool, str]:
         if is_protected_market(market):
             return False, f"수동 관리 격리 종목 ({market}) 매수 불가"
@@ -76,24 +83,37 @@ class RiskGuard:
         if total_equity <= 0:
             return False, "총 자산 평가 실패"
 
-        # Dual-Track 비중 및 슬롯 제어
-        is_swing = str(strategy_mode).upper() == "SWING"
-        effective_max_pct = max(self.max_position_pct, 0.35) if is_swing else self.max_position_pct
+        mode_upper = str(strategy_mode).upper()
+        is_swing = mode_upper == "SWING"
+        is_new_listing = mode_upper == "NEW_LISTING"
+        if is_swing:
+            effective_max_pct = max(self.max_position_pct, 0.35)
+        elif is_new_listing:
+            effective_max_pct = self.max_position_pct * StrategyPolicy.NEW_LISTING_ALLOC_RATIO
+        else:
+            effective_max_pct = self.max_position_pct
         if order_krw / total_equity > effective_max_pct:
             return False, "종목당 비중 한도 초과"
 
         swing_held = set(held_swing_markets or [])
-        if self.max_swing_positions > 0:
+        new_listing_held = set(held_new_listing_markets or [])
+        uses_reserved_slots = self.max_swing_positions > 0 or self.max_new_listing_positions > 0
+        if uses_reserved_slots:
             if is_swing:
-                # 스윙 슬롯 독립 검증
-                if len(swing_held) >= self.max_swing_positions and market not in swing_held:
+                if self.max_swing_positions > 0 and len(swing_held) >= self.max_swing_positions and market not in swing_held:
                     return False, f"스윙 전용 보유 종목 수 한도({self.max_swing_positions}개) 초과"
+            elif is_new_listing:
+                if (
+                    self.max_new_listing_positions > 0
+                    and len(new_listing_held) >= self.max_new_listing_positions
+                    and market not in new_listing_held
+                ):
+                    return False, f"신규상장 전용 보유 종목 수 한도({self.max_new_listing_positions}개) 초과"
             else:
-                # 단타 슬롯: 전체 보유 중 스윙을 제외한 단타 보유 종목 수만 계측
-                scalp_held = [m for m in held_markets if m not in swing_held]
-                # 스윙이 전체 슬롯을 모두 예약한 구성에서는 단타 슬롯을 임의로 1개
-                # 되살리지 않아, 전체·스윙·단타 한도가 동시에 일관되게 적용된다.
-                max_scalp_positions = max(0, self.max_open_positions - self.max_swing_positions)
+                # 단타 슬롯: 스윙·신규상장 예약 슬롯을 제외한 나머지만 사용
+                scalp_held = [m for m in held_markets if m not in swing_held and m not in new_listing_held]
+                reserved = self.max_swing_positions + self.max_new_listing_positions
+                max_scalp_positions = max(0, self.max_open_positions - reserved)
                 if len(scalp_held) >= max_scalp_positions and market not in scalp_held:
                     return False, f"단타 전용 보유 종목 수 한도({max_scalp_positions}개) 초과"
 
@@ -122,7 +142,9 @@ def calculate_risk_position_size(
     if total_equity <= 0 or entry_price <= 0:
         return 0.0
     scale = max(0.1, min(float(risk_scale_factor), 1.0))
-    is_swing = str(strategy_mode).upper() == "SWING"
+    mode_upper = str(strategy_mode).upper()
+    is_swing = mode_upper == "SWING"
+    is_new_listing = mode_upper == "NEW_LISTING"
 
     # 스윙 모드는 리스크 버퍼를 약간 확대(1.5%)하고 기본 슬롯 2개 기준 적용
     effective_risk_fraction = max(risk_fraction, 0.015) if is_swing else risk_fraction
@@ -132,7 +154,12 @@ def calculate_risk_position_size(
     raw_position_krw = risk_capital / effective_loss_pct
 
     effective_slots = 2 if is_swing else max(1, open_slots)
-    effective_max_pct = max(max_position_pct, 0.35) if is_swing else max_position_pct
+    if is_swing:
+        effective_max_pct = max(max_position_pct, 0.35)
+    elif is_new_listing:
+        effective_max_pct = max_position_pct * StrategyPolicy.NEW_LISTING_ALLOC_RATIO
+    else:
+        effective_max_pct = max_position_pct
     max_allowed_krw = min(total_equity * effective_max_pct * scale, (total_equity / effective_slots) * scale)
 
     if available_krw is not None:
