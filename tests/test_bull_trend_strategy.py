@@ -126,10 +126,12 @@ class TestBullTrendStrategy(unittest.TestCase):
         # +3.1% 상승 시: BULL_TREND 1차 분할 익절 (+3.0% 통과)
         action, _, _, _, _ = tracker.check_position(market, 103.1, buy_p, btc_regime="BULL_TREND")
         self.assertEqual(action, "PARTIAL_TP_1")
+        self.assertTrue(tracker.mark_partial_take_profit_filled(market, 1, 0.5))
 
         # +6.1% 상승 시: BULL_TREND 2차 분할 익절 (+6.0% 통과)
         action, _, _, _, _ = tracker.check_position(market, 106.1, buy_p, btc_regime="BULL_TREND")
         self.assertEqual(action, "PARTIAL_TP_2")
+        self.assertTrue(tracker.mark_partial_take_profit_filled(market, 2, 0.25))
 
         # 최고점 110.0원 찍고 1.0% 하락(108.9원): BULL_TREND(1.5% 드롭)에서는 홀딩
         tracker.check_position(market, 110.0, buy_p, btc_regime="BULL_TREND")

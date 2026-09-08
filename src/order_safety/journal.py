@@ -218,6 +218,19 @@ class OrderJournal:
                     return dict(candidate)
         return None
 
+    def get_latest_confirmed_entry_volume(self, market: str) -> float:
+        """해당 거래소 저널에서 최근 포지션의 최초 확정 매수 누적 수량을 반환한다."""
+        with self._lock:
+            for candidate in reversed(self.orders):
+                if candidate.get("market") != market:
+                    continue
+                if str(candidate.get("side", "")).lower() not in ("bid", "buy"):
+                    continue
+                filled = float(candidate.get("processed_executed_volume", 0.0) or 0.0)
+                if filled > 0.0:
+                    return filled
+        return 0.0
+
     def has_unresolved_market(self, market: str) -> bool:
         with self._lock:
             return any(

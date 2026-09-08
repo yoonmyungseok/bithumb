@@ -174,7 +174,9 @@ class TestSwingStrategy(unittest.TestCase):
         )
         self.assertEqual(action, "PARTIAL_TP_1")
 
-        # 3. 브레이크이븐 활성화 확인
+        # 3. 주문 신호만으로는 본전 보호를 켜지 않고, 확인 체결 뒤에만 활성화한다.
+        self.assertFalse(tracker.is_breakeven_active(market))
+        self.assertTrue(tracker.mark_partial_take_profit_filled(market, 1, 0.4))
         self.assertTrue(tracker.is_breakeven_active(market))
 
         # 4. 최고점 120_000_000원(+20%) 찍은 후 -4.5% 반락 시 ➜ 스윙 트레일링(드롭 4%) 청산

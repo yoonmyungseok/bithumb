@@ -11,6 +11,7 @@ from order_safety.fill_processor import OrderFillProcessor
 from order_safety.journal import OrderJournal
 from order_safety.markets import get_excluded_markets_set
 from order_safety.orderbook import evaluate_buy_orderbook_impact
+from order_safety.position_sizing import calculate_partial_take_profit_volume
 from order_safety.types import AmbiguousOrderError, OrderStatus
 from risk_controls import RiskGuard, calculate_risk_position_size, get_dynamic_portfolio_tiers
 from state_store import load_json_with_backup_recovery, write_json_atomically
@@ -25,6 +26,7 @@ __all__ = [
     "SafeOrderExecutor",
     "calculate_risk_position_size",
     "evaluate_buy_orderbook_impact",
+    "calculate_partial_take_profit_volume",
     "get_dynamic_portfolio_tiers",
     "get_excluded_markets_set",
     "load_json_with_backup_recovery",

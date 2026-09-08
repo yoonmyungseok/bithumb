@@ -115,6 +115,11 @@ MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
 MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.35"))
 MAX_TOTAL_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_EXPOSURE_PCT", "0.90"))
 MAX_ORDER_KRW = float(os.getenv("MAX_ORDER_KRW", "20000000"))
+# 빗썸은 총 3개 중 스윙 1개만 예약하고 나머지 2개를 단타에 보장한다.
+MAX_SWING_POSITIONS = min(
+    MAX_OPEN_POSITIONS,
+    max(0, int(os.getenv("BITHUMB_MAX_SWING_POSITIONS", os.getenv("MAX_SWING_POSITIONS", "1")))),
+)
 # 관찰 기간에는 차단 후보만 기록하고, 검증 후 환경 변수로 신규 매수 차단을 활성화한다.
 ORDERBOOK_SLIPPAGE_ENFORCEMENT = os.getenv("ORDERBOOK_SLIPPAGE_ENFORCEMENT", "false").strip().lower() in {"1", "true", "yes", "on"}
 # 모멘텀 돌파는 확정봉·호가·주문 안전 검증을 모두 통과한 소수 후보만 직접 진입한다.
@@ -160,6 +165,7 @@ risk_guard = RiskGuard(
     max_position_pct=MAX_POSITION_PCT,
     max_total_exposure_pct=MAX_TOTAL_EXPOSURE_PCT,
     max_order_krw=MAX_ORDER_KRW,
+    max_swing_positions=MAX_SWING_POSITIONS,
 )
 trailing_tracker = TrailingStopTracker(
     start_profit_pct=TRAILING_START_PCT, trailing_drop_pct=TRAILING_STOP_PCT

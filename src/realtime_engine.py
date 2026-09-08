@@ -6,7 +6,14 @@ from typing import Any
 
 from bithumb_api import BithumbAPI
 from strategy_engine import StrategyPolicy
-from order_safety import CooldownManager, OrderFillProcessor, OrderJournal, OrderStatus, SafeOrderExecutor
+from order_safety import (
+    CooldownManager,
+    OrderFillProcessor,
+    OrderJournal,
+    OrderStatus,
+    SafeOrderExecutor,
+    calculate_partial_take_profit_volume,
+)
 from risk_manager import DailyRiskManager, TrailingStopTracker, get_kst_now_str
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
@@ -389,7 +396,6 @@ class RealtimeRiskEngine:
                     logger.warning(
                         f"⚡ [실시간 웹소켓 {stop_type} 발동] {korean_name}({market}) 현재가({current_price:,.2f}원) <= 기준선({hard_stop_price if is_hard_stop else effective_stop_loss:,.2f}원). 즉시 시장가 매도!"
                     )
-                    self.trailing_tracker.clear(market)
                     self.cancel_bot_open_orders(market)
 
                     ex_name = self._resolve_exchange_name(bithumb)
@@ -440,10 +446,21 @@ class RealtimeRiskEngine:
 
             if action_type in ("PARTIAL_TP", "PARTIAL_TP_1", "PARTIAL_TP_2"):
                 is_stage2 = (action_type == "PARTIAL_TP_2")
-                # 1차: 보유의 50% 매도 | 2차: 잔여의 50% (원금 대비 25%) 매도 ➔ 최종 25% 대세 추종 러너 유지
-                sell_ratio = 0.50 if is_stage2 else StrategyPolicy.PARTIAL_TP_1_RATIO
-                sell_vol = coin_available * sell_ratio
+                stage = 2 if is_stage2 else 1
+                original_filled = self.order_journal.get_latest_confirmed_entry_volume(market) if is_swing else 0.0
+                # 단타는 기존 1차 50%, 2차 잔여 50% 계약을 유지한다.
+                scalp_ratio = 0.50 if is_stage2 else StrategyPolicy.PARTIAL_TP_1_RATIO
+                sell_vol = calculate_partial_take_profit_volume(
+                    is_swing=is_swing,
+                    stage=stage,
+                    available_volume=coin_available,
+                    original_filled_volume=original_filled,
+                    scalp_stage_ratio=scalp_ratio,
+                )
                 sell_val = sell_vol * current_price
+                if is_swing and sell_vol <= 0.0:
+                    logger.warning("[%s] 스윙 원보유 확정 수량을 찾지 못해 분할익절 주문을 보류합니다.", market)
+                    return
                 if sell_val >= self.min_order_krw:
                     with self._lock:
                         if now_ts - self._last_trigger.get(market, 0.0) < 5.0:
@@ -473,7 +490,9 @@ class RealtimeRiskEngine:
                             ord_type="market",
                             position_id=market,
                             expected_price=current_price,
-                            exit_reason=f"0.1초 실시간 {stage_label} 도달 분할 익절",
+                            # OrderFillProcessor가 확인 체결에서 단계 전진을 식별할 수 있도록
+                            # 표시 문구와 별개로 안정적인 익절 단계 코드를 저널에 남긴다.
+                            exit_reason=f"PARTIAL_TP_{stage}: 0.1초 실시간 {stage_label} 도달 분할 익절",
                             avg_buy_price=avg_buy_price,
                             exchange_name=ex_name,
                         )
@@ -488,7 +507,7 @@ class RealtimeRiskEngine:
                             avg_buy_price=avg_buy_price,
                             fallback_price=current_price,
                             fallback_vol=sell_vol,
-                            exit_reason=f"0.1초 실시간 {stage_label} 도달 분할 익절",
+                            exit_reason=f"PARTIAL_TP_{stage}: 0.1초 실시간 {stage_label} 도달 분할 익절",
                             now_str=now_str,
                         )
 

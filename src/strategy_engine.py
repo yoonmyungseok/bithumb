@@ -73,6 +73,7 @@ class StrategyPolicy:
     SWING_TARGET_PCT: float = 0.150              # 스윙 기본 목표 수익률 +15.0%
     SWING_ALLOC_RATIO: float = 0.50              # 스윙 포지션 기본 배분 비중
     SWING_TIME_STOP_ENABLED: bool = False        # 스윙은 시간 기반 타임스탑 미적용 (추세 기반 청산)
+    SWING_4H_DATA_UNAVAILABLE_MAX_HOLD_SECONDS: int = 43200  # 4H 대사 불가가 12시간 지속되면 무기한 보유 방지 보호 청산
 
     # 2. 익절 및 트레일링 스탑 (2~3단계 분할 익절 & 2차 러너 추세 추종)
     PARTIAL_TP_PCT: float = 0.035        # 기본 1차 익절 기준 +3.5%
@@ -1226,6 +1227,16 @@ def recovery_rebound_signal(
     }
 
 
+def has_confirmed_swing_trend_candles(candles_4h: list[dict[str, Any]] | None) -> bool:
+    """스윙 EMA20 판정에 필요한 4시간 확정봉 20개가 있는지 확인한다."""
+    return bool(select_completed_candles(candles_4h or [], 20))
+
+
+def should_force_swing_data_unavailable_exit(hold_duration_sec: float) -> bool:
+    """4H 데이터 불능이 장시간 지속될 때만 무기한 보유 방지 보호 청산을 허용한다."""
+    return hold_duration_sec >= StrategyPolicy.SWING_4H_DATA_UNAVAILABLE_MAX_HOLD_SECONDS
+
+
 def evaluate_swing_trend_exit(
     candles_4h: list[dict[str, Any]],
     current_price: float,
@@ -1236,12 +1247,12 @@ def evaluate_swing_trend_exit(
     - 4시간봉 확정 캔들의 EMA20 대비 buffer_ratio(기본 0.985, -1.5% 하회) 이탈 시 청산
     - 캔들 부족 시 관망 (Fail-Safe)
     """
-    if not candles_4h or len(candles_4h) < 20 or current_price <= 0:
-        return False, "4H 캔들 데이터 부족으로 추세 유지"
+    if current_price <= 0:
+        return False, "현재가 오류로 4H 추세 판정 보류"
 
-    completed = select_completed_candles(candles_4h, 20)
+    completed = select_completed_candles(candles_4h or [], 20)
     if not completed:
-        return False, "4H 확정봉 부족으로 추세 유지"
+        return False, "4H 확정봉 부족: 신규 BUY 차단 및 기존 포지션 보호 모드"
 
     prices = [float(c.get("trade_price", 0.0)) for c in completed]
     ema20 = calculate_ema(prices, 20)

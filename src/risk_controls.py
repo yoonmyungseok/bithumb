@@ -91,7 +91,9 @@ class RiskGuard:
             else:
                 # 단타 슬롯: 전체 보유 중 스윙을 제외한 단타 보유 종목 수만 계측
                 scalp_held = [m for m in held_markets if m not in swing_held]
-                max_scalp_positions = max(1, self.max_open_positions - self.max_swing_positions)
+                # 스윙이 전체 슬롯을 모두 예약한 구성에서는 단타 슬롯을 임의로 1개
+                # 되살리지 않아, 전체·스윙·단타 한도가 동시에 일관되게 적용된다.
+                max_scalp_positions = max(0, self.max_open_positions - self.max_swing_positions)
                 if len(scalp_held) >= max_scalp_positions and market not in scalp_held:
                     return False, f"단타 전용 보유 종목 수 한도({max_scalp_positions}개) 초과"
 

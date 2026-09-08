@@ -470,17 +470,17 @@ class TrailingStopTracker:
             cur_stage = 1 if raw_stage is True else int(raw_stage or 0)
 
             # 1-A. 1차 분할 익절
+            # 주문 신호는 상태 완료가 아니다. 실제 체결 델타가 OrderFillProcessor에
+            # 도착할 때만 mark_partial_take_profit_filled()가 단계를 전진시킨다.
             if current_profit_rate >= tp_1_target and cur_stage < 1:
-                self.partial_tp_done[market] = 1
                 self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
-                self._save_state(force=True)
+                self._save_state()
                 return "PARTIAL_TP_1", current_price, current_price, current_profit_pct, current_profit_pct
 
             # 1-B. 2차 추가 분할 익절
             if current_profit_rate >= tp_2_target and cur_stage < 2:
-                self.partial_tp_done[market] = 2
                 self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
-                self._save_state(force=True)
+                self._save_state()
                 return "PARTIAL_TP_2", current_price, current_price, current_profit_pct, current_profit_pct
 
             # 2. [수익률 단계별 가속 트레일링 스탑 (Ratchet Tightening)]
@@ -554,7 +554,8 @@ class TrailingStopTracker:
 
                 if current_price <= trailing_stop_price:
                     realized_profit_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100.0
-                    self.clear(market)
+                    # 트레일링 조건 충족은 매도 주문 요청일 뿐이다. 거절·타임아웃·부분
+                    # 체결에서 보호 상태를 보존하기 위해 전체 상태 삭제는 확정 전량 체결 경계가 담당한다.
                     return "TRAILING_STOP", current_peak, trailing_stop_price, peak_profit_pct, realized_profit_pct
 
             return "NONE", self.peaks.get(market, current_price), 0.0, 0.0, current_profit_pct
@@ -564,6 +565,18 @@ class TrailingStopTracker:
         with self._lock:
             raw = self.partial_tp_done.get(market, 0)
             return 1 if raw is True else int(raw or 0)
+
+    def mark_partial_take_profit_filled(self, market: str, stage: int, fill_delta: float) -> bool:
+        """확인된 분할익절 체결 증가분이 있을 때만 단계와 본전 보호를 활성화한다."""
+        if fill_delta <= 0.0 or stage not in (1, 2):
+            return False
+        with self._lock:
+            current_stage = self.get_tp_stage(market)
+            if stage <= current_stage:
+                return False
+            self.partial_tp_done[market] = stage
+            self._save_state(force=True)
+            return True
 
     def is_breakeven_active(self, market: str) -> bool:
         """1차 분할 익절 완료 후 본전 보장(Break-Even) 스탑 가동 여부"""

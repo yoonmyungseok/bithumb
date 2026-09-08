@@ -274,7 +274,8 @@ class BotController:
                         )
                         k_name = exchange.get_korean_name(market)
                         sold_list.append(f"{k_name}({cur}) {vol:.4f}개")
-                        self.trailing_tracker.clear(market)
+                        # 긴급 매도도 접수 성공만으로 포지션 상태를 지우지 않는다.
+                        # 후속 REST/Private WebSocket 체결 대사가 정리 경계를 결정한다.
                 except Exception as e:
                     logger.error(f"긴급 매도 실패 ({cur}): {e}")
 

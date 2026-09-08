@@ -250,10 +250,21 @@ class TradingOrchestrator:
             current_price=prefetched_price if is_fresh_prefetch and prefetched_price > 0 else exchange.get_current_price(market),
             candles_5m=exchange.get_candles(unit=interval_minutes, count=30, market=market),
             candles_1h=exchange.get_candles(unit=60, count=50, market=market),
+            # 4H 조회 실패는 전체 스냅샷을 버리지 않고 신규 BUY 차단/기존 보호 경계로 전달한다.
+            candles_4h=self._load_swing_candles_safely(exchange, market),
             orderbook=prefetched_orderbook if is_fresh_prefetch and isinstance(prefetched_orderbook, dict) else exchange.get_orderbook(market),
         )
         self.record_latency("market_snapshot", time.monotonic() - started_at)
         return snapshot
+
+    @staticmethod
+    def _load_swing_candles_safely(exchange: ExchangeAdapter, market: str) -> list[dict[str, Any]]:
+        """4시간봉 조회 오류를 빈 데이터로 표준화해 상위 런타임이 fail-closed 처리하게 한다."""
+        try:
+            candles = exchange.get_candles(unit=240, count=25, market=market)
+            return candles if isinstance(candles, list) else []
+        except Exception:
+            return []
 
     def classify_market_regime(
         self,
@@ -333,4 +344,5 @@ class MarketSnapshot:
     current_price: float
     candles_5m: list[dict[str, Any]]
     candles_1h: list[dict[str, Any]]
+    candles_4h: list[dict[str, Any]]
     orderbook: dict[str, Any]

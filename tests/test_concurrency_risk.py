@@ -93,7 +93,10 @@ class TestConcurrencyRisk(unittest.TestCase):
         # +3.6% 도달 시 check_position 호출 (1차 분할 익절 기준 +3.5%)
         action, peak_p, trig_p, peak_pct, real_pct = self.trailing.check_position(market, 1036.0, avg_buy)
         self.assertEqual(action, "PARTIAL_TP_1")
-        self.assertTrue(self.trailing.partial_tp_done.get(market, False))
+        # 주문 신호는 ACK와 같으므로 체결 처리 전에는 단계를 완료하지 않는다.
+        self.assertFalse(self.trailing.partial_tp_done.get(market, False))
+        self.assertTrue(self.trailing.mark_partial_take_profit_filled(market, 1, 0.5))
+        self.assertEqual(self.trailing.get_tp_stage(market), 1)
 
         # 청산 락 획득 후 추가 청산 시도 시 거부 확인
         lock_acquired = self.trailing.acquire_exit_lock(market)

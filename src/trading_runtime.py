@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 from exchange_adapter import ExchangeAdapter
 from gemini_analyzer import GeminiAnalyzer
-from order_safety import calculate_risk_position_size, evaluate_buy_orderbook_impact
+from order_safety import calculate_partial_take_profit_volume, calculate_risk_position_size, evaluate_buy_orderbook_impact
 from risk_manager import get_fear_and_greed_index, get_kst_now, get_kst_now_str
 from runtime_config import load_runtime_risk_settings
 from strategy_engine import (
@@ -26,10 +26,12 @@ from strategy_engine import (
     calculate_vwap,
     entry_signal,
     evaluate_swing_trend_exit,
+    has_confirmed_swing_trend_candles,
     is_ai_direct_entry_eligible,
     is_night_session,
     recovery_rebound_signal,
     select_completed_candles,
+    should_force_swing_data_unavailable_exit,
 )
 from trading_orchestrator import TradingOrchestrator
 
@@ -181,6 +183,7 @@ class MarketExitInputs:
     orderbook: dict[str, Any] | None = None
     analyzer: GeminiAnalyzer | None = None
     is_btc_crashing: bool = False
+    candles_4h: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -213,6 +216,8 @@ class MarketEntryInputs:
     allow_ai_analysis: bool = True
     # 같은 5분 사이클의 상관된 후발 모멘텀 동시 추격을 막는 단일 신규 주문 슬롯이다.
     momentum_entry_slot_available: bool = True
+    # 4H 데이터 부재는 모든 신규 BUY를 fail-closed로 막기 위한 별도 입력이다.
+    candles_4h: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -719,10 +724,22 @@ class TradingCycleEngine:
 
         if action_type in ("PARTIAL_TP", "PARTIAL_TP_1", "PARTIAL_TP_2"):
             is_stage2 = action_type == "PARTIAL_TP_2"
-            sell_ratio = exit_profile.partial_tp_stage2_ratio if is_stage2 else StrategyPolicy.PARTIAL_TP_1_RATIO
-            sell_vol = coin_available * sell_ratio
+            stage = 2 if is_stage2 else 1
+            is_swing = ctx.trailing_tracker.is_swing_position(market)
+            original_filled = ctx.order_journal.get_latest_confirmed_entry_volume(market) if is_swing else 0.0
+            scalp_ratio = exit_profile.partial_tp_stage2_ratio if is_stage2 else StrategyPolicy.PARTIAL_TP_1_RATIO
+            sell_vol = calculate_partial_take_profit_volume(
+                is_swing=is_swing,
+                stage=stage,
+                available_volume=coin_available,
+                original_filled_volume=original_filled,
+                scalp_stage_ratio=scalp_ratio,
+            )
             sell_val = sell_vol * current_price
             stage_name = exit_profile.partial_tp_stage2_name if is_stage2 else exit_profile.partial_tp_stage1_name
+            if is_swing and sell_vol <= 0.0:
+                logger.warning("[%s] 스윙 원보유 확정 수량을 찾지 못해 분할익절 주문을 보류합니다.", market)
+                return False
             if sell_val >= min_order_krw and ctx.trailing_tracker.acquire_exit_lock(market):
                 try:
                     logger.info(
@@ -924,9 +941,17 @@ class TradingCycleEngine:
 
         is_swing = getattr(ctx.trailing_tracker, "is_swing_position", lambda m: False)(market)
         if is_swing:
-            # 스윙 포지션은 120분/180분 타임스탑을 면제하고, 상위봉(1H/4H) 추세 지지선 이탈 시에만 청산한다.
-            candles_1h = getattr(market_inputs, "candles_1h", None)
-            is_trend_exit, trend_reason = evaluate_swing_trend_exit(candles_1h or [], current_price)
+            # 스윙 포지션은 4시간 확정봉 EMA20으로만 추세 청산을 판단한다.
+            candles_4h = getattr(market_inputs, "candles_4h", None)
+            if not has_confirmed_swing_trend_candles(candles_4h):
+                if not should_force_swing_data_unavailable_exit(hold_duration_sec):
+                    # 하드스탑·확정 손절·트레일링은 이 분기 전에 계속 평가되므로 보호를 유지한다.
+                    logger.warning("[%s] 4H 확정봉 부족: 신규 BUY는 차단하고 기존 스윙 보호 주문만 유지합니다.", market)
+                    return False
+                is_trend_exit = True
+                trend_reason = "4H 데이터 불능이 12시간 지속되어 무기한 보유 방지 보호 청산"
+            else:
+                is_trend_exit, trend_reason = evaluate_swing_trend_exit(candles_4h or [], current_price)
             if not is_trend_exit:
                 return False  # 스윙 추세 지지 중이므로 홀딩 유지
 
@@ -1056,6 +1081,7 @@ class TradingCycleEngine:
         krw_available = market_inputs.krw_available
         candles_5m = market_inputs.candles_5m
         candles_1h = market_inputs.candles_1h
+        candles_4h = market_inputs.candles_4h
         orderbook = market_inputs.orderbook
         btc_regime = market_inputs.btc_regime
         btc_status_msg = market_inputs.btc_status_msg
@@ -1092,6 +1118,10 @@ class TradingCycleEngine:
 
         if entry_profile.require_minimum_candles and (not candles_5m or len(candles_5m) < 20):
             logger.warning(f"[{market}] 캔들 데이터 부족으로 진입 생략")
+            return EntryGatingResult(should_continue=True)
+
+        if not has_confirmed_swing_trend_candles(candles_4h):
+            logger.warning("[%s] 4H 확정봉 데이터 부족 또는 조회 실패로 신규 BUY 차단", market)
             return EntryGatingResult(should_continue=True)
 
         completed_candles_5m = select_completed_candles(candles_5m, minimum_count=25)
@@ -1570,7 +1600,6 @@ class TradingCycleEngine:
                 logger.warning(
                     f"🚨 [{market} 손절 발생] 현재가({current_price:,.2f}원) <= 손절가({stop_loss:,.2f}원). 전량 시장가 매도!"
                 )
-                ctx.trailing_tracker.clear(market)
                 ctx.cancel_bot_open_orders(exchange, market)
                 ctx.order_executor.submit(
                     exchange,
@@ -1808,8 +1837,6 @@ class TradingCycleEngine:
             "momentum_phase": market_inputs.momentum_phase,
             "strategy_mode": strategy_mode,
         })
-        if strategy_mode == "SWING" and hasattr(ctx.trailing_tracker, "set_strategy_mode"):
-            ctx.trailing_tracker.set_strategy_mode(market, "SWING")
         position_id = f"{buy_profile.exchange_name}:{market}:{int(time.time() * 1000)}"
         ctx.order_executor.submit(
             exchange,
@@ -1928,6 +1955,7 @@ class TradingCycleEngine:
                 coin_value = coin_available * current_price
                 candles_5m = market_snapshot.candles_5m
                 candles_1h = market_snapshot.candles_1h
+                candles_4h = market_snapshot.candles_4h
                 orderbook = market_snapshot.orderbook
 
                 if self.process_priority_exits(MarketExitInputs(
@@ -1942,6 +1970,7 @@ class TradingCycleEngine:
                     btc_regime=btc_regime,
                     now_str=now_str,
                     candles_1h=candles_1h,
+                    candles_4h=candles_4h,
                     orderbook=orderbook,
                     analyzer=analyzer,
                     is_btc_crashing=is_btc_crashing,
@@ -1963,6 +1992,7 @@ class TradingCycleEngine:
                     krw_available=krw_available,
                     candles_5m=candles_5m,
                     candles_1h=candles_1h,
+                    candles_4h=candles_4h,
                     orderbook=orderbook,
                     btc_regime=btc_regime,
                     btc_status_msg=btc_status_msg,

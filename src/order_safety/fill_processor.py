@@ -110,6 +110,10 @@ class OrderFillProcessor:
                     # 매수 첫 체결 시점에만 진입시간 생성 (P0-1)
                     if prev_processed_vol == 0.0 and self.trailing_tracker:
                         self.trailing_tracker.set_entry_time(market)
+                        # 주문 ACK/거절에는 전략 슬롯 상태를 남기지 않는다. 실제 첫 매수
+                        # 체결만 해당 포지션의 스윙/단타 모드를 확정한다.
+                        entry_mode = str((order.get("entry_strategy_snapshot") or {}).get("strategy_mode") or "SCALP")
+                        self.trailing_tracker.set_strategy_mode(market, entry_mode)
                     logger.info(
                         "🛒 [%s] 실제 매수 체결 확인: 증가분=%.6f, 체결단가=%.2f, 수수료=%.2f, 슬리피지=%+.1fbps",
                         market, fill_delta, effective_price, fee_delta, slippage_bps,
@@ -159,6 +163,12 @@ class OrderFillProcessor:
 
 
                 else:
+                    stored_upper = str(stored_exit_reason).upper()
+                    if self.trailing_tracker and "PARTIAL_TP_" in stored_upper:
+                        # 부분 체결도 실제 수량 감소이므로 해당 단계의 본전 보호를 즉시
+                        # 활성화하되, 주문 ACK/OPEN/UNKNOWN에는 절대로 전진하지 않는다.
+                        stage = 2 if "PARTIAL_TP_2" in stored_upper else 1
+                        self.trailing_tracker.mark_partial_take_profit_filled(market, stage, fill_delta)
                     # 매도 체결: 실제 체결 증가분만 실현 손익 계산 (P0-1, P0-3)
                     effective_avg_buy_price = avg_buy_price or float(order.get("avg_buy_price", 0.0) or 0.0)
                     if effective_price <= 0 or effective_avg_buy_price <= 0:
@@ -271,8 +281,10 @@ class OrderFillProcessor:
                     # [알림 최적화] 거래소 앱 자체 알림 활용을 위해 텔레그램 매도 체결 알림 비활성화
                     pass
 
-            # 2. 완전 청산 상태 도달 시 트레일링 스탑 초기화
-            if not is_buy and status in (OrderStatus.FILLED, OrderStatus.CANCELED) and remaining_volume == 0.0:
+            # 2. 부분익절 주문 완료는 포지션 전체 완료가 아니다. 확정 전량 청산 주문의
+            # REST/Private-WS FILLED 결과에서만 트레일링·전략 상태를 정리한다.
+            is_partial_take_profit = "PARTIAL_TP_" in str(stored_exit_reason).upper()
+            if not is_buy and not is_partial_take_profit and status == OrderStatus.FILLED and remaining_volume == 0.0:
                 if self.trailing_tracker:
                     self.trailing_tracker.clear(market)
 
