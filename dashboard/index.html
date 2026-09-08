@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI 퀀트 트레이딩 Pro 대시보드</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- TradingView Widget Script -->
@@ -37,14 +38,28 @@
       <div class="flex flex-wrap items-center gap-3 mt-4 lg:mt-0">
         <!-- Exchange Switcher Tabs -->
         <div class="flex bg-slate-950/80 p-1 rounded-xl border border-slate-800">
-          <button id="exchange_combined" onclick="window.switchExchange('combined')" class="exchange-tab-btn px-3 py-1.5 rounded-lg text-xs font-bold transition bg-blue-600 text-white">
-            🌐 전체 통합
+          <button id="exchange_combined" onclick="window.switchExchange('combined')" class="exchange-tab-btn px-3 py-1.5 rounded-lg text-xs font-bold transition bg-blue-600 text-white inline-flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="2" y1="12" x2="22" y2="12"/>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+            </svg>
+            <span>전체 통합</span>
           </button>
-          <button id="exchange_bithumb" onclick="window.switchExchange('bithumb')" class="exchange-tab-btn px-3 py-1.5 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white">
-            🟡 빗썸
+          <button id="exchange_bithumb" onclick="window.switchExchange('bithumb')" class="exchange-tab-btn px-3 py-1.5 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white inline-flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5 shrink-0 text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" fill="currentColor" fill-opacity="0.15"/>
+              <path d="M9.5 7.5h4a2.2 2.2 0 0 1 0 4.4H9.5v-4.4z" stroke="currentColor"/>
+              <path d="M9.5 11.9h4.5a2.3 2.3 0 0 1 0 4.6H9.5V11.9z" stroke="currentColor"/>
+              <line x1="9.5" y1="6" x2="9.5" y2="18" stroke="currentColor"/>
+            </svg>
+            <span>빗썸</span>
           </button>
-          <button id="exchange_upbit" onclick="window.switchExchange('upbit')" class="exchange-tab-btn px-3 py-1.5 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white">
-            🔵 업비트
+          <button id="exchange_upbit" onclick="window.switchExchange('upbit')" class="exchange-tab-btn px-3 py-1.5 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white inline-flex items-center gap-1.5">
+            <svg class="w-3.5 h-3.5 shrink-0 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor" fill-opacity="0.2"/>
+            </svg>
+            <span>업비트</span>
           </button>
         </div>
 
@@ -346,14 +361,37 @@
     <!-- Strategy View Switcher Tabs -->
     <div class="flex items-center justify-between bg-slate-900/60 p-2 rounded-2xl border border-slate-800 shadow-sm">
       <div class="flex space-x-2">
-        <button id="tab_all" onclick="window.switchStrategyTab('all')" class="tab-button active">
-          🌐 전체 뷰
+        <button id="tab_all" onclick="window.switchStrategyTab('all')" class="tab-button active inline-flex items-center gap-1.5">
+          <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+            <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+            <rect x="14" y="14" width="7" height="7" rx="1.5"/>
+            <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+          </svg>
+          <span>전체 뷰</span>
         </button>
-        <button id="tab_positions" onclick="window.switchStrategyTab('positions')" class="tab-button">
-          📊 보유 포지션 (<span id="count_positions">0</span>)
+        <button id="tab_positions" onclick="window.switchStrategyTab('positions')" class="tab-button inline-flex items-center gap-1.5">
+          <svg class="w-4 h-4 shrink-0 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="6" y1="3" x2="6" y2="21"/>
+            <rect x="4" y="7" width="4" height="9" rx="1" fill="currentColor" fill-opacity="0.3"/>
+            <line x1="18" y1="3" x2="18" y2="21"/>
+            <rect x="16" y="5" width="4" height="11" rx="1" fill="currentColor" fill-opacity="0.3"/>
+            <line x1="12" y1="1" x2="12" y2="23"/>
+            <rect x="10" y="11" width="4" height="7" rx="1" fill="currentColor" fill-opacity="0.3"/>
+          </svg>
+          <span>보유 포지션 (<span id="count_positions">0</span>)</span>
         </button>
-        <button id="tab_candidates" onclick="window.switchStrategyTab('candidates')" class="tab-button">
-          🎯 신규 스캔 후보 (<span id="count_candidates">0</span>)
+        <button id="tab_candidates" onclick="window.switchStrategyTab('candidates')" class="tab-button inline-flex items-center gap-1.5">
+          <svg class="w-4 h-4 shrink-0 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9"/>
+            <circle cx="12" cy="12" r="5"/>
+            <line x1="12" y1="2" x2="12" y2="6"/>
+            <line x1="12" y1="18" x2="12" y2="22"/>
+            <line x1="2" y1="12" x2="6" y2="12"/>
+            <line x1="18" y1="12" x2="22" y2="12"/>
+            <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
+          </svg>
+          <span>신규 스캔 후보 (<span id="count_candidates">0</span>)</span>
         </button>
       </div>
       <div class="text-xs text-slate-400 flex items-center gap-2 pr-3">

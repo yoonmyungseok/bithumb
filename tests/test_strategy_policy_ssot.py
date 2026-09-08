@@ -124,12 +124,12 @@ class StrategyPolicySSOTTests(unittest.TestCase):
             normal = entry_signal(candles, btc_regime="NORMAL", is_night=False)
 
         self.assertTrue(risk_off["allow_buy"])
-        self.assertEqual(risk_off["checklist_details"]["hard_gates"]["bb_guard"]["max"], 0.75)
+        self.assertEqual(risk_off["checklist_details"]["hard_gates"]["bb_guard"]["max"], 0.80)
         self.assertFalse(normal["allow_buy"])
         self.assertFalse(normal["checklist_details"]["hard_gates"]["bb_guard"]["pass"])
 
-    def test_risk_off_still_blocks_upper_band_chase_above_075(self):
-        """약세장 완화 후에도 %B 0.76 이상은 상투 추격으로 차단한다."""
+    def test_risk_off_still_blocks_upper_band_chase_above_080(self):
+        """약세장 완화 후에도 %B 0.81 이상은 상투 추격으로 차단한다."""
         candles = [
             {"trade_price": 100.0, "opening_price": 99.0, "high_price": 101.0,
              "low_price": 98.0, "candle_acc_trade_volume": 1000.0}
@@ -138,7 +138,7 @@ class StrategyPolicySSOTTests(unittest.TestCase):
         approved_alpha = {"total_score": 90, "allow_buy": True, "factor_breakdown": {"orderflow_score": 10}}
 
         with patch("strategy_engine.calculate_composite_alpha_score", return_value=approved_alpha), \
-             patch("strategy_engine.calculate_bollinger_bands", return_value={"middle": 100.0, "upper": 110.0, "lower": 90.0, "width_pct": 0.2, "pct_b": 0.76}), \
+             patch("strategy_engine.calculate_bollinger_bands", return_value={"middle": 100.0, "upper": 110.0, "lower": 90.0, "width_pct": 0.2, "pct_b": 0.81}), \
              patch("strategy_engine.calculate_rsi", return_value=55.0):
             signal = entry_signal(candles, btc_regime="RISK_OFF", is_night=False)
 

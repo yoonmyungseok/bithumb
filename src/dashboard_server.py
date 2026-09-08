@@ -745,6 +745,8 @@ class UnifiedDashboardServer:
                         rel_path = path.lstrip("/")
                         if not rel_path or rel_path == "index.html":
                             target_file = os.path.join(server_self.static_dir, "index.html")
+                        elif rel_path in ("favicon.ico", "favicon.svg"):
+                            target_file = os.path.join(server_self.static_dir, "favicon.svg")
                         else:
                             target_file = os.path.join(server_self.static_dir, rel_path)
 
@@ -752,13 +754,15 @@ class UnifiedDashboardServer:
                         norm_static = os.path.abspath(server_self.static_dir)
                         if norm_target.startswith(norm_static) and os.path.isfile(norm_target):
                             mime_type, _ = mimetypes.guess_type(norm_target)
-                            if not mime_type:
+                            if not mime_type or norm_target.endswith(".svg"):
                                 if norm_target.endswith(".js"):
                                     mime_type = "text/javascript"
                                 elif norm_target.endswith(".css"):
                                     mime_type = "text/css"
                                 elif norm_target.endswith(".html"):
                                     mime_type = "text/html"
+                                elif norm_target.endswith(".svg"):
+                                    mime_type = "image/svg+xml"
                                 else:
                                     mime_type = "application/octet-stream"
                             if "text/" in mime_type or mime_type in ("application/javascript", "application/json"):
@@ -846,6 +850,7 @@ class UnifiedDashboardServer:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bithumb & Upbit AI 퀀트 트레이딩 Pro</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body { background-color: #0b0e14; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -877,9 +882,29 @@ class UnifiedDashboardServer:
 
         <!-- Exchange Switcher Tabs -->
         <div class="flex space-x-2 border-b border-slate-800 pb-2">
-            <button onclick="switchView('combined')" id="tab-combined" class="tab-btn active px-4 py-2 rounded-lg font-bold text-sm bg-slate-800 hover:bg-slate-700 transition">🌐 전체 통합 뷰</button>
-            <button onclick="switchView('bithumb')" id="tab-bithumb" class="tab-btn px-4 py-2 rounded-lg font-bold text-sm bg-slate-800 hover:bg-slate-700 transition">🟡 빗썸 (Bithumb)</button>
-            <button onclick="switchView('upbit')" id="tab-upbit" class="tab-btn px-4 py-2 rounded-lg font-bold text-sm bg-slate-800 hover:bg-slate-700 transition">🔵 업비트 (Upbit)</button>
+            <button onclick="switchView('combined')" id="tab-combined" class="tab-btn active px-4 py-2 rounded-lg font-bold text-sm bg-slate-800 hover:bg-slate-700 transition inline-flex items-center gap-1.5">
+                <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="2" y1="12" x2="22" y2="12"/>
+                    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                </svg>
+                <span>전체 통합 뷰</span>
+            </button>
+            <button onclick="switchView('bithumb')" id="tab-bithumb" class="tab-btn px-4 py-2 rounded-lg font-bold text-sm bg-slate-800 hover:bg-slate-700 transition inline-flex items-center gap-1.5">
+                <svg class="w-4 h-4 shrink-0 text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="9" stroke="currentColor" fill="currentColor" fill-opacity="0.15"/>
+                    <path d="M9.5 7.5h4a2.2 2.2 0 0 1 0 4.4H9.5v-4.4z" stroke="currentColor"/>
+                    <path d="M9.5 11.9h4.5a2.3 2.3 0 0 1 0 4.6H9.5V11.9z" stroke="currentColor"/>
+                    <line x1="9.5" y1="6" x2="9.5" y2="18" stroke="currentColor"/>
+                </svg>
+                <span>빗썸 (Bithumb)</span>
+            </button>
+            <button onclick="switchView('upbit')" id="tab-upbit" class="tab-btn px-4 py-2 rounded-lg font-bold text-sm bg-slate-800 hover:bg-slate-700 transition inline-flex items-center gap-1.5">
+                <svg class="w-4 h-4 shrink-0 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor" fill-opacity="0.2"/>
+                </svg>
+                <span>업비트 (Upbit)</span>
+            </button>
         </div>
 
         <!-- Major Metric Cards -->

@@ -112,20 +112,21 @@ class StrategyPolicy:
     RSI_MIN_NORMAL: float = 42.0         # 정상장 저점 반등 확인용 RSI 최소치
     RSI_MAX_NORMAL: float = 60.0         # 정상장 고점 추격 방지용 RSI 최대치
     RSI_MIN_RISK_OFF: float = 42.0       # RISK_OFF 저점 반등 확인용 RSI 최소치
-    RSI_MAX_RISK_OFF: float = 65.0       # RISK_OFF 고점 추격 방지용 RSI 최대치 (약세장 독자 수급 수용을 위해 65.0으로 현실화)
+    RSI_MAX_RISK_OFF: float = 70.0       # RISK_OFF 고점 추격 방지용 RSI 최대치 (약세장 독자 수급 수용을 위해 70.0으로 현실화)
     PCT_B_MIN: float = 0.20              # 볼린저 밴드 %B 최소치
     PCT_B_MAX: float = 0.72              # NORMAL/BULL_TREND 상단권 모멘텀 추격을 차단하는 상한
-    # RISK_OFF에서는 하드 안전 조건을 모두 만족한 반등의 0.73~0.75 구간만 추가 수용한다.
+    # RISK_OFF에서는 하드 안전 조건을 모두 만족한 반등의 0.73~0.80 구간만 추가 수용한다.
     # 이 값은 눌림목 상한과 동일하게 유지해 두 게이트 간 정책 불일치를 막는다.
-    PCT_B_MAX_RISK_OFF: float = 0.75
+    PCT_B_MAX_RISK_OFF: float = 0.80
     PULLBACK_PCT_B_MIN_NORMAL: float = 0.25  # 정상장 저점권 반등 후보 하한
     PULLBACK_PCT_B_MAX_NORMAL: float = 0.68  # 정상장 저점권 반등 후보 상한 (0.60 -> 0.68)
     PULLBACK_PCT_B_MIN_RISK_OFF: float = 0.28  # RISK_OFF 반등 후보 하한
-    PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.75  # RISK_OFF 반등 후보 상한: 하드 상한과 같게 유지
+    PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.80  # RISK_OFF 반등 후보 상한: 하드 상한과 같게 유지
     PULLBACK_LOOKBACK_BARS: int = 12      # 최근 지지 저점 산정에 사용하는 5분봉 수
     PULLBACK_MAX_DISTANCE_NORMAL: float = 0.035  # 정상장 최근 저점 대비 최대 허용 거리
-    PULLBACK_MAX_DISTANCE_RISK_OFF: float = 0.035  # RISK_OFF 최근 저점 대비 최대 허용 거리 (3.5%로 현실화)
-    MAX_MA20_DISPARITY: float = 1.035    # MA20 대비 최대 이격도 +3.5% (강한 모멘텀 돌파 캔들 수용)
+    PULLBACK_MAX_DISTANCE_RISK_OFF: float = 0.045  # RISK_OFF 최근 저점 대비 최대 허용 거리 (4.5%로 현실화)
+    MAX_MA20_DISPARITY: float = 1.035    # MA20 대비 최대 이격도 +3.5% (기본 눌림목/반등형)
+    MAX_MA20_DISPARITY_MOMENTUM: float = 1.050 # MA20 대비 모멘텀 돌파 최대 이격도 +5.0% (급등 돌파 캔들 수용)
     MAX_UPPER_SHADOW_RATIO: float = 0.50 # 캔들 윗꼬리 최대 허용 비율 (50%로 강화하여 피뢰침 차단)
     MA_ALIGNMENT_RATIO: float = 0.995    # MA5 >= MA20 * 0.995
     PULLBACK_MA_ALIGNMENT_RATIO: float = 0.990  # 저점 반등은 MA20 아래 1% 이내 회복까지 허용
@@ -160,15 +161,28 @@ class StrategyPolicy:
     MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF: int = 70
     MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT: int = 65
     MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF: int = 75
-    MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN: float = 1.3
+    MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN: float = 1.1
     MOMENTUM_BREAKOUT_LOOKBACK_BARS: int = 4
     MOMENTUM_BREAKOUT_RSI_MIN: float = 52.0
-    MOMENTUM_BREAKOUT_RSI_MAX: float = 72.0
+    MOMENTUM_BREAKOUT_RSI_MAX: float = 78.0
     MOMENTUM_BREAKOUT_RS_MIN: float = 0.008
-    MOMENTUM_BREAKOUT_MTF_EMA20_RATIO: float = 0.990
+    MOMENTUM_BREAKOUT_MTF_EMA20_RATIO: float = 0.980
     MOMENTUM_BREAKOUT_ALLOC_RATIO: float = 0.25
     # 모멘텀은 초입에서만 첫 주문을 허용한다. 확장 구간은 관찰·보유 관리용으로 남긴다.
-    MOMENTUM_EARLY_MAX_CHANGE_RATE: float = 0.030
+    MOMENTUM_EARLY_MAX_CHANGE_RATE: float = 0.060
+
+    @classmethod
+    def get_momentum_early_max_change_rate(cls) -> float:
+        """환경 변수 MOMENTUM_EARLY_MAX_CHANGE_RATE 또는 기본 상한(0.060) 반환"""
+        raw = os.getenv("MOMENTUM_EARLY_MAX_CHANGE_RATE", "").strip()
+        if raw:
+            try:
+                val = float(raw)
+                if val > 0.0:
+                    return val
+            except ValueError:
+                pass
+        return cls.MOMENTUM_EARLY_MAX_CHANGE_RATE
 
     # 5. 거시 시장 리스크 및 거래소 비용
     BTC_CRASH_THRESHOLD_PCT: float = 0.015  # BTC 15분 -1.5% 급락 시 차단
@@ -805,6 +819,7 @@ def entry_signal(
     exchange: str = "",
     entry_type: str = "CONFIRMED",
     is_night: bool | None = None,
+    relative_strength: float = 0.0,
 ) -> dict[str, Any]:
     """
     결정론적 퀀트 진입 신호 생성기 (Deterministic Entry Engine)
@@ -852,13 +867,14 @@ def entry_signal(
     # 1. 1시간봉 MTF 추세 필터
     mtf_allowed = True
     mtf_reason = "1H MTF 미제공"
+    is_strong_rs_leader = (regime_upper == "RISK_OFF" and relative_strength >= 0.020)
     if candles_1h and len(candles_1h) >= 20:
         prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
         ema20_1h = calculate_ema(prices_1h, 20)
         current_1h = prices_1h[0]
         if regime_upper == "RISK_OFF":
-            # 약세장에서는 높은 점수보다 상위 시간봉 지지 확인을 우선한다.
-            mtf_ratio = 0.998
+            # 약세장에서는 상위 시간봉 지지 확인을 우선하되, BTC 대비 독자 수급 주도주(RS >= +2%)는 정상장(0.980)으로 완화
+            mtf_ratio = 0.980 if is_strong_rs_leader else 0.998
         else:
             mtf_ratio = 0.980
         mtf_allowed = current_1h >= (ema20_1h * mtf_ratio)
@@ -869,7 +885,7 @@ def entry_signal(
     hard_gate_mtf = mtf_allowed
     if regime_upper == "RISK_OFF":
         rsi_hard_min = StrategyPolicy.RSI_MIN_RISK_OFF
-        rsi_hard_max = StrategyPolicy.RSI_MAX_RISK_OFF
+        rsi_hard_max = max(StrategyPolicy.RSI_MAX_RISK_OFF, StrategyPolicy.RSI_MAX_NORMAL) if is_strong_rs_leader else StrategyPolicy.RSI_MAX_RISK_OFF
     else:
         rsi_hard_min = StrategyPolicy.RSI_MIN_NORMAL
         rsi_hard_max = StrategyPolicy.RSI_MAX_NORMAL
@@ -981,7 +997,9 @@ def entry_signal(
     if normalized_entry_type == "MOMENTUM_BREAKOUT":
         # 반등형의 저점 근접 조건은 적용하지 않되, 급락·상위 추세·이격·윗꼬리 안전 게이트는 유지한다.
         entry_alpha_threshold = get_momentum_breakout_alpha_threshold(btc_regime, night_active)
-        momentum_safety_passed = hard_gate_btc and momentum_mtf_allowed and hard_gate_disparity and hard_gate_shadow
+        # 모멘텀 돌파는 급등 캔들의 탄력을 감안하여 모멘텀 전용 이격도(최대 +5.0%)를 적용한다.
+        hard_gate_disparity_momentum = current <= (ma20 * StrategyPolicy.MAX_MA20_DISPARITY_MOMENTUM)
+        momentum_safety_passed = hard_gate_btc and momentum_mtf_allowed and hard_gate_disparity_momentum and hard_gate_shadow
         allowed = momentum_safety_passed and momentum_breakout_passed and total_score >= entry_alpha_threshold
     else:
         # 알파 점수는 후보 품질 확인용이며, 저점권 반등 하드 게이트를 우회할 수 없다.

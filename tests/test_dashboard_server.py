@@ -292,6 +292,38 @@ class UnifiedDashboardServerTests(unittest.TestCase):
             server = UnifiedDashboardServer(port=17999, host="127.0.0.1")
             self.assertEqual(server.host, "127.0.0.1")
 
+    def test_dashboard_favicon_and_tab_icons(self):
+        """파비콘 SVG 파일 존재 여부, HTML 파비콘 링크 및 탭 SVG 아이콘 포함 여부 검증"""
+        dashboard_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dashboard"))
+        favicon_path = os.path.join(dashboard_dir, "favicon.svg")
+        index_html_path = os.path.join(dashboard_dir, "index.html")
+
+        # 1. favicon.svg 파일 존재 및 SVG 태그 유효성 검증
+        self.assertTrue(os.path.isfile(favicon_path), "dashboard/favicon.svg must exist")
+        with open(favicon_path, "r", encoding="utf-8") as f:
+            svg_content = f.read()
+        self.assertIn("<svg", svg_content)
+        self.assertIn("</svg>", svg_content)
+
+        # 2. index.html에 파비콘 링크 및 탭 SVG 아이콘 포함 검증
+        with open(index_html_path, "r", encoding="utf-8") as f:
+            html_content = f.read()
+        self.assertIn('rel="icon"', html_content)
+        self.assertIn('href="/favicon.svg"', html_content)
+        self.assertIn('id="exchange_combined"', html_content)
+        self.assertIn('id="exchange_bithumb"', html_content)
+        self.assertIn('id="exchange_upbit"', html_content)
+        self.assertIn('id="tab_all"', html_content)
+        self.assertIn('id="tab_positions"', html_content)
+        self.assertIn('id="tab_candidates"', html_content)
+
+        # 3. _render_unified_html 폴백 템플릿에도 파비콘 링크 포함 검증
+        fallback_html = self.server._render_unified_html()
+        self.assertIn('href="/favicon.svg"', fallback_html)
+        self.assertIn('id="tab-combined"', fallback_html)
+        self.assertIn('id="tab-bithumb"', fallback_html)
+        self.assertIn('id="tab-upbit"', fallback_html)
+
 
 if __name__ == "__main__":
     unittest.main()

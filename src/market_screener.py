@@ -183,9 +183,14 @@ class MarketScreener:
                         and change_rate >= 0.030
                         and relative_strength >= 0.015
                     )
+                    early_max_change_rate = (
+                        StrategyPolicy.get_momentum_early_max_change_rate()
+                        if hasattr(StrategyPolicy, "get_momentum_early_max_change_rate")
+                        else getattr(StrategyPolicy, "MOMENTUM_EARLY_MAX_CHANGE_RATE", 0.060)
+                    )
                     momentum_phase = (
                         "EARLY"
-                        if change_rate <= StrategyPolicy.MOMENTUM_EARLY_MAX_CHANGE_RATE
+                        if change_rate <= early_max_change_rate
                         else "EXTENDED"
                     )
 

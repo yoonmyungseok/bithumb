@@ -1102,6 +1102,7 @@ class TradingCycleEngine:
 
         night_session_active = is_night_session()
         candidate_trade_value = float(candidate_metadata.get("acc_trade_price_24h", 0.0) or 0.0)
+        candidate_relative_strength = float(candidate_metadata.get("relative_strength", 0.0) or 0.0)
         local_entry = entry_signal(
             candles=completed_candles_5m,
             candles_1h=completed_candles_1h,
@@ -1111,6 +1112,7 @@ class TradingCycleEngine:
             exchange=entry_profile.signal_exchange,
             entry_type=candidate_type,
             is_night=night_session_active,
+            relative_strength=candidate_relative_strength,
         )
 
 

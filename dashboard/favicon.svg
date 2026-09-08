@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="quantGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="50%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+    <linearGradient id="candleGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="70%" cy="30%" r="60%">
+      <stop offset="0%" stop-color="#10b981" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#0b0e14" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 테두리 및 글로우 배경 -->
+  <rect width="64" height="64" rx="16" fill="#0b0e14"/>
+  <rect width="64" height="64" rx="16" fill="url(#glow)"/>
+  <rect x="1.5" y="1.5" width="61" height="61" rx="14.5" fill="none" stroke="url(#quantGrad)" stroke-width="3"/>
+
+  <!-- 캔들스틱 1 (좌측) -->
+  <line x1="18" y1="30" x2="18" y2="48" stroke="#60a5fa" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="14.5" y="34" width="7" height="10" rx="2" fill="#3b82f6"/>
+
+  <!-- 캔들스틱 2 (중앙) -->
+  <line x1="32" y1="20" x2="32" y2="44" stroke="#34d399" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="28.5" y="24" width="7" height="14" rx="2" fill="url(#candleGrad)"/>
+
+  <!-- 캔들스틱 3 (우측) -->
+  <line x1="46" y1="12" x2="46" y2="36" stroke="#34d399" stroke-width="2.5" stroke-linecap="round"/>
+  <rect x="42.5" y="16" width="7" height="14" rx="2" fill="#10b981"/>
+
+  <!-- AI 알파 모멘텀 돌파 라인 -->
+  <path d="M 12 46 C 22 42, 28 32, 48 14" fill="none" stroke="#f59e0b" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="48" cy="14" r="4.5" fill="#f59e0b"/>
+  <circle cx="48" cy="14" r="2" fill="#ffffff"/>
+</svg>

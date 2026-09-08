@@ -17,10 +17,10 @@ class TestTradeImprovementGuards(unittest.TestCase):
         self.assertEqual(StrategyPolicy.COOLDOWN_STOP_LOSS_SEC, 1800.0)
         self.assertEqual(StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF, 70)
         self.assertEqual(StrategyPolicy.RISK_OFF_ALLOC_RATIO, 0.4)
-        self.assertEqual(StrategyPolicy.PCT_B_MAX_RISK_OFF, 0.75)
-        self.assertEqual(StrategyPolicy.PULLBACK_PCT_B_MAX_RISK_OFF, 0.75)
+        self.assertEqual(StrategyPolicy.PCT_B_MAX_RISK_OFF, 0.80)
+        self.assertEqual(StrategyPolicy.PULLBACK_PCT_B_MAX_RISK_OFF, 0.80)
         self.assertEqual(StrategyPolicy.TIME_STOP_BREAKEVEN_MIN_PNL_PCT, 0.003)
-        self.assertEqual(StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MAX, 72.0)
+        self.assertEqual(StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MAX, 78.0)
 
     def test_cooldown_knife_catch_and_daily_limit(self):
         """CooldownManager의 떨어지는 칼날 잡기 방지 및 당일 2회 차단 검증"""

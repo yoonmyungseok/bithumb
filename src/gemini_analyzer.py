@@ -990,7 +990,8 @@ class GeminiAnalyzer:
                 f"RSI {StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MIN:.0f}~{StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MAX:.0f}, "
                 f"1시간 EMA20의 {StrategyPolicy.MOMENTUM_BREAKOUT_MTF_EMA20_RATIO:.3f}배 이상을 모두 충족해야 합니다. "
                 f"초기 주문 비중은 최대 종목 비중의 {StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO * 100:.0f}%를 넘지 않습니다. "
-                f"현재 단계는 {normalized_momentum_phase}이며, 신규 BUY는 EARLY 단계에서만 가능합니다. (EXTENDED 단계는 로컬 퀀트 통과 및 AI 알파 80점 이상 고확신 확인형 진입 시에만 제한 허용)"
+                f"현재 단계는 {normalized_momentum_phase}이며, 신규 BUY는 EARLY 단계에서만 가능합니다(당일 변동률 +{StrategyPolicy.get_momentum_early_max_change_rate() * 100:.1f}% 이하). "
+                f"(EXTENDED 단계는 로컬 퀀트 통과 및 AI 알파 80점 이상 고확신 확인형 진입 시에만 제한 허용)"
             )
         elif normalized_policy_mode == "RECOVERY_REBOUND":
             current_alpha_threshold = max(

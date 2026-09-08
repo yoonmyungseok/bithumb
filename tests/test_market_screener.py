@@ -98,16 +98,16 @@ class MarketScreenerTests(unittest.TestCase):
         self.assertEqual(early["momentum_phase"], "EARLY")
 
     def test_extended_momentum_is_tagged_for_runtime_chase_block(self):
-        """5% 이하 후보는 EARLY로 분류되고, 5% 초과 확장 후보는 EXTENDED 단계로 전달된다."""
+        """6% 이하 후보는 EARLY로 분류되고, 6% 초과 확장 후보는 EXTENDED 단계로 전달된다."""
         class ExtendedMomentumAPI(FakeAPI):
             def get_all_markets(self):
-                return [{"market": "KRW-BTC"}, {"market": "KRW-EARLY4"}, {"market": "KRW-EXT"}]
+                return [{"market": "KRW-BTC"}, {"market": "KRW-EARLY5"}, {"market": "KRW-EXT"}]
 
             def get_tickers(self, markets):
                 return [
                     {"market": "KRW-BTC", "trade_price": "100000", "signed_change_rate": "0.0", "acc_trade_price_24h": "0"},
-                    {"market": "KRW-EARLY4", "trade_price": "1000", "signed_change_rate": "0.03", "acc_trade_price_24h": "5000000000"},
-                    {"market": "KRW-EXT", "trade_price": "1000", "signed_change_rate": "0.06", "acc_trade_price_24h": "5000000000"},
+                    {"market": "KRW-EARLY5", "trade_price": "1000", "signed_change_rate": "0.05", "acc_trade_price_24h": "5000000000"},
+                    {"market": "KRW-EXT", "trade_price": "1000", "signed_change_rate": "0.07", "acc_trade_price_24h": "5000000000"},
                 ]
 
             def get_orderbook(self, market):
@@ -117,9 +117,9 @@ class MarketScreenerTests(unittest.TestCase):
             ExtendedMomentumAPI(), min_trade_value_krw=1, min_change_rate=0.01,
             enable_early_breakout=True,
         ).scan_markets(top_count=2)
-        early4 = next(item for item in selected if item["market"] == "KRW-EARLY4")
-        self.assertEqual(early4["candidate_type"], "MOMENTUM_BREAKOUT")
-        self.assertEqual(early4["momentum_phase"], "EARLY")
+        early5 = next(item for item in selected if item["market"] == "KRW-EARLY5")
+        self.assertEqual(early5["candidate_type"], "MOMENTUM_BREAKOUT")
+        self.assertEqual(early5["momentum_phase"], "EARLY")
 
         extended = next(item for item in selected if item["market"] == "KRW-EXT")
         self.assertEqual(extended["candidate_type"], "MOMENTUM_BREAKOUT")
