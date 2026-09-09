@@ -33,7 +33,10 @@ class UpbitGeminiFailClosedTests(unittest.TestCase):
         self.assertIsNone(result.value)
         self.assertTrue(provider.is_entry_fail_closed)
         self.assertTrue(AIProviderTelemetry.snapshot("upbit")["entry_safety"]["entry_blocked"])
-        self.assertTrue(AIProviderTelemetry.get_entry_block_reason("upbit"))
+        block_reason = AIProviderTelemetry.get_entry_block_reason("upbit")
+        self.assertTrue(block_reason)
+        self.assertIn("업비트", block_reason)
+        self.assertNotIn("빗썸", block_reason)
 
 
 if __name__ == "__main__":

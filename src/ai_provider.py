@@ -429,7 +429,8 @@ class AIProviderTelemetry:
                 return ""
             reason = str(state.get("reason", "provider_failure"))
             context = str(state.get("context", ""))
-            return f"빗썸 Gemini 분석 장애({reason}{f', {context}' if context else ''})로 신규 BUY를 차단합니다."
+            exchange_label = "업비트" if str(exchange).lower() == "upbit" else "빗썸"
+            return f"{exchange_label} Gemini 분석 장애({reason}{f', {context}' if context else ''})로 신규 BUY를 차단합니다."
 
     @classmethod
     def snapshot(cls, exchange: str) -> dict[str, Any]:
