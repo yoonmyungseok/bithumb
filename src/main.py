@@ -330,12 +330,28 @@ BITHUMB_CYCLE_PROFILE = ExchangeCycleProfile(
     btc_crash_label="비트코인 급락 위험 감지",
 )
 
-BITHUMB_EXIT_PROFILE = ExchangeExitProfile()
+BITHUMB_EXIT_PROFILE = ExchangeExitProfile(
+    partial_tp_log_prefix="",
+    partial_tp_stage1_name="1차 50%",
+    partial_tp_stage2_name="2차 50%",
+    partial_tp_stage2_ratio=StrategyPolicy.PARTIAL_TP_2_RATIO,
+    time_stop_recheck_active_exit=True,
+    entry_time_missing_log_template=(
+        "⏱️ [{market}] 빗썸 진입 시점 미등록 포지션 ➜ 현재 시간 보정 등록 ({now_str})"
+    ),
+)
 
 BITHUMB_ENTRY_PROFILE = ExchangeEntryProfile(
     signal_exchange="bithumb",
     recovery_db_exchange="bithumb",
+    ws_unhealthy_label="빗썸 웹소켓",
+    hold_reason_fallback="조건 미충족",
+    use_dynamic_default_alloc=True,
+    enforce_pre_entry_safety_gates=True,
+    block_on_reentry_denied=True,
+    require_minimum_candles=True,
     continue_on_inactive_status=True,
+    use_hold_price_fallbacks=True,
 )
 
 

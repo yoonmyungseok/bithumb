@@ -97,8 +97,8 @@ formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] [%(filename)s:%(lin
 file_handler.setFormatter(formatter)
 
 handlers = [file_handler]
-if sys.stdout is not None:
-    console_handler = logging.StreamHandler(sys.stdout)
+if sys.stderr is not None:
+    console_handler = logging.StreamHandler(sys.stderr)
     # 포그라운드 콘솔은 운영 중 확인이 필요한 경고 이상만 출력한다.
     console_handler.setLevel(logging.WARNING)
     console_handler.setFormatter(formatter)
@@ -151,11 +151,11 @@ MAX_DAILY_LOSS_PCT = _risk_settings.max_daily_loss_pct
 TRAILING_START_PCT = _risk_settings.trailing_start_pct
 TRAILING_STOP_PCT = _risk_settings.trailing_stop_pct
 
-MIN_ORDER_KRW = 5000.0  # 업비트 KRW 마켓 최소 주문 금액
-MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "2"))
-MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.50"))
-MAX_TOTAL_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_EXPOSURE_PCT", "0.95"))
-MAX_ORDER_KRW = float(os.getenv("MAX_ORDER_KRW", "0"))
+MIN_ORDER_KRW = float(os.getenv("MIN_ORDER_KRW", "5000"))  # 업비트 KRW 마켓 최소 주문 금액
+MAX_OPEN_POSITIONS = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
+MAX_POSITION_PCT = float(os.getenv("MAX_POSITION_PCT", "0.35"))
+MAX_TOTAL_EXPOSURE_PCT = float(os.getenv("MAX_TOTAL_EXPOSURE_PCT", "0.90"))
+MAX_ORDER_KRW = float(os.getenv("MAX_ORDER_KRW", "20000000"))
 # 업비트는 총 2개 중 스윙 1개와 단타 1개를 서로 침범하지 않게 예약한다.
 MAX_SWING_POSITIONS = min(
     MAX_OPEN_POSITIONS,
@@ -420,14 +420,39 @@ UPBIT_ENTRY_PROFILE = ExchangeEntryProfile(
     require_minimum_candles=True,
     include_candidate_metadata_in_latest=False,
     whale_flow_requires_capability=True,
+    continue_on_inactive_status=True,
     use_hold_price_fallbacks=True,
 )
 
 
+def _send_btc_crash_buy_block_alert(market: str, korean_name: str, btc_status_msg: str) -> None:
+    """BTC 급락 시 업비트 알트코인 매수 차단 알림."""
+    telegram.send_debounced_message(
+        category_key=f"btc_crash_{market}",
+        text=(
+            f"⚠️ <b>[업비트 {korean_name}({market}) 매수 차단 - BTC 급락 방어]</b>\n"
+            f"• 사유: <i>{btc_status_msg}</i>\n"
+            f"• 대장주(BTC) 급락으로 인한 알트코인 동반 폭락 위험 방지"
+        ),
+        min_interval_sec=900.0,
+    )
+
+
 UPBIT_BUY_PROFILE = ExchangeBuyProfile(
     exchange_name="upbit",
+    enable_cycle_stop_loss=True,
+    render_stop_loss_chart=False,
+    render_buy_chart=True,
+    enforce_pre_buy_safety_gates=True,
+    block_unresolved_market=True,
+    block_duplicate_position=True,
+    block_alt_on_btc_crash=True,
+    use_slot_based_budget=True,
+    use_entry_price_guard=True,
     use_simple_buy_log=True,
     buy_log_prefix="업비트 ",
+    risk_guard_log_label="통합 리스크 검증",
+    send_btc_crash_block_alert=_send_btc_crash_buy_block_alert,
 )
 
 

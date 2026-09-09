@@ -98,7 +98,7 @@ class ExchangeSlotIsolationTests(unittest.TestCase):
         self.assertIn("신규상장 전용", reason)
 
     def test_upbit_two_slots_reserve_one_swing_one_new_listing_zero_scalp(self):
-        """업비트 2슬롯에서는 스윙·신규상장 예약 후 단타 슬롯이 0이 된다."""
+        """업비트 2슬롯 레거시/최소 설정에서는 스윙·신규상장 예약 후 단타 슬롯이 0이 된다."""
         guard = self._guard(
             max_open_positions=2,
             max_position_pct=0.50,
@@ -129,6 +129,27 @@ class ExchangeSlotIsolationTests(unittest.TestCase):
             ),
             (True, "OK"),
         )
+
+    def test_upbit_three_slots_standard_alignment(self):
+        """업비트 3슬롯 정합화 설정: 스윙 1 + 신규상장 1 + 단타 1 슬롯을 지원한다."""
+        guard = self._guard(
+            max_open_positions=3,
+            max_position_pct=0.35,
+            max_exposure=0.90,
+            max_swing_positions=1,
+            max_new_listing_positions=1,
+        )
+        common = dict(order_krw=200_000.0, available_krw=500_000.0, total_equity=1_000_000.0)
+        allowed, reason = guard.validate_buy(
+            "KRW-ALT1",
+            held_markets=[],
+            held_swing_markets=[],
+            held_new_listing_markets=[],
+            strategy_mode="SCALP",
+            **common,
+        )
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "OK")
 
     def test_dual_track_backward_compat_when_new_listing_slot_zero(self):
         """신규상장 슬롯 미예약(0)이면 기존 Dual-Track 단타 2슬롯 동작을 유지한다."""
