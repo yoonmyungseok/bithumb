@@ -2353,6 +2353,25 @@ class TradingCycleEngine:
                 latest_strategies.pop(old_market, None)
         self.context.strategy_cache_manager.save_cache(latest_strategies)
 
+    def warmup_macro_regime(self) -> None:
+        """봇 기동 시 백그라운드로 거시 레짐 진단을 선제 웜업하여 첫 사이클 지연을 방지한다."""
+        analyzer = getattr(self.context, "analyzer", None)
+        if analyzer is None or not hasattr(analyzer, "diagnose_macro_regime"):
+            return
+        try:
+            exchange = self.context.create_exchange_client()
+            candles_1h = exchange.get_candles(unit=60, count=50, market="KRW-BTC")
+            fng = get_fear_and_greed_index()
+            if candles_1h:
+                analyzer.diagnose_macro_regime(
+                    btc_candles_1h=candles_1h,
+                    fng_index=fng,
+                    background=True,
+                )
+                self.context.logger.info("🚀 [거시 레짐 선제 웜업] 백그라운드 AI 거시 진단 비동기 요청 완료")
+        except Exception as exc:
+            self.context.logger.debug("거시 레짐 선제 웜업 예외 (무시): %s", exc)
+
     def run_cycle(self) -> None:
         """5분 사이클 전체(prefix -> market loop -> suffix) 실행."""
         logger = self.context.logger

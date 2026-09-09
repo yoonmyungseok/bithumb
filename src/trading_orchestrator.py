@@ -491,12 +491,13 @@ class TradingOrchestrator:
             if regime == "CRASH":
                 return True, "CRASH", reason
 
-            # [3순위] AI 매크로 정밀 진단 결합 (30분 캐시)
+            # [3순위] AI 매크로 정밀 진단 결합 (백그라운드 비동기 갱신으로 사이클 지연 제거)
             if analyzer is not None and hasattr(analyzer, "diagnose_macro_regime") and candles_1h:
                 try:
                     macro_diag = analyzer.diagnose_macro_regime(
                         btc_candles_1h=candles_1h,
                         fng_index=fng_index,
+                        background=True,
                     )
                     ai_regime = str(macro_diag.get("regime", "")).upper()
                     if ai_regime == "CRASH":
@@ -507,6 +508,23 @@ class TradingOrchestrator:
                     elif ai_regime == "BULL_TREND" and regime == "NORMAL":
                         regime = "BULL_TREND"
                         reason = f"{reason} | AI: {macro_diag.get('summary')}"
+                except TypeError:
+                    try:
+                        macro_diag = analyzer.diagnose_macro_regime(
+                            btc_candles_1h=candles_1h,
+                            fng_index=fng_index,
+                        )
+                        ai_regime = str(macro_diag.get("regime", "")).upper()
+                        if ai_regime == "CRASH":
+                            return True, "CRASH", f"AI 거시 위기 경보: {macro_diag.get('summary')}"
+                        elif ai_regime in ("BEAR_REGIME", "CAUTION_PULLBACK") and regime != "CRASH":
+                            regime = "RISK_OFF"
+                            reason = f"{reason} | AI: {macro_diag.get('summary')}"
+                        elif ai_regime == "BULL_TREND" and regime == "NORMAL":
+                            regime = "BULL_TREND"
+                            reason = f"{reason} | AI: {macro_diag.get('summary')}"
+                    except Exception as exc:
+                        self.logger.debug("AI 매크로 진단 폴백: %s", exc)
                 except Exception as exc:
                     self.logger.debug("AI 매크로 진단 폴백: %s", exc)
 

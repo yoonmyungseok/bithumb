@@ -1062,7 +1062,7 @@ class UnifiedDashboardServer:
         <!-- Recent Orders Card -->
         <div class="card p-5 shadow-md space-y-4">
             <h2 class="text-lg font-bold text-white flex items-center gap-2">
-                <span>📜</span> 최근 주문 저널 (Order Journal)
+                <span>📜</span> 최근 주문 저널 (Order Journal, 최근 24시간)
             </h2>
             <div class="overflow-x-auto">
                 <table class="w-full text-left text-sm">
@@ -1080,7 +1080,7 @@ class UnifiedDashboardServer:
                     </thead>
                     <tbody id="order_table_body" class="divide-y divide-slate-800">
                         <tr>
-                            <td colspan="8" class="p-6 text-center text-slate-500">최근 주문 내역이 없습니다.</td>
+                            <td colspan="8" class="p-6 text-center text-slate-500">최근 24시간 내 주문 내역이 없습니다.</td>
                         </tr>
                     </tbody>
                 </table>
@@ -1229,11 +1229,26 @@ class UnifiedDashboardServer:
                 }
             }
 
-            // 3. Orders Table
+            // 3. Orders Table (최근 24시간 필터링)
             const otbody = document.getElementById('order_table_body');
-            const orders = target.recent_orders || [];
+            const rawOrders = target.recent_orders || [];
+            const nowMs = Date.now();
+            const orders = rawOrders.filter(o => {
+                const ts = o.timestamp || o.created_at || o.updated_at;
+                if (!ts) return false;
+                let ms;
+                if (typeof ts === 'number' || (!isNaN(Number(ts)) && !String(ts).includes('-') && !String(ts).includes(':'))) {
+                    const num = Number(ts);
+                    ms = (num > 1e11 ? num : num * 1000);
+                } else {
+                    ms = new Date(String(ts).replace(' ', 'T')).getTime();
+                }
+                if (isNaN(ms)) return false;
+                const diff = nowMs - ms;
+                return diff >= -60000 && diff <= 24 * 3600 * 1000;
+            });
             if (orders.length === 0) {
-                otbody.innerHTML = '<tr><td colspan="8" class="p-6 text-center text-slate-500">최근 주문 내역이 없습니다.</td></tr>';
+                otbody.innerHTML = '<tr><td colspan="8" class="p-6 text-center text-slate-500">최근 24시간 내 주문 내역이 없습니다.</td></tr>';
             } else {
                 otbody.innerHTML = orders.slice(0, 15).map(o => {
                     const isBuy = (o.side || '').toLowerCase().includes('bid') || (o.side || '').includes('매수');

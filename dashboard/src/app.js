@@ -68,6 +68,29 @@
     return `${month}-${day} ${hours}:${minutes}:${seconds}`;
   }
 
+  // 타임스탬프 파싱 헬퍼 (Unix 초/밀리초, ISO 및 날짜 문자열 지원)
+  function parseTimestampToMs(ts) {
+    if (ts === undefined || ts === null || ts === '') return null;
+    let d;
+    if (typeof ts === 'number' || (!isNaN(Number(ts)) && !String(ts).includes('-') && !String(ts).includes(':'))) {
+      const num = Number(ts);
+      d = new Date(num > 1e11 ? num : num * 1000);
+    } else {
+      d = new Date(String(ts).replace(' ', 'T'));
+    }
+    const ms = d.getTime();
+    return isNaN(ms) ? null : ms;
+  }
+
+  // 최근 24시간 이내 여부 판정 (시계 오차 감안 미래 1분 허용, 최대 24시간)
+  const MS_PER_24_HOURS = 24 * 60 * 60 * 1000;
+  function isWithinLast24Hours(ts, nowMs = Date.now()) {
+    const ms = parseTimestampToMs(ts);
+    if (ms === null) return false;
+    const diff = nowMs - ms;
+    return diff >= -60000 && diff <= MS_PER_24_HOURS;
+  }
+
   // 7대 팩터 적격 수 뱃지 렌더러 (항상 7대 팩터 기준: "X / 7개 적격")
   function renderFactorChips(factors, alphaScore) {
     const sc = Number(alphaScore || 0);
@@ -412,6 +435,66 @@
     }
   }
 
+  // 비정상 로그 원문에서 사건 유형(Incident Headline)을 정규화하여 추출
+  function extractIncidentHeadline(rawMsg) {
+    let msg = String(rawMsg || '').trim();
+    // 1. 타임스탬프 및 밀리초 제거 (예: [2026-09-09 14:12:09,161] 또는 2026-09-09 14:12:09,161)
+    msg = msg.replace(/^\[?\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[,\.]\d+)?\]?\s*/, '');
+    // 2. 로그 레벨 제거 [WARNING], [ERROR], [CRITICAL], [INFO]
+    msg = msg.replace(/^\[(WARNING|ERROR|CRITICAL|INFO)\]\s*/i, '');
+    // 3. 소스 파일 및 라인 번호 제거 (예: [trading_orchestrator.py:50])
+    msg = msg.replace(/^\[[\w\.-]+:\d+\]\s*/, '');
+    // 4. 선두 이모지 및 특수기호 제거 (⚠️, ⚡, 🛑, 🚨, 🔔 등)
+    msg = msg.replace(/^[\u26a0\ufe0f\u26a1\ud83d\uded1\ud83d\udea8\ud83d\udd14\s]+/, '');
+    // 5. 종목 코드 태그 제거 (예: [KRW-EDGEX], [KRW-BTC] 등) -> 종목이 달라도 같은 유형 사건으로 통합
+    msg = msg.replace(/^\[KRW-[A-Z0-9]+\]\s*/i, '');
+
+    // 6. 대표 패턴별 간결하고 직관적인 사건 제목 매핑
+    if (/full_cycle.*목표 초과/i.test(msg) || /사이클.*지연/i.test(msg)) {
+      return '사이클 지연 (full_cycle 초과)';
+    }
+    if (/Gemini.*분석 장애/i.test(msg)) {
+      const m = msg.match(/Gemini.*?장애\(([^)]+)\)/i);
+      return m ? `Gemini 분석 장애 (${m[1]})` : 'Gemini 분석 장애';
+    }
+    if (/슬리피지 편차 감지/i.test(msg)) {
+      return '슬리피지 편차 감지';
+    }
+    if (/API \[\d+\].*일시 오류/i.test(msg)) {
+      const m = msg.match(/API \[(\d+)\]\s*([^\s]+)/i);
+      return m ? `API ${m[1]} 일시 오류 (${m[2]})` : 'API 일시 오류';
+    }
+    if (/Private WebSocket/i.test(msg)) {
+      return 'Private WebSocket 오류';
+    }
+    if (/실시간.*손절 발동/i.test(msg)) {
+      return '실시간 손절 발동';
+    }
+    if (/연속.*손절/i.test(msg)) {
+      return '연속 손절 쿨다운 발동';
+    }
+    if (/구글 시트.*실패/i.test(msg)) {
+      return '구글 시트 연동 실패';
+    }
+    if (/소켓 연결/i.test(msg)) {
+      return '소켓 연결 이상';
+    }
+    if (/포트.*바인딩 실패/i.test(msg)) {
+      return '포트 바인딩 실패';
+    }
+    if (/REST 체결 데이터가 모순/i.test(msg)) {
+      return 'REST 체결 데이터 모순 감지';
+    }
+    if (/수동 관리 격리 종목/i.test(msg)) {
+      return '수동 관리 종목 주문 차단';
+    }
+
+    // fallback: 구두점 또는 개행 이전의 첫 문맥 추출 (최대 35자)
+    const firstSentence = msg.split(/[.:\n]/)[0].trim();
+    if (!firstSentence) return '기타 비정상 로그';
+    return firstSentence.length > 35 ? `${firstSentence.slice(0, 32)}...` : firstSentence;
+  }
+
   // WARNING, ERROR, CRITICAL 로그 전용 조회. 로그 원문은 반드시 textContent로 렌더링한다.
   async function fetchAlertLogs() {
     const tbody = document.getElementById('alerts_tbody');
@@ -428,8 +511,11 @@
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      renderAlertLogs(Array.isArray(data.alerts) ? data.alerts : []);
-      if (countEl) countEl.textContent = `${Array.isArray(data.alerts) ? data.alerts.length : 0}건`;
+      const rawAlerts = Array.isArray(data.alerts) ? data.alerts : [];
+      // 최근 24시간 이내 로그만 선별 필터링
+      const validAlerts = rawAlerts.filter(a => !a.timestamp || isWithinLast24Hours(a.timestamp));
+      renderAlertLogs(validAlerts);
+      if (countEl) countEl.textContent = `${validAlerts.length}건`;
     } catch (err) {
       tbody.replaceChildren();
       const row = document.createElement('tr');
@@ -449,15 +535,15 @@
     if (!tbody) return;
     tbody.replaceChildren();
 
-    if (alerts.length === 0) {
+    if (!alerts || alerts.length === 0) {
       const row = document.createElement('tr');
       const cell = document.createElement('td');
       cell.colSpan = 4;
       cell.className = 'p-4 text-center text-emerald-400';
-      cell.textContent = '현재 WARNING 이상 비정상 로그가 없습니다.';
+      cell.textContent = '최근 24시간 내 WARNING 이상 비정상 로그가 없습니다.';
       row.appendChild(cell);
       tbody.appendChild(row);
-      renderAlertIncidentSummary(alerts);
+      renderAlertIncidentSummary(alerts || []);
       return;
     }
 
@@ -493,35 +579,41 @@
     if (!alerts || alerts.length === 0) {
       const empty = document.createElement('span');
       empty.className = 'text-slate-500';
-      empty.textContent = '최근 비정상 사건이 없습니다.';
+      empty.textContent = '최근 24시간 내 비정상 사건이 없습니다.';
       container.appendChild(empty);
       return;
     }
 
     const incidents = new Map();
     alerts.forEach(alert => {
-      const message = String(alert && alert.message || '')
-        .replace(/^\[?\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\]?\s*/, '')
-        .replace(/\d+/g, '#');
       const source = String(alert && alert.source || '알 수 없는 구성요소');
       const level = String(alert && alert.level || 'WARNING').toUpperCase();
-      const key = `${source}|${level}|${message}`;
-      const saved = incidents.get(key) || { source, level, message, count: 0 };
+      const headline = extractIncidentHeadline(alert && alert.message);
+      const key = `${source}|${level}|${headline}`;
+      const saved = incidents.get(key) || {
+        source,
+        level,
+        headline,
+        sampleMsg: alert && alert.message,
+        count: 0
+      };
       saved.count += 1;
       incidents.set(key, saved);
     });
 
     [...incidents.values()]
       .sort((a, b) => b.count - a.count)
-      .slice(0, 5)
+      .slice(0, 8)
       .forEach(incident => {
         const chip = document.createElement('span');
         const severe = incident.level === 'CRITICAL' || incident.level === 'ERROR';
         chip.className = severe
-          ? 'px-2 py-1 rounded-lg border border-rose-500/40 bg-rose-500/10 text-rose-200'
-          : 'px-2 py-1 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-100';
-        chip.textContent = `${incident.source} · ${incident.level} ${incident.count}건`;
-        chip.title = incident.message || '메시지 없음';
+          ? 'px-2.5 py-1 rounded-lg border border-rose-500/40 bg-rose-500/10 text-rose-200 flex items-center gap-1.5'
+          : 'px-2.5 py-1 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-100 flex items-center gap-1.5';
+        
+        // 칩 텍스트: 출처 · 사건 제목 (수준 N건) 형식으로 명확히 표시
+        chip.textContent = `${incident.source} · ${incident.headline} (${incident.level} ${incident.count}건)`;
+        chip.title = incident.sampleMsg || incident.headline;
         container.appendChild(chip);
       });
   }
@@ -1404,17 +1496,20 @@
     }).join('');
   }
 
-  // Render Recent Completed Trades Table (구분 간결화 및 체결 사유 가로 레이아웃 보장)
+  // Render Recent Completed Trades Table (최근 24시간 내 완료 거래만 표시)
   function renderRecentTradesTable(trades) {
     const tbody = document.getElementById('trades_tbody');
     if (!tbody) return;
 
-    if (!trades || trades.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-slate-500">완료된 거래 기록이 없습니다.</td></tr>`;
+    // 최근 24시간 이내 데이터만 필터링
+    const filteredTrades = (trades || []).filter(t => isWithinLast24Hours(t.timestamp || t.created_at || t.time));
+
+    if (filteredTrades.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="5" class="p-4 text-center text-slate-500">최근 24시간 내 완료된 거래 기록이 없습니다.</td></tr>`;
       return;
     }
 
-    tbody.innerHTML = trades.map(t => {
+    tbody.innerHTML = filteredTrades.map(t => {
       const pnlKrw = Number(t.pnl_krw || 0);
       const isProfit = pnlKrw >= 0;
       const pnlCls = isProfit ? 'text-emerald-400' : 'text-rose-400';
@@ -1433,13 +1528,16 @@
     }).join('');
   }
 
-  // Render Order Journal Table
+  // Render Order Journal Table (최근 24시간 내 주문 저널만 표시)
   function renderOrderJournalTable(orders) {
     const tbody = document.getElementById('orders_tbody');
     if (!tbody) return;
 
-    if (!orders || orders.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="7" class="p-4 text-center text-slate-500">주문 저널 기록이 없습니다.</td></tr>`;
+    // 최근 24시간 이내 데이터만 필터링
+    const filteredOrders = (orders || []).filter(o => isWithinLast24Hours(o.timestamp || o.created_at || o.updated_at));
+
+    if (filteredOrders.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="7" class="p-4 text-center text-slate-500">최근 24시간 내 주문 저널 기록이 없습니다.</td></tr>`;
       return;
     }
 

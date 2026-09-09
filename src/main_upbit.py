@@ -605,6 +605,7 @@ def main():
             update_heartbeat=update_heartbeat,
             cycle_offset_seconds=CYCLE_OFFSET_SECONDS,
             reconcile_after_private_ws=_reconcile_after_private_ws_drain,
+            warmup_callback=cycle_engine.warmup_macro_regime,
         ),
     )
     bootstrap.run()

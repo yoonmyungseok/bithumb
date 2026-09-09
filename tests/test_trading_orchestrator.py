@@ -125,6 +125,52 @@ class TradingOrchestratorPerformanceTests(unittest.TestCase):
             self.assertIn("candles_1h", payload)
             self.assertIn("candles_4h", payload)
 
+    def test_classify_market_regime_passes_background_true(self):
+        """classify_market_regime이 analyzer의 diagnose_macro_regime을 background=True로 호출하는지 검증"""
+        analyzer = MagicMock()
+        analyzer.diagnose_macro_regime.return_value = {
+            "regime": "CAUTION_PULLBACK",
+            "risk_score": 65,
+            "summary": "AI 눌림목 경보",
+        }
+
+        is_crashing, regime, reason = self.orchestrator.classify_market_regime(
+            self.adapter,
+            interval_minutes=5,
+            crash_threshold_pct=0.015,
+            analyzer=analyzer,
+            fng_index={"desc": "탐욕"},
+        )
+
+        self.assertFalse(is_crashing)
+        self.assertEqual(regime, "RISK_OFF")
+        self.assertIn("AI: AI 눌림목 경보", reason)
+        analyzer.diagnose_macro_regime.assert_called_once()
+        self.assertTrue(analyzer.diagnose_macro_regime.call_args.kwargs.get("background"))
+
+    def test_classify_market_regime_legacy_analyzer_type_error_fallback(self):
+        """background 인자를 지원하지 않는 구버전 analyzer에서 TypeError 발생 시 자동 폴백하는지 검증"""
+        analyzer = MagicMock()
+
+        def mock_legacy_diagnose(btc_candles_1h, fng_index=None, **kwargs):
+            if "background" in kwargs:
+                raise TypeError("diagnose_macro_regime() got an unexpected keyword argument 'background'")
+            return {"regime": "CAUTION_PULLBACK", "summary": "레거시 폴백"}
+
+        analyzer.diagnose_macro_regime.side_effect = mock_legacy_diagnose
+
+        is_crashing, regime, reason = self.orchestrator.classify_market_regime(
+            self.adapter,
+            interval_minutes=5,
+            crash_threshold_pct=0.015,
+            analyzer=analyzer,
+        )
+
+        self.assertFalse(is_crashing)
+        self.assertEqual(regime, "RISK_OFF")
+        self.assertIn("레거시 폴백", reason)
+        self.assertEqual(analyzer.diagnose_macro_regime.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

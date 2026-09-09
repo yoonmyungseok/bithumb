@@ -163,6 +163,108 @@ class GeminiMacroFlashTests(unittest.TestCase):
         self.assertEqual(macro_models[0], "gemini-3.8-flash")
         self.assertIn("gemini-3.5-flash-lite", macro_models)
 
+    @patch("ai_provider.requests.post")
+    def test_diagnose_macro_regime_background_non_blocking_and_updates_cache(self, mock_post):
+        """background=True 호출 시 콜드 스타트에서 메인 스레드가 블로킹 없이 즉시 반환되고 백그라운드 스레드에서 캐시가 갱신되는지 검증"""
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "text": '{"regime": "BULL_TREND", "risk_score": 20, "recommended_cash_ratio": 0.2, "summary": "백그라운드 진단 완료", "action_guideline": "매수 유지"}'
+                    }]
+                }
+            }]
+        }
+        mock_post.return_value = mock_resp
+
+        analyzer = GeminiAnalyzer(api_key="test-api-key")
+        candles_1h = [{"trade_price": 95000000.0} for _ in range(25)]
+
+        # 1. 콜드 스타트에서 background=True 호출
+        start_ts = time.monotonic()
+        immediate_result = analyzer.diagnose_macro_regime(candles_1h, background=True)
+        elapsed = time.monotonic() - start_ts
+
+        # 메인 스레드는 0.1초 미만으로 즉시 반환되어야 함
+        self.assertLess(elapsed, 0.1)
+        # 콜드 스타트 즉시 결과는 기본 fallback 레짐이어야 함
+        self.assertIn(immediate_result["regime"], ("NORMAL", "CAUTION_PULLBACK"))
+
+        # 백그라운드 스레드가 완료될 때까지 대기
+        worker = getattr(GeminiAnalyzer, "_MACRO_DIAG_WORKER_THREAD", None)
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=3.0)
+
+        # 백그라운드 완료 후 캐시가 최신 진단 결과로 업데이트되었는지 확인
+        cached = analyzer.diagnose_macro_regime(candles_1h, background=True)
+        self.assertEqual(cached["regime"], "BULL_TREND")
+        self.assertEqual(cached["summary"], "백그라운드 진단 완료")
+
+    @patch("ai_provider.requests.post")
+    def test_diagnose_macro_regime_background_stale_revalidate(self, mock_post):
+        """기존 캐시가 있고 30분(1800초) 이상 지난 경우, background=True 호출 시 기존 캐시를 즉시 반환하고 백그라운드 갱신을 트리거하는지 검증"""
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "text": '{"regime": "BEAR_REGIME", "risk_score": 80, "recommended_cash_ratio": 0.8, "summary": "하락장 전환", "action_guideline": "현금 확보"}'
+                    }]
+                }
+            }]
+        }
+        mock_post.return_value = mock_resp
+
+        analyzer = GeminiAnalyzer(api_key="test-api-key")
+        candles_1h = [{"trade_price": 95000000.0} for _ in range(25)]
+
+        # 40분 전 캐시 사전 주입
+        old_diag = {
+            "regime": "NORMAL",
+            "risk_score": 35,
+            "recommended_cash_ratio": 0.3,
+            "summary": "직전 정상 장세",
+            "action_guideline": "분할 매매",
+        }
+        GeminiAnalyzer._MACRO_DIAG_CACHE = dict(old_diag)
+        GeminiAnalyzer._LAST_MACRO_DIAG_TS = time.time() - 2400.0  # 40분 전
+
+        # background=True 호출
+        start_ts = time.monotonic()
+        immediate = analyzer.diagnose_macro_regime(candles_1h, background=True)
+        elapsed = time.monotonic() - start_ts
+
+        # 0ms로 직전 캐시 반환
+        self.assertLess(elapsed, 0.05)
+        self.assertEqual(immediate["regime"], "NORMAL")
+        self.assertEqual(immediate["summary"], "직전 정상 장세")
+
+        # 백그라운드 스레드 완료 대기
+        worker = getattr(GeminiAnalyzer, "_MACRO_DIAG_WORKER_THREAD", None)
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=3.0)
+
+        # 갱신 완료 후 캐시가 최신 진단 결과로 교체되었는지 확인
+        updated = analyzer.diagnose_macro_regime(candles_1h, background=True)
+        self.assertEqual(updated["regime"], "BEAR_REGIME")
+        self.assertEqual(updated["summary"], "하락장 전환")
+
+    @patch("ai_provider.requests.post")
+    def test_diagnose_macro_regime_background_deduplication(self, mock_post):
+        """백그라운드 작업이 이미 진행 중일 때 추가 background=True 호출이 중복 스레드를 띄우지 않는지 검증"""
+        analyzer = GeminiAnalyzer(api_key="test-api-key")
+        candles_1h = [{"trade_price": 95000000.0} for _ in range(25)]
+
+        # 강제로 실행 중 플래그 활성화
+        GeminiAnalyzer._MACRO_DIAG_RUNNING = True
+        try:
+            triggered = analyzer._trigger_macro_regime_background(candles_1h)
+            self.assertFalse(triggered)
+            self.assertEqual(mock_post.call_count, 0)
+        finally:
+            GeminiAnalyzer._MACRO_DIAG_RUNNING = False
+
 
 if __name__ == "__main__":
     unittest.main()

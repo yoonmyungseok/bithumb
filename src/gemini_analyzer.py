@@ -151,6 +151,9 @@ class GeminiAnalyzer:
     # 전역 인스턴스 간 공유되는 통합 AI 결과 캐시 (인스턴스 재생성 시에도 캐시 보존)
     _MACRO_DIAG_CACHE: ClassVar[dict[str, Any]] = {}
     _LAST_MACRO_DIAG_TS: ClassVar[float] = 0.0
+    _MACRO_DIAG_LOCK: ClassVar[threading.RLock] = threading.RLock()
+    _MACRO_DIAG_RUNNING: ClassVar[bool] = False
+    _MACRO_DIAG_WORKER_THREAD: ClassVar[threading.Thread | None] = None
     _SCREENER_RANK_CACHE: ClassVar[dict[str, dict[str, Any]]] = {}
     _MARKET_AI_SCORE_CACHE: ClassVar[dict[str, dict[str, Any]]] = {}
     _HOLDING_EVAL_CACHE: ClassVar[dict[str, dict[str, Any]]] = {}
@@ -170,6 +173,9 @@ class GeminiAnalyzer:
             cls._MODEL_BLACKLIST.clear()
             cls._MACRO_DIAG_CACHE.clear()
             cls._LAST_MACRO_DIAG_TS = 0.0
+            with cls._MACRO_DIAG_LOCK:
+                cls._MACRO_DIAG_RUNNING = False
+                cls._MACRO_DIAG_WORKER_THREAD = None
             cls._SCREENER_RANK_CACHE.clear()
             cls._MARKET_AI_SCORE_CACHE.clear()
             cls._HOLDING_EVAL_CACHE.clear()
@@ -1691,20 +1697,59 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
 
         return candidates
 
-    def diagnose_macro_regime(
+    def _trigger_macro_regime_background(
         self,
         btc_candles_1h: list[dict[str, Any]],
         btc_candles_4h: list[dict[str, Any]] | None = None,
         fng_index: dict[str, Any] | None = None,
+    ) -> bool:
+        """백그라운드 스레드에서 거시 레짐 진단을 비동기로 실행한다. 이미 실행 중이면 False를 반환한다."""
+        with self.__class__._MACRO_DIAG_LOCK:
+            if getattr(self.__class__, "_MACRO_DIAG_RUNNING", False):
+                return False
+            self.__class__._MACRO_DIAG_RUNNING = True
+
+        # 스레드 안전을 위해 리스트 및 딕셔너리 얕은 복사
+        safe_candles_1h = list(btc_candles_1h) if btc_candles_1h else []
+        safe_candles_4h = list(btc_candles_4h) if btc_candles_4h else None
+        safe_fng = dict(fng_index) if fng_index else None
+
+        def _worker():
+            try:
+                logger.info("🌍 [%s AI 거시 시황] 백그라운드 비동기 진단 시작", self.provider_label)
+                self._sync_diagnose_macro_regime(
+                    btc_candles_1h=safe_candles_1h,
+                    btc_candles_4h=safe_candles_4h,
+                    fng_index=safe_fng,
+                    force_refresh=True,
+                )
+            except Exception as exc:
+                logger.warning("백그라운드 거시 레짐 진단 예외 발생: %s", exc)
+            finally:
+                with self.__class__._MACRO_DIAG_LOCK:
+                    self.__class__._MACRO_DIAG_RUNNING = False
+
+        thread = threading.Thread(
+            target=_worker,
+            daemon=True,
+            name=f"{self.provider_label}_MacroRegimeWorker",
+        )
+        self.__class__._MACRO_DIAG_WORKER_THREAD = thread
+        thread.start()
+        return True
+
+    def _sync_diagnose_macro_regime(
+        self,
+        btc_candles_1h: list[dict[str, Any]],
+        btc_candles_4h: list[dict[str, Any]] | None = None,
+        fng_index: dict[str, Any] | None = None,
+        force_refresh: bool = False,
     ) -> dict[str, Any]:
-        """
-        [3순위] BTC 1시간봉/4시간봉 및 공포탐욕 지수를 종합 진단하여 매크로 레짐 및 권장 현금 비중 산출
-        - 일반 Flash(gemini-3.8-flash) 최우선 라우팅 (소진/에러 시 Flash-Lite 순차 폴백)
-        - 1시간(3600초) 캐시 적용 (무료 티어 20 RPD 예산 철저 보호)
-        """
+        """거시 레짐 정밀 진단 실제 동기 실행 엔진 (1시간 캐시 및 Flash 우선 라우팅)"""
         now_ts = time.time()
         if (
-            hasattr(self, "_macro_diag_cache")
+            not force_refresh
+            and hasattr(self, "_macro_diag_cache")
             and self._macro_diag_cache
             and (now_ts - getattr(self, "_last_macro_diag_ts", 0.0) < 3600.0)
         ):
@@ -1821,6 +1866,68 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
         if getattr(self.provider, "exchange", "") == "bithumb" and AIProviderTelemetry.get_entry_block_reason("bithumb"):
             return bithumb_unavailable_diag
         return fallback_diag
+
+    def diagnose_macro_regime(
+        self,
+        btc_candles_1h: list[dict[str, Any]],
+        btc_candles_4h: list[dict[str, Any]] | None = None,
+        fng_index: dict[str, Any] | None = None,
+        background: bool = False,
+    ) -> dict[str, Any]:
+        """
+        [3순위] BTC 1시간봉/4시간봉 및 공포탐욕 지수를 종합 진단하여 매크로 레짐 및 권장 현금 비중 산출
+        - 일반 Flash(gemini-3.8-flash) 최우선 라우팅 (소진/에러 시 Flash-Lite 순차 폴백)
+        - 1시간(3600초) 캐시 적용 (무료 티어 20 RPD 예산 철저 보호)
+        - background=True: Stale-While-Revalidate 패턴으로 백그라운드 스레드에서 비동기 갱신,
+          호출자는 0ms로 기존 캐시(또는 fallback)를 즉시 반환받아 메인 트레이딩 사이클 블로킹 방지
+        """
+        now_ts = time.time()
+        cached_ts = getattr(self, "_last_macro_diag_ts", 0.0)
+        has_cache = bool(hasattr(self, "_macro_diag_cache") and self._macro_diag_cache)
+        cache_age = (now_ts - cached_ts) if has_cache else float("inf")
+
+        # 1. 캐시가 30분 이내로 신선하면 동기/비동기 무관하게 즉시 반환
+        if has_cache and cache_age < 1800.0:
+            self._record_cache_hit("MACRO")
+            return dict(self._macro_diag_cache)
+
+        # 2. background=True 모드 (메인 트레이딩 사이클 전용)
+        if background:
+            # 백그라운드 비동기 갱신 트리거 (이미 실행 중이면 내부에서 무시)
+            self._trigger_macro_regime_background(
+                btc_candles_1h=btc_candles_1h,
+                btc_candles_4h=btc_candles_4h,
+                fng_index=fng_index,
+            )
+            # 기존 캐시가 있으면(설령 1800초가 지났더라도 백그라운드 갱신 전까지) 즉시 캐시 재사용 (최대 2시간)
+            if has_cache and cache_age < 7200.0:
+                self._record_cache_hit("MACRO")
+                return dict(self._macro_diag_cache)
+
+            # 캐시가 전혀 없는 콜드 스타트 시점: 0ms로 fallback 즉시 반환하여 메인 사이클 블로킹 방지
+            if getattr(self.provider, "exchange", "") == "bithumb" and AIProviderTelemetry.get_entry_block_reason("bithumb"):
+                return {
+                    "regime": "CAUTION_PULLBACK",
+                    "risk_score": 70,
+                    "recommended_cash_ratio": 0.7,
+                    "summary": "AI 거시 진단 비동기 초기화 중: 로컬 방어 규칙 적용",
+                    "action_guideline": "기존 포지션 보호를 유지하고 AI 정상 응답 전까지 신규 진입 대기",
+                    "provider_status": "AI_UNAVAILABLE",
+                }
+            return {
+                "regime": "NORMAL",
+                "risk_score": 40,
+                "recommended_cash_ratio": 0.3,
+                "summary": "AI 거시 진단 비동기 시작 (로컬 기본 규칙 적용)",
+                "action_guideline": "정상적인 퀀트 분할 매매 진행 (백그라운드 진단 갱신 중)",
+            }
+
+        # 3. background=False (일일 결산 브리핑 등 명시적 동기 대기 필요 시)
+        return self._sync_diagnose_macro_regime(
+            btc_candles_1h=btc_candles_1h,
+            btc_candles_4h=btc_candles_4h,
+            fng_index=fng_index,
+        )
 
     def generate_market_briefing(
         self,

@@ -401,7 +401,7 @@ class DashboardWebServer:
             <!-- Recent Completed Trades -->
             <div class="card p-6 shadow-md">
                 <h2 class="text-lg font-bold text-white mb-4 flex items-center">
-                    <span class="mr-2">💰</span> 최근 완료 거래 내역
+                    <span class="mr-2">💰</span> 최근 완료 거래 내역 <span class="text-xs font-normal text-slate-400 ml-1">(최근 24시간)</span>
                 </h2>
                 <div class="table-scroll-recent-trades overflow-x-auto" aria-label="최근 완료 거래 내역 목록">
                     <table class="w-full text-left text-xs text-slate-300">
@@ -415,7 +415,7 @@ class DashboardWebServer:
                             </tr>
                         </thead>
                         <tbody id="trades_tbody" class="divide-y divide-slate-800">
-                            <tr><td colspan="5" class="p-3 text-center text-slate-500">완료된 거래 기록이 없습니다.</td></tr>
+                            <tr><td colspan="5" class="p-3 text-center text-slate-500">최근 24시간 내 완료된 거래 기록이 없습니다.</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -424,7 +424,7 @@ class DashboardWebServer:
             <!-- Order Journal -->
             <div class="card p-6 shadow-md">
                 <h2 class="text-lg font-bold text-white mb-4 flex items-center">
-                    <span class="mr-2">🛡️</span> 실시간 주문 저널
+                    <span class="mr-2">🛡️</span> 실시간 주문 저널 <span class="text-xs font-normal text-slate-400 ml-1">(최근 24시간)</span>
                 </h2>
                 <div class="table-scroll-order-journal overflow-x-auto" aria-label="실시간 주문 저널 목록">
                     <table class="w-full text-left text-xs text-slate-300">
@@ -438,7 +438,7 @@ class DashboardWebServer:
                             </tr>
                         </thead>
                         <tbody id="orders_tbody" class="divide-y divide-slate-800">
-                            <tr><td colspan="5" class="p-3 text-center text-slate-500">주문 저널 데이터 로딩 중...</td></tr>
+                            <tr><td colspan="5" class="p-3 text-center text-slate-500">최근 24시간 내 주문 저널 기록이 없습니다.</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -758,10 +758,26 @@ class DashboardWebServer:
                         candTbody.innerHTML = '<tr><td colspan="7" class="p-6 text-center text-slate-500">현재 스캔된 신규 후보 코인이 없습니다. (다음 5분 스케줄 분석 대기)</td></tr>';
                     }}
 
-                    // 3. Recent Completed Trades
+                    // 3. Recent Completed Trades (최근 24시간 필터링)
                     const tradesTbody = document.getElementById('trades_tbody');
-                    if (data.recent_trades && data.recent_trades.length > 0) {{
-                        tradesTbody.innerHTML = data.recent_trades.map(t => {{
+                    const nowMs = Date.now();
+                    const filter24h = (ts) => {{
+                        if (!ts) return false;
+                        let ms;
+                        if (typeof ts === 'number' || (!isNaN(Number(ts)) && !String(ts).includes('-') && !String(ts).includes(':'))) {{
+                            const num = Number(ts);
+                            ms = (num > 1e11 ? num : num * 1000);
+                        }} else {{
+                            ms = new Date(String(ts).replace(' ', 'T')).getTime();
+                        }}
+                        if (isNaN(ms)) return false;
+                        const diff = nowMs - ms;
+                        return diff >= -60000 && diff <= 24 * 3600 * 1000;
+                    }};
+
+                    const validTrades = (data.recent_trades || []).filter(t => filter24h(t.timestamp || t.created_at || t.time));
+                    if (validTrades.length > 0) {{
+                        tradesTbody.innerHTML = validTrades.map(t => {{
                             const pnlKrw = t.pnl_krw || 0;
                             const pnlPct = t.pnl_pct || 0;
                             const isWin = pnlKrw >= 0;
@@ -780,13 +796,14 @@ class DashboardWebServer:
                             `;
                         }}).join('');
                     }} else {{
-                        tradesTbody.innerHTML = '<tr><td colspan="5" class="p-3 text-center text-slate-500">완료된 거래 기록이 없습니다.</td></tr>';
+                        tradesTbody.innerHTML = '<tr><td colspan="5" class="p-3 text-center text-slate-500">최근 24시간 내 완료된 거래 기록이 없습니다.</td></tr>';
                     }}
 
-                    // 4. Recent Orders
+                    // 4. Recent Orders (최근 24시간 필터링)
                     const ordersTbody = document.getElementById('orders_tbody');
-                    if (data.recent_orders && data.recent_orders.length > 0) {{
-                        ordersTbody.innerHTML = data.recent_orders.map(o => {{
+                    const validOrders = (data.recent_orders || []).filter(o => filter24h(o.timestamp || o.created_at || o.updated_at));
+                    if (validOrders.length > 0) {{
+                        ordersTbody.innerHTML = validOrders.map(o => {{
                             const rawStatus = (o.status || '').toUpperCase();
                             const isFailed = (rawStatus === 'FAILED' || rawStatus === 'FAIL' || rawStatus === 'ERROR' || rawStatus === 'REJECTED' || rawStatus === 'UNKNOWN');
                             const statusColor = (rawStatus === 'FILLED' || rawStatus === 'DONE') ? 'bg-emerald-500/20 text-emerald-300' : ((rawStatus === 'PARTIALLY_FILLED') ? 'bg-amber-500/20 text-amber-300' : (isFailed ? 'bg-rose-500/20 text-rose-300' : 'bg-slate-700 text-slate-300'));
@@ -810,7 +827,7 @@ class DashboardWebServer:
                             `;
                         }}).join('');
                     }} else {{
-                        ordersTbody.innerHTML = '<tr><td colspan="5" class="p-3 text-center text-slate-500">주문 기록이 없습니다.</td></tr>';
+                        ordersTbody.innerHTML = '<tr><td colspan="5" class="p-3 text-center text-slate-500">최근 24시간 내 주문 저널 기록이 없습니다.</td></tr>';
                     }}
                 }}
             }} catch (e) {{

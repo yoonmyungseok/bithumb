@@ -59,6 +59,7 @@ class TradingBootstrapContext:
     update_heartbeat: Callable[[], None]
     cycle_offset_seconds: int = 0
     reconcile_after_private_ws: Callable[[], None] | None = None
+    warmup_callback: Callable[[], None] | None = None
 
 
 class TradingBotBootstrap:
@@ -79,11 +80,19 @@ class TradingBotBootstrap:
         self._start_telegram_listener()
         self._start_internal_api()
         self._start_websockets()
+        self._run_warmup_if_provided()
         should_run_immediate = self._restore_strategy_cache()
         self._start_scheduler(should_run_immediate)
         self._run_initial_cycle_if_needed(should_run_immediate)
         self._register_shutdown_handlers()
         self._main_loop()
+
+    def _run_warmup_if_provided(self) -> None:
+        if self.ctx.warmup_callback is not None:
+            try:
+                self.ctx.warmup_callback()
+            except Exception as exc:
+                self.ctx.logger.debug("선제 웜업 콜백 실행 예외 (무시): %s", exc)
 
     def _log_startup_banner(self) -> None:
         self.ctx.logger.info("============================================================")

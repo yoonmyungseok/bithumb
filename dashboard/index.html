@@ -471,7 +471,7 @@
       <!-- Recent Completed Trades -->
       <div class="card-glass p-5 sm:p-6">
         <h2 class="text-base font-bold text-white mb-3 flex items-center">
-          <span class="mr-2">💰</span> 최근 완료 거래 내역
+          <span class="mr-2">💰</span> 최근 완료 거래 내역 <span class="text-xs font-normal text-slate-400 ml-1">(최근 24시간)</span>
         </h2>
         <div class="table-scroll-recent-trades overflow-x-auto rounded-xl border border-slate-800/80" aria-label="최근 완료 거래 내역 목록">
           <table class="w-full text-left text-xs text-slate-300">
@@ -485,7 +485,7 @@
               </tr>
             </thead>
             <tbody id="trades_tbody" class="divide-y divide-slate-800 bg-slate-900/30">
-              <tr><td colspan="5" class="p-4 text-center text-slate-500">완료된 거래 기록이 없습니다.</td></tr>
+              <tr><td colspan="5" class="p-4 text-center text-slate-500">최근 24시간 내 완료된 거래 기록이 없습니다.</td></tr>
             </tbody>
           </table>
         </div>
@@ -494,9 +494,9 @@
       <!-- Real-time Order Journal -->
       <div class="card-glass p-5 sm:p-6">
         <h2 class="text-base font-bold text-white mb-3 flex items-center">
-          <span class="mr-2">🛡️</span> 실시간 주문 저널 (Order Journal)
+          <span class="mr-2">🛡️</span> 실시간 주문 저널 (Order Journal) <span class="text-xs font-normal text-slate-400 ml-1">(최근 24시간)</span>
         </h2>
-        <p class="text-[11px] text-slate-500 mb-3">접수(ACK)는 체결이 아닙니다. 체결·포지션 반영은 Private WebSocket 또는 REST 대사 확인 뒤에만 확정됩니다.</p>
+        <p class="text-[11px] text-slate-500 mb-3">최근 24시간 주문 내역입니다. 접수(ACK)는 체결이 아니며, 체결·포지션 반영은 Private WebSocket 또는 REST 대사 확인 뒤에만 확정됩니다.</p>
         <div class="table-scroll-order-journal overflow-x-auto rounded-xl border border-slate-800/80" aria-label="실시간 주문 저널 목록">
           <table class="w-full text-left text-xs text-slate-300">
             <thead class="bg-slate-800/80 text-slate-400 uppercase">
@@ -511,22 +511,22 @@
               </tr>
             </thead>
             <tbody id="orders_tbody" class="divide-y divide-slate-800 bg-slate-900/30">
-              <tr><td colspan="7" class="p-4 text-center text-slate-500">주문 저널 데이터 로딩 중...</td></tr>
+              <tr><td colspan="7" class="p-4 text-center text-slate-500">최근 24시간 내 주문 저널 기록이 없습니다.</td></tr>
             </tbody>
           </table>
         </div>
       </div>
     </div>
 
-    <!-- 비정상 운영 로그: INFO는 제외하고 경고 이상만 노출 -->
+    <!-- 비정상 운영 로그: INFO는 제외하고 경고 이상만 노출 (최근 24시간) -->
     <div id="section_alerts" class="card-glass p-5 sm:p-6">
       <div class="flex items-center justify-between gap-3 mb-3">
         <h2 class="text-base font-bold text-white flex items-center">
-          <span class="mr-2">⚠️</span> 비정상 운영 로그
+          <span class="mr-2">⚠️</span> 비정상 운영 로그 <span class="text-xs font-normal text-slate-400 ml-1">(최근 24시간)</span>
         </h2>
         <span id="alerts_count" class="text-xs text-slate-400">조회 중...</span>
       </div>
-      <p class="text-xs text-slate-500 mb-3">WARNING · ERROR · CRITICAL만 최근순으로 표시합니다.</p>
+      <p class="text-xs text-slate-500 mb-3">최근 24시간 동안 발생한 WARNING · ERROR · CRITICAL 로그만 최근순으로 표시합니다.</p>
       <!-- 원문 로그는 아래 표에서 textContent로 렌더링하고, 이 영역은 반복 사건의 우선순위만 요약한다. -->
       <div id="alert_incident_summary" class="flex flex-wrap gap-2 mb-3 text-xs" aria-live="polite"></div>
       <div class="overflow-x-auto rounded-xl border border-slate-800/80 max-h-96 overflow-y-auto">

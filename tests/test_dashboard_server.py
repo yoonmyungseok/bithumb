@@ -355,6 +355,47 @@ class UnifiedDashboardServerTests(unittest.TestCase):
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
+    def test_recent_24h_filter_markup_and_scripts(self):
+        """대시보드 완료 거래 내역 및 실시간 주문 저널의 최근 24시간 필터링 및 UI 표기 검증"""
+        project_root = os.path.dirname(os.path.dirname(__file__))
+
+        # 1. dashboard/index.html 검증
+        index_html_path = os.path.join(project_root, "dashboard", "index.html")
+        with open(index_html_path, "r", encoding="utf-8") as f:
+            index_html = f.read()
+        self.assertIn("최근 완료 거래 내역", index_html)
+        self.assertIn("실시간 주문 저널 (Order Journal)", index_html)
+        self.assertIn("비정상 운영 로그", index_html)
+        self.assertIn("최근 24시간", index_html)
+        self.assertIn("최근 24시간 내 완료된 거래 기록이 없습니다.", index_html)
+        self.assertIn("최근 24시간 내 주문 저널 기록이 없습니다.", index_html)
+
+        # 2. dashboard/src/app.js 필터링 및 사건 요약 로직 검증
+        app_js_path = os.path.join(project_root, "dashboard", "src", "app.js")
+        with open(app_js_path, "r", encoding="utf-8") as f:
+            app_js = f.read()
+        self.assertIn("function parseTimestampToMs", app_js)
+        self.assertIn("function isWithinLast24Hours", app_js)
+        self.assertIn("function extractIncidentHeadline", app_js)
+        self.assertIn("isWithinLast24Hours(t.timestamp", app_js)
+        self.assertIn("isWithinLast24Hours(o.timestamp", app_js)
+        self.assertIn("isWithinLast24Hours(a.timestamp", app_js)
+
+        # 3. src/dashboard_server.py 폴백 템플릿 검증
+        fallback_html = self.server._render_unified_html()
+        self.assertIn("최근 주문 저널 (Order Journal, 최근 24시간)", fallback_html)
+        self.assertIn("최근 24시간 내 주문 내역이 없습니다.", fallback_html)
+        self.assertIn("diff <= 24 * 3600 * 1000", fallback_html)
+
+        # 4. src/web_server.py 템플릿 검증
+        web_server_path = os.path.join(project_root, "src", "web_server.py")
+        with open(web_server_path, "r", encoding="utf-8") as f:
+            web_server_code = f.read()
+        self.assertIn("최근 완료 거래 내역 <span class=\"text-xs font-normal text-slate-400 ml-1\">(최근 24시간)</span>", web_server_code)
+        self.assertIn("실시간 주문 저널 <span class=\"text-xs font-normal text-slate-400 ml-1\">(최근 24시간)</span>", web_server_code)
+        self.assertIn("최근 24시간 내 완료된 거래 기록이 없습니다.", web_server_code)
+        self.assertIn("최근 24시간 내 주문 저널 기록이 없습니다.", web_server_code)
+
 
 if __name__ == "__main__":
     unittest.main()
