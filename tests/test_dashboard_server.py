@@ -396,6 +396,28 @@ class UnifiedDashboardServerTests(unittest.TestCase):
         self.assertIn("최근 24시간 내 완료된 거래 기록이 없습니다.", web_server_code)
         self.assertIn("최근 24시간 내 주문 저널 기록이 없습니다.", web_server_code)
 
+    def test_get_alert_logs_caching(self):
+        """get_alert_logs가 짧은 TTL 내에서 디스크 재스캔 없이 캐시된 결과를 즉시 반환하는지 검증"""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = os.path.join(tmpdir, "trading.log")
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write("2026-09-09 12:00:00 [WARNING] 첫 번째 경고 로그\n")
+
+            server = UnifiedDashboardServer(alert_log_dir=tmpdir)
+
+            with patch.object(server, "_read_recent_lines", wraps=server._read_recent_lines) as mock_read:
+                # 첫 번째 호출: 디스크 읽기 발생
+                res1 = server.get_alert_logs("bithumb")
+                self.assertEqual(len(res1["alerts"]), 1)
+                self.assertEqual(mock_read.call_count, 2)  # trading.log, watchdog.log
+
+                # 두 번째 호출 (즉시): 디스크 읽기 없이 캐시 반환
+                res2 = server.get_alert_logs("bithumb")
+                self.assertEqual(len(res2["alerts"]), 1)
+                self.assertEqual(mock_read.call_count, 2, "2초 TTL 내에는 _read_recent_lines가 재호출되지 않아야 함")
+
 
 if __name__ == "__main__":
     unittest.main()

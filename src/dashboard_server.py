@@ -124,6 +124,8 @@ class UnifiedDashboardServer:
         self._running = False
         self._cached_status: dict[str, Any] = {}
         self._cache_lock = threading.Lock()
+        self._alert_cache: dict[str, tuple[float, dict[str, Any], dict[str, float]]] = {}
+        self._alert_cache_lock = threading.Lock()
         self._last_known_good: dict[str, dict[str, Any]] = {}
         self._last_success_ts: dict[str, float] = {}
         self.http_session = requests.Session()
@@ -198,17 +200,51 @@ class UnifiedDashboardServer:
             return []
 
     def get_alert_logs(self, exchange_target: str = "combined") -> dict[str, Any]:
-        """선택한 거래소 범위의 WARNING 이상 로그만 최신순으로 반환한다."""
+        """선택한 거래소 범위의 WARNING 이상 로그만 최신순으로 반환한다 (2.0초 TTL 및 mtime 캐싱)."""
         target = exchange_target.lower()
         if target not in {"combined", "bithumb", "upbit"}:
             target = "combined"
 
+        now = time.time()
+        with self._alert_cache_lock:
+            cached_entry = self._alert_cache.get(target)
+            if cached_entry:
+                cached_ts, cached_data, cached_mtimes = cached_entry
+                # 2.0초 미만이면 디스크 I/O 없이 즉시 캐시 반환
+                if now - cached_ts < 2.0:
+                    return cached_data
+
+                # 2.0초 경과 시 파일들의 mtime 검사
+                files_changed = False
+                current_mtimes = {}
+                for filename, (_, exchange) in ALERT_LOG_SOURCES.items():
+                    if target != "combined" and exchange != target:
+                        continue
+                    path = os.path.join(self.alert_log_dir, filename)
+                    try:
+                        mtime = os.path.getmtime(path)
+                    except OSError:
+                        mtime = 0.0
+                    current_mtimes[filename] = mtime
+                    if cached_mtimes.get(filename, 0.0) != mtime:
+                        files_changed = True
+
+                if not files_changed:
+                    # 파일 변경이 없으면 캐시 타임스탬프만 갱신하고 즉시 반환
+                    self._alert_cache[target] = (now, cached_data, current_mtimes)
+                    return cached_data
+
         alerts: list[dict[str, str]] = []
+        scan_mtimes: dict[str, float] = {}
         for filename, (source, exchange) in ALERT_LOG_SOURCES.items():
             # 통합 탭은 양쪽 거래소와 통합 게이트웨이 로그를 모두 포함한다.
             if target != "combined" and exchange != target:
                 continue
             path = os.path.join(self.alert_log_dir, filename)
+            try:
+                scan_mtimes[filename] = os.path.getmtime(path)
+            except OSError:
+                scan_mtimes[filename] = 0.0
             for line in self._read_recent_lines(path):
                 level_match = ALERT_LEVEL_PATTERN.search(line)
                 if not level_match:
@@ -223,7 +259,10 @@ class UnifiedDashboardServer:
 
         # 로그 포맷의 날짜 문자열은 ISO 순서이므로 문자열 정렬로 최신순을 보장한다.
         alerts.sort(key=lambda item: item["timestamp"], reverse=True)
-        return {"alerts": alerts[:ALERT_LIMIT], "exchange": target, "updated_at": time.time()}
+        result = {"alerts": alerts[:ALERT_LIMIT], "exchange": target, "updated_at": now}
+        with self._alert_cache_lock:
+            self._alert_cache[target] = (now, result, scan_mtimes)
+        return result
 
     def _resolve_static_dir(self) -> str | None:
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dashboard"))

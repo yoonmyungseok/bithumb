@@ -65,6 +65,30 @@ class RealtimeRiskEngine:
         self._cached_balances: dict[str, Any] = {}
         self._last_balance_ts: float = 0.0
         self._balance_lock = threading.Lock()
+        self._active_held_currencies: set[str] = set()
+        self._active_held_initialized: bool = False
+
+    def _update_active_held(self, balances: dict[str, Any]) -> None:
+        """잔고 스냅샷 및 트래커에서 유의미하게 보유 중인 코인 심볼 세트를 갱신한다."""
+        new_held: set[str] = set()
+        for curr, info in balances.items():
+            if curr == "KRW" or not isinstance(info, dict):
+                continue
+            balance = float(info.get("balance", 0.0) or 0.0)
+            avg_price = float(info.get("avg_buy_price", 0.0) or 0.0)
+            if balance > 0 and (balance * avg_price >= self.min_order_krw or avg_price > 0):
+                new_held.add(curr)
+        # 트레일링 트래커에 활성 등록된 포지션도 함께 포함하여 감시 누락을 원천 방지한다 (fail-safe)
+        try:
+            get_active = getattr(self.trailing_tracker, "get_active_positions", None)
+            if callable(get_active):
+                for m in get_active():
+                    if "-" in m:
+                        new_held.add(m.split("-")[-1])
+        except Exception:
+            pass
+        self._active_held_currencies = new_held
+        self._active_held_initialized = True
 
     def _get_cached_balances(self, ttl: float = 1.5) -> dict[str, Any]:
         """REST API Rate Limit 방어를 위해 1.5초간 계좌 잔고를 캐싱"""
@@ -78,6 +102,7 @@ class RealtimeRiskEngine:
                 if fresh:
                     self._cached_balances = fresh
                     self._last_balance_ts = now_ts
+                    self._update_active_held(fresh)
                 return self._cached_balances
             except Exception as e:
                 logger.debug(f"실시간 잔고 조회 예외: {e}")
@@ -87,6 +112,7 @@ class RealtimeRiskEngine:
         """주문 체결 직후 잔고 캐시 즉시 무효화"""
         with self._balance_lock:
             self._last_balance_ts = 0.0
+            self._active_held_initialized = False
 
     def _resolve_exchange_name(self, exchange: Any) -> str:
         """어댑터 또는 API 클라이언트에서 명시적 거래소 식별자를 반환한다."""
@@ -315,6 +341,14 @@ class RealtimeRiskEngine:
     def on_price_tick(self, market: str, current_price: float) -> None:
         """0.1초 실시간 웹소켓 체결가 수신 시 즉시 트레일링 스탑 / 손절 감시 및 자동 청산 (P0-2 동시성 락 적용)"""
         if current_price <= 0 or not market.startswith("KRW-"):
+            return
+
+        currency = market.split("-")[-1]
+        # 메모리 세트를 통해 미보유 코인은 락 경합 및 잔고 조회 없이 즉각 O(1) 반환
+        with self._balance_lock:
+            initialized = self._active_held_initialized
+            is_held = currency in self._active_held_currencies
+        if initialized and not is_held:
             return
 
         now_ts = time.time()

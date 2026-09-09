@@ -298,6 +298,56 @@ class RealtimeRiskAndIndicatorTests(unittest.TestCase):
         engine.on_price_tick("KRW-BTC", 90_000_000.0)
         self.assertEqual(submit_calls, [])
 
+    def test_realtime_tick_o1_filtering_skips_unheld_markets(self):
+        from realtime_engine import RealtimeRiskEngine
+
+        balance_calls = []
+
+        def mock_balances():
+            balance_calls.append(1)
+            return {
+                "BTC": {"balance": 0.5, "locked": 0.0, "avg_buy_price": 50_000_000.0},
+            }
+
+        journal = types.SimpleNamespace(
+            orders=[{"market": "KRW-BTC", "status": "FILLED"}],
+            has_active_exit_order=lambda _m: False,
+            exchange_scope="bithumb",
+        )
+        tracker = types.SimpleNamespace(
+            is_exiting=lambda _m: False,
+            get_entry_time=lambda _m: 0.0,
+            get_active_positions=lambda: ["KRW-BTC"],
+        )
+        exchange = types.SimpleNamespace(
+            get_balances=mock_balances,
+            get_korean_name=lambda _m: "비트코인",
+        )
+        engine = RealtimeRiskEngine(
+            exchange_factory=lambda: exchange,
+            order_executor=types.SimpleNamespace(),
+            order_journal=journal,
+            risk_manager=types.SimpleNamespace(),
+            cooldown_manager=types.SimpleNamespace(),
+            trade_memory=types.SimpleNamespace(),
+            trailing_tracker=tracker,
+            telegram=types.SimpleNamespace(),
+            min_order_krw=5000.0,
+            latest_strategies={},
+        )
+
+        # 1. 초기 1회 호출로 잔고 캐시 및 active held 세트 초기화 (BTC 등록)
+        engine._get_cached_balances(ttl=1.5)
+        self.assertEqual(len(balance_calls), 1)
+        self.assertIn("BTC", engine._active_held_currencies)
+        self.assertTrue(engine._active_held_initialized)
+
+        # 2. 미보유 종목(ETH, XRP 등) 틱 수신 시 O(1) 즉각 반환으로 잔고 조회 증가 없음
+        engine.on_price_tick("KRW-ETH", 3_000_000.0)
+        engine.on_price_tick("KRW-XRP", 800.0)
+        engine.on_price_tick("KRW-SOL", 200_000.0)
+        self.assertEqual(len(balance_calls), 1, "미보유 종목 틱 수신 시 잔고 조회가 발생하지 않아야 함")
+
 
 if __name__ == "__main__":
     unittest.main()

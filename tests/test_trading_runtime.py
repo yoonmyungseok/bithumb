@@ -973,6 +973,122 @@ class UpbitMarketLoopSnapshotBudgetTests(unittest.TestCase):
         self.assertEqual(client.orderbook_calls, 0)
         self.assertEqual(client.price_calls, 0)
 
+    def test_bithumb_market_loop_uses_candle_prefetch_cache(self):
+        """빗썸 마켓 루프에서도 캔들 프리패치 캐시가 적용되어 캔들 중복 호출이 억제되는지 검증"""
+        client = FakeExchangeClient()
+        exchange = BithumbAdapter(client)
+        orchestrator = TradingOrchestrator(__import__("logging").getLogger("test_bithumb_budget"))
+        profile = ExchangeCycleProfile(
+            exchange_key="bithumb",
+            reconcile_label="빗썸",
+            decision_exchange="bithumb",
+            log_prefix="[빗썸]",
+            extra_excluded_markets=frozenset(),
+            create_screener=lambda _ex: None,
+            cycle_start_label="빗썸",
+            tier_label="빗썸 티어",
+            tier_top_wording="상위",
+            summary_label="빗썸 요약",
+            btc_crash_label="빗썸 BTC",
+        )
+        config = TradingRuntimeConfig(
+            profile=profile,
+            exit_profile=ExchangeExitProfile(),
+            entry_profile=ExchangeEntryProfile(
+                signal_exchange="bithumb",
+                recovery_db_exchange="bithumb",
+            ),
+            buy_profile=ExchangeBuyProfile(exchange_name="bithumb"),
+            env_file=".env",
+            interval_minutes=5,
+            gemini_api_key="",
+            min_order_krw=5000.0,
+            is_bot_paused=lambda: False,
+        )
+        context = TradingRuntimeContext(
+            logger=__import__("logging").getLogger("test_bithumb_budget"),
+            orchestrator=orchestrator,
+            create_exchange_client=lambda: exchange,
+            order_journal=types.SimpleNamespace(
+                is_entry_ready=lambda: True,
+                has_active_exit_order=lambda _m: False,
+                orders=[],
+            ),
+            fill_processor=types.SimpleNamespace(),
+            trailing_tracker=types.SimpleNamespace(
+                reconcile_markets=lambda held_markets: 0,
+                check_position=lambda *args, **kwargs: (None, 0.0, 0.0, 0.0, 0.0),
+                acquire_exit_lock=lambda market: True,
+                release_exit_lock=lambda market: None,
+                get_entry_time=lambda market: time.time(),
+                set_entry_time=lambda market, ts: None,
+            ),
+            realtime_engine=types.SimpleNamespace(clean_stale_orders=lambda **kwargs: 0, requote_pending_orders=lambda: 0),
+            risk_manager=types.SimpleNamespace(),
+            risk_guard=types.SimpleNamespace(),
+            bot_controller=types.SimpleNamespace(get_dashboard_data=lambda: {}),
+            ws_client=types.SimpleNamespace(update_subscriptions=lambda markets: None, get_whale_flow_summary=lambda market: "", get_health_status=lambda market=None: {"is_healthy": True}),
+            decision_db=types.SimpleNamespace(),
+            calculate_total_equity=lambda balances, exchange: 1_000_000.0,
+            get_held_markets=lambda balances, exchange: [],
+            get_portfolio_tiers=lambda equity: (3, 0.35, 3),
+            order_executor=types.SimpleNamespace(),
+            chart_renderer=types.SimpleNamespace(),
+            cancel_bot_open_orders=lambda exchange, market=None: 0,
+            cooldown_manager=types.SimpleNamespace(),
+            trade_memory=types.SimpleNamespace(),
+            latest_strategies={},
+            strategy_cache_manager=types.SimpleNamespace(save_cache=lambda data: None),
+        )
+        engine = TradingCycleEngine(config, context)
+        markets = [f"KRW-B{i:02d}" for i in range(6)]
+        observed_at = time.monotonic()
+        prefetched = {
+            market: {
+                "price": 100.0,
+                "orderbook": {"market": market, "orderbook_units": []},
+                "observed_at": observed_at,
+            }
+            for market in markets
+        }
+        candle_prefetch_cache = orchestrator.prefetch_cycle_candles(exchange, markets, 5, max_workers=3)
+        baseline_candles = client.candle_calls
+
+        prefix = types.SimpleNamespace(
+            exchange=exchange,
+            analyzer=None,
+            target_markets=markets,
+            held_markets=[],
+            screened_candidate_metadata={},
+            prefetched_market_inputs=prefetched,
+            candle_prefetch_cache=candle_prefetch_cache,
+            excluded_markets=frozenset(),
+            is_btc_crashing=False,
+            is_kill_switch=False,
+            is_cooldown=False,
+            is_extreme_fear=False,
+            btc_regime="NORMAL",
+            btc_status_msg="정상",
+            current_total_equity=1_000_000.0,
+            now_str="2026-09-08 16:00:00",
+            dyn_max_positions=3,
+            dyn_max_pos_pct=0.35,
+            audit_decision=lambda *args, **kwargs: None,
+        )
+
+        with patch("trading_runtime.entry_signal", return_value={"allow_buy": False, "alpha_score": 10, "checklist": {"hard_gates": {"all_passed": False}}}):
+            with patch.dict(os.environ, {"MAX_AI_CANDIDATES_PER_CYCLE": "4"}):
+                engine.process_priority_exits = MagicMock(return_value=False)
+                engine.process_entry_gating = MagicMock(
+                    return_value=types.SimpleNamespace(should_continue=True, called_ai=False, action="HOLD"),
+                )
+                engine.run_market_loop(prefix)
+
+        incremental_candles = client.candle_calls - baseline_candles
+        # 사전조회된 캐시가 사용되어 루프 내 추가 캔들 호출이 대폭 억제되어야 함
+        legacy_estimate = len(markets) * 3 * 2
+        self.assertLessEqual(incremental_candles, int(legacy_estimate * 0.7))
+
 
 if __name__ == "__main__":
     unittest.main()

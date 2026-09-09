@@ -52,11 +52,24 @@ class DatabaseManager:
 
     def __init__(self, db_path: str | None = None):
         self.db_path = os.path.abspath(os.path.normpath(db_path or get_default_db_path()))
+        self._local = threading.local()
+        self._conns_lock = threading.Lock()
+        self._all_conns: set[sqlite3.Connection] = set()
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._init_db()
 
     def dispose(self) -> None:
         """WAL 체크포인트 후 Windows 테스트 환경의 파일 잠금을 줄인다."""
+        with self._conns_lock:
+            conns = list(self._all_conns)
+            self._all_conns.clear()
+        for conn in conns:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._local = threading.local()
+
         try:
             conn = sqlite3.connect(self.db_path, timeout=15.0)
             try:
@@ -71,7 +84,21 @@ class DatabaseManager:
             logger.debug("DatabaseManager dispose skipped for %s: %s", self.db_path, exc)
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Create a configured SQLite connection with row factory and timeout."""
+        """Create or reuse a configured SQLite connection with row factory and WAL mode."""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            try:
+                conn.execute("SELECT 1;")
+                return conn
+            except Exception:
+                with self._conns_lock:
+                    self._all_conns.discard(conn)
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._local.conn = None
+
         conn = sqlite3.connect(self.db_path, timeout=15.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         if _is_ephemeral_db_path(self.db_path):
@@ -80,6 +107,9 @@ class DatabaseManager:
             conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=5000;")
         conn.execute("PRAGMA synchronous=NORMAL;")
+        self._local.conn = conn
+        with self._conns_lock:
+            self._all_conns.add(conn)
         return conn
 
     def _init_db(self) -> None:

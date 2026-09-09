@@ -471,14 +471,21 @@ def calculate_rsi(prices: list[float], period: int = 14) -> float:
     """Calculate standard Relative Strength Index (RSI)."""
     if len(prices) < period + 1:
         return 50.0
-    chronological = prices[::-1]
-    changes = [chronological[i] - chronological[i - 1] for i in range(1, len(chronological))]
-    gains = [max(change, 0.0) for change in changes[-period:]]
-    losses = [max(-change, 0.0) for change in changes[-period:]]
-    avg_loss = sum(losses) / period
+    # 최신 period + 1개만 슬라이스하여 불필요한 전체 배열 복사 및 메모리 할당 방지 (O(period))
+    subset = prices[:period + 1]
+    sum_gains = 0.0
+    sum_losses = 0.0
+    for i in range(period):
+        change = subset[i] - subset[i + 1]  # 최신값 - 직전값
+        if change > 0:
+            sum_gains += change
+        elif change < 0:
+            sum_losses -= change
+
+    avg_loss = sum_losses / period
     if avg_loss == 0:
-        return 50.0 if sum(gains) == 0 else 100.0
-    rs = (sum(gains) / period) / avg_loss
+        return 50.0 if sum_gains == 0 else 100.0
+    rs = (sum_gains / period) / avg_loss
     return round(100.0 - (100.0 / (1.0 + rs)), 2)
 
 
@@ -813,6 +820,7 @@ def calculate_composite_alpha_score(
     # 1. MTF 1H 추세 (15점)
     score_mtf = 0
     mtf_reason = "1H 미제공"
+    ema20_1h = 0.0
     if candles_1h and len(candles_1h) >= 20:
         prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
         ema20_1h = calculate_ema(prices_1h, 20)
@@ -936,6 +944,8 @@ def calculate_composite_alpha_score(
         "macd_state": macd_acc["momentum_state"],
         "rsi": rsi_val,
         "pct_b": bb["pct_b"],
+        "bb": bb,
+        "ema20_1h": ema20_1h,
         "reason": f"알파 스코어 {total_score}/100점 ({'🟢 승인' if allow_buy else '⚪ 미달'}{night_tag}, 기준 {buy_threshold}점) | MTF:{score_mtf} VWAP:{score_vwap} MACD:{score_macd} RSI:{score_rsi} BB:{score_bb}",
     }
 
@@ -1125,8 +1135,8 @@ def entry_signal(
     if len(candles) < 25:
         return {"allow_buy": False, "reason": "캔들 데이터 부족"}
 
-    prices_check = [float(c.get("trade_price", 0.0)) for c in candles]
-    cur_check = prices_check[0] if prices_check else 0.0
+    prices = [float(c.get("trade_price", 0.0)) for c in candles]
+    cur_check = prices[0] if prices else 0.0
     if cur_check < StrategyPolicy.MIN_ASSET_PRICE_KRW:
         return {
             "allow_buy": False,
@@ -1149,23 +1159,25 @@ def entry_signal(
         is_night=night_active,
     )
 
-
-    prices = [float(c.get("trade_price", 0.0)) for c in candles]
-    current = prices[0]
+    current = cur_check
     ma5 = sum(prices[:5]) / 5.0
-    bands = calculate_bollinger_bands(prices, period=20)
+    bands = alpha_res.get("bb") or calculate_bollinger_bands(prices, period=20)
     ma20 = bands["middle"]
     pct_b = bands["pct_b"]
-    rsi = calculate_rsi(prices)
+    rsi = float(alpha_res.get("rsi") if alpha_res.get("rsi") is not None else calculate_rsi(prices))
 
     # 1. 1시간봉 MTF 추세 필터
     mtf_allowed = True
     mtf_reason = "1H MTF 미제공"
     is_strong_rs_leader = (regime_upper == "RISK_OFF" and relative_strength >= 0.020)
     if candles_1h and len(candles_1h) >= 20:
-        prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
-        ema20_1h = calculate_ema(prices_1h, 20)
-        current_1h = prices_1h[0]
+        current_1h = float(candles_1h[0].get("trade_price", 0.0) or 0.0)
+        cached_ema20 = float(alpha_res.get("ema20_1h") or 0.0)
+        if cached_ema20 > 0:
+            ema20_1h = cached_ema20
+        else:
+            prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
+            ema20_1h = calculate_ema(prices_1h, 20)
         if regime_upper == "RISK_OFF":
             # 약세장에서는 상위 시간봉 지지 확인을 우선하되, BTC 대비 독자 수급 주도주(RS >= +2%)는 정상장(0.980)으로 완화
             mtf_ratio = 0.980 if is_strong_rs_leader else 0.998

@@ -616,10 +616,11 @@ class TradingCycleEngine:
             exchange, target_markets, ticker_seed=ticker_seed,
         )
         candle_prefetch_cache: dict[str, dict[str, Any]] = {}
-        if profile.exchange_key == "upbit":
-            candle_prefetch_cache = ctx.orchestrator.prefetch_cycle_candles(
-                exchange, target_markets, self.config.interval_minutes,
-            )
+        # 빗썸과 업비트 모두 캔들 병렬 사전 조회를 적용한다 (빗썸은 Rate Limit 안전을 위해 워커 3개 제한).
+        prefetch_workers = 3 if profile.exchange_key == "bithumb" else 5
+        candle_prefetch_cache = ctx.orchestrator.prefetch_cycle_candles(
+            exchange, target_markets, self.config.interval_minutes, max_workers=prefetch_workers,
+        )
 
         ctx.decision_db.purge_strategy_decisions(
             profile.decision_exchange, time.time() - 30 * 24 * 60 * 60,
@@ -2093,26 +2094,18 @@ class TradingCycleEngine:
         # 단순 스크리너 순위로 AI 예산이 조기 소진되는 현상을 방지하기 위해,
         # 로컬 퀀트 알파 점수 및 매수 적격성(allow_buy)이 우수한 종목이 최우선으로 AI 심층 분석을 받도록 정렬한다.
         snapshot_cache: dict[str, Any] = {}
-        use_upbit_perf_path = profile.exchange_key == "upbit"
-        candle_prefetch_cache = prefix.candle_prefetch_cache if use_upbit_perf_path else {}
+        candle_prefetch_cache = prefix.candle_prefetch_cache or {}
         snapshot_cache_hits = 0
         snapshot_cache_misses = 0
         if ai_budget_remaining > 0 and len(target_markets) > 1:
             def _load_snapshot_for_priority(market: str):
                 prefetched = prefix.prefetched_market_inputs.get(market)
-                if use_upbit_perf_path:
-                    return ctx.orchestrator.load_priority_eval_snapshot(
-                        exchange,
-                        market,
-                        interval_minutes,
-                        prefetched,
-                        candle_cache=candle_prefetch_cache,
-                    )
-                return ctx.orchestrator.load_market_snapshot(
+                return ctx.orchestrator.load_priority_eval_snapshot(
                     exchange,
                     market,
                     interval_minutes,
                     prefetched,
+                    candle_cache=candle_prefetch_cache,
                 )
 
             def _eval_ai_priority(market: str) -> tuple[int, int, int]:
@@ -2197,8 +2190,8 @@ class TradingCycleEngine:
                         market,
                         interval_minutes,
                         prefix.prefetched_market_inputs.get(market),
-                        candle_cache=candle_prefetch_cache if use_upbit_perf_path else None,
-                        priority_snapshot=market_snapshot if use_upbit_perf_path else None,
+                        candle_cache=candle_prefetch_cache,
+                        priority_snapshot=market_snapshot,
                     )
                     snapshot_cache[market] = market_snapshot
                 korean_name = market_snapshot.korean_name
@@ -2340,7 +2333,7 @@ class TradingCycleEngine:
             except Exception as exc:
                 logger.error(f"[{market}] 매매 사이클 오류 발생: {exc}", exc_info=True)
 
-        if use_upbit_perf_path and (snapshot_cache_hits + snapshot_cache_misses) > 0:
+        if (snapshot_cache_hits + snapshot_cache_misses) > 0:
             hit_rate = snapshot_cache_hits / float(snapshot_cache_hits + snapshot_cache_misses)
             ctx.orchestrator.record_latency("snapshot_cache_hit_rate", hit_rate)
 
