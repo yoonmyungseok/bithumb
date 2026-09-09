@@ -29,6 +29,7 @@ class AIPriorityQueueTests(unittest.TestCase):
         profile.skip_excluded_markets_in_loop = False
         profile.market_analysis_log_label = "분석"
         profile.decision_exchange = "upbit"
+        profile.exchange_key = "upbit"
 
         config = MagicMock()
         config.interval_minutes = 5
@@ -48,6 +49,8 @@ class AIPriorityQueueTests(unittest.TestCase):
         snap.candles_5m = [{"trade_price": 1000.0}] * 30
         snap.candles_1h = [{"trade_price": 1000.0}] * 25
         snap.orderbook = {}
+        snap.is_priority_eval_only = False
+        ctx.orchestrator.load_priority_eval_snapshot.return_value = snap
         ctx.orchestrator.load_market_snapshot.return_value = snap
 
         evaluated_order = []
@@ -63,6 +66,7 @@ class AIPriorityQueueTests(unittest.TestCase):
         prefix.held_markets = held_markets
         prefix.screened_candidate_metadata = {}
         prefix.prefetched_market_inputs = {}
+        prefix.candle_prefetch_cache = {}
         prefix.excluded_markets = set()
         prefix.is_btc_crashing = False
         prefix.is_kill_switch = False
@@ -84,6 +88,7 @@ class AIPriorityQueueTests(unittest.TestCase):
         profile.skip_excluded_markets_in_loop = False
         profile.market_analysis_log_label = "분석"
         profile.decision_exchange = "upbit"
+        profile.exchange_key = "upbit"
 
         config = MagicMock()
         config.interval_minutes = 5
@@ -102,11 +107,12 @@ class AIPriorityQueueTests(unittest.TestCase):
         snap_b = MagicMock(korean_name="종목B", coin_available=0.0, avg_buy_price=0.0, current_price=2000.0, krw_available=100000.0, candles_5m=[{"trade_price": 2000.0}] * 30, candles_1h=[{"trade_price": 2000.0}] * 25, orderbook={})
         snap_c = MagicMock(korean_name="종목C", coin_available=0.0, avg_buy_price=0.0, current_price=3000.0, krw_available=100000.0, candles_5m=[{"trade_price": 3000.0}] * 30, candles_1h=[{"trade_price": 3000.0}] * 25, orderbook={})
 
-        def mock_load_snapshot(exchange, market, interval, prefetched):
+        def mock_load_snapshot(exchange, market, interval, prefetched, **kwargs):
             if market == "KRW-A": return snap_a
             elif market == "KRW-B": return snap_b
             return snap_c
 
+        ctx.orchestrator.load_priority_eval_snapshot.side_effect = mock_load_snapshot
         ctx.orchestrator.load_market_snapshot.side_effect = mock_load_snapshot
 
         def mock_entry_signal(**kwargs):
@@ -138,6 +144,7 @@ class AIPriorityQueueTests(unittest.TestCase):
         prefix.held_markets = held_markets
         prefix.screened_candidate_metadata = {}
         prefix.prefetched_market_inputs = {}
+        prefix.candle_prefetch_cache = {}
         prefix.excluded_markets = set()
         prefix.is_btc_crashing = False
         prefix.is_kill_switch = False

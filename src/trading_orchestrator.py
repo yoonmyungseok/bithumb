@@ -11,6 +11,7 @@ import datetime
 import logging
 import time
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -29,6 +30,8 @@ class TradingOrchestrator:
         self._balance_snapshot_exchange_id: int | None = None
         # 최근 실행 구간만 보존해 장기 실행 중 메모리 증가 없이 p50/p95를 관찰한다.
         self._latencies: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=40))
+        # 스크리너가 이미 조회한 ticker를 같은 사이클 prefetch가 재사용한다.
+        self._last_screener_ticker_seed: dict[str, dict[str, Any]] = {}
 
     def record_latency(self, name: str, elapsed_seconds: float) -> None:
         """성능 측정값을 누적하고 20회마다 운영 로그로 요약한다."""
@@ -43,6 +46,11 @@ class TradingOrchestrator:
             "[성능 계측] %s 최근 %d회: p50=%.3fs p95=%.3fs max=%.3fs",
             name, len(ordered), p50, p95, ordered[-1],
         )
+        if name == "full_cycle" and p95 > 15.0:
+            self.logger.warning(
+                "[성능 경고] full_cycle p95=%.3fs > 15s 목표 초과 (coalesce 위험 점검 필요)",
+                p95,
+            )
 
     def get_balance_snapshot(
         self, exchange: ExchangeAdapter, *, force_refresh: bool = False, ttl_seconds: float = 2.0,
@@ -153,6 +161,7 @@ class TradingOrchestrator:
     ) -> list[str]:
         """Select markets through one policy while retaining exchange exclusions."""
         held = [market for market in held_markets if exchange.is_tradeable_market(market)]
+        self._last_screener_ticker_seed = {}
         if is_auto_mode:
             screener = create_screener()
             try:
@@ -160,12 +169,31 @@ class TradingOrchestrator:
             except TypeError:
                 screened = screener.scan_markets(top_count=top_count, held_markets=held, btc_regime=btc_regime)
 
+            ticker_seed = getattr(screener, "last_scan_tickers", None) or []
+            for ticker in ticker_seed:
+                if isinstance(ticker, dict) and isinstance(ticker.get("market"), str):
+                    self._last_screener_ticker_seed[ticker["market"]] = ticker
+
             # [Dual-Track] 스윙 전용 유망 후보군 병합 스캔 (최대 1종목)
             if hasattr(screener, "scan_swing_markets"):
                 try:
-                    swing_candidates = screener.scan_swing_markets(top_count=1, held_markets=held, btc_regime=btc_regime)
+                    swing_kwargs: dict[str, Any] = {
+                        "top_count": 1,
+                        "held_markets": held,
+                        "btc_regime": btc_regime,
+                    }
+                    if ticker_seed:
+                        swing_kwargs["ticker_seed"] = ticker_seed
+                    swing_candidates = screener.scan_swing_markets(**swing_kwargs)
                     if swing_candidates:
                         screened.extend(swing_candidates)
+                except TypeError:
+                    try:
+                        swing_candidates = screener.scan_swing_markets(top_count=1, held_markets=held, btc_regime=btc_regime)
+                        if swing_candidates:
+                            screened.extend(swing_candidates)
+                    except Exception as exc:
+                        self.logger.debug("스윙 후보 스크리닝 폴백: %s", exc)
                 except Exception as exc:
                     self.logger.debug("스윙 후보 스크리닝 폴백: %s", exc)
 
@@ -184,15 +212,40 @@ class TradingOrchestrator:
             if market and exchange.is_tradeable_market(market)
         ))
 
-    def prefetch_market_inputs(self, exchange: ExchangeAdapter, markets: list[str]) -> dict[str, dict[str, Any]]:
+    def prefetch_market_inputs(
+        self,
+        exchange: ExchangeAdapter,
+        markets: list[str],
+        *,
+        ticker_seed: dict[str, dict[str, Any]] | None = None,
+    ) -> dict[str, dict[str, Any]]:
         """동일 사이클의 전략 입력만 일괄 조회하고, 주문 직전 검증에는 사용하지 않는다."""
         unique_markets = list(dict.fromkeys(market for market in markets if market))
         if not unique_markets:
             return {}
 
         started_at = time.monotonic()
+        observed_at = time.monotonic()
+        result: dict[str, dict[str, Any]] = {}
+        seed = ticker_seed if ticker_seed is not None else self._last_screener_ticker_seed
+        markets_needing_ticker: list[str] = []
+        for market in unique_markets:
+            seeded = (seed or {}).get(market)
+            if isinstance(seeded, dict):
+                try:
+                    price = float(seeded.get("trade_price", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    markets_needing_ticker.append(market)
+                    continue
+                if price > 0:
+                    result.setdefault(market, {})["price"] = price
+                else:
+                    markets_needing_ticker.append(market)
+            else:
+                markets_needing_ticker.append(market)
+
         try:
-            tickers = exchange.get_tickers(unique_markets)
+            tickers = exchange.get_tickers(markets_needing_ticker) if markets_needing_ticker else []
             orderbooks = exchange.get_orderbooks(unique_markets)
         except Exception as exc:
             # 사전 조회 실패는 캐시를 만들지 않아 이후 단건 조회와 fail-closed 경계를 보존한다.
@@ -201,8 +254,6 @@ class TradingOrchestrator:
         finally:
             self.record_latency("strategy_input_prefetch", time.monotonic() - started_at)
 
-        observed_at = time.monotonic()
-        result: dict[str, dict[str, Any]] = {}
         for ticker in tickers or []:
             if isinstance(ticker, dict) and isinstance(ticker.get("market"), str):
                 try:
@@ -219,12 +270,144 @@ class TradingOrchestrator:
             payload["observed_at"] = observed_at
         return result
 
+    def prefetch_cycle_candles(
+        self,
+        exchange: ExchangeAdapter,
+        markets: list[str],
+        interval_minutes: int,
+        *,
+        max_workers: int = 5,
+    ) -> dict[str, dict[str, Any]]:
+        """사이클 내 스냅샷·우선순위 평가가 공유하는 캔들 사전 조회. 예외 시 단건 폴백을 허용한다."""
+        unique_markets = list(dict.fromkeys(market for market in markets if market))
+        if not unique_markets:
+            return {}
+
+        started_at = time.monotonic()
+        cache: dict[str, dict[str, Any]] = {}
+        worker_count = max(1, min(max_workers, len(unique_markets)))
+
+        def _fetch_market_candles(market: str) -> tuple[str, dict[str, Any] | None]:
+            try:
+                candles_5m = exchange.get_candles(unit=interval_minutes, count=30, market=market)
+                candles_1h = exchange.get_candles(unit=60, count=50, market=market)
+                four_hour_history = self._load_swing_candles_safely(exchange, market)
+                return market, {
+                    "candles_5m": candles_5m,
+                    "candles_1h": candles_1h,
+                    "candles_4h": four_hour_history.candles,
+                    "four_hour_history_status": four_hour_history.status,
+                }
+            except Exception as exc:
+                self.logger.debug("캔들 사전 조회 실패(%s): %s", market, exc)
+                return market, None
+
+        try:
+            with ThreadPoolExecutor(max_workers=worker_count) as pool:
+                futures = {pool.submit(_fetch_market_candles, market): market for market in unique_markets}
+                for future in as_completed(futures):
+                    market, payload = future.result()
+                    if payload:
+                        cache[market] = payload
+        except Exception as exc:
+            self.logger.debug("캔들 사전 조회 병렬 실행 실패: %s", exc)
+        finally:
+            self.record_latency("candle_prefetch", time.monotonic() - started_at)
+        return cache
+
+    @staticmethod
+    def _resolve_prefetch_window(prefetched_input: dict[str, Any] | None) -> tuple[bool, float, dict[str, Any] | None]:
+        """전략 입력 prefetch TTL(1.0s) 안에서만 ticker·호가를 재사용한다."""
+        is_fresh_prefetch = bool(
+            prefetched_input
+            and time.monotonic() - float(prefetched_input.get("observed_at", 0.0) or 0.0) <= 1.0
+        )
+        prefetched_price = float((prefetched_input or {}).get("price", 0.0) or 0.0)
+        prefetched_orderbook = (prefetched_input or {}).get("orderbook")
+        return is_fresh_prefetch, prefetched_price, prefetched_orderbook if isinstance(prefetched_orderbook, dict) else None
+
+    @staticmethod
+    def _resolve_cached_candles(
+        market: str,
+        interval_minutes: int,
+        exchange: ExchangeAdapter,
+        candle_cache: dict[str, dict[str, Any]] | None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], FourHourHistoryResult]:
+        """사전 조회 캐시가 없으면 단건 REST로 fail-closed 폴백한다."""
+        cached = (candle_cache or {}).get(market, {})
+        candles_5m = cached.get("candles_5m")
+        candles_1h = cached.get("candles_1h")
+        if "candles_4h" in cached:
+            four_hour_history = FourHourHistoryResult(
+                cached.get("candles_4h") or [],
+                str(cached.get("four_hour_history_status", "AVAILABLE")),
+            )
+        else:
+            four_hour_history = None
+
+        if not isinstance(candles_5m, list):
+            candles_5m = exchange.get_candles(unit=interval_minutes, count=30, market=market)
+        if not isinstance(candles_1h, list):
+            candles_1h = exchange.get_candles(unit=60, count=50, market=market)
+        if four_hour_history is None:
+            four_hour_history = TradingOrchestrator._load_swing_candles_safely(exchange, market)
+        return candles_5m, candles_1h, four_hour_history
+
+    def load_priority_eval_snapshot(
+        self,
+        exchange: ExchangeAdapter,
+        market: str,
+        interval_minutes: int,
+        prefetched_input: dict[str, Any] | None = None,
+        *,
+        candle_cache: dict[str, dict[str, Any]] | None = None,
+    ) -> "MarketSnapshot":
+        """AI 우선순위 정렬에 필요한 최소 필드만 조회한다. 주문·청산 경로에는 사용하지 않는다."""
+        started_at = time.monotonic()
+        currency = market.split("-")[-1] if "-" in market else market
+        is_fresh_prefetch, prefetched_price, prefetched_orderbook = self._resolve_prefetch_window(prefetched_input)
+        candles_5m, candles_1h, four_hour_history = self._resolve_cached_candles(
+            market, interval_minutes, exchange, candle_cache,
+        )
+        snapshot = MarketSnapshot(
+            market=market,
+            currency=currency,
+            korean_name="",
+            balances={},
+            krw_available=0.0,
+            coin_available=0.0,
+            avg_buy_price=0.0,
+            current_price=(
+                prefetched_price
+                if is_fresh_prefetch and prefetched_price > 0
+                else exchange.get_current_price(market)
+            ),
+            candles_5m=candles_5m,
+            candles_1h=candles_1h,
+            candles_4h=four_hour_history.candles,
+            four_hour_history_status=four_hour_history.status,
+            orderbook=(
+                prefetched_orderbook
+                if is_fresh_prefetch and prefetched_orderbook is not None
+                else exchange.get_orderbook(market)
+            ),
+            listing_maturity=classify_listing_maturity(
+                four_hour_history.candles, candles_1h, candles_5m, four_hour_history.status,
+            ),
+            is_priority_eval_only=True,
+        )
+        self.record_latency("priority_eval_snapshot", time.monotonic() - started_at)
+        return snapshot
+
     def load_market_snapshot(
         self,
         exchange: ExchangeAdapter,
         market: str,
         interval_minutes: int,
         prefetched_input: dict[str, Any] | None = None,
+        *,
+        candle_cache: dict[str, dict[str, Any]] | None = None,
+        priority_snapshot: "MarketSnapshot | None" = None,
     ) -> "MarketSnapshot":
         """Load the common per-market inputs used by strategy and exit logic."""
         started_at = time.monotonic()
@@ -232,16 +415,26 @@ class TradingOrchestrator:
         # 시장별 분석은 짧은 TTL 잔고 스냅샷을 공유해 종목 수만큼 REST를 반복하지 않는다.
         balances = self.get_balance_snapshot(exchange)
         coin = balances.get(currency, {"balance": 0.0, "locked": 0.0, "avg_buy_price": 0.0})
-        # 전략 판단에는 1초 이내의 일괄 응답만 사용한다. 그 밖에는 기존 단건 REST 조회로 즉시 폴백한다.
-        is_fresh_prefetch = bool(
-            prefetched_input
-            and time.monotonic() - float(prefetched_input.get("observed_at", 0.0) or 0.0) <= 1.0
-        )
-        prefetched_price = float((prefetched_input or {}).get("price", 0.0) or 0.0)
-        prefetched_orderbook = (prefetched_input or {}).get("orderbook")
-        candles_5m = exchange.get_candles(unit=interval_minutes, count=30, market=market)
-        candles_1h = exchange.get_candles(unit=60, count=50, market=market)
-        four_hour_history = self._load_swing_candles_safely(exchange, market)
+        is_fresh_prefetch, prefetched_price, prefetched_orderbook = self._resolve_prefetch_window(prefetched_input)
+        if (
+            priority_snapshot is not None
+            and priority_snapshot.market == market
+            and priority_snapshot.is_priority_eval_only
+        ):
+            candles_5m = priority_snapshot.candles_5m
+            candles_1h = priority_snapshot.candles_1h
+            four_hour_history = FourHourHistoryResult(
+                priority_snapshot.candles_4h,
+                priority_snapshot.four_hour_history_status,
+            )
+            listing_maturity = priority_snapshot.listing_maturity
+        else:
+            candles_5m, candles_1h, four_hour_history = self._resolve_cached_candles(
+                market, interval_minutes, exchange, candle_cache,
+            )
+            listing_maturity = classify_listing_maturity(
+                four_hour_history.candles, candles_1h, candles_5m, four_hour_history.status,
+            )
         snapshot = MarketSnapshot(
             market=market,
             currency=currency,
@@ -255,10 +448,9 @@ class TradingOrchestrator:
             candles_1h=candles_1h,
             candles_4h=four_hour_history.candles,
             four_hour_history_status=four_hour_history.status,
-            orderbook=prefetched_orderbook if is_fresh_prefetch and isinstance(prefetched_orderbook, dict) else exchange.get_orderbook(market),
-            listing_maturity=classify_listing_maturity(
-                four_hour_history.candles, candles_1h, candles_5m, four_hour_history.status,
-            ),
+            orderbook=prefetched_orderbook if is_fresh_prefetch and prefetched_orderbook is not None else exchange.get_orderbook(market),
+            listing_maturity=listing_maturity,
+            is_priority_eval_only=False,
         )
         self.record_latency("market_snapshot", time.monotonic() - started_at)
         return snapshot
@@ -366,3 +558,4 @@ class MarketSnapshot:
     orderbook: dict[str, Any]
     four_hour_history_status: str = "UNAVAILABLE"
     listing_maturity: str = "MATURE"
+    is_priority_eval_only: bool = False

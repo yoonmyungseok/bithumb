@@ -265,7 +265,42 @@ private_ws = BithumbPrivateWebSocketClient(
     on_order=lambda event: order_journal.apply_private_order_event(
         event, fill_processor=fill_processor, require_rest_confirmation=True,
     ),
+    on_queue_overflow=lambda: (
+        order_journal.suspend_entry_for_reconciliation("private_ws_queue_full"),
+        telegram.send_debounced_message(
+            category_key="private_ws_queue_full",
+            text=(
+                "⚠️ <b>[빗썸 Private WebSocket 주문 이벤트 큐 포화]</b>\n"
+                "신규 BUY를 차단하고 REST 대사 완료 후 재개합니다."
+            ),
+            min_interval_sec=300.0,
+        ),
+    ),
 )
+
+_last_private_ws_reconcile_attempt = 0.0
+
+
+def _reconcile_after_private_ws_drain() -> None:
+    """큐 포화로 차단된 경우 backlog 정상화 후 REST 대사로 READY 복귀를 시도한다."""
+    global _last_private_ws_reconcile_attempt
+    if private_ws is None:
+        return
+    metrics = order_journal.reconciliation_metrics
+    if str(metrics.get("last_suspend_reason", "")) != "private_ws_queue_full":
+        return
+    if order_journal.reconciliation_state != "PENDING":
+        return
+    if private_ws.pending_order_event_count() > 0:
+        return
+    now_ts = time.time()
+    if now_ts - _last_private_ws_reconcile_attempt < 10.0:
+        return
+    _last_private_ws_reconcile_attempt = now_ts
+    exchange = create_exchange_client()
+    cycle_orchestrator.reconcile_orders(
+        exchange, order_journal, fill_processor, label="",
+    )
 
 
 def _create_bithumb_screener(exchange: ExchangeAdapter) -> MarketScreener:
@@ -501,6 +536,7 @@ def main():
             send_daily_morning_report=send_daily_morning_report,
             update_heartbeat=update_heartbeat,
             cycle_offset_seconds=CYCLE_OFFSET_SECONDS,
+            reconcile_after_private_ws=_reconcile_after_private_ws_drain,
         ),
     )
     bootstrap.run()

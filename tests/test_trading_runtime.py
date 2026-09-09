@@ -4,7 +4,7 @@ import tempfile
 import time
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -27,6 +27,11 @@ from trading_runtime import (
 
 
 class FakeExchangeClient:
+    def __init__(self):
+        self.candle_calls = 0
+        self.orderbook_calls = 0
+        self.price_calls = 0
+
     def get_balances(self):
         return {
             "KRW": {"balance": 1_000_000.0, "locked": 0.0},
@@ -34,13 +39,16 @@ class FakeExchangeClient:
         }
 
     def get_candles(self, unit=5, count=30, market="KRW-BTC", to=None):
+        self.candle_calls += 1
         price = 95_000_000.0 if market == "KRW-BTC" else 100.0
-        return [{"market": market, "trade_price": price} for _ in range(max(count, 5))]
+        return [{"market": market, "trade_price": price, "unit": unit} for _ in range(max(count, 5))]
 
     def get_orderbook(self, market="KRW-BTC"):
-        return {"market": market}
+        self.orderbook_calls += 1
+        return {"market": market, "orderbook_units": [{"ask_price": 101.0, "bid_price": 99.0}]}
 
     def get_current_price(self, market="KRW-BTC"):
+        self.price_calls += 1
         return 95_000_000.0 if market == "KRW-BTC" else 100.0
 
     def get_korean_name(self, market="KRW-BTC"):
@@ -48,6 +56,12 @@ class FakeExchangeClient:
 
     def get_open_orders(self, market=None):
         return []
+
+    def get_tickers(self, markets):
+        return [{"market": market, "trade_price": 100.0} for market in markets]
+
+    def get_orderbooks(self, markets):
+        return [{"market": market, "orderbook_units": []} for market in markets]
 
 
 class TradingRuntimePrefixTests(unittest.TestCase):
@@ -841,6 +855,122 @@ class TradingRuntimePrefixTests(unittest.TestCase):
         call_kwargs = mock_entry_signal.call_args.kwargs
         self.assertEqual(call_kwargs.get("entry_type"), "NEW_LISTING")
         self.assertEqual(result.action, "HOLD")
+
+
+class UpbitMarketLoopSnapshotBudgetTests(unittest.TestCase):
+    """업비트 12종목 시나리오에서 market_snapshot REST 호출 상한을 검증한다."""
+
+    def test_upbit_market_loop_reduces_repeat_candle_calls(self):
+        client = FakeExchangeClient()
+        exchange = BithumbAdapter(client, data_dir="data/upbit", web_port=7978)
+        orchestrator = TradingOrchestrator(__import__("logging").getLogger("test_upbit_perf"))
+        profile = ExchangeCycleProfile(
+            exchange_key="upbit",
+            reconcile_label="업비트 ",
+            decision_exchange="upbit",
+            log_prefix="업비트 ",
+            extra_excluded_markets=frozenset(),
+            create_screener=lambda _exchange: types.SimpleNamespace(),
+            cycle_start_label="업비트 5분 AI 퀀트 트레이딩",
+            tier_label="업비트 스마트 자산 티어",
+            tier_top_wording="상위",
+            summary_label="업비트 자산 요약",
+            btc_crash_label="업비트 비트코인 급락 위험 감지",
+        )
+        config = TradingRuntimeConfig(
+            profile=profile,
+            exit_profile=ExchangeExitProfile(),
+            entry_profile=ExchangeEntryProfile(signal_exchange="upbit", recovery_db_exchange="upbit"),
+            buy_profile=ExchangeBuyProfile(exchange_name="upbit"),
+            env_file=None,
+            interval_minutes=5,
+            gemini_api_key="",
+            is_bot_paused=lambda: False,
+            min_order_krw=5000.0,
+            orderbook_slippage_enforcement=False,
+        )
+        context = TradingRuntimeContext(
+            logger=__import__("logging").getLogger("test_upbit_perf"),
+            orchestrator=orchestrator,
+            create_exchange_client=lambda: exchange,
+            order_journal=types.SimpleNamespace(is_entry_ready=lambda: True),
+            fill_processor=object(),
+            trailing_tracker=types.SimpleNamespace(
+                reconcile_markets=lambda held_markets: 0,
+                check_position=lambda *args, **kwargs: (None, 0.0, 0.0, 0.0, 0.0),
+                acquire_exit_lock=lambda market: True,
+                release_exit_lock=lambda market: None,
+                get_entry_time=lambda market: time.time(),
+                set_entry_time=lambda market, ts: None,
+            ),
+            realtime_engine=types.SimpleNamespace(clean_stale_orders=lambda **kwargs: 0, requote_pending_orders=lambda: 0),
+            risk_manager=types.SimpleNamespace(),
+            risk_guard=types.SimpleNamespace(),
+            bot_controller=types.SimpleNamespace(get_dashboard_data=lambda: {}),
+            ws_client=types.SimpleNamespace(update_subscriptions=lambda markets: None, get_whale_flow_summary=lambda market: "", get_health_status=lambda market=None: {"is_healthy": True}),
+            decision_db=types.SimpleNamespace(),
+            calculate_total_equity=lambda balances, exchange: 1_000_000.0,
+            get_held_markets=lambda balances, exchange: [],
+            get_portfolio_tiers=lambda equity: (3, 0.35, 3),
+            order_executor=types.SimpleNamespace(),
+            chart_renderer=types.SimpleNamespace(),
+            cancel_bot_open_orders=lambda exchange, market=None: 0,
+            cooldown_manager=types.SimpleNamespace(),
+            trade_memory=types.SimpleNamespace(),
+            latest_strategies={},
+            strategy_cache_manager=types.SimpleNamespace(save_cache=lambda data: None),
+        )
+        engine = TradingCycleEngine(config, context)
+        markets = [f"KRW-M{i:02d}" for i in range(12)]
+        observed_at = time.monotonic()
+        prefetched = {
+            market: {
+                "price": 100.0,
+                "orderbook": {"market": market, "orderbook_units": []},
+                "observed_at": observed_at,
+            }
+            for market in markets
+        }
+        candle_prefetch_cache = orchestrator.prefetch_cycle_candles(exchange, markets, 5, max_workers=4)
+        baseline_candles = client.candle_calls
+
+        prefix = types.SimpleNamespace(
+            exchange=exchange,
+            analyzer=None,
+            target_markets=markets,
+            held_markets=[],
+            screened_candidate_metadata={},
+            prefetched_market_inputs=prefetched,
+            candle_prefetch_cache=candle_prefetch_cache,
+            excluded_markets=frozenset(),
+            is_btc_crashing=False,
+            is_kill_switch=False,
+            is_cooldown=False,
+            is_extreme_fear=False,
+            btc_regime="NORMAL",
+            btc_status_msg="정상",
+            current_total_equity=1_000_000.0,
+            now_str="2026-09-08 16:00:00",
+            dyn_max_positions=3,
+            dyn_max_pos_pct=0.35,
+            audit_decision=lambda *args, **kwargs: None,
+        )
+
+        with patch("trading_runtime.entry_signal", return_value={"allow_buy": False, "alpha_score": 10, "checklist": {"hard_gates": {"all_passed": False}}}):
+            with patch.dict(os.environ, {"MAX_AI_CANDIDATES_PER_CYCLE": "4"}):
+                engine.process_priority_exits = MagicMock(return_value=False)
+                engine.process_entry_gating = MagicMock(
+                    return_value=types.SimpleNamespace(should_continue=True, called_ai=False, action="HOLD"),
+                )
+                engine.run_market_loop(prefix)
+
+        # 기존 경로(종목당 정렬+메인 2회 캔들 조회) 대비 30% 이상 절감: 12종목×3캔들×2회=72 대신
+        # 사전조회 36 + 정렬 0 + 메인 잔고/호가만 추가되는 구조여야 한다.
+        incremental_candles = client.candle_calls - baseline_candles
+        legacy_estimate = len(markets) * 3 * 2
+        self.assertLessEqual(incremental_candles, int(legacy_estimate * 0.7))
+        self.assertEqual(client.orderbook_calls, 0)
+        self.assertEqual(client.price_calls, 0)
 
 
 if __name__ == "__main__":

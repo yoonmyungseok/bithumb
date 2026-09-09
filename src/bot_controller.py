@@ -12,6 +12,7 @@ from risk_controls import RiskGuard
 from risk_manager import (
     DailyRiskManager,
     TrailingStopTracker,
+    _fetch_held_prices,
     build_candidates_data,
     build_positions_data,
     calculate_total_equity,
@@ -126,7 +127,13 @@ class BotController:
         if self.risk_manager.kill_switch_active:
             block_reasons.append("일일 손실 킬스위치 활성화")
         if not self.order_journal.is_entry_ready():
-            block_reasons.append("초기 주문 체결 대사 미완료")
+            suspend_reason = str(
+                getattr(self.order_journal, "reconciliation_metrics", {}).get("last_suspend_reason", "")
+            )
+            if suspend_reason == "private_ws_queue_full":
+                block_reasons.append("Private WebSocket 이벤트 큐 포화")
+            else:
+                block_reasons.append("초기 주문 체결 대사 미완료")
         if status_counts.get("RECONCILIATION_PENDING", 0) > 0:
             block_reasons.append(f"체결 대사 진행 주문 {status_counts['RECONCILIATION_PENDING']}건")
         if status_counts.get("UNKNOWN", 0) > 0:
@@ -373,7 +380,8 @@ class BotController:
             bithumb = self.get_exchange()
             fng = get_fear_and_greed_index()
             balances = bithumb.get_balances()
-            total_equity = calculate_total_equity(balances, bithumb)
+            held_price_map = _fetch_held_prices(balances, bithumb)
+            total_equity = calculate_total_equity(balances, bithumb, price_map=held_price_map)
             krw_avail = balances.get("KRW", {}).get("balance", 0.0)
 
             # 장중 입출금 및 초기 입금 기준자산 실시간 보정
@@ -393,8 +401,9 @@ class BotController:
             state_badge = "⏸️ 일시정지 중" if self.get_is_paused() else "🟢 정상 가동 중"
 
             # 1. 포지션 및 후보군 데이터
-            self.restore_missing_position_strategies(get_held_markets(balances, bithumb))
-            positions_data = build_positions_data(balances, bithumb, self.latest_strategies)
+            held_markets = get_held_markets(balances, bithumb, price_map=held_price_map)
+            self.restore_missing_position_strategies(held_markets)
+            positions_data = build_positions_data(balances, bithumb, self.latest_strategies, price_map=held_price_map)
             # 확정 체결 기반 보유 시간과 익절 단계를 덧붙인다. 수동 보유분에는 시간을 추정하지 않는다.
             for position in positions_data:
                 market_key = str(position.get("market", "") or "")

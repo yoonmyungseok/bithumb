@@ -25,13 +25,36 @@ logger = logging.getLogger(__name__)
 class BithumbPrivateWebSocketClient:
     URL = "wss://ws-api.bithumb.com/websocket/v2/private"
 
-    def __init__(self, access_key: str, secret_key: str, on_order: Callable[[dict[str, Any]], None] | None = None, on_asset: Callable[[dict[str, Any]], None] | None = None):
+    def __init__(
+        self,
+        access_key: str,
+        secret_key: str,
+        on_order: Callable[[dict[str, Any]], None] | None = None,
+        on_asset: Callable[[dict[str, Any]], None] | None = None,
+        on_queue_overflow: Callable[[], None] | None = None,
+    ):
         self.access_key, self.secret_key = access_key, secret_key
         self.on_order, self.on_asset = on_order, on_asset
+        self.on_queue_overflow = on_queue_overflow
         self.is_running = False
         self.ws: websocket.WebSocketApp | None = None
         # 수신 스레드는 이벤트 큐에만 기록해 체결 파일과 손익 갱신 경합을 막는다.
         self._order_event_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1000)
+
+    def pending_order_event_count(self) -> int:
+        """메인 스레드가 아직 처리하지 않은 주문 이벤트 수."""
+        return self._order_event_queue.qsize()
+
+    def _handle_order_queue_overflow(self) -> None:
+        logger.warning(
+            "빗썸 Private WebSocket 주문 이벤트 큐 포화(대기 %d건): REST 대사 전까지 신규 진입을 차단합니다.",
+            self.pending_order_event_count(),
+        )
+        if self.on_queue_overflow:
+            try:
+                self.on_queue_overflow()
+            except Exception as exc:
+                logger.warning("빗썸 Private WebSocket 큐 포화 콜백 실패: %s", exc)
 
     def _headers(self) -> list[str]:
         token = jwt.encode({"access_key": self.access_key, "nonce": str(uuid.uuid4()), "timestamp": int(time.time() * 1000)}, self.secret_key, algorithm="HS256")
@@ -59,7 +82,7 @@ class BithumbPrivateWebSocketClient:
                     try:
                         self._order_event_queue.put_nowait(event)
                     except queue.Full:
-                        logger.error("빗썸 Private WebSocket 주문 이벤트 큐 포화: REST 대사 전까지 신규 진입을 차단해야 합니다.")
+                        self._handle_order_queue_overflow()
                 elif event_type == "myasset" and self.on_asset:
                     self.on_asset(event)
         except (ValueError, TypeError):

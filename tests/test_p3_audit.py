@@ -48,6 +48,10 @@ class TestP3Audit(unittest.TestCase):
                 "BTC": {"balance": 0.01, "locked": 0.0},
             }
             fake_exchange.get_current_price.side_effect = lambda m: 100_000_000.0 if "BTC" in m else 5000.0
+            fake_exchange.get_tickers.side_effect = lambda markets: [
+                {"market": market, "trade_price": 100_000_000.0 if "BTC" in market else 5000.0}
+                for market in markets
+            ]
             
             held = get_held_markets(balances, fake_exchange)
             self.assertIn("KRW-BTC", held)

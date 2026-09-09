@@ -12,6 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from risk_manager import TrailingStopTracker
+from market_screener import MarketScreener
 from strategy_engine import (
     StrategyPolicy,
     classify_listing_maturity,
@@ -536,6 +537,119 @@ class NewListingEntrySignalTests(unittest.TestCase):
         )
         self.assertTrue(signal["allow_buy"])
         self.assertEqual(signal["entry_type"], "NEW_LISTING")
+
+
+class NewListingScreenerPrefilterTests(unittest.TestCase):
+    """market_screener 신규상장 사전 필터를 검증한다."""
+
+    @staticmethod
+    def _new_listing_4h_candles() -> list[dict]:
+        return _make_4h_candles(1)
+
+    @staticmethod
+    def _mature_4h_candles() -> list[dict]:
+        now = get_kst_now()
+        candles: list[dict] = []
+        for idx in range(22):
+            ts = now - timedelta(hours=4 * idx)
+            candles.append({
+                "trade_price": 300.0,
+                "candle_date_time_kst": ts.strftime("%Y-%m-%dT%H:%M:%S"),
+            })
+        return candles
+
+    @staticmethod
+    def _new_listing_5m_candles() -> list[dict]:
+        return _make_candles(7)
+
+    def _build_screener_api(self, market_profiles: dict[str, dict]) -> object:
+        class ScreenerPrefilterAPI:
+            def get_all_markets(self, is_details=False):
+                return [{"market": m} for m in market_profiles]
+
+            def get_tickers(self, markets):
+                rows = []
+                for market in markets:
+                    profile = market_profiles.get(market, {})
+                    rows.append({
+                        "market": market,
+                        "trade_price": str(profile.get("trade_price", 1000)),
+                        "signed_change_rate": str(profile.get("change_rate", 0.05)),
+                        "acc_trade_price_24h": str(profile.get("acc_trade_price_24h", 5_000_000_000)),
+                    })
+                return rows
+
+            def get_orderbook(self, market):
+                return {
+                    "orderbook_units": [
+                        {"ask_price": 1001.0, "bid_price": 1000.0, "bid_size": 30000.0},
+                    ],
+                }
+
+            def get_candles(self, unit=5, count=30, market="KRW-BTC", to=None):
+                profile = market_profiles.get(market, {})
+                if unit == 240:
+                    return profile.get("candles_4h", [])
+                if unit == 5:
+                    return profile.get("candles_5m", NewListingScreenerPrefilterTests._new_listing_5m_candles())
+                return []
+
+        return ScreenerPrefilterAPI()
+
+    def test_risk_off_overheated_new_listing_excluded_from_screener(self):
+        api = self._build_screener_api({
+            "KRW-BTC": {"trade_price": 100000, "change_rate": -0.01, "acc_trade_price_24h": 0},
+            "KRW-USELESS": {
+                "trade_price": 1000,
+                "change_rate": 0.15,
+                "acc_trade_price_24h": 5_000_000_000,
+                "candles_4h": self._new_listing_4h_candles(),
+                "candles_5m": self._new_listing_5m_candles(),
+            },
+        })
+        screener = MarketScreener(
+            api, min_trade_value_krw=1, min_change_rate=0.005, max_change_rate=0.20,
+        )
+        result = screener.scan_markets(top_count=3, btc_regime="RISK_OFF")
+        markets = [item["market"] for item in result]
+        self.assertNotIn("KRW-USELESS", markets)
+
+    def test_risk_off_eligible_new_listing_passes_screener(self):
+        api = self._build_screener_api({
+            "KRW-BTC": {"trade_price": 100000, "change_rate": -0.01, "acc_trade_price_24h": 0},
+            "KRW-NEWOK": {
+                "trade_price": 1000,
+                "change_rate": 0.04,
+                "acc_trade_price_24h": 5_000_000_000,
+                "candles_4h": self._new_listing_4h_candles(),
+                "candles_5m": self._new_listing_5m_candles(),
+            },
+        })
+        screener = MarketScreener(
+            api, min_trade_value_krw=1, min_change_rate=0.005, max_change_rate=0.20,
+        )
+        result = screener.scan_markets(top_count=3, btc_regime="RISK_OFF")
+        picked = next((item for item in result if item["market"] == "KRW-NEWOK"), None)
+        self.assertIsNotNone(picked)
+        self.assertTrue(picked.get("new_listing_screener_verified"))
+
+    def test_mature_overheated_not_filtered_by_new_listing_prefilter(self):
+        api = self._build_screener_api({
+            "KRW-BTC": {"trade_price": 100000, "change_rate": -0.01, "acc_trade_price_24h": 0},
+            "KRW-MATURE": {
+                "trade_price": 1000,
+                "change_rate": 0.15,
+                "acc_trade_price_24h": 5_000_000_000,
+                "candles_4h": self._mature_4h_candles(),
+                "candles_5m": self._new_listing_5m_candles(),
+            },
+        })
+        screener = MarketScreener(
+            api, min_trade_value_krw=1, min_change_rate=0.005, max_change_rate=0.20,
+        )
+        result = screener.scan_markets(top_count=3, btc_regime="RISK_OFF")
+        markets = [item["market"] for item in result]
+        self.assertIn("KRW-MATURE", markets)
 
 
 if __name__ == "__main__":

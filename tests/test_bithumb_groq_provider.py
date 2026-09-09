@@ -99,6 +99,8 @@ class BithumbGroqProviderTests(unittest.TestCase):
         self.assertIn("SCALP", GroqProvider.SYSTEM_INSTRUCTION)
         self.assertIn("SWING", GroqProvider.SYSTEM_INSTRUCTION)
         self.assertIn("CRASH", GroqProvider.SYSTEM_INSTRUCTION)
+        self.assertIn("스크리너 단계 신규상장 사전 필터", GroqProvider.SYSTEM_INSTRUCTION)
+        self.assertIn("is_new_listing_eligible()", GroqProvider.SYSTEM_INSTRUCTION)
 
     def test_groq_telemetry_restores_after_reconfigure(self):
         """동일 KST 날짜의 Groq 호출량은 프로세스 재시작 뒤에도 복원되어야 한다."""

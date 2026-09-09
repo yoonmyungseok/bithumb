@@ -328,6 +328,7 @@ class CyclePrefixResult:
     dyn_top_count: int
     target_markets: list[str]
     prefetched_market_inputs: dict[str, dict[str, Any]]
+    candle_prefetch_cache: dict[str, dict[str, Any]]
     screened_candidate_metadata: dict[str, dict[str, Any]]
     excluded_markets: frozenset[str]
     cycle_id: str
@@ -606,7 +607,19 @@ class TradingCycleEngine:
 
         ctx.ws_client.update_subscriptions(list(dict.fromkeys(target_markets + held_markets + ["KRW-BTC"])))
         # 전략용 일괄 응답은 1초 이내에만 재사용하며, 이후 마켓은 기존 단건 조회로 폴백한다.
-        prefetched_market_inputs = ctx.orchestrator.prefetch_market_inputs(exchange, target_markets)
+        ticker_seed = (
+            ctx.orchestrator._last_screener_ticker_seed
+            if profile.exchange_key == "upbit" and is_auto_mode
+            else None
+        )
+        prefetched_market_inputs = ctx.orchestrator.prefetch_market_inputs(
+            exchange, target_markets, ticker_seed=ticker_seed,
+        )
+        candle_prefetch_cache: dict[str, dict[str, Any]] = {}
+        if profile.exchange_key == "upbit":
+            candle_prefetch_cache = ctx.orchestrator.prefetch_cycle_candles(
+                exchange, target_markets, self.config.interval_minutes,
+            )
 
         ctx.decision_db.purge_strategy_decisions(
             profile.decision_exchange, time.time() - 30 * 24 * 60 * 60,
@@ -660,6 +673,7 @@ class TradingCycleEngine:
             dyn_top_count=dyn_top_count,
             target_markets=target_markets,
             prefetched_market_inputs=prefetched_market_inputs,
+            candle_prefetch_cache=candle_prefetch_cache,
             screened_candidate_metadata=screened_candidate_metadata,
             excluded_markets=excluded_markets,
             cycle_id=cycle_id,
@@ -1199,7 +1213,13 @@ class TradingCycleEngine:
                 exchange=buy_profile.exchange_name,
             )
             if not eligible:
-                logger.warning("[%s] 신규상장 후보 자격 미충족: %s", market, eligibility_reason)
+                if candidate_metadata.get("new_listing_screener_verified"):
+                    logger.warning(
+                        "[%s] 신규상장 후보 자격 미충족(스크리너 사전검증 후 상태 변화): %s",
+                        market, eligibility_reason,
+                    )
+                else:
+                    logger.warning("[%s] 신규상장 후보 자격 미충족: %s", market, eligibility_reason)
                 audit_decision(
                     market, "BLOCKED", "NEW_LISTING_INELIGIBLE",
                     [eligibility_reason],
@@ -2073,19 +2093,35 @@ class TradingCycleEngine:
         # 단순 스크리너 순위로 AI 예산이 조기 소진되는 현상을 방지하기 위해,
         # 로컬 퀀트 알파 점수 및 매수 적격성(allow_buy)이 우수한 종목이 최우선으로 AI 심층 분석을 받도록 정렬한다.
         snapshot_cache: dict[str, Any] = {}
+        use_upbit_perf_path = profile.exchange_key == "upbit"
+        candle_prefetch_cache = prefix.candle_prefetch_cache if use_upbit_perf_path else {}
+        snapshot_cache_hits = 0
+        snapshot_cache_misses = 0
         if ai_budget_remaining > 0 and len(target_markets) > 1:
+            def _load_snapshot_for_priority(market: str):
+                prefetched = prefix.prefetched_market_inputs.get(market)
+                if use_upbit_perf_path:
+                    return ctx.orchestrator.load_priority_eval_snapshot(
+                        exchange,
+                        market,
+                        interval_minutes,
+                        prefetched,
+                        candle_cache=candle_prefetch_cache,
+                    )
+                return ctx.orchestrator.load_market_snapshot(
+                    exchange,
+                    market,
+                    interval_minutes,
+                    prefetched,
+                )
+
             def _eval_ai_priority(market: str) -> tuple[int, int, int]:
                 if market in held_markets:
                     return (0, 0, target_markets.index(market))
                 try:
                     snap = snapshot_cache.get(market)
                     if snap is None:
-                        snap = ctx.orchestrator.load_market_snapshot(
-                            exchange,
-                            market,
-                            interval_minutes,
-                            prefix.prefetched_market_inputs.get(market),
-                        )
+                        snap = _load_snapshot_for_priority(market)
                         snapshot_cache[market] = snap
                     c_meta = screened_candidate_metadata.get(market, {})
                     c_rs = float(c_meta.get("relative_strength", 0.0) or 0.0)
@@ -2152,13 +2188,19 @@ class TradingCycleEngine:
                 candidate_metadata = screened_candidate_metadata.get(market, {})
                 candidate_type = str(candidate_metadata.get("candidate_type", "CONFIRMED")).upper()
                 market_snapshot = snapshot_cache.get(market)
-                if market_snapshot is None:
+                if market_snapshot is not None and not getattr(market_snapshot, "is_priority_eval_only", False):
+                    snapshot_cache_hits += 1
+                else:
+                    snapshot_cache_misses += 1
                     market_snapshot = ctx.orchestrator.load_market_snapshot(
                         exchange,
                         market,
                         interval_minutes,
                         prefix.prefetched_market_inputs.get(market),
+                        candle_cache=candle_prefetch_cache if use_upbit_perf_path else None,
+                        priority_snapshot=market_snapshot if use_upbit_perf_path else None,
                     )
+                    snapshot_cache[market] = market_snapshot
                 korean_name = market_snapshot.korean_name
                 logger.info(
                     f"--- [{korean_name} / {market} {profile.market_analysis_log_label}] ---"
@@ -2297,6 +2339,10 @@ class TradingCycleEngine:
                     continue
             except Exception as exc:
                 logger.error(f"[{market}] 매매 사이클 오류 발생: {exc}", exc_info=True)
+
+        if use_upbit_perf_path and (snapshot_cache_hits + snapshot_cache_misses) > 0:
+            hit_rate = snapshot_cache_hits / float(snapshot_cache_hits + snapshot_cache_misses)
+            ctx.orchestrator.record_latency("snapshot_cache_hit_rate", hit_rate)
 
     def run_cycle_suffix(self, prefix: CyclePrefixResult) -> None:
         """이번 사이클 대상 외 전략 캐시 정리 및 디스크 저장."""

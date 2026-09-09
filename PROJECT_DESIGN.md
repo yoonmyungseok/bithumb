@@ -1,4 +1,4 @@
-# Bithumb & Upbit AI Pro Quant Trading Bot (v8.50)
+# Bithumb & Upbit AI Pro Quant Trading Bot (v8.53)
 
 본 문서는 `c:\AI\bithumb` 디렉토리에 위치한 빗썸(Bithumb) 및 업비트(Upbit) 듀얼 거래소 지원 AI 퀀트 트레이딩 봇의 프로젝트 설명 및 아키텍처 설계서입니다. 이 문서는 다른 AI 에이전트 또는 개발자가 프로젝트의 전반적인 구조와 핵심 로직을 빠르고 명확하게 파악할 수 있도록 작성되었습니다.
 
@@ -26,7 +26,7 @@
     - **스윙 전용 파라미터**: 손절 -5.5%, 절대 하드스탑 -8.0%, 1차 익절 +8.0%(40%), 2차 익절 +15.0%(30%), 트레일링 시작 +8.0%/드롭 4.0%, 본전보장 +1.5%
     - **스윙 타임스탑 면제**: 120분/180분 시간 청산을 면제하고, 4H EMA20 이탈 시에만 추세 청산(`evaluate_swing_trend_exit`) 집행
     - **Triple-Track 슬롯 격리(`RiskGuard`, v8.46)**: 스윙·신규상장·단타 슬롯을 독립 검증한다. 빗썸 기본 3슬롯=스윙 1+신규상장 1+단타 1, 업비트 2슬롯=스윙 1+신규상장 1+단타 0. env `BITHUMB_MAX_NEW_LISTING_POSITIONS`/`UPBIT_MAX_NEW_LISTING_POSITIONS`(공통 `MAX_NEW_LISTING_POSITIONS` 폴백)로 조정 가능
-    - **신규 상장 단타(`NEW_LISTING`, v8.42~49)**: 신뢰 가능한 희소 4H 이력으로 상장 72시간 이내가 확인된 종목만 `classify_listing_maturity()`에서 분류한다. 빈 4H 배열·조회 예외·형식/시간 파싱 실패는 상장 직후 증거가 아니므로 `INSUFFICIENT`로 처리해 5분봉이 정상이어도 신규 BUY를 차단한다. 거래대금·RS·당일 상승률 하드게이트와 `new_listing_entry_signal()` 1차 퀀트·AI BUY 확인을 통과한 후보만 관찰하며, 기본값은 관찰 모드(`NEW_LISTING_ENFORCEMENT=false`)다. 실주문은 `BITHUMB_NEW_LISTING_ENFORCEMENT=true` 또는 `UPBIT_NEW_LISTING_ENFORCEMENT=true`를 명시한 해당 거래소에서만 허용하고, 거래소별 값이 공통 값보다 우선한다. 청산은 하드스탑 -4.0%·손절 -2.5%·1차 분할익절 +3.0%(50%)·트레일링 +4.0%/드롭 2.0%·30분 조기탈출(-0.5%~+0.3%)·60분 타임스탑을 적용하며, 기존 보유 포지션 보호는 신규 진입 차단과 무관하게 유지한다.
+    - **신규 상장 단타(`NEW_LISTING`, v8.42~49)**: 신뢰 가능한 희소 4H 이력으로 상장 72시간 이내가 확인된 종목만 `classify_listing_maturity()`에서 분류한다. 빈 4H 배열·조회 예외·형식/시간 파싱 실패는 상장 직후 증거가 아니므로 `INSUFFICIENT`로 처리해 5분봉이 정상이어도 신규 BUY를 차단한다. **스크리너 사전 필터(v8.53)**: 스프레드 통과 shortlist 확정 후 최소 4H·5분봉 조회로 동일 SSOT(`is_new_listing_eligible()`)를 적용해 자격 미충족 NEW_LISTING(예: RISK_OFF 과열)을 AI 랭킹·런타임 사이클 전에 제외한다. MATURE·INSUFFICIENT는 신규상장 필터를 적용하지 않으며 최종 `process_entry_gating()` 게이트는 유지한다. 거래대금·RS·당일 상승률 하드게이트와 `new_listing_entry_signal()` 1차 퀀트·AI BUY 확인을 통과한 후보만 관찰하며, 기본값은 관찰 모드(`NEW_LISTING_ENFORCEMENT=false`)다. 실주문은 `BITHUMB_NEW_LISTING_ENFORCEMENT=true` 또는 `UPBIT_NEW_LISTING_ENFORCEMENT=true`를 명시한 해당 거래소에서만 허용하고, 거래소별 값이 공통 값보다 우선한다. 청산은 하드스탑 -4.0%·손절 -2.5%·1차 분할익절 +3.0%(50%)·트레일링 +4.0%/드롭 2.0%·30분 조기탈출(-0.5%~+0.3%)·60분 타임스탑을 적용하며, 기존 보유 포지션 보호는 신규 진입 차단과 무관하게 유지한다.
   - **AI 심층 분석 우선순위 큐 & 예산 확대 (`MAX_AI_CANDIDATES_PER_CYCLE=4`, v8.38)**: 로컬 퀀트 알파 사전 평가(Tier 1: allow_buy 즉시 매수 적격 & 고알파, Tier 2: 하드게이트 통과 후보, Tier 3: 기타)를 거쳐 사이클당 최대 4개 후보를 우선순위대로 AI 심층 분석에 투입
   - **10원 미만 초저가 코인 제한 전면 해제 & 소수점 정밀도 (`MIN_ASSET_PRICE_KRW=0.0001`, v8.39)**: 10원 미만 급등 알트코인(SOPH, MANTRA, QKC, OBSR 등)의 스크리닝 및 매수 제한을 해제하고, 1원 미만 코인의 소수점 4자리 호가 정밀도(`round(price, 4)`) 완비
   - **대시보드 비정상 운영 로그 역방향 청크 스캔 (v8.40)**: 트레이딩 봇의 정상 사이클(`INFO`) 로그가 대량 누적되어도 이전 WARNING/ERROR/CRITICAL이 누락되지 않도록 파일 끝에서 역방향으로 256KB 단위 청크 스캔(최대 10MB, 소스당 최소 20건 목표)을 수행하여 최신 비정상 운영 로그를 확실히 수집 및 최신순 노출한다.
@@ -119,7 +119,7 @@ c:\AI\bithumb\
 │   ├── state_store.py              # 원자적 JSON 영속 저장 (`write_json_atomically`, `load_json_with_backup_recovery`)
 │   ├── strategy_engine.py          # 표준 기술지표(RSI, BB, ATR, MACD, EMA) 계산, 확인형·초기 돌파 결정론적 진입 게이트, StrategyPolicy SSOT
 │   ├── gemini_analyzer.py          # Gemini AI 퀀트 분석 및 시그널 생성 엔진
-│   ├── market_screener.py          # 확인형·초기 돌파 후보와 조건(거래대금, 상승률, 스프레드, 호가깊이) 시장 동적 탐색 (Fail-Closed, HOLO 제외)
+│   ├── market_screener.py          # 확인형·초기 돌파 후보와 조건(거래대금, 상승률, 스프레드, 호가깊이) 시장 동적 탐색 + NEW_LISTING SSOT 사전 필터 (Fail-Closed, HOLO 제외)
 │   ├── trading_runtime.py          # 5분 사이클 공통 오케스트레이션 (`TradingCycleEngine`, profile 기반)
 │   ├── trading_bot_bootstrap.py    # 진입점 부트스트랩 공통화 (`TradingBotBootstrap`, 텔레그램·내부 API·WS·스케줄러·shutdown, 사이클 오프셋 분산)
 │   ├── paper_broker.py             # 모의투자 어댑터 (거래소별 원장 격리 지원)
@@ -137,6 +137,7 @@ c:\AI\bithumb\
 │   ├── test_upbit_holo_guard.py    # KRW-HOLO 7중 방어선 (자산평가, 주문, 청산, 긴급매도, 시트 배제) 검증
 │   ├── test_exchange_isolation.py  # 빗썸/업비트 데이터 및 프로세스 완전 분리 검증
 │   ├── test_upbit_reconciliation_safety.py # 업비트 REST 대사 및 불완전 체결 안전망 검증
+│   ├── test_private_ws_queue_overflow.py   # Private WS 큐 포화 fail-closed 및 READY 복귀 검증
 │   ├── test_storage_and_fill_boundaries.py # DB 경로 격리·확정 체결 뒤 쿨다운 검증
 │   ├── test_p0_p1_readiness.py     # 확정봉, 호가 플로우, 데이터 무결성 검증
 │   ├── test_strategy_ssot.py       # StrategyPolicy 단일 기준 일원화 검증
@@ -218,29 +219,36 @@ c:\AI\bithumb\
 ### 3.12. 듀얼 거래소 데이터 격리 & REST 체결 대사(Reconciliation) 안전망
 - **경로별 SQLite 인스턴스**: `DatabaseManager`는 정규화된 DB 경로별 인스턴스를 관리합니다. 빗썸은 `data/trading.db`, 업비트는 `data/upbit/trading.db`만 사용하므로 초기화 순서에 따른 상태 혼입을 방지합니다.
 - **REST 체결 대사 우선**: ACK는 주문 수락일 뿐 체결이 아닙니다. Private WebSocket은 대사 대기 신호로만 사용하며, `reconcile_exchange_statuses`가 수량·잔량·평균가·수수료를 검증한 뒤에만 포지션 진입시각, 실현손익, 쿨다운, 거래 메모리를 갱신합니다. 대사 미완료·모순·실패 시 신규 매수는 계속 차단됩니다.
+- **Private WebSocket 큐 포화 fail-closed**: 빗썸(`BithumbPrivateWebSocketClient`)·업비트(`UpbitPrivateWebSocketClient`) 주문 이벤트 bounded queue가 `queue.Full`이면 `on_queue_overflow` 콜백으로 거래소별 `OrderJournal.suspend_entry_for_reconciliation("private_ws_queue_full")`을 호출해 `reconciliation_state=PENDING`으로 전환하고 신규 BUY만 차단합니다. 기존 포지션 손절·익절·보호 관리는 계속 허용합니다. 메인 루프가 `drain_order_events()`로 backlog를 소화한 뒤 큐가 비었을 때만 주기적 `reconcile_orders()` + `complete_reconciliation_if_safe()`로 READY 복귀를 시도하고, 큐 포화가 지속되면 차단을 유지합니다. 대시보드 `entry_block_reasons`에는 `Private WebSocket 이벤트 큐 포화`가 노출되며, 5분 debounced 텔레그램 경보를 보냅니다.
 - **마이그레이션 및 감사**: 거래소별 JSON은 자기 거래소 레코드만 전용 DB로 적재합니다. 완료 표식과 `sqlite_migration.audit.json`을 거래소별로 남겨 재실행 중복 적재를 막고 결과를 추적합니다.
 - **짧은 수명 캐시와 관측성**: 시장별 분석은 2초 잔고 스냅샷을 재사용하되, 포트폴리오 산정과 취소/재호가 뒤에는 강제 최신 조회합니다. 대시보드 안전 상태에는 WebSocket stale·재연결·큐 깊이, `RECONCILIATION_PENDING`, REST 대사 시작/완료 시각 및 갱신·실패 건수, 슬리피지·호가/VWAP 지표를 포함합니다.
+- **빗썸 ticker 캐시·포트폴리오 배치 조회**: `BithumbAPI.get_tickers()`는 업비트와 동일하게 마켓별 1.5초 TTL 캐시(`force_refresh=True`로 우회)를 사용해 `/ticker` REST 호출을 줄입니다. `risk_manager._fetch_held_prices()`가 보유 종목 가격을 `get_tickers()` 1회로 수집하고, `calculate_total_equity`·`get_held_markets`·`build_positions_data` 및 `BotController.get_dashboard_data()`가 동일 `price_map`을 공유해 종목별 `get_current_price()` 3중 중복을 제거합니다. 주문 직전 신규 매수 검증(`SafeOrderExecutor`)은 `force_refresh=True`로 최신 시세를 요구합니다.
 - **운영 판단 대시보드**: 통합 화면은 한 거래소라도 안전 상태가 불확실하면 신규 매수를 차단으로 표시하고, 거래소별 차단 사유를 분리합니다. 포지션은 청산 진행·표시 손절가 근접 여부로 화면 전용 우선순위를 정렬하며, 이는 주문 조건을 바꾸지 않습니다. 후보군은 전역 안전 차단·전략 관망·진입 검토 가능을 구분하지만 최종 주문 전 엔진의 안전 게이트를 반드시 다시 통과해야 합니다.
 - **주문 확정 및 사건 관측**: 주문 저널은 `요청 → 접수(ACK, 체결 아님) → REST 대사 → 체결 확정` 흐름을 표시합니다. ACK·Private WebSocket 이벤트만으로 포지션·손익을 갱신하지 않으며 REST/Private WebSocket 확인 뒤에만 확정합니다. WARNING 이상 로그는 원문을 안전한 텍스트로 표시하고, 반복 경고는 화면에서 사건 단위로 요약합니다.
 - **전략 판단 감사 이력**: 각 거래소의 `strategy_decisions` 테이블은 사이클·종목별 `HOLD`, 안전 차단, 종목별 쿨다운, 리스크 가드, 매수 승인 및 주문 제출을 기록합니다. 후보 상대강도·거래대금·BTC 레짐·하드게이트 결과·반등 전용 체크리스트를 JSON으로 보존하며, 판단 이력만 30일 뒤 정리합니다. 주문 원장과 체결 이력은 이 정리 대상이 아닙니다.
 
 ### 3.13. API 일일 사용량 & 쿼터 텔레메트리 모니터링 체계 (`api_telemetry.py` & `gemini_telemetry.py`)
 - **거래소 REST API 호출 계측 (`ExchangeApiTelemetry`)**: 빗썸과 업비트의 모든 REST 호출(GET 조회, POST/DELETE 주문)의 호출수, 상태코드(200/429/5xx), Rate limit(429) 발생 건수, 최근 엔드포인트를 스레드 안전하게 실시간 집계합니다.
-- **업비트 실시간 잔여 쿼터 파싱**: 업비트 응답 헤더(`Remaining-Req`)의 `sec`(초당 잔여) 및 `min`(분당 잔여)을 자동 추출하여 Rate limit 임계 도달 여부를 실시간 추적합니다.
+- **업비트 실시간 잔여 쿼터 파싱**: 업비트 응답 헤더(`Remaining-Req`)의 `sec`(초당 잔여) 및 `min`(분당 잔여)을 자동 추출하여 Rate limit 임계 도달 여부를 실시간 추적합니다. 빗썸 Open API는 동일한 잔여 쿼터 헤더를 제공하지 않으므로 대시보드에서는 `조회/주문(GET/POST)`·`오류/429`·`최근 요청`으로 관측합니다.
 - **KST 자정 기준 자동 롤오버 & 디스크 영속화(Persistence)**: 봇 프로세스를 재시작하더라도 오늘 하루 누적 사용량이 초기화되지 않도록 원자적 파일 쓰기로 분리 보관(`data/api_telemetry.json`, `data/gemini_telemetry.json`, `data/upbit/*`)하며, 한국 표준시(KST) 매일 00:00:00 자정을 기준으로 일일 누적 카운터를 자동 초기화합니다.
 - **Gemini AI 쿼터 및 캐시 절감 관측**: Google AI Studio와 동일하게 `generateContent`·`ListModels`의 **모든 HTTP 시도**(성공·429·401/404/타임아웃 포함)를 실제 모델 ID별(`models_by_id`) 및 쿼터 그룹별(`quota_buckets`)로 집계합니다.
 - **무료 티어 85% 하드 컷오프(Hard Cutoff) 및 429 원천 방지 (v8.30)**:
   - 분당 15 RPM 한도 준수를 위해 최소 호출 간격을 3.5초에서 **6.0초(최대 10 RPM, 33% 안전 마진)**로 상향했습니다.
   - 모델별 실제 쿼터(Flash-Lite 500 RPD, 일반 Flash 20 RPD)에 비례하여 85%(평시: Flash-Lite 425회, 일반 Flash 17회 / 긴급: 95%) 도달 시 Google API 호출을 원천 차단(`get_candidate_models`가 빈 리스트 `[]` 반환)하고 100% 로컬 퀀트 알고리즘 엔진으로 무중단 자동 전환하여 Google AI Studio의 429 에러 발생을 원천 차단합니다.
   - 보유 종목 평가(`evaluate_holding_position`) 시 정상 횡보 구간(-2.0% ~ +2.0%)은 15분(900초) 캐시를 적용하고, -2.0% 이하 급락 위기 또는 +2.0% 이상 급등 랠리 시에만 60초 적응형 재진단을 수행하여 5분 사이클마다 불필요하게 AI가 호출되던 쿼터 누수를 완벽히 제거했습니다.
-- **통합 대시보드 UI 연동**: SPA 대시보드(`index.html`, `app.js`)의 `api_usage_panel` 위젯에서 빗썸 Open API, 빗썸 Gemini AI, 업비트 Open API, 업비트 Gemini AI를 4열 독립 그리드로 시각화하며, 탭 전환(`combined`/`bithumb`/`upbit`)에 따라 해당 거래소 사용량을 동적으로 강조합니다.
+- **통합 대시보드 UI 연동**: SPA 대시보드(`index.html`, `app.js`)의 `api_usage_panel` 위젯에서 빗썸 Open API, 빗썸 Gemini AI, 업비트 Open API, 업비트 Gemini AI를 4열 독립 그리드로 시각화합니다. 업비트 Open API는 `실시간 잔여 쿼터` 행을, 빗썸 Open API는 `조회/주문(GET/POST)` 행을 각각 노출합니다. 탭 전환(`combined`/`bithumb`/`upbit`)에 따라 해당 거래소 사용량을 동적으로 강조합니다.
 
 ---
 
 ## 4. 변경 이력 및 개선 히스토리 (Changelog)
 
-> 성능 경계: 전략 입력의 일괄 ticker·호가 값은 최대 1초만 재사용하며, 주문 직전 검증·체결 대사에는 사용하지 않습니다. 신규 진입 차단 상태에서는 후보용 AI 호출을 생략하지만 보유 포지션 방어는 계속 수행합니다.
+> 성능 경계: 전략 입력의 일괄 ticker·호가 값은 최대 1초만 재사용하며, 주문 직전 검증·체결 대사에는 사용하지 않습니다. 신규 진입 차단 상태에서는 후보용 AI 호출을 생략하지만 보유 포지션 방어는 계속 수행합니다. **업비트 5분 사이클**은 `market_selection` ticker seed 재사용, `prefetch_cycle_candles`(bounded concurrent, 기본 5 workers), AI 우선순위 정렬용 `load_priority_eval_snapshot`, 메인 루프 `load_market_snapshot` 캔들·스냅샷 공유로 `market_snapshot` REST를 줄입니다. `full_cycle` p95가 15초를 초과하면 WARNING 로그를 남기며, `priority_eval_snapshot`·`snapshot_cache_hit_rate`·`candle_prefetch` 계측을 추가합니다.
 
+| **v8.54** | 2026-09-08 | • **업비트 5분 사이클 성능 최적화 (스냅샷·스크리너 I/O 절감)**<br>• **`load_priority_eval_snapshot()`**: AI 우선순위 정렬에 필요한 5m/1h/4h·listing_maturity·prefetch 호가만 조회, 메인 분석은 기존 full snapshot 유지<br>• **`prefetch_cycle_candles()`**: target 확정 직후 bounded concurrent(기본 5 workers)로 캔들 사전 조회, 정렬·메인 루프가 `candle_prefetch_cache` 공유<br>• **`market_screener` ticker seed**: `scan_markets`·`scan_swing_markets`가 동일 ticker 리스트 재사용, `prefetch_market_inputs(ticker_seed=)`로 280종목 재조회 방지<br>• **성능 가드**: `full_cycle` p95>15s WARNING, `priority_eval_snapshot`·`snapshot_cache_hit_rate` 계측 추가<br>• **검증**: `tests/test_trading_orchestrator.py`, `tests/test_trading_runtime.py` 12종목 mock 호출 상한 테스트 |
+
+| **v8.53** | 2026-09-08 | • **Private WebSocket 주문 이벤트 큐 포화 fail-closed 연동**<br>• **`OrderJournal.suspend_entry_for_reconciliation()`**: `queue.Full` 시 `reconciliation_state=PENDING` 전환, `last_suspend_reason`·`last_suspend_at` 기록, 동일 사유 60초 debounce<br>• **빗썸·업비트 Private WS**: `on_queue_overflow` 콜백으로 저널 차단·debounced 텔레그램 경보 연동<br>• **메인 루프 복구**: backlog 소화 후 `reconcile_orders()` + `complete_reconciliation_if_safe()`로 READY 복귀, 큐 포화 지속 시 신규 BUY 차단 유지<br>• **대시보드**: `entry_block_reasons`에 `Private WebSocket 이벤트 큐 포화` 노출<br>• **검증**: `tests/test_private_ws_queue_overflow.py`, `tests/test_upbit_reconciliation_safety.py` |
+| **v8.53** | 2026-09-08 | • **신규상장(NEW_LISTING) 스크리너 사전 필터 — 반복 WARNING·AI 낭비 제거**<br>• **`market_screener.py`**: 스프레드 통과 shortlist 후 최소 4H·5분봉으로 `classify_listing_maturity()` + `is_new_listing_eligible()` SSOT 사전 검증. RISK_OFF 과열 NEW_LISTING(예: KRW-USELESS 유형)은 AI 랭킹·런타임 사이클 전 DEBUG 제외. MATURE·INSUFFICIENT는 신규상장 필터 미적용<br>• **`scan_swing_markets` 동일 필터**, 통과 후보에 `new_listing_screener_verified` 메타데이터 부여<br>• **`trading_runtime`**: 사전검증 후 런타임 자격 실패는 예외 경로 WARNING으로 구분<br>• **AI 프롬프트**: `GeminiAnalyzer` 랭킹·NEW_LISTING 분석·`GroqProvider.SYSTEM_INSTRUCTION`에 스크리너 사전 필터 문구 반영<br>• **검증**: `tests/test_new_listing_gate.py`, `tests/test_gemini_prompt_contract.py`, `tests/test_bithumb_groq_provider.py` 회귀 테스트 갱신 |
+| **v8.52** | 2026-09-08 | • **빗썸 `/ticker` REST 호출 대폭 절감 (1.5초 캐시 & 포트폴리오 배치 조회)**<br>• **`BithumbAPI` ticker 캐시**: 업비트와 동일한 마켓별 1.5초 TTL·`force_refresh` 우회·스레드 안전 `_lock` 도입으로 캐시 hit 시 REST 0건<br>• **포트폴리오 배치 조회**: `risk_manager._fetch_held_prices()`가 보유 종목 `get_tickers()` 1회 결과를 `calculate_total_equity`·`get_held_markets`·`build_positions_data`·`get_dashboard_data()`에 공유<br>• **주문 안전 경계 유지**: `SafeOrderExecutor` 신규 매수 직전 검증은 `force_refresh=True`로 최신 시세 요구<br>• **검증**: `tests/test_bithumb_api.py`, `tests/test_risk_manager.py` 신규 작성 |
 | **v8.51** | 2026-09-08 | • **빗썸·업비트 Gemini AI 대시보드 인터페이스 & 텔레메트리 스키마 완전 동일화**<br>• **대시보드 UI/마크업 일치**: `dashboard/index.html`에 `upbit_ai_provider_title` 고유 ID 추가로 빗썸 카드와 DOM 구조 일치<br>• **뱃지 및 소진율 정책 통일**: `dashboard/src/app.js`에서 거래소 분기를 제거하고 장애 시 `신규 BUY 차단` 적색 뱃지, 평상시 `${pct}% 소진` 보라색 뱃지 동일 적용<br>• **모델 쿼터 및 프로그레스 바 정합화**: Flash-Lite 계열 모델 500회 일일 한도(`X / 500회 (X.X%)`) 및 진행 바를 양 거래소 동일 렌더링하도록 안전망 탑재<br>• **AI 텔레메트리 스키마 동기화**: `AIProviderTelemetry.snapshot`에 `quota_limit`(1000)·`quota_used_pct`·모델별 `quota_limit`(500)·`models_by_id`·`remaining_str` 탑재, `GeminiTelemetry.snapshot`에 `provider`·`exchange`·`entry_safety` 연동<br>• **검증**: `tests/test_bithumb_gemini_provider.py`, `tests/test_api_telemetry.py`, `tests/test_dashboard_frontend_korean.py` 단위 및 회귀 테스트 100% 통과 |
 | **v8.48** | 2026-09-08 | • **신규상장(NEW_LISTING) 20개 5분봉 선행 게이트 우회 (KRW-CP 사례)**<br>• **`should_block_for_minimum_candles()`**: `classify_listing_maturity()`를 선행하고, 업비트 `require_minimum_candles`는 MATURE만 5분봉 20개를 요구. NEW_LISTING은 확정 5개(원시 6개) 이상이면 20개 선행 차단을 우회<br>• **AI 우선순위 큐**: `listing_maturity=NEW_LISTING` 후보는 사전 평가에서 5분 확정 5개·1H 면제·`entry_type=NEW_LISTING` 기준을 사용해 tier 9 밀림 방지<br>• **검증**: `tests/test_new_listing_gate.py`, `tests/test_trading_runtime.py` 회귀 테스트 갱신 |
 | **v8.49** | 2026-09-08 | • **매수 입력 계약**: `MarketBuyInputs.strategy_mode`를 상위 게이트에서 확정해 BUY 실행이 누락된 `candidate_metadata`를 참조하지 않도록 보완. CONFIRMED/NEW_LISTING/MOMENTUM_BREAKOUT/SWING 주문 스냅샷에 전략 모드를 보존<br>• **4H fail-closed**: `FourHourHistoryResult`로 정상 희소 이력과 빈 응답·예외·형식 오류를 분리하고, 후자는 `INSUFFICIENT`로 차단. 기존 보유 포지션의 손절·트레일링·보호 청산은 계속 실행<br>• **기본 관찰·프로세스 판정**: 신규상장 실주문은 거래소별 명시 enforcement에서만 허용하며, `process_manager status`는 신선한 heartbeat만으로 가동 중으로 표시하지 않고 정식 PID·잠금 소유자·heartbeat 상태를 읽기 전용으로 구분<br>• **검증**: `test_new_listing_gate.py`, `test_runtime_buy_contract.py`, `test_process_manager_status.py` focused 회귀 테스트 추가 |

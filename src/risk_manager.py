@@ -85,42 +85,87 @@ def get_excluded_manual_holdings() -> set[str]:
     return get_excluded_markets()
 
 
-def calculate_total_equity(balances: dict[str, dict[str, float]], bithumb: Any) -> float:
+def _fetch_held_prices(balances: dict[str, dict[str, float]], exchange_api: Any) -> dict[str, float]:
+    """보유 코인 마켓 가격을 일괄 조회해 market -> trade_price 맵 반환"""
+    excluded = get_excluded_manual_holdings()
+    markets: list[str] = []
+    for cur, info in balances.items():
+        if cur in ("KRW", "P") or cur in excluded or f"KRW-{cur}" in excluded:
+            continue
+        vol = info.get("balance", 0.0) + info.get("locked", 0.0)
+        if vol > 0:
+            markets.append(f"KRW-{cur}")
+
+    if not markets:
+        return {}
+
+    price_map: dict[str, float] = {}
+    get_tickers_fn = getattr(exchange_api, "get_tickers", None)
+    if callable(get_tickers_fn):
+        try:
+            tickers = get_tickers_fn(markets)
+            for ticker in tickers:
+                if isinstance(ticker, dict):
+                    market = ticker.get("market")
+                    if isinstance(market, str):
+                        price_map[market] = float(ticker.get("trade_price", 0.0) or 0.0)
+        except (requests.exceptions.RequestException, KeyError, ValueError, TypeError):
+            logger.debug("보유 종목 일괄 시세 조회 예외 무시")
+    else:
+        for market in markets:
+            try:
+                price = float(exchange_api.get_current_price(market) or 0.0)
+                if price > 0:
+                    price_map[market] = price
+            except (requests.exceptions.RequestException, KeyError, ValueError, TypeError):
+                logger.debug(f"{market} 보유 시세 단건 조회 예외 무시")
+    return price_map
+
+
+def calculate_total_equity(
+    balances: dict[str, dict[str, float]],
+    bithumb: Any,
+    price_map: dict[str, float] | None = None,
+) -> float:
     """원화 잔고 및 보유 코인 평가금액을 합산하여 총 평가 자산 계산 (수동 격리 종목 완전 배제)"""
     krw_balance = balances.get("KRW", {}).get("balance", 0.0) + balances.get("KRW", {}).get("locked", 0.0)
     total_coin_val = 0.0
     excluded = get_excluded_manual_holdings()
+    if price_map is None:
+        price_map = _fetch_held_prices(balances, bithumb)
 
     for cur, info in balances.items():
         if cur == "KRW" or cur in excluded or f"KRW-{cur}" in excluded:
             continue
         vol = info.get("balance", 0.0) + info.get("locked", 0.0)
         if vol > 0:
-            try:
-                price = bithumb.get_current_price(f"KRW-{cur}")
+            price = price_map.get(f"KRW-{cur}", 0.0)
+            if price > 0:
                 total_coin_val += vol * price
-            except (requests.exceptions.RequestException, KeyError, ValueError):
-                logger.debug(f"{cur} 잔고 시세 조회 예외 무시")
 
     return krw_balance + total_coin_val
 
 
-def get_held_markets(balances: dict[str, dict[str, float]], bithumb: Any, min_val_krw: float = 4000.0) -> list[str]:
+def get_held_markets(
+    balances: dict[str, dict[str, float]],
+    bithumb: Any,
+    min_val_krw: float = 4000.0,
+    price_map: dict[str, float] | None = None,
+) -> list[str]:
     """현재 의미 있게 보유 중인(4,000원 이상) 마켓 코드 목록 반환 (수동 격리 종목 완전 배제)"""
     held = []
     excluded = get_excluded_manual_holdings()
+    if price_map is None:
+        price_map = _fetch_held_prices(balances, bithumb)
     for cur, info in balances.items():
         if cur in ("KRW", "P") or cur in excluded or f"KRW-{cur}" in excluded:
             continue
         total_vol = info.get("balance", 0.0) + info.get("locked", 0.0)
         if total_vol > 0:
             market = f"KRW-{cur}"
-            try:
-                price = bithumb.get_current_price(market)
-                if price > 0 and (total_vol * price) >= min_val_krw:
-                    held.append(market)
-            except (requests.exceptions.RequestException, KeyError, ValueError):
-                logger.debug(f"{market} 보유 여부 확인 예외 무시")
+            price = price_map.get(market, 0.0)
+            if price > 0 and (total_vol * price) >= min_val_krw:
+                held.append(market)
     return held
 
 
@@ -128,11 +173,14 @@ def build_positions_data(
     balances: dict[str, dict[str, float]],
     bithumb: Any,
     strategies: dict[str, dict[str, Any]] | None = None,
+    price_map: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """웹 대시보드 표시용 보유 코인 포지션 목록 생성 (수동 격리 종목 완전 배제)"""
     positions = []
     strategies = strategies or {}
     excluded = get_excluded_manual_holdings()
+    if price_map is None:
+        price_map = _fetch_held_prices(balances, bithumb)
     for cur, info in balances.items():
         if cur in ("KRW", "P") or cur in excluded or f"KRW-{cur}" in excluded:
             continue
@@ -141,7 +189,7 @@ def build_positions_data(
             continue
         market = f"KRW-{cur}"
         try:
-            price = bithumb.get_current_price(market)
+            price = price_map.get(market, 0.0)
             if price <= 0:
                 continue
             val = vol * price

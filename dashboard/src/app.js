@@ -631,6 +631,33 @@
     });
   }
 
+  // 거래소 Open API 잔여 쿼터 표시 (업비트 Remaining-Req, 빗썸 미제공 시 '-')
+  function renderExchangeQuotaEl(el, data, secLimit = 10, minLimit = 600) {
+    if (!el) return;
+    data = data || {};
+    const hasSec = data.remaining_sec !== null && data.remaining_sec !== undefined;
+    const hasMin = data.remaining_min !== null && data.remaining_min !== undefined;
+    const sec = hasSec ? `${data.remaining_sec}/${secLimit}` : '-';
+    const min = hasMin ? `${data.remaining_min}/${minLimit}` : '-';
+    el.innerText = `초당: ${sec} / 분당: ${min}`;
+    if (hasSec && data.remaining_sec <= 2) {
+      el.className = 'font-medium text-amber-400';
+    } else if (hasSec) {
+      el.className = 'font-medium text-emerald-400';
+    } else {
+      el.className = 'font-medium text-slate-400';
+    }
+  }
+
+  // 거래소 Open API GET/POST 누적 (빗썸 등 잔여 쿼터 미제공 시 보조 관측)
+  function renderExchangeMethodsEl(el, data) {
+    if (!el) return;
+    data = data || {};
+    const getC = (data.by_method && data.by_method.GET) || 0;
+    const postC = (data.by_method && data.by_method.POST) || 0;
+    el.innerText = `GET ${getC.toLocaleString()} / POST ${postC.toLocaleString()}`;
+  }
+
   // API 일일 사용량 & 쿼터 패널 렌더링
   function renderApiUsagePanel(apiUsage, activeExchange) {
     if (!apiUsage) return;
@@ -680,12 +707,7 @@
     if (btCallsEl) {
       btCallsEl.innerHTML = `${(btData.total_calls || 0).toLocaleString()}<span class="text-xs font-normal text-slate-400 ml-1">회</span>`;
     }
-    const btMethodsEl = document.getElementById('bithumb_api_methods');
-    if (btMethodsEl) {
-      const getC = (btData.by_method && btData.by_method.GET) || 0;
-      const postC = (btData.by_method && btData.by_method.POST) || 0;
-      btMethodsEl.innerText = `GET ${getC.toLocaleString()} / POST ${postC.toLocaleString()}`;
-    }
+    renderExchangeMethodsEl(document.getElementById('bithumb_api_methods'), btData);
     const btErrorsEl = document.getElementById('bithumb_api_errors');
     if (btErrorsEl) {
       const errC = btData.errors || 0;
@@ -722,17 +744,7 @@
     if (upCallsEl) {
       upCallsEl.innerHTML = `${(upData.total_calls || 0).toLocaleString()}<span class="text-xs font-normal text-slate-400 ml-1">회</span>`;
     }
-    const upQuotaEl = document.getElementById('upbit_api_quota');
-    if (upQuotaEl) {
-      const sec = upData.remaining_sec !== null && upData.remaining_sec !== undefined ? `${upData.remaining_sec}/10` : '-';
-      const min = upData.remaining_min !== null && upData.remaining_min !== undefined ? `${upData.remaining_min}/600` : '-';
-      upQuotaEl.innerText = `초당: ${sec} / 분당: ${min}`;
-      if (upData.remaining_sec !== null && upData.remaining_sec <= 2) {
-        upQuotaEl.className = 'font-medium text-amber-400';
-      } else {
-        upQuotaEl.className = 'font-medium text-emerald-400';
-      }
-    }
+    renderExchangeQuotaEl(document.getElementById('upbit_api_quota'), upData);
     const upErrorsEl = document.getElementById('upbit_api_errors');
     if (upErrorsEl) {
       const errC = upData.errors || 0;

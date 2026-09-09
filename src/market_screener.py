@@ -7,7 +7,12 @@ import requests
 
 from bithumb_api import BithumbAPI
 from market_policy import get_excluded_markets
-from strategy_engine import StrategyPolicy, is_night_session
+from strategy_engine import (
+    StrategyPolicy,
+    classify_listing_maturity,
+    is_new_listing_eligible,
+    is_night_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +78,79 @@ class MarketScreener:
         self.enable_early_breakout = enable_early_breakout
         self.early_breakout_min_change_rate = max(0.0, early_breakout_min_change_rate)
         self.early_breakout_max_candidates = max(0, early_breakout_max_candidates)
+        # 동일 사이클 prefetch가 스크리너 ticker 조회를 재사용할 수 있도록 마지막 스캔 결과를 보관한다.
+        self.last_scan_tickers: list[dict[str, Any]] = []
+
+    def _exchange_name(self) -> str:
+        return "upbit" if "upbit" in str(type(self.api)).lower() else "bithumb"
+
+    def _load_four_hour_history(self, market: str) -> tuple[list[dict[str, Any]], str]:
+        """4시간봉 실제 희소 이력과 조회 장애를 분리한다. trading_orchestrator와 동일 계약."""
+        get_candles_fn = getattr(self.api, "get_candles", None)
+        if not callable(get_candles_fn):
+            return [], "UNAVAILABLE"
+        try:
+            candles = get_candles_fn(unit=240, count=25, market=market)
+            if not isinstance(candles, list) or not candles:
+                return [], "UNAVAILABLE"
+            if not all(isinstance(candle, dict) for candle in candles):
+                return [], "UNAVAILABLE"
+            return candles, "AVAILABLE"
+        except Exception:
+            return [], "UNAVAILABLE"
+
+    def _passes_new_listing_screener_prefilter(
+        self,
+        candidate: dict[str, Any],
+        btc_regime: str,
+    ) -> bool:
+        """
+        NEW_LISTING 경로만 is_new_listing_eligible() SSOT로 사전 검증한다.
+        MATURE·INSUFFICIENT는 신규상장 필터를 적용하지 않는다.
+        """
+        market = str(candidate.get("market", ""))
+        if not market:
+            return False
+
+        get_candles_fn = getattr(self.api, "get_candles", None)
+        if not callable(get_candles_fn):
+            # 테스트·구형 API mock은 런타임 게이트에 맡기고 사전 필터를 생략한다.
+            return True
+
+        candles_4h, four_hour_status = self._load_four_hour_history(market)
+        candles_5m = get_candles_fn(unit=5, count=30, market=market)
+        maturity = classify_listing_maturity(candles_4h, None, candles_5m, four_hour_status)
+        if maturity != "NEW_LISTING":
+            return True
+
+        eligible, reason = is_new_listing_eligible(
+            maturity,
+            acc_trade_price_24h=float(candidate.get("acc_trade_price_24h", 0.0) or 0.0),
+            change_rate=float(candidate.get("change_rate", 0.0) or 0.0),
+            relative_strength=float(candidate.get("relative_strength", 0.0) or 0.0),
+            btc_regime=btc_regime,
+            exchange=self._exchange_name(),
+        )
+        if eligible:
+            candidate["new_listing_screener_verified"] = True
+            return True
+
+        logger.debug("[%s] 신규상장 스크리너 사전 필터 제외: %s", market, reason)
+        return False
+
+    def _filter_new_listing_ineligible_candidates(
+        self,
+        candidates: list[dict[str, Any]],
+        btc_regime: str,
+    ) -> list[dict[str, Any]]:
+        """스프레드 통과 shortlist에서 NEW_LISTING 자격 미충족 종목을 제거한다."""
+        if not candidates:
+            return []
+        filtered: list[dict[str, Any]] = []
+        for cand in candidates:
+            if self._passes_new_listing_screener_prefilter(cand, btc_regime):
+                filtered.append(cand)
+        return filtered
 
     def scan_markets(
         self,
@@ -80,6 +158,7 @@ class MarketScreener:
         held_markets: list[str] | None = None,
         btc_regime: str = "NORMAL",
         analyzer: Any | None = None,
+        ticker_seed: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         held_set: set[str] = {m.upper() for m in (held_markets or [])}
         is_risk_off = (btc_regime or "NORMAL").upper() == "RISK_OFF"
@@ -104,14 +183,19 @@ class MarketScreener:
                 krw_markets.append(m_code)
 
             if not krw_markets:
+                self.last_scan_tickers = []
                 return [{"market": m, "reason": "기본 마켓"} for m in (held_markets or ["KRW-BTC"])]
 
-            chunk_size = 50
-            all_tickers: list[dict[str, Any]] = []
-            for i in range(0, len(krw_markets), chunk_size):
-                chunk = krw_markets[i : i + chunk_size]
-                tickers_chunk = self.api.get_tickers(chunk)
-                all_tickers.extend(tickers_chunk)
+            if ticker_seed:
+                all_tickers = list(ticker_seed)
+            else:
+                chunk_size = 50
+                all_tickers: list[dict[str, Any]] = []
+                for i in range(0, len(krw_markets), chunk_size):
+                    chunk = krw_markets[i : i + chunk_size]
+                    tickers_chunk = self.api.get_tickers(chunk)
+                    all_tickers.extend(tickers_chunk)
+            self.last_scan_tickers = list(all_tickers)
 
             ex_name = "업비트" if "upbit" in str(type(self.api)).lower() else "빗썸"
             logger.info(f"{ex_name} KRW 마켓 {len(all_tickers)}개 종목 시세 스캔 완료 (레짐: {btc_regime})")
@@ -280,6 +364,11 @@ class MarketScreener:
                 except Exception:
                     continue
 
+            # 신규상장(NEW_LISTING) 자격 미충족 종목은 AI 랭킹·런타임 사이클 소모 전에 제외한다.
+            screened_by_spread = self._filter_new_listing_ineligible_candidates(
+                screened_by_spread, btc_regime,
+            )
+
             # 초기 돌파(변동률 < min_change_rate)는 별도 소수 슬롯으로 격리 관리하고,
             # 주도주 모멘텀(변동률 >= min_change_rate)은 일반 확인형과 함께 종합 순위 풀에서 경쟁한다.
             screened_early_breakouts = [
@@ -371,6 +460,10 @@ class MarketScreener:
                         "is_held": False,
                     })
 
+            qualified_candidates = self._filter_new_listing_ineligible_candidates(
+                qualified_candidates, btc_regime,
+            )
+
             final_selection: list[dict[str, Any]] = []
             selected_markets_set: set[str] = set()
 
@@ -417,6 +510,7 @@ class MarketScreener:
         top_count: int = 2,
         held_markets: list[str] | None = None,
         btc_regime: str = "NORMAL",
+        ticker_seed: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         """
         중기/추세추종 스윙(SWING) 유망 종목 스크리닝 (Dual-Track)
@@ -447,20 +541,23 @@ class MarketScreener:
             if not krw_market_codes:
                 return []
 
-            chunk_size = 50
-            all_tickers: list[dict[str, Any]] = []
-            get_tickers_fn = getattr(self.api, "get_tickers", None)
-            if callable(get_tickers_fn):
-                for i in range(0, len(krw_market_codes), chunk_size):
-                    chunk = krw_market_codes[i : i + chunk_size]
-                    tickers_chunk = get_tickers_fn(chunk)
-                    all_tickers.extend(tickers_chunk)
-            elif callable(getattr(self.api, "get_ticker", None)):
-                ticker_res = self.api.get_ticker(krw_market_codes)
-                if isinstance(ticker_res, list):
-                    all_tickers.extend(ticker_res)
-                elif isinstance(ticker_res, dict):
-                    all_tickers.append(ticker_res)
+            if ticker_seed:
+                all_tickers = list(ticker_seed)
+            else:
+                chunk_size = 50
+                all_tickers: list[dict[str, Any]] = []
+                get_tickers_fn = getattr(self.api, "get_tickers", None)
+                if callable(get_tickers_fn):
+                    for i in range(0, len(krw_market_codes), chunk_size):
+                        chunk = krw_market_codes[i : i + chunk_size]
+                        tickers_chunk = get_tickers_fn(chunk)
+                        all_tickers.extend(tickers_chunk)
+                elif callable(getattr(self.api, "get_ticker", None)):
+                    ticker_res = self.api.get_ticker(krw_market_codes)
+                    if isinstance(ticker_res, list):
+                        all_tickers.extend(ticker_res)
+                    elif isinstance(ticker_res, dict):
+                        all_tickers.append(ticker_res)
 
             if not all_tickers:
                 return []
@@ -513,6 +610,9 @@ class MarketScreener:
                 })
 
             swing_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+            swing_candidates = self._filter_new_listing_ineligible_candidates(
+                swing_candidates, btc_regime,
+            )
             return swing_candidates[:top_count]
 
         except Exception as e:

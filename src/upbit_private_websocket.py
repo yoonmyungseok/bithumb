@@ -42,18 +42,35 @@ class UpbitPrivateWebSocketClient:
         secret_key: str = "",
         on_order: Callable[[dict[str, Any]], None] | None = None,
         on_asset: Callable[[dict[str, Any]], None] | None = None,
+        on_queue_overflow: Callable[[], None] | None = None,
     ):
         self.access_key = (access_key or os.getenv("UPBIT_ACCESS_KEY", "")).strip()
         self.secret_key = (secret_key or os.getenv("UPBIT_SECRET_KEY", "")).strip()
         self.ws_url = os.getenv("UPBIT_PRIVATE_WEBSOCKET_URL", self.URL).strip()
         self.on_order = on_order
         self.on_asset = on_asset
+        self.on_queue_overflow = on_queue_overflow
         self.is_running = False
         self.ws: websocket.WebSocketApp | None = None
         self._thread: threading.Thread | None = None
         # Private WebSocket 수신 스레드에서는 영속화·손익 계산을 하지 않는다.
         self._order_event_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1000)
         self._reconnect_delay = 2
+
+    def pending_order_event_count(self) -> int:
+        """메인 스레드가 아직 처리하지 않은 주문 이벤트 수."""
+        return self._order_event_queue.qsize()
+
+    def _handle_order_queue_overflow(self) -> None:
+        logger.warning(
+            "업비트 Private WebSocket 주문 이벤트 큐 포화(대기 %d건): REST 대사 전까지 신규 진입을 차단합니다.",
+            self.pending_order_event_count(),
+        )
+        if self.on_queue_overflow:
+            try:
+                self.on_queue_overflow()
+            except Exception as exc:
+                logger.warning("업비트 Private WebSocket 큐 포화 콜백 실패: %s", exc)
 
     def _headers(self) -> list[str]:
         """업비트 Private WebSocket용 JWT 토큰 헤더 생성"""
@@ -91,7 +108,7 @@ class UpbitPrivateWebSocketClient:
                     try:
                         self._order_event_queue.put_nowait(event)
                     except queue.Full:
-                        logger.error("Private WebSocket 주문 이벤트 큐 포화: REST 대사 전까지 신규 진입을 차단해야 합니다.")
+                        self._handle_order_queue_overflow()
                 elif event_type == "myasset" and self.on_asset:
                     self.on_asset(event)
         except Exception as e:

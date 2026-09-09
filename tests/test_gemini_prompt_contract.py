@@ -174,6 +174,32 @@ class TestGeminiEntryPromptContract(unittest.TestCase):
         self.assertIn("현재 알파 승인 기준: 85점 이상", risk_off_prompt)
         self.assertIn("약세장 신규 상장 단타(NEW_LISTING) 경로", risk_off_prompt)
         self.assertIn("30억 원 이상", risk_off_prompt)
+        self.assertIn("스크리너 단계에서도 동일 SSOT", risk_off_prompt)
+
+    @patch("requests.post")
+    def test_rank_candidate_prompt_mentions_new_listing_screener_prefilter(self, mock_post):
+        """스크리너 AI 랭킹 프롬프트에 신규상장 사전 필터 문구가 포함되어야 한다."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": (
+                '{"rankings":[{"market":"KRW-A","rank":1,"tier":"TIER_1","score":90,"reason":"테스트"}]}'
+            )}]}}]
+        }
+        mock_post.return_value = mock_response
+
+        analyzer = GeminiAnalyzer(api_key="test-key")
+        analyzer.rank_candidate_markets(
+            [
+                {"market": "KRW-A", "trade_price": 1000.0, "change_rate": 0.03, "acc_trade_price_24h": 5e9, "relative_strength": 0.02},
+                {"market": "KRW-B", "trade_price": 900.0, "change_rate": 0.02, "acc_trade_price_24h": 4e9, "relative_strength": 0.01},
+            ],
+            btc_regime="RISK_OFF",
+            btc_change_rate=-0.01,
+        )
+        sent_prompt = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
+        self.assertIn("스크리너 단계 신규상장 사전 필터", sent_prompt)
+        self.assertIn("is_new_listing_eligible()", sent_prompt)
 
 
 if __name__ == "__main__":

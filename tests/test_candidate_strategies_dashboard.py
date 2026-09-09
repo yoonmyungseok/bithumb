@@ -16,7 +16,18 @@ from web_server import DashboardWebServer
 class TestCandidateStrategiesDashboard(unittest.TestCase):
     def setUp(self):
         self.mock_api = MagicMock()
-        self.mock_api.get_current_price.side_effect = lambda m: 100000000.0 if m == "KRW-BTC" else (4000000.0 if m == "KRW-ETH" else 200000.0)
+
+        def _price_for(market: str) -> float:
+            if market == "KRW-BTC":
+                return 100000000.0
+            if market == "KRW-ETH":
+                return 4000000.0
+            return 200000.0
+
+        self.mock_api.get_current_price.side_effect = _price_for
+        self.mock_api.get_tickers.side_effect = lambda markets: [
+            {"market": market, "trade_price": _price_for(market)} for market in markets
+        ]
         self.mock_api.get_korean_name.side_effect = lambda m: "비트코인" if m == "KRW-BTC" else ("이더리움" if m == "KRW-ETH" else "솔라나")
 
     def test_build_candidates_data(self):

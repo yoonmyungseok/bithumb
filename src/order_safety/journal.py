@@ -418,6 +418,26 @@ class OrderJournal:
         """초기 REST 대사 전에는 신규 매수만 차단하고 기존 포지션 보호는 계속 허용한다."""
         return self.reconciliation_state == "READY"
 
+    def suspend_entry_for_reconciliation(self, reason: str) -> None:
+        """신규 BUY만 차단하고 기존 포지션 보호·청산 경로는 유지한다."""
+        reason = str(reason or "").strip()
+        if not reason:
+            reason = "unknown"
+        now = time.time()
+        with self._lock:
+            last_reason = str(self.reconciliation_metrics.get("last_suspend_reason", ""))
+            last_at = float(self.reconciliation_metrics.get("last_suspend_at", 0.0) or 0.0)
+            # 이미 PENDING이면 동일 사유 60초 이내 중복 저장·로그를 생략한다.
+            if self.reconciliation_state == "PENDING" and last_reason == reason and now - last_at < 60.0:
+                return
+            was_ready = self.reconciliation_state == "READY"
+            self.reconciliation_state = "PENDING"
+            self.reconciliation_metrics["last_suspend_reason"] = reason
+            self.reconciliation_metrics["last_suspend_at"] = now
+            self._save()
+        if was_ready or last_reason != reason:
+            logger.warning("🛑 신규 매수 차단: %s", reason)
+
     def complete_reconciliation_if_safe(self) -> bool:
         """모든 미완료 주문의 REST 대사가 성공한 경우에만 신규 진입을 재개한다."""
         with self._lock:

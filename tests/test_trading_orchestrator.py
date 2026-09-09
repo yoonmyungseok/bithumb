@@ -1,0 +1,130 @@
+import os
+import sys
+import time
+import unittest
+from unittest.mock import MagicMock
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+from exchange_adapter import BithumbAdapter
+from trading_orchestrator import TradingOrchestrator
+
+
+class CountingExchangeClient:
+    def __init__(self):
+        self.candle_calls = 0
+        self.orderbook_calls = 0
+        self.price_calls = 0
+
+    def get_balances(self):
+        return {
+            "KRW": {"balance": 1_000_000.0, "locked": 0.0},
+            "XRP": {"balance": 0.0, "locked": 0.0, "avg_buy_price": 0.0},
+        }
+
+    def get_candles(self, unit=5, count=30, market="KRW-BTC", to=None):
+        self.candle_calls += 1
+        return [{"market": market, "trade_price": 100.0, "unit": unit} for _ in range(max(count, 5))]
+
+    def get_orderbook(self, market="KRW-BTC"):
+        self.orderbook_calls += 1
+        return {"market": market, "orderbook_units": [{"ask_price": 101.0, "bid_price": 99.0}]}
+
+    def get_current_price(self, market="KRW-BTC"):
+        self.price_calls += 1
+        return 100.0
+
+    def get_korean_name(self, market="KRW-BTC"):
+        return market
+
+    def get_tickers(self, markets):
+        return [{"market": market, "trade_price": 100.0} for market in markets]
+
+    def get_orderbooks(self, markets):
+        return [{"market": market, "orderbook_units": []} for market in markets]
+
+
+class TradingOrchestratorPerformanceTests(unittest.TestCase):
+    def setUp(self):
+        self.client = CountingExchangeClient()
+        self.adapter = BithumbAdapter(self.client)
+        self.orchestrator = TradingOrchestrator(__import__("logging").getLogger("test_trading_orchestrator"))
+
+    def _fresh_prefetch(self, market: str = "KRW-XRP") -> dict:
+        return {
+            "price": 123.0,
+            "orderbook": {"market": market, "prefetched": True, "orderbook_units": []},
+            "observed_at": time.monotonic(),
+        }
+
+    def test_priority_eval_snapshot_uses_prefetch_and_skips_balance(self):
+        prefetched = self._fresh_prefetch()
+        snap = self.orchestrator.load_priority_eval_snapshot(
+            self.adapter, "KRW-XRP", 5, prefetched,
+        )
+
+        self.assertTrue(snap.is_priority_eval_only)
+        self.assertEqual(snap.current_price, 123.0)
+        self.assertTrue(snap.orderbook.get("prefetched"))
+        self.assertEqual(snap.listing_maturity, "MATURE")
+        self.assertEqual(snap.candles_5m[0]["market"], "KRW-XRP")
+        self.assertEqual(snap.candles_1h[0]["unit"], 60)
+        self.assertEqual(self.client.orderbook_calls, 0)
+        self.assertEqual(self.client.price_calls, 0)
+        self.assertGreaterEqual(self.client.candle_calls, 3)
+
+    def test_full_snapshot_reuses_priority_snapshot_candles(self):
+        prefetched = self._fresh_prefetch()
+        candle_cache = {
+            "KRW-XRP": {
+                "candles_5m": [{"market": "KRW-XRP", "trade_price": 50.0, "unit": 5}] * 30,
+                "candles_1h": [{"market": "KRW-XRP", "trade_price": 50.0, "unit": 60}] * 50,
+                "candles_4h": [{"market": "KRW-XRP", "trade_price": 50.0, "unit": 240}] * 25,
+                "four_hour_history_status": "AVAILABLE",
+            }
+        }
+        priority = self.orchestrator.load_priority_eval_snapshot(
+            self.adapter, "KRW-XRP", 5, prefetched, candle_cache=candle_cache,
+        )
+        before_candles = self.client.candle_calls
+
+        full = self.orchestrator.load_market_snapshot(
+            self.adapter,
+            "KRW-XRP",
+            5,
+            prefetched,
+            candle_cache=candle_cache,
+            priority_snapshot=priority,
+        )
+
+        self.assertFalse(full.is_priority_eval_only)
+        self.assertEqual(full.candles_5m, priority.candles_5m)
+        self.assertEqual(full.candles_1h, priority.candles_1h)
+        self.assertEqual(full.candles_4h, priority.candles_4h)
+        self.assertEqual(full.listing_maturity, priority.listing_maturity)
+        self.assertEqual(full.korean_name, "KRW-XRP")
+        self.assertEqual(self.client.candle_calls, before_candles)
+
+    def test_prefetch_market_inputs_reuses_ticker_seed(self):
+        seed = {"KRW-XRP": {"market": "KRW-XRP", "trade_price": 777.0}}
+        result = self.orchestrator.prefetch_market_inputs(
+            self.adapter, ["KRW-XRP"], ticker_seed=seed,
+        )
+
+        self.assertEqual(result["KRW-XRP"]["price"], 777.0)
+        self.assertIn("orderbook", result["KRW-XRP"])
+
+    def test_prefetch_cycle_candles_populates_cache(self):
+        cache = self.orchestrator.prefetch_cycle_candles(
+            self.adapter, ["KRW-A", "KRW-B", "KRW-C"], 5, max_workers=2,
+        )
+
+        self.assertEqual(set(cache.keys()), {"KRW-A", "KRW-B", "KRW-C"})
+        for payload in cache.values():
+            self.assertIn("candles_5m", payload)
+            self.assertIn("candles_1h", payload)
+            self.assertIn("candles_4h", payload)
+
+
+if __name__ == "__main__":
+    unittest.main()

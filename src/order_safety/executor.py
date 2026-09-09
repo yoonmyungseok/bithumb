@@ -53,7 +53,7 @@ class SafeOrderExecutor:
             # 신규 매수 직전에는 캐시 가격을 신뢰하지 않고 거래소 최신가를 다시 확인한다.
             # 최신가를 확인할 수 없으면 기존 포지션은 건드리지 않되 신규 매수만 fail-closed 한다.
             try:
-                latest_price = float(exchange.get_current_price(market) or 0.0)
+                latest_price = float(exchange.get_current_price(market, force_refresh=True) or 0.0)
             except Exception as exc:
                 raise RuntimeError(f"{market} 주문 직전 최신가 조회 실패로 신규 매수를 차단합니다.") from exc
             if latest_price <= 0:

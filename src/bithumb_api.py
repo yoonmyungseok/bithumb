@@ -2,6 +2,7 @@ import hashlib
 import logging
 import math
 import os
+import threading
 import time
 from requests.adapters import HTTPAdapter
 import urllib.parse
@@ -41,6 +42,10 @@ class BithumbAPI:
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
         self.telemetry = ExchangeApiTelemetry("bithumb")
+        self._lock = threading.RLock()
+        # 시장 스캔·대시보드의 중복 /ticker 요청을 줄이기 위한 짧은 수명 캐시
+        self._ticker_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._ticker_cache_ttl = 1.5
 
     def _generate_jwt_token(self, params: dict[str, Any] | None = None) -> str:
         """
@@ -222,9 +227,11 @@ class BithumbAPI:
                 self._market_name_map = {}
         return self._market_name_map.get(market, market.split("-")[-1])
 
-    def get_tickers(self, markets: list[str]) -> list[dict[str, Any]]:
+    def get_tickers(self, markets: list[str], force_refresh: bool = False) -> list[dict[str, Any]]:
         """
         여러 마켓의 Ticker 시세 일괄 조회 (미상장 마켓 404 방지)
+        - 기본값은 1.5초 캐시를 사용해 시장 스캔·대시보드의 중복 호출을 방지한다.
+        - 주문 직전처럼 최신 시세가 필요한 호출자는 force_refresh=True를 사용할 수 있다.
         """
         if not markets:
             return []
@@ -232,24 +239,50 @@ class BithumbAPI:
         filtered = [m for m in markets if not valid_set or m in valid_set]
         if not filtered:
             return []
-        
+
+        now = time.monotonic()
+        cached_by_market: dict[str, dict[str, Any]] = {}
+        if not force_refresh:
+            with self._lock:
+                for market in filtered:
+                    cached_entry = self._ticker_cache.get(market)
+                    if cached_entry and now - cached_entry[0] < self._ticker_cache_ttl:
+                        cached_by_market[market] = dict(cached_entry[1])
+
+        missing_markets = [market for market in filtered if market not in cached_by_market]
+        if not missing_markets:
+            return [cached_by_market[market] for market in filtered if market in cached_by_market]
+
         # 빗썸 API 규격에 맞춰 쉼표로 연결
-        markets_str = ",".join(filtered)
+        markets_str = ",".join(missing_markets)
         params = {"markets": markets_str}
         try:
             data = self._request("GET", "/ticker", params=params)
-            return data if isinstance(data, list) else []
+            tickers = data if isinstance(data, list) else []
+            fetched_by_market = {
+                ticker["market"]: dict(ticker)
+                for ticker in tickers
+                if isinstance(ticker, dict) and isinstance(ticker.get("market"), str)
+            }
+            if fetched_by_market:
+                cached_at = time.monotonic()
+                with self._lock:
+                    for market, ticker in fetched_by_market.items():
+                        self._ticker_cache[market] = (cached_at, ticker)
+            merged = {**cached_by_market, **fetched_by_market}
+            return [merged[market] for market in filtered if market in merged]
         except (requests.exceptions.RequestException, KeyError, ValueError):
-            return []
+            # 이미 확보한 짧은 캐시만 반환해 장애 시 불필요한 빈 시세 전파를 줄인다.
+            return [cached_by_market[market] for market in filtered if market in cached_by_market]
 
-    def get_ticker(self, market: str = "KRW-BTC") -> dict[str, Any]:
+    def get_ticker(self, market: str = "KRW-BTC", force_refresh: bool = False) -> dict[str, Any]:
         """
         단일 코인 시세 조회
         """
         valid_set = self._get_valid_markets_set()
         if valid_set and market not in valid_set:
             return {}
-        res = self.get_tickers([market])
+        res = self.get_tickers([market], force_refresh=force_refresh)
         return res[0] if res else {}
 
     def get_candles(self, unit: int = 5, count: int = 30, market: str = "KRW-BTC", to: str | None = None) -> list[dict[str, Any]]:
@@ -307,11 +340,14 @@ class BithumbAPI:
         except (requests.exceptions.RequestException, KeyError, ValueError, IndexError):
             return {}
 
-    def get_current_price(self, market: str = "KRW-BTC") -> float:
+    def get_current_price(self, market: str = "KRW-BTC", force_refresh: bool = False) -> float:
         """
-        현재 체결가(trade_price) float 조회
+        현재 체결가(trade_price) float 조회. force_refresh=True면 캐시를 우회한다.
         """
-        ticker = self.get_ticker(market)
+        valid_set = self._get_valid_markets_set()
+        if valid_set and market not in valid_set:
+            return 0.0
+        ticker = self.get_ticker(market, force_refresh=force_refresh)
         return float(ticker.get("trade_price", 0.0))
 
     @staticmethod

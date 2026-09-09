@@ -58,6 +58,7 @@ class TradingBootstrapContext:
     send_daily_morning_report: Callable[[], None]
     update_heartbeat: Callable[[], None]
     cycle_offset_seconds: int = 0
+    reconcile_after_private_ws: Callable[[], None] | None = None
 
 
 class TradingBotBootstrap:
@@ -260,6 +261,15 @@ class TradingBotBootstrap:
                 drained = self.ctx.ws_client.drain_callbacks()
                 if self.ctx.private_ws is not None:
                     self.ctx.private_ws.drain_order_events()
+                    if self.ctx.reconcile_after_private_ws is not None:
+                        try:
+                            self.ctx.reconcile_after_private_ws()
+                        except Exception as exc:
+                            self.ctx.logger.debug(
+                                "%sPrivate WebSocket 큐 복구 REST 대사 예외: %s",
+                                prefix,
+                                exc,
+                            )
                 if now_ts - last_hb_ts >= 15.0:
                     self.ctx.update_heartbeat()
                     last_hb_ts = now_ts

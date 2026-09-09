@@ -1038,6 +1038,8 @@ class GeminiAnalyzer:
                 f"BTC 대비 RS는 일반 +{StrategyPolicy.NEW_LISTING_MIN_RS * 100:.1f}% / RISK_OFF "
                 f"+{StrategyPolicy.NEW_LISTING_MIN_RS_RISK_OFF * 100:.1f}% 이상이어야 합니다. "
                 f"BTC 레짐이 CRASH이면 신규 진입이 차단되며, RISK_OFF에서는 위 엄격 기준을 적용합니다. "
+                "스크리너 단계에서도 동일 SSOT(`classify_listing_maturity` + `is_new_listing_eligible`)로 "
+                "자격 미충족 NEW_LISTING 후보는 AI 랭킹 입력 전에 제외됩니다. "
                 f"1차 퀀트 new_listing_entry_signal() 통과 후에만 AI 분석이 호출되며, AI BUY 확인이 필수입니다"
                 "기본 관찰 모드이며, 해당 거래소의 NEW_LISTING_ENFORCEMENT=true 명시 설정 전에는 실주문이 금지됩니다. "
                 f"초기 주문 비중은 최대 종목 비중의 {StrategyPolicy.NEW_LISTING_ALLOC_RATIO * 100:.0f}%를 넘지 않습니다. "
@@ -1494,6 +1496,10 @@ class GeminiAnalyzer:
 
 각 종목의 [상대강도(RS)], [24h 거래대금 유동성], [상승률 및 모멘텀 건전성]을 종합 평가하여,
 진짜 세력 수급 주도주와 가짜 펌핑/설거지 종목을 선별하고 최우선순위 랭킹을 지정하세요.
+
+### [스크리너 단계 신규상장 사전 필터]
+이 목록은 이미 `classify_listing_maturity()` + `is_new_listing_eligible()` SSOT로 NEW_LISTING 자격 미충족(과열·RS·거래대금·CRASH 등) 종목이 제외된 shortlist입니다.
+MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후보는 RISK_OFF에서 당일 상승률·RS·거래대금 엄격 기준을 통과한 종목만 포함됩니다.
 
 ### [후보 종목 목록]
 {cand_summary}
