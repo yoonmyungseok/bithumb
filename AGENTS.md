@@ -9,7 +9,7 @@
 ## 프로젝트 개요
 
 - 목적: 빗썸과 업비트를 지원하는 실시간 AI 퀀트 트레이딩 시스템이다.
-- 기술: Python 3.11, WebSocket, REST API, 빗썸 Groq API, 업비트 Google Gemini API, Telegram API를 사용한다.
+- 기술: Python 3.11, WebSocket, REST API, Google Gemini API(빗썸 및 업비트 독립 분리), Telegram API를 사용한다.
 - 설계 기준: 코드 변경 시 [PROJECT_DESIGN.md](PROJECT_DESIGN.md)와의 정합성을 확인하고, 설계가 달라지면 함께 갱신한다.
 
 ## 주요 경로
@@ -31,8 +31,8 @@
 - `identifier`와 주문 저널을 우회하거나 멱등성을 약화하는 변경을 하지 않는다.
 - 수동 관리 종목과 사용자가 명시한 제외 종목은 자동 매매, 긴급 매도, 자동 평가에서 제외한다.
 - API 키, 시크릿, 토큰, 계좌 식별 정보, 주문 식별자를 코드·문서·로그·응답에 노출하지 않는다.
-- 빗썸 AI는 `BITHUMB_AI_PROVIDER=groq`와 전용 Groq 키·고정 모델만 사용한다. `FAST_TRADING=openai/gpt-oss-20b`은 신규 진입·보유 평가·후보 랭킹·거시 진단을, `DEEP_BRIEFING=openai/gpt-oss-120b`은 빗썸 브리핑을 담당하며 업비트 Gemini 경계와 혼합하지 않는다.
-- 빗썸 Groq에 전달하는 모든 모델 지침은 분석 보조·거래소 데이터 격리·제공 데이터만 사용·ACK 비체결·불확실 신규 BUY 금지·비밀정보 비출력 원칙을 포함해야 한다. 20B 호출 실패는 신규 BUY를 fail-closed로 차단하고, 120B 실패의 20B 브리핑 폴백만 허용한다.
+- 빗썸 AI는 `BITHUMB_AI_PROVIDER=gemini`와 전용 Gemini 키(`BITHUMB_GEMINI_API_KEY`)를 사용하며, 신규 BUY 주문 진입은 고정 모델(`gemini-3.5-flash-lite`)만 사용하고, 거시 레짐 진단 및 브리핑은 일반 Flash(`gemini-3.8-flash`) 우선 시도 후 Flash-Lite 순차 폴백을 허용한다. 업비트 Gemini 경계(`UPBIT_GEMINI_API_KEY`)와는 절대로 혼합하지 않는다.
+- 빗썸 Gemini에 전달하는 모든 모델 지침은 분석 보조·거래소 데이터 격리·제공 데이터만 사용·ACK 비체결·불확실 신규 BUY 금지·비밀정보 비출력 원칙을 포함해야 한다. Gemini 호출 실패는 신규 BUY를 fail-closed로 차단한다.
 
 ## 변경 작업 방식
 
@@ -41,7 +41,7 @@
 - 코드에는 한국어 주석을 작성한다. 의도, 안전 조건, 예외 처리처럼 유지보수에 필요한 이유를 설명하되 자명한 동작을 반복하지 않는다.
 - 기능 변경에는 같은 수준의 단위 또는 회귀 테스트를 추가·갱신하고, 실행한 검증 명령과 결과를 최종 응답에 보고한다.
 - 전략, 안전 정책, 데이터 흐름, 운영 절차가 바뀌면 `PROJECT_DESIGN.md`도 같은 변경에서 갱신한다.
-- 전략의 추가·수정·삭제(진입·청산·필터·임계값·비중·레짐 경로 포함) 시에는 `src/gemini_analyzer.py`의 AI 분석 프롬프트와 `GroqProvider.SYSTEM_INSTRUCTION`을 함께 최신화한다. 빗썸 Groq와 업비트 Gemini 각각의 프롬프트·모델 지침이 레짐·세션·후보 경로·승인 기준·안전 차단 조건·JSON 응답 스키마 및 Provider 격리와 일치하는지 검증하고, 프롬프트 회귀 테스트와 `PROJECT_DESIGN.md` 설명도 같은 변경에서 갱신한다.
+- 전략의 추가·수정·삭제(진입·청산·필터·임계값·비중·레짐 경로 포함) 시에는 `src/gemini_analyzer.py`의 AI 분석 프롬프트와 `BithumbGeminiProvider.SYSTEM_INSTRUCTION`을 함께 최신화한다. 빗썸과 업비트 각각의 프롬프트·모델 지침이 레짐·세션·후보 경로·승인 기준·안전 차단 조건·JSON 응답 스키마 및 Provider 격리와 일치하는지 검증하고, 프롬프트 회귀 테스트와 `PROJECT_DESIGN.md` 설명도 같은 변경에서 갱신한다.
 - 기존 사용자 변경과 무관한 파일을 되돌리거나 삭제하지 않는다.
 
 ## 운영 및 대시보드 규칙

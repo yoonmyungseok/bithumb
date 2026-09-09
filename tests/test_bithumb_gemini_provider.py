@@ -126,7 +126,7 @@ class BithumbGeminiProviderTests(unittest.TestCase):
         """두 거래소 모두 AI 장애 시 신규 BUY를 열지 않는 계약을 유지한다."""
         self.assertEqual(get_bithumb_ai_config_block_reason(), "")
         self.assertIsNotNone(build_bithumb_analyzer())
-        os.environ["BITHUMB_AI_PROVIDER"] = "groq"
+        os.environ["BITHUMB_AI_PROVIDER"] = "unsupported"
         self.assertIsNone(build_bithumb_analyzer())
         self.assertIn("gemini", get_bithumb_ai_config_block_reason())
         self.assertEqual(GeminiProvider.exchange, "upbit")
@@ -143,7 +143,7 @@ class BithumbGeminiProviderTests(unittest.TestCase):
         self.assertIn("gemini_bithumb", dashboard_js)
 
     def test_bithumb_card_uses_the_same_gemini_display_contract_as_upbit(self):
-        """빗썸 카드가 Groq 잔재 없이 업비트와 같은 Gemini 모델·색상·마크업·텔레메트리 계약을 사용한다."""
+        """빗썸 카드가 업비트와 같은 Gemini 모델·색상·마크업·텔레메트리 계약을 사용한다."""
         dashboard_html = (self.root / "dashboard" / "index.html").read_text(encoding="utf-8")
         dashboard_js = (self.root / "dashboard" / "src" / "app.js").read_text(encoding="utf-8")
 

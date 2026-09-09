@@ -41,7 +41,7 @@ from strategy_engine import (
 logger = logging.getLogger(__name__)
 
 
-# Groq strict JSON Schema와 분석기 공통 응답 검증에 사용하는 계약이다.
+# strict JSON Schema와 분석기 공통 응답 검증에 사용하는 계약이다.
 ENTRY_JSON_SCHEMA: dict[str, Any] = {
     "type": "object", "additionalProperties": False,
     "required": ["STATUS", "ACTION", "ENTRY_PRICE", "TARGET_PRICE", "STOP_LOSS", "ALLOC_PCT", "ALPHA_SCORE", "REASON"],
@@ -60,7 +60,7 @@ HOLDING_JSON_SCHEMA: dict[str, Any] = {
         "CONFIDENCE": {"type": "integer"}, "REASON": {"type": "string"},
     },
 }
-# Groq strict JSON Schema는 object 루트만 허용하므로 배열 응답은 래퍼 객체로 감싼다.
+# strict JSON Schema는 object 루트만 허용하므로 배열 응답은 래퍼 객체로 감싼다.
 RANKING_JSON_SCHEMA: dict[str, Any] = {
     "type": "object", "additionalProperties": False,
     "required": ["rankings"],
@@ -112,7 +112,19 @@ class GeminiAnalyzer:
     STABLE_MODELS = FALLBACK_MODELS
 
     # 브리핑 전용 Fallback 모델 (하루 1회 발송용 최신 Flash 모델 순차 구성, Pro 모델 완전 배제)
+    # 브리핑 전용 Fallback 모델 (하루 1회 발송용 최신 Flash 모델 순차 구성, Pro 모델 완전 배제)
     BRIEFING_FALLBACK_MODELS: ClassVar[list[str]] = [
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+    ]
+
+    # 거시 레짐(Macro Regime) 정밀 진단 전용 Fallback 모델 (일반 Flash 최우선 ➜ 쿼터 소진/장애 시 Flash-Lite 순차 폴백)
+    MACRO_FALLBACK_MODELS: ClassVar[list[str]] = [
         "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
@@ -125,8 +137,10 @@ class GeminiAnalyzer:
     # 동적 감지된 모델 캐시 및 TTL (6시간)
     _CACHED_MODELS: ClassVar[list[str]] = []
     _CACHED_BRIEFING_MODELS: ClassVar[list[str]] = []
+    _CACHED_MACRO_MODELS: ClassVar[list[str]] = []
     _MODELS_CACHED_AT: ClassVar[float] = 0.0
     _BRIEFING_MODELS_CACHED_AT: ClassVar[float] = 0.0
+    _MACRO_MODELS_CACHED_AT: ClassVar[float] = 0.0
     _MODELS_CACHE_TTL: ClassVar[float] = 21600.0
 
     # 모델별 쿨다운(429/타임아웃) 및 블랙리스트(404/지원종료) 만료 시점 캐시 (전역 공유)
@@ -148,8 +162,10 @@ class GeminiAnalyzer:
         with cls._CLASS_LOCK:
             cls._CACHED_MODELS.clear()
             cls._CACHED_BRIEFING_MODELS.clear()
+            cls._CACHED_MACRO_MODELS.clear()
             cls._MODELS_CACHED_AT = 0.0
             cls._BRIEFING_MODELS_CACHED_AT = 0.0
+            cls._MACRO_MODELS_CACHED_AT = 0.0
             cls._MODEL_COOLDOWNS.clear()
             cls._MODEL_BLACKLIST.clear()
             cls._MACRO_DIAG_CACHE.clear()
@@ -297,6 +313,17 @@ class GeminiAnalyzer:
         stable_flag = 0 if is_preview else 1
 
         return (tier, version, stable_flag, is_latest, lower_name)
+
+    @classmethod
+    def _macro_model_priority_key(cls, name: str) -> tuple[int, float, int, int, str]:
+        """
+        거시 레짐 진단용 Gemini 모델 우선순위 점수 산출 함수 (내림차순 정렬)
+        1순위(Tier 1): 일반 flash 계열 (추론력/거시판단 최우선, gemini-3.8-flash 우선)
+        2순위(Tier 0): flash-lite 계열 (폴백용)
+        Pro 및 기타 모델: 완전 배제 (-1)
+        세부 정렬: 최신 버전 번호(3.8 > 3.7 > 3.5 > 3.1 > 2.5), latest 별칭, 정식 릴리스 우선
+        """
+        return cls._briefing_model_priority_key(name)
 
     @classmethod
     def _set_model_cooldown(cls, model: str, duration_sec: float) -> None:
@@ -488,6 +515,99 @@ class GeminiAnalyzer:
             ]
             return fallback_usable[:limit]
 
+    @classmethod
+    def fetch_available_macro_models(cls, api_key: str = "") -> list[str]:
+        """
+        거시 레짐 진단용 최신 고성능 모델 목록을 API(ListModels)로부터 조회하여
+        최신 flash 계열 우선(3.8-flash 최우선) ➜ flash-lite 순으로 자동 정렬합니다.
+        (이미지·오디오·임베딩 등 미디어/특수 목적 모델 및 Pro 모델은 제외)
+        """
+        key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
+        if not key:
+            return list(cls.MACRO_FALLBACK_MODELS)
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+        try:
+            resp = requests.get(url, timeout=10)
+            cls._record_http("", "macro_router", "list_models", resp)
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_models = data.get("models", [])
+                valid_models = []
+                for item in raw_models:
+                    m_name = item.get("name", "").replace("models/", "").strip()
+                    methods = item.get("supportedGenerationMethods", [])
+
+                    if "generateContent" in methods:
+                        bad_keywords = [
+                            "pro", "embedding", "aqa", "imagen", "image", "audio",
+                            "tts", "stt", "omni", "vision", "high-res"
+                        ]
+                        if any(bad in m_name.lower() for bad in bad_keywords):
+                            continue
+                        if "flash" not in m_name.lower():
+                            continue
+                        valid_models.append(m_name)
+
+                if valid_models:
+                    sorted_models = sorted(valid_models, key=cls._macro_model_priority_key, reverse=True)
+                    logger.info(
+                        f"✨ [Gemini Macro Router] 거시 레짐 지원 모델 {len(sorted_models)}개 자동 감지 및 정렬 완료 "
+                        f"(1위: {sorted_models[0]}): {sorted_models[:5]}"
+                    )
+                    return sorted_models
+                else:
+                    logger.warning("Gemini ListModels 응답에 적합한 거시 레짐 모델이 없어 기본 Fallback 목록을 사용합니다.")
+            else:
+                logger.warning(f"Gemini ListModels 거시 레짐 모델 조회 실패 (HTTP {resp.status_code}) ➜ 기본 Fallback 목록 사용")
+        except Exception as e:
+            cls._record_http("", "macro_router", "list_models", error_kind="exception")
+            logger.warning(f"Gemini ListModels 거시 레짐 모델 조회 중 예외 발생: {e} ➜ 기본 Fallback 목록 사용")
+
+        return list(cls.MACRO_FALLBACK_MODELS)
+
+    @classmethod
+    def get_available_macro_models(cls, api_key: str = "", force_refresh: bool = False) -> list[str]:
+        """
+        6시간 TTL 캐시를 적용하여 거시 레짐용 가용 모델 목록을 반환합니다. (영구/장기 블랙리스트 제외)
+        """
+        now = time.time()
+        with cls._CLASS_LOCK:
+            if force_refresh or not cls._CACHED_MACRO_MODELS or (now - cls._MACRO_MODELS_CACHED_AT > cls._MODELS_CACHE_TTL):
+                models = cls.fetch_available_macro_models(api_key)
+                cls._CACHED_MACRO_MODELS = models
+                cls._MACRO_MODELS_CACHED_AT = now
+
+            active_models = [
+                m for m in cls._CACHED_MACRO_MODELS
+                if cls._MODEL_BLACKLIST.get(m, 0.0) <= now and "pro" not in m.lower()
+            ]
+            return active_models if active_models else list(cls.MACRO_FALLBACK_MODELS)
+
+    def get_macro_candidate_models(self, limit: int = 3) -> list[str]:
+        """
+        현재 시점에 쿨다운이나 블랙리스트가 아니고, 일일 쿼터 여유가 있는 거시 레짐 최우선 순위 모델 목록을 최대 limit개 반환합니다.
+        (Pro 모델 완전 제외, 3.8-flash ➜ 3.7 ➜ 3.6 ➜ 3.5 ➜ 3-flash ➜ 3.5-flash-lite 순차 폴백)
+        """
+        now_ts = time.time()
+        with self._CLASS_LOCK:
+            all_models = self.get_available_macro_models(self.api_key)
+            usable = [
+                m for m in all_models
+                if self._MODEL_COOLDOWNS.get(m, 0.0) <= now_ts
+                and "pro" not in m.lower()
+                and GeminiTelemetry.can_call_model(m, for_emergency_exit=False)
+            ]
+            if usable:
+                return usable[:limit]
+            fallback_usable = [
+                m for m in self.MACRO_FALLBACK_MODELS
+                if self._MODEL_BLACKLIST.get(m, 0.0) <= now_ts
+                and "pro" not in m.lower()
+                and GeminiTelemetry.can_call_model(m, for_emergency_exit=False)
+            ]
+            return fallback_usable[:limit]
+
     @property
     def _analysis_cache(self) -> dict[str, dict[str, Any]]:
         return self.__class__._ANALYSIS_CACHE
@@ -525,7 +645,7 @@ class GeminiAnalyzer:
     @property
     def provider_label(self) -> str:
         """실행 로그는 실제 호출 Provider명을 표시해 거래소별 혼동을 막는다."""
-        return "Groq" if self.provider.name == "groq" else "Gemini"
+        return "Gemini"
 
     @staticmethod
     def calculate_rsi(prices: list[float], period: int = 14) -> float:
@@ -1179,7 +1299,7 @@ class GeminiAnalyzer:
 }}
 """
 
-        # Groq 인퍼런스 서버의 조기 400(json_validate_failed) 드랍을 회피하고 로컬 2단계 검증을 적용한다.
+        # Provider 응답 검증 및 로컬 2단계 검증을 적용한다.
         provider_result = self.provider.complete_json(
             prompt, candidate_models, ENTRY_JSON_SCHEMA, context=market, timeout=25.0, max_tokens=4000, strict=False,
         )
@@ -1271,9 +1391,6 @@ class GeminiAnalyzer:
             return None
         resolved_schema = schema or {"type": "object", "additionalProperties": False, "required": [], "properties": {}}
         use_strict = True if strict is None else strict
-        if self.provider.name == "groq" and strict is None:
-            # 거시·보유·랭킹 배치는 strict object 루트 규칙을 지키되, Groq 400 회피를 위해 best-effort를 허용한다.
-            use_strict = False
         result = self.provider.complete_json(
             prompt,
             models,
@@ -1582,13 +1699,14 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
     ) -> dict[str, Any]:
         """
         [3순위] BTC 1시간봉/4시간봉 및 공포탐욕 지수를 종합 진단하여 매크로 레짐 및 권장 현금 비중 산출
-        - 30분(1800초) 캐시 적용
+        - 일반 Flash(gemini-3.8-flash) 최우선 라우팅 (소진/에러 시 Flash-Lite 순차 폴백)
+        - 1시간(3600초) 캐시 적용 (무료 티어 20 RPD 예산 철저 보호)
         """
         now_ts = time.time()
         if (
             hasattr(self, "_macro_diag_cache")
             and self._macro_diag_cache
-            and (now_ts - getattr(self, "_last_macro_diag_ts", 0.0) < 1800.0)
+            and (now_ts - getattr(self, "_last_macro_diag_ts", 0.0) < 3600.0)
         ):
             self._record_cache_hit("MACRO")
             return dict(self._macro_diag_cache)
@@ -1600,13 +1718,13 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
             "summary": "BTC 정상 안정세 (로컬 규칙)",
             "action_guideline": "정상적인 퀀트 분할 매매 진행",
         }
-        # Groq FAST 실패는 이미 공통 신규 BUY 게이트를 닫지만, 레짐 표기까지 정상으로 보이면 운영 판단을 흐린다.
-        groq_unavailable_diag = {
+        # 빗썸 AI 장애 시 레짐 표기까지 정상으로 보이면 운영 판단을 흐린다.
+        bithumb_unavailable_diag = {
             "regime": "CAUTION_PULLBACK",
             "risk_score": 70,
             "recommended_cash_ratio": 0.7,
-            "summary": "Groq 거시 진단 불가: 로컬 방어 규칙만 적용하고 신규 BUY는 차단",
-            "action_guideline": "기존 포지션 보호를 유지하고 Groq FAST 정상 응답 전까지 신규 진입 금지",
+            "summary": "AI 거시 진단 불가: 로컬 방어 규칙만 적용하고 신규 BUY는 차단",
+            "action_guideline": "기존 포지션 보호를 유지하고 AI 정상 응답 전까지 신규 진입 금지",
             "provider_status": "AI_UNAVAILABLE",
         }
         if not self.api_key or not btc_candles_1h or len(btc_candles_1h) < 10:
@@ -1624,15 +1742,33 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
                 else 0.0
             )
 
+            # 4시간봉 중기 추세 및 변동폭 정밀 계산 (Flash 전용 고차원 팩터)
+            btc_4h_desc = "4시간봉 데이터 없음"
+            if btc_candles_4h and len(btc_candles_4h) >= 10:
+                prices_4h = [float(c.get("trade_price", 0.0)) for c in btc_candles_4h]
+                ema20_4h = self.calculate_ema(prices_4h, min(len(prices_4h), 20))
+                ema60_4h = self.calculate_ema(prices_4h, min(len(prices_4h), 60))
+                chg_4h = ((cur_btc - prices_4h[1]) / prices_4h[1] * 100.0) if len(prices_4h) > 1 else 0.0
+                high_7d = max(prices_4h[:min(len(prices_4h), 42)])
+                low_7d = min(prices_4h[:min(len(prices_4h), 42)])
+                dd_7d = ((cur_btc - high_7d) / high_7d * 100.0) if high_7d > 0 else 0.0
+                rebound_7d = ((cur_btc - low_7d) / low_7d * 100.0) if low_7d > 0 else 0.0
+                trend_4h = "🟢 중기 정배열(상승세)" if ema20_4h >= ema60_4h else "🔴 중기 역배열(하락세)"
+                btc_4h_desc = (
+                    f"EMA20={ema20_4h:,.0f} | EMA60={ema60_4h:,.0f} ({trend_4h}) | 직전 4H {chg_4h:+.2f}% | "
+                    f"최근 7일 고점 대비 {dd_7d:+.2f}%, 저점 대비 반등 {rebound_7d:+.2f}%"
+                )
+
             fng_desc = fng_index.get("desc", "50점 (중립)") if fng_index else "중립"
 
             prompt = f"""당신은 매크로 크립토 헤지펀드 CIO입니다.
-비트코인(BTC) 1시간봉 지표와 크립토 시장 심리를 진단하여 거시 레짐과 리스크 수준을 판정하세요:
+비트코인(BTC) 1시간봉/4시간봉 복합 지표와 크립토 시장 심리를 진단하여 거시 레짐과 리스크 수준을 판정하세요:
 
 - BTC 현재가: {cur_btc:,.0f} KRW
-- 1시간 이평선: EMA20={ema20:,.0f} | EMA50={ema50:,.0f} ({'🟢 정배열(상승세)' if ema20 >= ema50 else '🔴 역배열(하락세)'})
+- 1시간 단기 추세: EMA20={ema20:,.0f} | EMA50={ema50:,.0f} ({'🟢 단기 정배열(상승세)' if ema20 >= ema50 else '🔴 단기 역배열(하락세)'})
 - 최근 등락률: 1시간 {chg_1h:+.2f}% | 24시간 {chg_24h:+.2f}%
-- 공포/탐욕 지수: {fng_desc}
+- 4시간 중기 추세: {btc_4h_desc}
+- 공포/탐욕 심리 지수: {fng_desc}
 
 ### [레짐 분류 옵션]
 - "BULL_TREND": 강력한 상승 추세, 알트코인 적극 매수
@@ -1651,8 +1787,14 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
   "action_guideline": "반드시 한국어로 봇 자금 운용 지침 1줄"
 }}
 """
+            provider_models = self.provider.models_for("macro")
+            macro_models = provider_models or self.get_macro_candidate_models(limit=3)
             parsed = self._call_gemini_json(
-                prompt, timeout=8.0, schema=MACRO_JSON_SCHEMA, context="macro_regime",
+                prompt,
+                candidate_models=macro_models,
+                timeout=10.0,
+                schema=MACRO_JSON_SCHEMA,
+                context="macro_regime",
                 schema_name="bithumb_macro_result",
             )
             if isinstance(parsed, dict) and "regime" in parsed:
@@ -1676,8 +1818,8 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
         except Exception as e:
             logger.warning(f"diagnose_macro_regime 예외: {e}")
 
-        if self.provider.name == "groq" and AIProviderTelemetry.get_entry_block_reason("bithumb"):
-            return groq_unavailable_diag
+        if getattr(self.provider, "exchange", "") == "bithumb" and AIProviderTelemetry.get_entry_block_reason("bithumb"):
+            return bithumb_unavailable_diag
         return fallback_diag
 
     def generate_market_briefing(
@@ -1716,12 +1858,8 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
    • [전략 제언]: 향후 몇 시간 동안의 안전 운용 지침
 3. 반드시 한국어로 정중하고 명확하게 작성.
 """
-            # 빗썸 Groq은 고정 브리핑 모델(120b -> 20b)만 사용하고, 업비트 Gemini는 동적 모델 라우터를 사용한다.
-            if self.provider.name == "groq":
-                models = self.provider.models_for("briefing")
-            else:
-                provider_models = self.provider.models_for("briefing")
-                models = provider_models or self.get_briefing_candidate_models(limit=5)
+            provider_models = self.provider.models_for("briefing")
+            models = provider_models or self.get_briefing_candidate_models(limit=5)
             if not models:
                 return default_comment
             result = self.provider.complete_text(

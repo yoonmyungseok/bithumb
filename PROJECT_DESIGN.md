@@ -1,4 +1,4 @@
-# Bithumb & Upbit AI Pro Quant Trading Bot (v8.53)
+# Bithumb & Upbit AI Pro Quant Trading Bot (v8.54)
 
 본 문서는 `c:\AI\bithumb` 디렉토리에 위치한 빗썸(Bithumb) 및 업비트(Upbit) 듀얼 거래소 지원 AI 퀀트 트레이딩 봇의 프로젝트 설명 및 아키텍처 설계서입니다. 이 문서는 다른 AI 에이전트 또는 개발자가 프로젝트의 전반적인 구조와 핵심 로직을 빠르고 명확하게 파악할 수 있도록 작성되었습니다.
 
@@ -16,7 +16,7 @@
 - **핵심 기술**: 
   - 빗썸 REST API & WebSocket (v1/v2)
   - 업비트 REST API & WebSocket (Public: 시세/체결, Private: myOrder/myAsset, HS512 JWT + unencoded query string SHA-512 hash, `identifier` 멱등성)
-  - 빗썸·업비트 분리 Google Gemini API (Flash-Lite 모델군), Telegram API
+  - 빗썸·업비트 분리 Google Gemini API (신규 BUY: Flash-Lite 고정, 거시 진단 및 브리핑: 일반 Flash 최우선 라우터), Telegram API
 - **주요 전략 및 아키텍처**: 
   - **다중 시간대(MTF) 분석**: 1시간봉 대세 추세 + 5분봉 정밀 타점 정렬
 - **거래대금 및 모멘텀 기반 동적 시장 스크리닝**: 모멘텀 후보를 `EARLY`(당일 상승률 +3% 이하의 RS 확인 초입)와 `EXTENDED`(확장 후반) 단계로 기록한다. 신규 주문은 `EARLY`에서만 소액으로 허용하고, `EXTENDED`는 분석·감사만 수행해 후발 추격을 방지한다. 동일 5분 사이클에서는 모멘텀 신규 주문을 1건으로 제한한다.
@@ -42,10 +42,14 @@
   - **7중 KRW-HOLO 수동 종목 절대 보호망**: 업비트 `KRW-HOLO`는 스크리닝, 주문, 긴급매도, 자산평가, 실시간 청산, 시트, 대시보드에서 100% 영구 제외
   - **대시보드 비정상 운영 로그 역방향 청크 스캔 (v8.40)**: 트레이딩 봇의 정상 사이클(`INFO`) 로그가 대량 누적되어도 이전 WARNING/ERROR/CRITICAL이 누락되지 않도록 파일 끝에서 역방향으로 256KB 단위 청크 스캔(최대 10MB, 소스당 최소 20건 목표)을 수행하여 최신 비정상 운영 로그를 확실히 수집 및 최신순 노출한다.
 
-### 빗썸 / 업비트 Gemini AI Provider 분리 정책 (v8.50)
+### 빗썸 / 업비트 Gemini AI Provider 분리 및 목적별 모델 라우팅 정책 (v8.54)
 
-- 빗썸 AI 분석은 `BITHUMB_AI_PROVIDER=gemini`와 `BITHUMB_GEMINI_API_KEY`를 통해서만 활성화한다. 공용 `GEMINI_API_KEY`, `UPBIT_GEMINI_API_KEY`, Groq 키는 fallback으로도 읽거나 사용하지 않는다.
-- `BithumbGeminiProvider`는 업비트 `GeminiProvider`와 별도 인스턴스·키·모델 캐시·사용량 파일을 사용한다. 빗썸 분석 모델은 업비트와 같은 `gemini-3.5-flash-lite`로 고정하며, Google Generative Language API의 `ListModels`에 해당 모델의 `generateContent` 지원이 확인될 때만 선택한다. 목록 조회 실패 또는 해당 모델 부재 시 latest 별칭·다른 모델로 대체 호출하지 않는다.
+- 빗썸 AI 분석은 `BITHUMB_AI_PROVIDER=gemini`와 `BITHUMB_GEMINI_API_KEY`를 통해서만 활성화한다. 공용 `GEMINI_API_KEY`, `UPBIT_GEMINI_API_KEY`는 fallback으로도 읽거나 사용하지 않는다.
+- **신규 BUY 진입 모델 고정**: 신규 BUY 진입 분석 모델은 업비트와 동일하게 `gemini-3.5-flash-lite`로 고정하며, Google Generative Language API의 `ListModels`에 해당 모델의 `generateContent` 지원이 확인될 때만 선택한다. 목록 조회 실패 또는 해당 모델 부재 시 latest 별칭·다른 모델로 대체 호출하지 않고 fail-closed 차단한다.
+- **거시 레짐(Macro Regime) 정밀 진단 및 브리핑 전담 모델 (v8.54)**: 
+  - 시장의 거시 방향성과 권장 현금 비중을 결정하는 `diagnose_macro_regime()` 및 정기 브리핑은 일반 Flash 계열(`gemini-3.8-flash` ➜ `gemini-3.7-flash` ➜ `gemini-3.5-flash`)을 최우선 라우팅한다.
+  - BTC 1시간봉 지표뿐 아니라 4시간봉 중장기 추세(EMA20/60 정·역배열), 7일 고저점 대비 이격도, 최근 변동성(ATR)을 복합 주입하여 Flash의 심층 추론 능력을 극대화한다.
+  - 무료 티어 쿼터(20 RPD) 방어를 위해 1시간(3600초) 캐시를 적용하고, 쿼터 소진(429/Threshold) 시 `gemini-3.5-flash-lite`로 무중단 순차 자동 폴백한다.
 - 구성 누락, ListModels 실패, 429/4xx/5xx, 타임아웃·네트워크 예외, 빈 응답, 잘못된 JSON 또는 로컬 JSON Schema 오류는 일반 후보·`MOMENTUM_BREAKOUT`·`RECOVERY_REBOUND`·`NEW_LISTING`을 포함한 모든 빗썸 신규 BUY를 fail-closed로 차단한다. 다른 모델 승격·로컬 BUY 폴백·다른 거래소 키 재사용은 허용하지 않는다. 기존 포지션의 주문·체결 대사·리스크 보호·청산은 계속 동작한다.
 - 업비트는 `UPBIT_GEMINI_API_KEY`와 `GeminiProvider`만 사용한다. HTTP 4xx/429/5xx, 타임아웃·네트워크 예외, 빈/스키마 오류, 가용 모델 없음 및 신규 진입용 쿼터 소진은 `data/upbit/gemini_entry_safety.json`에 기록하고 모든 신규 BUY를 fail-closed로 차단한다. 로컬 퀀트는 기존 보유 포지션의 보호·청산 보조에만 사용하며 로컬 BUY fallback은 허용하지 않는다. 거래소 REST/Private WebSocket, 주문 실행, 주문 저널 및 확정 체결 대사 계약은 Provider 전환 범위 밖이다.
 - 빗썸 Gemini 호출 계측은 `data/gemini_bithumb_telemetry.json`에 원자 저장·복원한다. 모델별 호출량·성공·429·오류·캐시·마지막 신규 BUY 안전 상태를 분리 보관하며, PT 자정 쿼터 리셋 정보를 표시한다. 저장 실패는 주문·체결·기존 포지션 보호를 막지 않는다.
@@ -243,6 +247,8 @@ c:\AI\bithumb\
 ## 4. 변경 이력 및 개선 히스토리 (Changelog)
 
 > 성능 경계: 전략 입력의 일괄 ticker·호가 값은 최대 1초만 재사용하며, 주문 직전 검증·체결 대사에는 사용하지 않습니다. 신규 진입 차단 상태에서는 후보용 AI 호출을 생략하지만 보유 포지션 방어는 계속 수행합니다. **업비트 5분 사이클**은 `market_selection` ticker seed 재사용, `prefetch_cycle_candles`(bounded concurrent, 기본 5 workers), AI 우선순위 정렬용 `load_priority_eval_snapshot`, 메인 루프 `load_market_snapshot` 캔들·스냅샷 공유로 `market_snapshot` REST를 줄입니다. `full_cycle` p95가 15초를 초과하면 WARNING 로그를 남기며, `priority_eval_snapshot`·`snapshot_cache_hit_rate`·`candle_prefetch` 계측을 추가합니다.
+
+| **v8.55** | 2026-09-09 | • **빗썸 Groq 레거시 코드·설정·테스트 완전 제거 및 Gemini 단일화**<br>• **`GroqProvider` 제거**: `src/ai_provider.py`의 `GroqProvider` 클래스 및 미사용 레거시 테스트 `tests/test_bithumb_groq_provider.py` 완전 삭제<br>• **분석기 및 런타임 정합화**: `src/gemini_analyzer.py`의 `provider_label`을 `Gemini`로 단일화, Groq strict 전용 분기 제거, 빗썸 AI 장애 시 방어 레짐(`AI_UNAVAILABLE`) 반환 계약을 빗썸 Gemini로 정합화, `src/trading_runtime.py` AI 마커 목록에서 Groq/gpt-oss 제거<br>• **규칙 및 환경변수 정합화**: `AGENTS.md`의 Groq/20B/120B 지침을 빗썸 전용 Gemini(`BithumbGeminiProvider`, `gemini-3.5-flash-lite`, fail-closed) 규칙으로 갱신, `.env.sample`·`.env.upbit.sample` 주석 정합화<br>• **검증**: 전체 단위/회귀 테스트 통과 |
 
 | **v8.54** | 2026-09-08 | • **업비트 5분 사이클 성능 최적화 (스냅샷·스크리너 I/O 절감)**<br>• **`load_priority_eval_snapshot()`**: AI 우선순위 정렬에 필요한 5m/1h/4h·listing_maturity·prefetch 호가만 조회, 메인 분석은 기존 full snapshot 유지<br>• **`prefetch_cycle_candles()`**: target 확정 직후 bounded concurrent(기본 5 workers)로 캔들 사전 조회, 정렬·메인 루프가 `candle_prefetch_cache` 공유<br>• **`market_screener` ticker seed**: `scan_markets`·`scan_swing_markets`가 동일 ticker 리스트 재사용, `prefetch_market_inputs(ticker_seed=)`로 280종목 재조회 방지<br>• **성능 가드**: `full_cycle` p95>15s WARNING, `priority_eval_snapshot`·`snapshot_cache_hit_rate` 계측 추가<br>• **검증**: `tests/test_trading_orchestrator.py`, `tests/test_trading_runtime.py` 12종목 mock 호출 상한 테스트 |
 

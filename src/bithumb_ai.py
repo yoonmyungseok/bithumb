@@ -13,7 +13,7 @@ def get_bithumb_ai_config_block_reason() -> str:
     provider = os.getenv("BITHUMB_AI_PROVIDER", "").strip().lower()
     if provider != "gemini":
         return "빗썸 AI Provider가 gemini로 설정되지 않아 신규 BUY를 차단합니다."
-    # 공용·업비트·Groq 키 fallback을 읽지 않아 거래소 자격 증명 경계를 고정한다.
+    # 공용·업비트 키 fallback을 읽지 않아 거래소 자격 증명 경계를 고정한다.
     if not os.getenv("BITHUMB_GEMINI_API_KEY", "").strip():
         return "빗썸 Gemini API 키가 없어 신규 BUY를 차단합니다."
     return ""

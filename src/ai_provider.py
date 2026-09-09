@@ -319,7 +319,7 @@ class AIProviderTelemetry:
 
     @staticmethod
     def _parse_reset_seconds(value: str) -> float | None:
-        """Groq 헤더의 `1h2m3.45s` 형식을 초 단위로 보수적으로 변환한다."""
+        """API 헤더의 `1h2m3.45s` 형식을 초 단위로 보수적으로 변환한다."""
         text = (value or "").strip().lower()
         if not text:
             return None
@@ -520,7 +520,7 @@ def _parse_json_text(raw: str) -> dict[str, Any] | list[Any] | None:
 
 
 def _validate_schema(value: Any, schema: dict[str, Any]) -> bool:
-    """Groq strict schema 응답도 로컬에서 핵심 타입·필수 필드를 재검증합니다."""
+    """Provider 스키마 응답의 핵심 타입·필수 필드를 로컬에서 재검증합니다."""
     expected = schema.get("type")
     if expected == "object":
         if not isinstance(value, dict):
@@ -574,8 +574,12 @@ class GeminiProvider:
         self, prompt: str, models: list[str], schema: dict[str, Any], *, context: str, timeout: float, max_tokens: int,
         schema_name: str = "bithumb_trading_result", strict: bool = True,
     ) -> ProviderResult:
-        """정상 JSON 스키마 응답만 신규 BUY 차단을 해제한다."""
+        """정상 JSON 스키마 응답만 신규 BUY 차단을 해제하며, 실패 시 다음 가용 모델로 순차 폴백한다."""
+        last_error = "no_model"
+        last_model = ""
+        last_status_code: int | None = None
         for model in models:
+            last_model = model
             try:
                 response = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}",
@@ -583,6 +587,7 @@ class GeminiProvider:
                         "temperature": 0.1, "topP": 0.8, "maxOutputTokens": max_tokens, "responseMimeType": "application/json",
                     }}, timeout=timeout,
                 )
+                last_status_code = response.status_code
                 GeminiTelemetry.record_http_attempt(model, context, "generate_content", response.status_code)
                 if response.status_code == 200:
                     value = _parse_json_text(self._extract_text(response.json()) or "")
@@ -591,33 +596,24 @@ class GeminiProvider:
                             self.exchange, blocked=False, context=context, model=model, status_code=response.status_code,
                         )
                         return ProviderResult(value, model)
-                    error_kind = "invalid_json" if value is None else "schema"
-                    AIProviderTelemetry.record_entry_safety(
-                        self.exchange, blocked=True, reason=error_kind, context=context, model=model,
-                        status_code=response.status_code,
-                    )
-                    return ProviderResult(None, model, error_kind)
-                error_kind = "rate_limited" if response.status_code == 429 else "http_error"
-                AIProviderTelemetry.record_entry_safety(
-                    self.exchange, blocked=True, reason=error_kind, context=context, model=model,
-                    status_code=response.status_code,
-                )
-                return ProviderResult(None, model, error_kind)
+                    last_error = "invalid_json" if value is None else "schema"
+                    continue
+                last_error = "rate_limited" if response.status_code == 429 else "http_error"
+                continue
             except requests.exceptions.Timeout:
                 GeminiTelemetry.record_http_attempt(model, context, "generate_content", None, "timeout")
-                AIProviderTelemetry.record_entry_safety(
-                    self.exchange, blocked=True, reason="timeout", context=context, model=model,
-                )
-                return ProviderResult(None, model, "timeout")
+                last_error = "timeout"
+                continue
             except (requests.exceptions.RequestException, ValueError, KeyError, IndexError):
                 GeminiTelemetry.record_http_attempt(model, context, "generate_content", None, "exception")
-                AIProviderTelemetry.record_entry_safety(
-                    self.exchange, blocked=True, reason="exception", context=context, model=model,
-                )
-                return ProviderResult(None, model, "exception")
+                last_error = "exception"
+                continue
 
-        AIProviderTelemetry.record_entry_safety(self.exchange, blocked=True, reason="no_model", context=context)
-        return ProviderResult(None, "", "no_model")
+        AIProviderTelemetry.record_entry_safety(
+            self.exchange, blocked=True, reason=last_error, context=context, model=last_model,
+            status_code=last_status_code,
+        )
+        return ProviderResult(None, last_model, last_error)
 
     def complete_text(self, prompt: str, models: list[str], *, context: str, timeout: float, max_tokens: int) -> ProviderResult:
         """업비트 브리핑 호환 경로입니다."""
@@ -673,6 +669,14 @@ class BithumbGeminiProvider:
     is_entry_fail_closed = True
     # 업비트 실거래 분석과 같은 구체 모델만 허용해 latest 별칭의 비가시적 변경을 막는다.
     TRADING_MODEL = "gemini-3.5-flash-lite"
+    MACRO_FALLBACK_MODELS = [
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3-flash",
+        "gemini-3.5-flash-lite",
+    ]
     # Flash-Lite만 탐색해 고비용 모델 승격과 암묵적 모델 폴백을 금지한다.
     SYSTEM_INSTRUCTION = """당신은 빗썸 전용 Gemini AI 분석 보조자입니다.
 빗썸에서 제공한 데이터만 사용하고 업비트·다른 거래소 데이터, API 키, 계좌, 주문 상태를 절대로 혼합하지 마세요. 제공된 수치 외에는 추측하지 마세요.
@@ -685,6 +689,7 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
         # 호출자에서 전달받은 전용 키만 보관하며 환경 변수 fallback을 의도적으로 두지 않는다.
         self.api_key = (api_key or "").strip()
         self._models: list[str] | None = None
+        self._macro_models: list[str] | None = None
 
     @property
     def is_configured(self) -> bool:
@@ -756,8 +761,37 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
         self._record_entry_safety(ProviderResult(None, "", error_kind or "exception", status_code, error_code), "list_models")
         return []
 
+    def _discover_macro_models(self) -> list[str]:
+        """빗썸 전용 키로 거시 진단용 Flash 모델을 탐색하고, 우선순위대로 반환한다."""
+        if not self.is_configured:
+            return []
+        try:
+            response = requests.get(
+                f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}", timeout=10.0,
+            )
+            if response.status_code != 200:
+                return [self.TRADING_MODEL]
+            payload = response.json()
+            available = [
+                str(item.get("name", "")).replace("models/", "").strip()
+                for item in payload.get("models", []) if isinstance(item, dict)
+                and "generateContent" in item.get("supportedGenerationMethods", [])
+                and "pro" not in str(item.get("name", "")).lower()
+            ]
+            candidates = [m for m in self.MACRO_FALLBACK_MODELS if m in available]
+            if candidates:
+                return candidates
+            return [self.TRADING_MODEL]
+        except Exception:
+            return [self.TRADING_MODEL]
+
     def models_for(self, purpose: str) -> list[str]:
-        """탐색 실패 시에는 추정 모델을 쓰지 않고 빈 목록으로 fail-closed 처리한다."""
+        """목적별 허용 모델을 반환하며, 신규 BUY(trading)는 TRADING_MODEL 단일 모델 fail-closed를 유지한다."""
+        if purpose == "macro":
+            if self._macro_models is None:
+                self._macro_models = self._discover_macro_models()
+            return list(self._macro_models) if self._macro_models else [self.TRADING_MODEL]
+
         if self._models is None:
             self._models = self._discover_models()
         elif self._models:
@@ -769,40 +803,48 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
                       timeout: float, max_tokens: int, schema_name: str = "bithumb_trading_result",
                       strict: bool = True) -> ProviderResult:
         """Gemini generateContent 응답을 로컬 JSON 스키마 검증 뒤에만 정상 처리한다."""
-        model = models[0] if len(models) == 1 else ""
-        if not self.is_configured or not model:
-            return self._record_entry_safety(ProviderResult(None, model, "configuration"), context)
-        started = time.monotonic()
-        status_code: int | None = None
-        error_kind = ""
-        error_code = ""
-        try:
-            response = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}",
-                json={"systemInstruction": {"parts": [{"text": self.SYSTEM_INSTRUCTION}]},
-                      "contents": [{"parts": [{"text": prompt}]}],
-                      "generationConfig": {"temperature": 0.1, "topP": 0.8, "maxOutputTokens": max_tokens,
-                                           "responseMimeType": "application/json"}}, timeout=timeout,
-            )
-            status_code = response.status_code
-            if status_code != 200:
-                error_kind = "rate_limited" if status_code == 429 else "http_error"
-                error_code = self._safe_error_code(response)
-                return self._record_entry_safety(ProviderResult(None, model, error_kind, status_code, error_code), context)
-            value = _parse_json_text(GeminiProvider._extract_text(response.json()) or "")
-            if value is None:
-                return self._record_entry_safety(ProviderResult(None, model, "invalid_json", status_code), context)
-            if not _validate_schema(value, schema):
-                return self._record_entry_safety(ProviderResult(None, model, "schema", status_code), context)
-            return self._record_entry_safety(ProviderResult(value, model, status_code=status_code), context)
-        except requests.exceptions.Timeout:
-            error_kind = "timeout"
-        except (requests.exceptions.RequestException, ValueError, TypeError, KeyError, IndexError):
-            error_kind = "exception"
-        finally:
-            AIProviderTelemetry.record(self.name, self.exchange, model or "unavailable", context, status_code,
-                                       (time.monotonic() - started) * 1000.0, error_kind)
-        return self._record_entry_safety(ProviderResult(None, model, error_kind or "exception", status_code, error_code), context)
+        if not self.is_configured or not models:
+            return self._record_entry_safety(ProviderResult(None, "", "configuration"), context)
+        last_result = ProviderResult(None, models[0], "configuration")
+        for model in models:
+            started = time.monotonic()
+            status_code: int | None = None
+            error_kind = ""
+            error_code = ""
+            try:
+                response = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}",
+                    json={"systemInstruction": {"parts": [{"text": self.SYSTEM_INSTRUCTION}]},
+                          "contents": [{"parts": [{"text": prompt}]}],
+                          "generationConfig": {"temperature": 0.1, "topP": 0.8, "maxOutputTokens": max_tokens,
+                                               "responseMimeType": "application/json"}}, timeout=timeout,
+                )
+                status_code = response.status_code
+                if status_code != 200:
+                    error_kind = "rate_limited" if status_code == 429 else "http_error"
+                    error_code = self._safe_error_code(response)
+                    last_result = ProviderResult(None, model, error_kind, status_code, error_code)
+                    continue
+                value = _parse_json_text(GeminiProvider._extract_text(response.json()) or "")
+                if value is None:
+                    last_result = ProviderResult(None, model, "invalid_json", status_code)
+                    continue
+                if not _validate_schema(value, schema):
+                    last_result = ProviderResult(None, model, "schema", status_code)
+                    continue
+                return self._record_entry_safety(ProviderResult(value, model, status_code=status_code), context)
+            except requests.exceptions.Timeout:
+                error_kind = "timeout"
+                last_result = ProviderResult(None, model, error_kind, status_code, error_code)
+                continue
+            except (requests.exceptions.RequestException, ValueError, TypeError, KeyError, IndexError):
+                error_kind = "exception"
+                last_result = ProviderResult(None, model, error_kind, status_code, error_code)
+                continue
+            finally:
+                AIProviderTelemetry.record(self.name, self.exchange, model or "unavailable", context, status_code,
+                                           (time.monotonic() - started) * 1000.0, error_kind)
+        return self._record_entry_safety(last_result, context)
 
     def complete_text(self, prompt: str, models: list[str], *, context: str, timeout: float, max_tokens: int) -> ProviderResult:
         """브리핑은 신규 BUY 게이트와 독립된 텍스트 보조 경로로만 제공한다."""
@@ -836,183 +878,3 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
                                        (time.monotonic() - started) * 1000.0, error_kind)
         return ProviderResult(None, model, error_kind or "exception", status_code, error_code)
 
-
-class GroqProvider:
-    """빗썸 전용 Groq Provider; FAST 실패는 신규 매수에 로컬 BUY를 허용하지 않습니다."""
-
-    name = "groq"
-    exchange = "bithumb"
-    is_entry_fail_closed = True
-    FAST_TRADING = "openai/gpt-oss-20b"
-    DEEP_BRIEFING = "openai/gpt-oss-120b"
-    # 모든 빗썸 Groq 모델에 같은 안전 경계를 전달해 개별 사용자 프롬프트의 누락을 막는다.
-    SYSTEM_INSTRUCTION = """당신은 빗썸 전용 Groq AI 분석 보조자입니다.
-당신의 역할은 서버가 제공한 실시간 수치만 근거로 분석 결과를 만드는 것이며, 주문 제출·취소·체결 확정·잔고 변경 권한은 없습니다.
-업비트, Gemini, 다른 거래소 데이터·키·계좌·주문 상태를 가정하거나 섞지 마세요. 제공되지 않은 외부 정보, 과거 기억, 추측으로 수치를 보완하지 마세요.
-ACK는 체결이 아닙니다. REST 또는 Private WebSocket의 확정 체결 정보가 없는 한 포지션·손익·쿨다운·주문 완료를 단정하지 마세요.
-신규 진입 데이터가 누락되거나 모순되면 BUY를 제안하지 말고 HOLD를 선택하세요. 보유 포지션 분석도 조언일 뿐 직접 청산을 실행할 수 없습니다.
-단타(SCALP), 중기 추세추종(SWING), 신규 상장 단타(NEW_LISTING) 경로에 맞춰 제공된 기준(레짐, 세션, 목표/손절선, 알파 승인선)을 엄격히 준수하세요. NEW_LISTING은 신뢰 가능한 희소 4H 상장 이력이 확인될 때만 4H/1H 면제를 적용하며, 빈 응답·조회 실패·파싱 실패는 신규 BUY를 차단합니다. 스크리너 단계 신규상장 사전 필터로 `classify_listing_maturity()` + `is_new_listing_eligible()` SSOT에 따라 자격 미충족 NEW_LISTING 후보는 AI 랭킹·심층 분석 입력 전에 제외됩니다. 신규상장 전략의 기본값은 관찰 모드이며, 거래소별 NEW_LISTING_ENFORCEMENT 명시 설정이 없는 한 BUY를 제안하지 마세요. CRASH에서는 신규 진입이 차단되고 RISK_OFF에서는 더 엄격한 기준을 적용합니다.
-API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·재현하지 마세요. 요청별 출력 스키마·형식·언어를 정확히 따르고, JSON 요청에는 마크다운 없는 유효 JSON만 반환하세요.
-모든 설명과 REASON, 분석 근거(reason, summary, guideline 등 모든 텍스트 값)는 반드시 명확하고 자연스러운 한국어로만 작성하세요. 영어나 다른 언어로 출력하지 마세요."""
-
-    def __init__(self, api_key: str, fast_model: str, deep_model: str):
-        self.api_key = (api_key or "").strip()
-        self.fast_model = (fast_model or "").strip()
-        self.deep_model = (deep_model or "").strip()
-
-    @property
-    def is_configured(self) -> bool:
-        """고정 모델 매핑과 자격 증명이 모두 있을 때만 분석을 허용합니다."""
-        return bool(self.api_key and self.fast_model == self.FAST_TRADING and self.deep_model == self.DEEP_BRIEFING)
-
-    def models_for(self, purpose: str) -> list[str]:
-        return [self.deep_model] if purpose == "briefing" else [self.fast_model]
-
-    @staticmethod
-    def _safe_error_code(response: requests.Response) -> str:
-        """Groq 오류 본문에서 키·프롬프트 없이 오류 코드/타입만 제한적으로 추출한다."""
-        try:
-            payload = response.json()
-            error = payload.get("error", {}) if isinstance(payload, dict) else {}
-            raw = error.get("code") or error.get("type") or ""
-            # 외부 오류 문자열은 예상치 못한 값을 포함할 수 있어 운영 저장소에는 식별자 형식만 남긴다.
-            return re.sub(r"[^A-Za-z0-9_.:-]", "", str(raw))[:80]
-        except (ValueError, TypeError, AttributeError):
-            return ""
-
-    @staticmethod
-    def _safe_error_summary(response: requests.Response) -> str:
-        """Groq 오류 본문에서 키·계정정보 없이 오류 사유 및 요약만 안전하게 추출한다."""
-        try:
-            payload = response.json()
-            error = payload.get("error", {}) if isinstance(payload, dict) else {}
-            msg = str(error.get("message") or "").strip()
-            # 줄바꿈 및 다중 공백 정리, 키나 토큰 형태의 민감 패턴 마스킹
-            msg = re.sub(r"[\r\n\t]+", " ", msg)
-            msg = re.sub(r"(?:gsk_|key|secret|token|bearer)[A-Za-z0-9_\-]+", "***", msg, flags=re.I)
-            return msg[:120]
-        except (ValueError, TypeError, AttributeError):
-            return ""
-
-    def _record_fast_entry_safety(self, result: ProviderResult, context: str) -> ProviderResult:
-        """FAST JSON 호출 성공 전까지 모든 빗썸 신규 진입을 닫고 성공 후에만 재개한다."""
-        is_success = isinstance(result.value, dict) or isinstance(result.value, list)
-        AIProviderTelemetry.record_entry_safety(
-            self.exchange,
-            blocked=not is_success,
-            reason=result.error_kind or "invalid_response",
-            context=context,
-            model=result.model or self.fast_model,
-            status_code=result.status_code,
-            error_code=result.error_code,
-        )
-        return result
-
-    def _post(self, model: str, payload: dict[str, Any], context: str, timeout: float) -> ProviderResult:
-        started = time.monotonic()
-        status_code: int | None = None
-        error_kind = ""
-        error_code = ""
-        error_summary = ""
-        reset_requests = ""
-        try:
-            response = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                json=payload, timeout=timeout,
-            )
-            status_code = response.status_code
-            # Groq 공식 헤더는 RPD 쿼터 창이 리셋되기까지의 실제 남은 시간을 제공한다.
-            reset_requests = str(response.headers.get("x-ratelimit-reset-requests", ""))
-            if status_code != 200:
-                error_kind = "rate_limited" if status_code == 429 else "http_error"
-                error_code = self._safe_error_code(response)
-                error_summary = self._safe_error_summary(response)
-                return ProviderResult(None, model, error_kind, status_code, error_code)
-            data = response.json()
-            choices = data.get("choices", [])
-            content = choices[0].get("message", {}).get("content") if choices and isinstance(choices[0], dict) else None
-            if not isinstance(content, str) or not content.strip():
-                error_kind = "invalid_response"
-                return ProviderResult(None, model, error_kind, status_code, error_code)
-            return ProviderResult(content.strip(), model, status_code=status_code, error_code=error_code)
-        except requests.exceptions.Timeout:
-            error_kind = "timeout"
-            return ProviderResult(None, model, error_kind, status_code, error_code)
-        except (requests.exceptions.RequestException, ValueError, KeyError, IndexError, TypeError):
-            error_kind = "exception"
-            return ProviderResult(None, model, error_kind, status_code, error_code)
-        finally:
-            AIProviderTelemetry.record(
-                self.name, self.exchange, model, context, status_code,
-                (time.monotonic() - started) * 1000.0, error_kind, reset_requests,
-            )
-            if error_code:
-                if error_summary:
-                    logger.warning("[Groq] 안전 오류 코드: HTTP %s, 모델=%s, 목적=%s, 코드=%s (%s)", status_code, model, context, error_code, error_summary)
-                else:
-                    logger.warning("[Groq] 안전 오류 코드: HTTP %s, 모델=%s, 목적=%s, 코드=%s", status_code, model, context, error_code)
-
-    def complete_json(
-        self,
-        prompt: str,
-        models: list[str],
-        schema: dict[str, Any],
-        *,
-        context: str,
-        timeout: float,
-        max_tokens: int,
-        schema_name: str = "bithumb_trading_result",
-        strict: bool = False,
-    ) -> ProviderResult:
-        """Groq JSON Schema 가이던스와 로컬 재검증을 모두 적용합니다."""
-        model = self.fast_model
-        if not self.is_configured or models != [model]:
-            return ProviderResult(None, model, "configuration")
-        result = self._post(model, {
-            "model": model,
-            # 사용자 데이터보다 먼저 시스템 지침을 전달해 20B 분석 경로의 안전 계약을 고정한다.
-            "messages": [
-                {"role": "system", "content": self.SYSTEM_INSTRUCTION},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.1,
-            "max_tokens": max_tokens,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {"name": schema_name, "strict": strict, "schema": schema},
-            },
-        }, context, timeout)
-        if not isinstance(result.value, str):
-            return self._record_fast_entry_safety(result, context)
-        value = _parse_json_text(result.value)
-        if value is None:
-            return self._record_fast_entry_safety(ProviderResult(None, model, "invalid_json", result.status_code, result.error_code), context)
-        if not _validate_schema(value, schema):
-            return self._record_fast_entry_safety(ProviderResult(None, model, "schema", result.status_code, result.error_code), context)
-        return self._record_fast_entry_safety(ProviderResult(value, model, status_code=result.status_code, error_code=result.error_code), context)
-
-    def complete_text(self, prompt: str, models: list[str], *, context: str, timeout: float, max_tokens: int) -> ProviderResult:
-        """120B 브리핑 실패 시에만 20B 요약 브리핑으로 단일 폴백합니다."""
-        if not self.is_configured or models != [self.deep_model]:
-            return ProviderResult(None, self.deep_model, "configuration")
-        deep_result = self._post(self.deep_model, {
-            "model": self.deep_model,
-            # 120B 브리핑도 같은 거래소 분리·비주문 권한 지침을 반드시 받는다.
-            "messages": [
-                {"role": "system", "content": self.SYSTEM_INSTRUCTION},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.2, "max_tokens": max_tokens,
-        }, context, timeout)
-        if isinstance(deep_result.value, str):
-            return deep_result
-        return self._post(self.fast_model, {
-            "model": self.fast_model,
-            # 브리핑의 20B 폴백도 원본 120B와 동일한 안전 지침을 사용한다.
-            "messages": [
-                {"role": "system", "content": self.SYSTEM_INSTRUCTION},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.2, "max_tokens": max_tokens,
-        }, f"{context}_fast_fallback", timeout)

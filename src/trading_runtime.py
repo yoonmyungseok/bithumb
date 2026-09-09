@@ -140,7 +140,7 @@ class TradingRuntimeConfig:
     is_bot_paused: Callable[[], bool]
     min_order_krw: float
     orderbook_slippage_enforcement: bool = False
-    # 빗썸만 Groq 구성/FAST 실패 시 전체 신규 BUY를 닫는 별도 안전 훅을 주입한다.
+    # 빗썸만 AI 구성/분석 실패 시 전체 신규 BUY를 닫는 별도 안전 훅을 주입한다.
     analyzer_factory: Callable[[], GeminiAnalyzer | None] | None = None
     new_buy_block_reason: Callable[[], str] | None = None
 
@@ -1495,7 +1495,7 @@ class TradingCycleEngine:
                 called_ai_flag
                 or any(
                     marker in strategy.get("reason", "")
-                    for marker in ("gemini", "Gemini", "AI", "Flash", "flash", "flash-lite", "Groq", "gpt-oss")
+                    for marker in ("gemini", "Gemini", "AI", "Flash", "flash", "flash-lite")
                 )
             )
         )

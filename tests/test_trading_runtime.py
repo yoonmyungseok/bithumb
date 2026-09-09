@@ -667,7 +667,7 @@ class TradingRuntimePrefixTests(unittest.TestCase):
                     "target_price": 344.0,
                     "stop_loss": 320.0,
                     "alloc_pct": 0.15,
-                    "reason": "Groq AI 신규상장 승인",
+                    "reason": "Gemini AI 신규상장 승인",
                     "alpha_score": 82,
                 }
 

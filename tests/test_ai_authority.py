@@ -249,9 +249,9 @@ class AIAuthorityTests(unittest.TestCase):
         self.assertEqual(result.action, "BUY")
         self.assertIn("EXTENDED 주도주 고확신 확인형 진입", result.reason)
 
-    def test_groq_runtime_failure_blocks_momentum_direct_entry(self):
-        """Groq FAST 장애면 AI를 우회하는 초기 모멘텀 직접 진입도 주문 후보가 되면 안 된다."""
-        self.runtime.config.new_buy_block_reason = lambda: "빗썸 Groq FAST 분석 장애(http_error)로 신규 BUY를 차단합니다."
+    def test_bithumb_ai_runtime_failure_blocks_momentum_direct_entry(self):
+        """빗썸 AI 분석 장애면 AI를 우회하는 초기 모멘텀 직접 진입도 주문 후보가 되면 안 된다."""
+        self.runtime.config.new_buy_block_reason = lambda: "빗썸 Gemini 분석 장애(http_error)로 신규 BUY를 차단합니다."
         inputs = MarketEntryInputs(
             exchange=self.mock_exchange, market="KRW-TEST", korean_name="테스트",
             candidate_type="MOMENTUM_BREAKOUT",
