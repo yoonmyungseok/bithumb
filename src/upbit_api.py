@@ -70,6 +70,10 @@ class UpbitAPI:
         # 시장 스캔 결과를 재사용해 분석·대시보드의 중복 /ticker 요청을 줄인다.
         self._ticker_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._ticker_cache_ttl = 1.5
+        # 4시간봉(240분) 등 긴 주기의 캔들 재사용으로 초당 요청 제한(429)을 방지한다.
+        self._candle_cache: dict[tuple[str, int, int], tuple[float, list[dict[str, Any]]]] = {}
+        self._candle_cache_ttl_long = 180.0
+        self._candle_cache_ttl_short = 5.0
 
     @staticmethod
     def _normalize_rate_limit_group(group: str) -> str:
@@ -453,16 +457,36 @@ class UpbitAPI:
         res = self.get_tickers([market], force_refresh=force_refresh)
         return res[0] if res else {}
 
-    def get_candles(self, unit: int = 5, count: int = 30, market: str = "KRW-BTC", to: str | None = None) -> list[dict[str, Any]]:
+    def get_candles(
+        self,
+        unit: int = 5,
+        count: int = 30,
+        market: str = "KRW-BTC",
+        to: str | None = None,
+        force_refresh: bool = False,
+    ) -> list[dict[str, Any]]:
         """
         분봉 캔들 데이터 조회 (최신 순으로 정렬되어 반환됨)
         - unit: 1, 3, 5, 10, 15, 30, 60, 240
         - count: 조회할 캔들 개수 (최대 200)
         - to: 마지막 캔들 시각 (예: 2026-08-25T12:00:00+09:00 또는 YYYY-MM-DD HH:MM:SS)
+        - force_refresh: 캐시를 우회하고 새 데이터를 조회할지 여부
         """
         valid_set = self._get_valid_markets_set()
         if valid_set and market not in valid_set:
             return []
+
+        # to 파라미터가 없는 실시간 캔들에 대해 단기 TTL 캐시를 적용해 중복 요청(429)을 방지한다.
+        cache_key = (market, unit, count)
+        if not to and not force_refresh:
+            ttl = self._candle_cache_ttl_long if unit >= 60 else self._candle_cache_ttl_short
+            with self._lock:
+                cached = self._candle_cache.get(cache_key)
+                if cached:
+                    ts, data = cached
+                    if (time.time() - ts) < ttl and data:
+                        return list(data)
+
         endpoint = f"/candles/minutes/{unit}"
         params: dict[str, Any] = {
             "market": market,
@@ -472,7 +496,12 @@ class UpbitAPI:
             params["to"] = to
         try:
             data = self._request("GET", endpoint, params=params)
-            return data if isinstance(data, list) else []
+            if isinstance(data, list) and data:
+                if not to:
+                    with self._lock:
+                        self._candle_cache[cache_key] = (time.time(), list(data))
+                return data
+            return []
         except Exception:
             return []
 

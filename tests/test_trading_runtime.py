@@ -627,7 +627,8 @@ class TradingRuntimePrefixTests(unittest.TestCase):
     @patch("trading_runtime.recovery_rebound_signal", return_value={"allow_buy": False})
     @patch("trading_runtime.entry_signal")
     @patch("trading_runtime.select_completed_candles")
-    def test_new_listing_path_activates_without_four_hour_gate(self, mock_select_candles, mock_entry_signal, _mock_recovery):
+    @patch("trading_runtime.StrategyPolicy.is_new_listing_enforcement_enabled", return_value=True)
+    def test_new_listing_path_activates_without_four_hour_gate(self, _mock_enforcement, mock_select_candles, mock_entry_signal, _mock_recovery):
         mock_select_candles.side_effect = (
             lambda candles, minimum_count=25: candles[1:1 + minimum_count]
             if len(candles) >= minimum_count + 1 else []

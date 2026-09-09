@@ -32,12 +32,21 @@ class TestWebServerStatic(unittest.TestCase):
             "candidates": []
         }
         self.action_called = None
-        self.port = 17985
+        self._orig_action_token = os.environ.get("DASHBOARD_ACTION_TOKEN")
+        os.environ.pop("DASHBOARD_ACTION_TOKEN", None)
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            self.port = s.getsockname()[1]
 
     def tearDown(self):
         if hasattr(self, "server") and self.server:
             self.server.stop()
             time.sleep(0.1)
+        if getattr(self, "_orig_action_token", None) is not None:
+            os.environ["DASHBOARD_ACTION_TOKEN"] = self._orig_action_token
+        else:
+            os.environ.pop("DASHBOARD_ACTION_TOKEN", None)
 
     def _get_status(self):
         return dict(self.mock_data)

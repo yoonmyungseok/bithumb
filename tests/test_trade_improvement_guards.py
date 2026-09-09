@@ -76,7 +76,7 @@ class TestTradeImprovementGuards(unittest.TestCase):
             "candidates": [{
                 "content": {
                     "parts": [{
-                        "text": '{"STATUS": "ACTIVE", "ACTION": "BUY", "ENTRY_PRICE": 100, "TARGET_PRICE": 105, "STOP_LOSS": 97, "ALLOC_PCT": 0.5, "REASON": "급등 모멘텀 포착"}'
+                        "text": '{"STATUS": "ACTIVE", "ACTION": "BUY", "ENTRY_PRICE": 100, "TARGET_PRICE": 105, "STOP_LOSS": 97, "ALLOC_PCT": 0.5, "ALPHA_SCORE": 80, "REASON": "급등 모멘텀 포착"}'
                     }]
                 }
             }]

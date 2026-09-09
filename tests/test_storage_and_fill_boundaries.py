@@ -71,27 +71,31 @@ class StorageAndFillBoundaryTests(unittest.TestCase):
 
         # REST 대사가 확인한 체결 증가분에서만 상태를 갱신한다.
         processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=110.0, remaining_volume=0.0)
-        cooldown.record_exit.assert_called_once_with("KRW-BTC", "손절 방어", exit_price=110.0)
+        cooldown.record_exit.assert_called_once_with("KRW-BTC", "STOP_LOSS", exit_price=110.0)
         risk.add_realized_trade.assert_called_once()
 
     def test_ai_emergency_exit_reason_refined_to_korean(self):
-        """AI_EMERGENCY_EXIT 사유가 확정 체결 시 한글 레이블로 정제되어 쿨다운/기록에 반영된다."""
+        """AI_EMERGENCY_EXIT 사유가 확정 체결 시 쿨다운에는 원본 코드로, 거래 메모리에는 한글 레이블로 반영된다."""
         journal = _InMemoryJournal()
         journal.orders[0]["exit_reason"] = "AI_EMERGENCY_EXIT"
         journal.orders[0]["avg_buy_price"] = 100.0
         cooldown = MagicMock()
         risk = MagicMock()
-        processor = OrderFillProcessor(journal, risk_manager=risk, cooldown_manager=cooldown)
+        trade_mem = MagicMock()
+        processor = OrderFillProcessor(journal, risk_manager=risk, cooldown_manager=cooldown, trade_memory=trade_mem)
 
         # 손실 상태의 AI 비상탈출 (90원에 체결)
         processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=90.0, remaining_volume=0.0)
-        cooldown.record_exit.assert_called_once_with("KRW-BTC", "AI 긴급 비상탈출", exit_price=90.0)
+        cooldown.record_exit.assert_called_once_with("KRW-BTC", "AI_EMERGENCY_EXIT", exit_price=90.0)
+        self.assertEqual(trade_mem.record_completed_trade.call_args.kwargs["reason"], "AI 긴급 비상탈출")
 
         # 이익 상태의 AI 비상탈출 (110원에 체결)
         cooldown.reset_mock()
+        trade_mem.reset_mock()
         journal.orders[0]["processed_executed_volume"] = 0.0
         processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=110.0, remaining_volume=0.0)
-        cooldown.record_exit.assert_called_once_with("KRW-BTC", "AI 긴급 익절탈출", exit_price=110.0)
+        cooldown.record_exit.assert_called_once_with("KRW-BTC", "AI_EMERGENCY_EXIT", exit_price=110.0)
+        self.assertEqual(trade_mem.record_completed_trade.call_args.kwargs["reason"], "AI 긴급 익절탈출")
 
     def test_insert_trade_canonical_field_mapping(self):
         """insert_trade 호출 시 레거시 키(reason, btc_regime, bars_held)가 표준 컬럼으로 매핑된다."""

@@ -90,7 +90,7 @@ class TestGeminiCallOptimization(unittest.TestCase):
                     "content": {
                         "parts": [
                             {
-                                "text": '{"STATUS":"ACTIVE","ACTION":"BUY","ENTRY_PRICE":1000,"TARGET_PRICE":1050,"STOP_LOSS":980,"ALLOC_PCT":0.3,"REASON":"골든크로스"}'
+                                "text": '{"STATUS":"ACTIVE","ACTION":"BUY","ENTRY_PRICE":1000,"TARGET_PRICE":1050,"STOP_LOSS":980,"ALLOC_PCT":0.3,"ALPHA_SCORE":80,"REASON":"골든크로스"}'
                             }
                         ]
                     }

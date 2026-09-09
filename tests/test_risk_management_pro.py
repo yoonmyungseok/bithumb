@@ -106,6 +106,8 @@ class RiskManagementProTests(unittest.TestCase):
         mock_exchange.round_price_to_tick.side_effect = lambda p: p
 
         journal = OrderJournal(data_dir=self.test_dir)
+        buy_cid = journal.record_intent(market="KRW-BTC", side="bid", volume=0.01, price=100000000.0, ord_type="limit")
+        journal.mark(buy_cid, OrderStatus.FILLED, executed_volume=0.01, avg_price=100000000.0)
         executor = SafeOrderExecutor(journal)
         executor.submit = MagicMock(return_value={"uuid": "hard-stop-order-1", "client_order_id": "bot-hs-1"})
 

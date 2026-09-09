@@ -136,6 +136,29 @@ class UpbitAPITests(unittest.TestCase):
             self.assertEqual(self.api.get_current_price("KRW-BTC", force_refresh=True), 100.0)
             self.assertEqual(mock_request.call_count, 2)
 
+    def test_get_candles_reuses_cache_and_force_refresh_bypasses(self):
+        # 4시간봉(unit=240) 등 긴 주기의 캔들은 캐시되어 429를 방지한다.
+        self.api._valid_markets_cache = {"KRW-BTC"}
+        fake_candles = [{"market": "KRW-BTC", "trade_price": 50000000.0}]
+        with patch.object(self.api, "_request") as mock_request:
+            mock_request.return_value = list(fake_candles)
+
+            # 첫 호출 -> _request 실행
+            c1 = self.api.get_candles(unit=240, count=25, market="KRW-BTC")
+            self.assertEqual(len(c1), 1)
+            self.assertEqual(mock_request.call_count, 1)
+
+            # 동일 인자 연속 호출 -> 캐시 재사용 (호출 횟수 증가 없음)
+            c2 = self.api.get_candles(unit=240, count=25, market="KRW-BTC")
+            self.assertEqual(len(c2), 1)
+            self.assertEqual(mock_request.call_count, 1)
+
+            # force_refresh=True 호출 -> 캐시 우회 및 갱신
+            c3 = self.api.get_candles(unit=240, count=25, market="KRW-BTC", force_refresh=True)
+            self.assertEqual(len(c3), 1)
+            self.assertEqual(mock_request.call_count, 2)
+
+
     @patch("requests.Session.get")
     def test_get_balances_normalization(self, mock_get):
         mock_response = MagicMock()

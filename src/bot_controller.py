@@ -412,10 +412,13 @@ class BotController:
                 position["strategy_mode"] = risk_state.get("strategy_mode") or position.get("strategy_mode") or "SCALP"
             candidates_data = build_candidates_data(balances, bithumb, self.latest_strategies)
 
-            new_listing_markets = self.trailing_tracker.get_new_listing_markets()
+            tracker = self.trailing_tracker
+            new_listing_fn = getattr(tracker, "get_new_listing_markets", None)
+            new_listing_markets = new_listing_fn() if callable(new_listing_fn) else []
+            risk_guard = getattr(self, "risk_guard", None)
             new_listing_slot_max = (
-                self.risk_guard.max_new_listing_positions
-                if self.risk_guard is not None
+                risk_guard.max_new_listing_positions
+                if risk_guard is not None and hasattr(risk_guard, "max_new_listing_positions")
                 else StrategyPolicy.NEW_LISTING_MAX_OPEN_POSITIONS
             )
 

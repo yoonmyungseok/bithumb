@@ -1716,9 +1716,12 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
    • [전략 제언]: 향후 몇 시간 동안의 안전 운용 지침
 3. 반드시 한국어로 정중하고 명확하게 작성.
 """
-            # 빗썸 Gemini 모델 탐색 실패 시 다른 모델·업비트 쿼터로 브리핑을 우회하지 않는다.
-            provider_models = self.provider.models_for("briefing")
-            models = provider_models if self.provider.is_entry_fail_closed else (provider_models or self.get_briefing_candidate_models(limit=5))
+            # 빗썸 Groq은 고정 브리핑 모델(120b -> 20b)만 사용하고, 업비트 Gemini는 동적 모델 라우터를 사용한다.
+            if self.provider.name == "groq":
+                models = self.provider.models_for("briefing")
+            else:
+                provider_models = self.provider.models_for("briefing")
+                models = provider_models or self.get_briefing_candidate_models(limit=5)
             if not models:
                 return default_comment
             result = self.provider.complete_text(
