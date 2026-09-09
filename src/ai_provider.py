@@ -673,8 +673,12 @@ class BithumbGeminiProvider:
     name = "gemini"
     exchange = "bithumb"
     is_entry_fail_closed = True
-    # 업비트 실거래 분석과 같은 구체 모델만 허용해 latest 별칭의 비가시적 변경을 막는다.
-    TRADING_MODEL = "gemini-3.5-flash-lite"
+    # 신규 BUY 진입은 Flash-Lite 계열(3.5 우선 후 3.1 순차 폴백)만 허용해 안정성과 복원력을 유지한다.
+    TRADING_MODELS = [
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+    ]
+    TRADING_MODEL = TRADING_MODELS[0]
     MACRO_FALLBACK_MODELS = [
         "gemini-3.8-flash",
         "gemini-3.7-flash",
@@ -750,13 +754,14 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
             if not models:
                 self._record_entry_safety(ProviderResult(None, "", "no_flash_lite", status_code), "list_models")
                 return []
-            if self.TRADING_MODEL not in models:
-                # 최신 별칭·다른 버전으로 대체하면 업비트와 실제 모델 계약이 달라지므로 신규 BUY를 닫는다.
+            available_trading = [m for m in self.TRADING_MODELS if m in models]
+            if not available_trading:
+                # 허용된 구체 Flash-Lite 모델이 전혀 없으면 신규 BUY를 차단한다.
                 self._record_entry_safety(
                     ProviderResult(None, "", "required_model_unavailable", status_code), "list_models"
                 )
                 return []
-            return [self.TRADING_MODEL]
+            return available_trading
         except requests.exceptions.Timeout:
             error_kind = "timeout"
         except (requests.exceptions.RequestException, ValueError, TypeError, KeyError, IndexError):
@@ -792,7 +797,7 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
             return [self.TRADING_MODEL]
 
     def models_for(self, purpose: str) -> list[str]:
-        """목적별 허용 모델을 반환하며, 신규 BUY(trading)는 TRADING_MODEL 단일 모델 fail-closed를 유지한다."""
+        """목적별 허용 모델을 반환하며, 신규 BUY(trading)는 Flash-Lite 계열 순차 폴백 목록을 반환한다."""
         if purpose == "macro":
             if self._macro_models is None:
                 self._macro_models = self._discover_macro_models()
@@ -803,7 +808,7 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
         elif self._models:
             # 프로세스 내 모델 목록 재사용도 빗썸 전용 텔레메트리에만 기록한다.
             AIProviderTelemetry.record_cache_hit(self.name, self.exchange, self._models[0], "list_models")
-        return self._models[:1]
+        return list(self._models) if self._models else []
 
     def complete_json(self, prompt: str, models: list[str], schema: dict[str, Any], *, context: str,
                       timeout: float, max_tokens: int, schema_name: str = "bithumb_trading_result",

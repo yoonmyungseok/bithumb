@@ -1511,7 +1511,7 @@ class GeminiAnalyzer:
 }}
 """
             parsed = self._call_gemini_json(
-                prompt, candidate_models=holding_models, timeout=8.0, schema=HOLDING_JSON_SCHEMA,
+                prompt, candidate_models=holding_models, timeout=12.0, schema=HOLDING_JSON_SCHEMA,
                 context=f"holding_eval:{market}", schema_name="bithumb_holding_result",
             )
             if isinstance(parsed, dict):
@@ -1642,7 +1642,7 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
 }}
 """
             parsed = self._call_gemini_json(
-                prompt, timeout=8.0, schema=RANKING_JSON_SCHEMA, context="screener_rank",
+                prompt, timeout=15.0, schema=RANKING_JSON_SCHEMA, context="screener_rank",
                 schema_name="bithumb_ranking_result",
             )
             rank_items: list[Any] = []

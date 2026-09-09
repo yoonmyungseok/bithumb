@@ -31,7 +31,7 @@
 - `identifier`와 주문 저널을 우회하거나 멱등성을 약화하는 변경을 하지 않는다.
 - 수동 관리 종목과 사용자가 명시한 제외 종목은 자동 매매, 긴급 매도, 자동 평가에서 제외한다.
 - API 키, 시크릿, 토큰, 계좌 식별 정보, 주문 식별자를 코드·문서·로그·응답에 노출하지 않는다.
-- 빗썸 AI는 `BITHUMB_AI_PROVIDER=gemini`와 전용 Gemini 키(`BITHUMB_GEMINI_API_KEY`)를 사용하며, 신규 BUY 주문 진입은 고정 모델(`gemini-3.5-flash-lite`)만 사용하고, 거시 레짐 진단 및 브리핑은 일반 Flash(`gemini-3.8-flash`) 우선 시도 후 Flash-Lite 순차 폴백을 허용한다. 업비트 Gemini 경계(`UPBIT_GEMINI_API_KEY`)와는 절대로 혼합하지 않는다.
+- 빗썸 AI는 `BITHUMB_AI_PROVIDER=gemini`와 전용 Gemini 키(`BITHUMB_GEMINI_API_KEY`)를 사용하며, 신규 BUY 주문 진입은 Flash-Lite 계열(`gemini-3.5-flash-lite` 최우선 시도 후 `gemini-3.1-flash-lite` 순차 폴백)만 사용하고, 거시 레짐 진단 및 브리핑은 일반 Flash(`gemini-3.8-flash`) 우선 시도 후 Flash-Lite 순차 폴백을 허용한다. 업비트 Gemini 경계(`UPBIT_GEMINI_API_KEY`)와는 절대로 혼합하지 않는다.
 - 빗썸 Gemini에 전달하는 모든 모델 지침은 분석 보조·거래소 데이터 격리·제공 데이터만 사용·ACK 비체결·불확실 신규 BUY 금지·비밀정보 비출력 원칙을 포함해야 한다. Gemini 호출 실패는 신규 BUY를 fail-closed로 차단한다.
 
 ## 변경 작업 방식

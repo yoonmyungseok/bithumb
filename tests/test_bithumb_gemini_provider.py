@@ -88,13 +88,14 @@ class BithumbGeminiProviderTests(unittest.TestCase):
 
     @patch("ai_provider.requests.get")
     def test_bithumb_requires_the_same_concrete_model_as_upbit(self, mock_get):
-        """latest 별칭은 선택하지 않고 업비트와 같은 3.5 Flash-Lite만 허용한다."""
-        response = MagicMock(status_code=200)
-        response.json.return_value = {"models": [
+        """latest 별칭 단독은 배제하고 구체 Flash-Lite 모델(3.5 및 3.1) 순차 목록을 지원한다."""
+        # 1. latest 별칭만 있는 경우 -> 구체 모델 없으므로 required_model_unavailable 차단
+        response_alias_only = MagicMock(status_code=200)
+        response_alias_only.json.return_value = {"models": [
             {"name": "models/gemini-flash-lite-latest", "supportedGenerationMethods": ["generateContent"]},
-            {"name": "models/gemini-3.1-flash-lite", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-2.5-pro", "supportedGenerationMethods": ["generateContent"]},
         ]}
-        mock_get.return_value = response
+        mock_get.return_value = response_alias_only
 
         provider = BithumbGeminiProvider("bithumb-only-key")
         self.assertEqual(provider.models_for("trading"), [])
@@ -102,9 +103,40 @@ class BithumbGeminiProviderTests(unittest.TestCase):
         self.assertTrue(safety["entry_blocked"])
         self.assertEqual(safety["reason"], "required_model_unavailable")
 
-        mock_get.return_value = self._models_response()
+        # 2. 3.1 모델만 있는 경우 -> 3.1 단독 정상 채택
+        response_31_only = MagicMock(status_code=200)
+        response_31_only.json.return_value = {"models": [
+            {"name": "models/gemini-flash-lite-latest", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.1-flash-lite", "supportedGenerationMethods": ["generateContent"]},
+        ]}
+        mock_get.return_value = response_31_only
+        provider_31 = BithumbGeminiProvider("bithumb-only-key")
+        self.assertEqual(provider_31.models_for("trading"), ["gemini-3.1-flash-lite"])
+
+        # 3. 3.5와 3.1 모두 있는 경우 -> 3.5 우선 후 3.1 순차 목록 반환
+        response_both = MagicMock(status_code=200)
+        response_both.json.return_value = {"models": [
+            {"name": "models/gemini-3.5-flash-lite", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.1-flash-lite", "supportedGenerationMethods": ["generateContent"]},
+        ]}
+        mock_get.return_value = response_both
+        provider_both = BithumbGeminiProvider("bithumb-only-key")
+        self.assertEqual(provider_both.models_for("trading"), ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"])
+
+    @patch("ai_provider.requests.post")
+    def test_fallback_to_3_1_on_3_5_timeout_or_error(self, mock_post):
+        """3.5 모델 타임아웃 시 3.1 모델로 즉시 폴백하여 정상 JSON 응답을 수신하고 진입 차단되지 않는다."""
+        import requests
+        mock_post.side_effect = [requests.exceptions.Timeout(), self._json_response()]
         provider = BithumbGeminiProvider("bithumb-only-key")
-        self.assertEqual(provider.models_for("trading"), ["gemini-3.5-flash-lite"])
+        models = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+        result = provider.complete_json(
+            "분석", models, ENTRY_JSON_SCHEMA, context="KRW-BTC", timeout=1.0, max_tokens=100
+        )
+        self.assertIsInstance(result.value, dict)
+        self.assertEqual(result.model, "gemini-3.1-flash-lite")
+        safety = AIProviderTelemetry.snapshot("bithumb")["entry_safety"]
+        self.assertFalse(safety["entry_blocked"])
 
     @patch("ai_provider.requests.post")
     @patch("ai_provider.requests.get")
