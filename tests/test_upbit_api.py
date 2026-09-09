@@ -104,6 +104,25 @@ class UpbitAPITests(unittest.TestCase):
         self.assertIn("ticker", self.api._rate_limit_blocked_until)
         self.assertNotIn("orderbook", self.api._rate_limit_blocked_until)
 
+    def test_rate_limit_candles_group_normalization_and_blocking(self):
+        # /candles/와 /trades/ticks 엔드포인트는 업비트 규격인 복수형(candles, trades)으로 정규화된다.
+        self.assertEqual(self.api._get_rate_limit_group("GET", "/candles/minutes/240"), "candles")
+        self.assertEqual(self.api._get_rate_limit_group("GET", "/trades/ticks"), "trades")
+
+        # 단수/복수형 어느 쪽으로 응답 헤더가 와도 candles 키로 통일 차단된다.
+        response = MagicMock()
+        response.headers = {"Remaining-Req": "group=candles; min=1799; sec=0"}
+        group, remaining = self.api._update_rate_limit_from_response(response, "candle")
+
+        self.assertEqual(group, "candles")
+        self.assertEqual(remaining, 0)
+        self.assertIn("candles", self.api._rate_limit_blocked_until)
+
+        # 429 수동 차단도 candles로 정규화되어 기록된다.
+        self.api._block_rate_limit_group("candle")
+        self.assertIn("candles", self.api._rate_limit_blocked_until)
+
+
     def test_get_tickers_reuses_short_lived_cache_and_force_refresh_bypasses_it(self):
         # 시장 스캔으로 받은 시세는 짧은 시간 동안 개별 현재가 조회에 재사용한다.
         self.api._valid_markets_cache = {"KRW-BTC"}

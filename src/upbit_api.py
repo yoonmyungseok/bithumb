@@ -72,6 +72,18 @@ class UpbitAPI:
         self._ticker_cache_ttl = 1.5
 
     @staticmethod
+    def _normalize_rate_limit_group(group: str) -> str:
+        """업비트 공식 응답 규격(Remaining-Req)에 맞춰 그룹명을 정규화한다."""
+        g = group.lower().strip()
+        if g in {"candle", "candles"}:
+            return "candles"
+        if g in {"trade", "trades"}:
+            return "trades"
+        if g in {"order", "orders"}:
+            return "order" if g == "order" else "orders"
+        return g
+
+    @staticmethod
     def _get_rate_limit_group(method: str, endpoint: str) -> str:
         """요청 전에도 안전한 간격을 적용할 수 있도록 API 그룹을 판별한다."""
         if endpoint == "/ticker":
@@ -81,9 +93,9 @@ class UpbitAPI:
         if endpoint == "/market/all":
             return "market"
         if endpoint.startswith("/candles/"):
-            return "candle"
+            return "candles"
         if endpoint == "/trades/ticks":
-            return "trade"
+            return "trades"
         if method.upper() == "POST" and endpoint == "/orders":
             return "order"
         return "default"
@@ -91,10 +103,11 @@ class UpbitAPI:
     @staticmethod
     def _get_rate_limit_interval(group: str) -> float:
         """공식 초당 한도보다 여유를 둔 그룹별 최소 요청 간격을 반환한다."""
+        norm_group = UpbitAPI._normalize_rate_limit_group(group)
         # 시세 그룹은 초당 10회보다 낮은 약 7.7회, 주문은 초당 10회로 제한한다.
-        if group in {"market", "candle", "trade", "ticker", "orderbook"}:
+        if norm_group in {"market", "candles", "trades", "ticker", "orderbook"}:
             return 0.13
-        if group == "order":
+        if norm_group in {"order", "orders"}:
             return 0.10
         # 거래·자산 기본 그룹의 공식 한도(초당 30회)보다 여유를 둔다.
         return 0.04
@@ -106,6 +119,7 @@ class UpbitAPI:
 
     def _throttle(self, group: str) -> None:
         """그룹별 요청 예약으로 동시 호출에도 초당 한도를 선제적으로 지킨다."""
+        group = self._normalize_rate_limit_group(group)
         with self._lock:
             now = time.monotonic()
             reserved_at = max(
@@ -124,7 +138,7 @@ class UpbitAPI:
         # requests의 CaseInsensitiveDict와 테스트용 dict 모두 get()을 지원한다.
         header = response.headers.get("Remaining-Req", "")
         if not isinstance(header, str):
-            return fallback_group, None
+            return self._normalize_rate_limit_group(fallback_group), None
 
         parts: dict[str, str] = {}
         for item in header.split(";"):
@@ -132,7 +146,8 @@ class UpbitAPI:
             if separator:
                 parts[key.strip()] = value.strip()
 
-        group = parts.get("group", fallback_group)
+        raw_group = parts.get("group", fallback_group)
+        group = self._normalize_rate_limit_group(raw_group)
         remaining_sec = None
         try:
             remaining_sec = int(parts["sec"])
@@ -159,6 +174,7 @@ class UpbitAPI:
 
     def _block_rate_limit_group(self, group: str) -> float:
         """429를 받은 그룹만 다음 초 경계까지 차단하고 실제 대기 시간을 반환한다."""
+        group = self._normalize_rate_limit_group(group)
         wait_sec = self._seconds_until_next_boundary()
         with self._lock:
             blocked_until = time.monotonic() + wait_sec
