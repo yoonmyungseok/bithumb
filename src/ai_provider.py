@@ -16,7 +16,11 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from gemini_telemetry import GeminiTelemetry
+from gemini_telemetry import (
+    GeminiTelemetry,
+    quota_bucket_for_model,
+    quota_limit_for_bucket,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -451,13 +455,15 @@ class AIProviderTelemetry:
                     continue
                 providers.add(provider)
                 m_calls = int(stat["calls"])
-                m_limit = 500 if (model != "list_models" and ("flash-lite" in model or "flash_lite" in model or "gemini-" in model)) else 0
+                bucket = quota_bucket_for_model(model)
+                m_limit = quota_limit_for_bucket(bucket) if model != "list_models" else 0
                 m_used_pct = round((m_calls / m_limit) * 100.0, 1) if m_limit > 0 else 0.0
                 models[model] = {
                     "provider": provider, "calls": m_calls, "success": int(stat["success"]),
                     "rate_limited": int(stat["rate_limited"]), "errors": int(stat["errors"]),
                     "cache_hits": int(stat.get("cache_hits", 0)),
                     "avg_latency_ms": round(float(stat["latency_total_ms"]) / m_calls, 1) if m_calls else 0.0,
+                    "quota_bucket": bucket,
                     "quota_limit": m_limit,
                     "quota_used_pct": m_used_pct,
                 }

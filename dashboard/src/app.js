@@ -963,9 +963,13 @@
           const barWrap = document.createElement('div');
           const bar = document.createElement('div');
           const modelCalls = Number(stat.calls || 0);
-          let quotaLimit = Number(stat.quota_limit || 0);
-          if (!quotaLimit && model !== 'list_models' && (model.includes('flash-lite') || model.includes('flash_lite') || model.includes('gemini-'))) {
-            quotaLimit = 500;
+          let quotaLimit = Number(stat.quota_limit !== undefined ? stat.quota_limit : 0);
+          if (!quotaLimit && model !== 'list_models') {
+            if (model.includes('flash-lite') || model.includes('flash_lite')) {
+              quotaLimit = 500;
+            } else if (model.includes('flash')) {
+              quotaLimit = 20;
+            }
           }
           const quotaPct = quotaLimit > 0 ? Math.min(100, Math.max(0, (modelCalls / quotaLimit) * 100)) : 0;
 

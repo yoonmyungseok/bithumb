@@ -157,12 +157,18 @@ class BithumbGeminiProviderTests(unittest.TestCase):
         self.assertIn('gData.models_by_id || gData.models || {}', dashboard_js)
         self.assertNotIn("빗썸 Groq AI", dashboard_js)
 
-        # 빗썸 AI Provider 스냅샷이 업비트와 동일한 쿼터 스키마를 제공하는지 검증
+        # 빗썸 AI Provider 스냅샷이 업비트와 동일한 쿼터 스키마 및 모델별 한도(Flash-Lite=500, Flash=20, list_models=0)를 제공하는지 검증
         AIProviderTelemetry.record("gemini", "bithumb", "gemini-3.5-flash-lite", "test", 200, 10.0)
+        AIProviderTelemetry.record("gemini", "bithumb", "gemini-3.8-flash", "macro_regime", 200, 20.0)
+        AIProviderTelemetry.record("gemini", "bithumb", "list_models", "list_models", 200, 5.0)
         bt_snap = AIProviderTelemetry.snapshot("bithumb")
         self.assertEqual(bt_snap["quota_limit"], 1000)
         self.assertIn("gemini-3.5-flash-lite", bt_snap["models"])
         self.assertEqual(bt_snap["models"]["gemini-3.5-flash-lite"]["quota_limit"], 500)
+        self.assertIn("gemini-3.8-flash", bt_snap["models"])
+        self.assertEqual(bt_snap["models"]["gemini-3.8-flash"]["quota_limit"], 20)
+        self.assertIn("list_models", bt_snap["models"])
+        self.assertEqual(bt_snap["models"]["list_models"]["quota_limit"], 0)
         self.assertIn("models_by_id", bt_snap)
         self.assertIn("remaining_str", bt_snap["reset_info"])
 

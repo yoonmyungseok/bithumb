@@ -258,5 +258,51 @@ class DashboardFrontendKoreanTests(unittest.TestCase):
         self.assertNotIn('id="feed_health"', index_content)
 
 
+    def test_gemini_card_model_quota_limit_matches_upbit(self):
+        """대시보드 프론트엔드에서 Flash-Lite(500) 및 Flash(20) 모델 한도가 업비트와 동일하게 적용되는지 검증"""
+        self.assertIn("model.includes('flash-lite') || model.includes('flash_lite')", self.app_js_content)
+        self.assertIn("quotaLimit = 500;", self.app_js_content)
+        self.assertIn("model.includes('flash')", self.app_js_content)
+        self.assertIn("quotaLimit = 20;", self.app_js_content)
+
+        # Node.js 스크립트로 실제 계산 로직 검증
+        js_code = """
+        function getQuotaLimit(model, stat) {
+          let quotaLimit = Number(stat.quota_limit !== undefined ? stat.quota_limit : 0);
+          if (!quotaLimit && model !== 'list_models') {
+            if (model.includes('flash-lite') || model.includes('flash_lite')) {
+              quotaLimit = 500;
+            } else if (model.includes('flash')) {
+              quotaLimit = 20;
+            }
+          }
+          return quotaLimit;
+        }
+
+        const results = {
+          lite_explicit: getQuotaLimit('gemini-3.5-flash-lite', { quota_limit: 500 }),
+          lite_fallback: getQuotaLimit('gemini-3.5-flash-lite', {}),
+          flash_explicit: getQuotaLimit('gemini-3.8-flash', { quota_limit: 20 }),
+          flash_fallback: getQuotaLimit('gemini-3.8-flash', {}),
+          list_models: getQuotaLimit('list_models', { quota_limit: 0 })
+        };
+        console.log(JSON.stringify(results));
+        """
+        proc = subprocess.run(
+            ["node", "-e", js_code],
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding="utf-8",
+        )
+        results = json.loads(proc.stdout)
+        self.assertEqual(results["lite_explicit"], 500)
+        self.assertEqual(results["lite_fallback"], 500)
+        self.assertEqual(results["flash_explicit"], 20)
+        self.assertEqual(results["flash_fallback"], 20)
+        self.assertEqual(results["list_models"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
+
