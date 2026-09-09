@@ -605,6 +605,10 @@ class GeminiAnalyzer:
                 and GeminiTelemetry.can_call_model(m, for_emergency_exit=False)
             ]
             if usable:
+                flash_models = [m for m in usable if "flash-lite" not in m.lower()]
+                lite_models = [m for m in usable if "flash-lite" in m.lower()]
+                if flash_models and lite_models and limit >= 3:
+                    return flash_models[:limit - 1] + lite_models[:1]
                 return usable[:limit]
             fallback_usable = [
                 m for m in self.MACRO_FALLBACK_MODELS
@@ -612,6 +616,11 @@ class GeminiAnalyzer:
                 and "pro" not in m.lower()
                 and GeminiTelemetry.can_call_model(m, for_emergency_exit=False)
             ]
+            if fallback_usable:
+                flash_models = [m for m in fallback_usable if "flash-lite" not in m.lower()]
+                lite_models = [m for m in fallback_usable if "flash-lite" in m.lower()]
+                if flash_models and lite_models and limit >= 3:
+                    return flash_models[:limit - 1] + lite_models[:1]
             return fallback_usable[:limit]
 
     @property
@@ -1837,7 +1846,7 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
             parsed = self._call_gemini_json(
                 prompt,
                 candidate_models=macro_models,
-                timeout=10.0,
+                timeout=15.0,
                 schema=MACRO_JSON_SCHEMA,
                 context="macro_regime",
                 schema_name="bithumb_macro_result",

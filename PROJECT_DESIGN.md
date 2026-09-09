@@ -16,7 +16,7 @@
 - **핵심 기술**: 
   - 빗썸 REST API & WebSocket (v1/v2)
   - 업비트 REST API & WebSocket (Public: 시세/체결, Private: myOrder/myAsset, HS512 JWT + unencoded query string SHA-512 hash, `identifier` 멱등성)
-  - 빗썸·업비트 분리 Google Gemini API (신규 BUY: Flash-Lite 고정, 거시 진단 및 브리핑: 일반 Flash 최우선 라우터), Telegram API
+  - 빗썸·업비트 분리 Google Gemini API (신규 BUY: Flash-Lite 계열 순차 폴백, 거시 진단 및 브리핑: 일반 Flash 최우선 라우팅 및 Flash-Lite 폴백, 추론 모델 ThinkingBudget=0 제어, 거시 레짐 타임아웃 15초 상향 및 신규 BUY 진입 게이트 격리 안전망 완비), Telegram API
 - **주요 전략 및 아키텍처**: 
   - **다중 시간대(MTF) 분석**: 1시간봉 대세 추세 + 5분봉 정밀 타점 정렬
 - **거래대금 및 모멘텀 기반 동적 시장 스크리닝**: 모멘텀 후보를 `EARLY`(당일 상승률 +3% 이하의 RS 확인 초입)와 `EXTENDED`(확장 후반) 단계로 기록한다. 신규 주문은 `EARLY`에서만 소액으로 허용하고, `EXTENDED`는 분석·감사만 수행해 후발 추격을 방지한다. 동일 5분 사이클에서는 모멘텀 신규 주문을 1건으로 제한한다.
@@ -287,6 +287,7 @@ c:\AI\bithumb\
 
 | **v8.32** | 2026-09-07 | • **빗썸 Groq FAST 런타임 fail-closed 확장**<br>• **공통 신규 BUY 차단**: 20B의 4xx/429/5xx·타임아웃·JSON/스키마 오류를 영속 안전 상태로 기록하고 표준 AI·`MOMENTUM_BREAKOUT`·`RECOVERY_REBOUND`를 모두 차단<br>• **안전한 오류 진단**: 목적·모델·HTTP 상태·제한된 오류 코드만 대시보드에 표시하고 키·프롬프트·오류 원문·주문 식별자는 제외<br>• **거시 실패 방어**: Groq 거시 진단 실패는 `CAUTION_PULLBACK`/`AI_UNAVAILABLE`로 표시하며 정상 레짐으로 위장하지 않음<br>• **기존 포지션 보호**: REST 대사와 체결 확인, 손절·트레일링·긴급 청산은 계속 수행<br>• **검증**: Groq 안전 상태 복원·400 마스킹·정상 응답 복구·모멘텀 직접 진입 차단 회귀 테스트 추가 |
 
+| **v8.60** | 2026-09-09 | • **Gemini AI 거시 레짐(macro_regime) 타임아웃 방지 및 신규 BUY 진입 게이트 안전 격리**<br>• `diagnose_macro_regime` 타임아웃을 10.0초에서 15.0초로 상향하여 1H/4H 복합 지표 응답 시간 확보<br>• `complete_json` 호출 시 `gemini-3.7-flash` 등 추론 모델에 `thinkingBudget: 0`을 명시하여 불필요한 생각(Thinking) 토큰 소모 지연 원천 차단<br>• 거시 레짐 후보 모델군(`get_macro_candidate_models`)에 `gemini-3.5-flash-lite` 순차 폴백 보장<br>• 보조 시장 분석(`macro_regime`, `market_briefing`) 실패가 신규 종목 매수 게이트(`AIProviderTelemetry.record_entry_safety`)를 오염시키지 않도록 진입 컨텍스트 엄격 분리 (`trading`, `screener_rank`의 fail-closed는 100% 견고히 유지) |
 | **v8.31** | 2026-09-07 | • **상승 초입 참여·후발 동시 추격 방지 (Momentum Phase Entry)**<br>• **후보 단계 분리**: 공용 스크리너가 상대강도 +0.8% 이상인 모멘텀 후보에 `EARLY`(당일 +3% 이하) 또는 `EXTENDED` 단계를 기록하며, 양 거래소의 외부 응답 계약은 유지<br>• **주문 권한 일원화**: 공용 런타임은 확정봉·거래량·RSI·MTF·주문 안전 게이트를 통과해도 `EXTENDED` 단계의 신규 매수를 `HOLD`로 전환. 초입 후보만 최대 포지션의 25% 소액 경로를 사용<br>• **상관 노출 제한**: 한 5분 사이클에서 모멘텀 신규 주문은 1건만 제출해 여러 상승 후반 종목의 동시 추격을 차단. 기존 포지션의 손절·익절·체결 대사 경로는 변경하지 않음<br>• **Gemini 폴백 정합화**: 정상 AI와 401/쿼터 로컬 폴백 모두 모멘텀 단계를 프롬프트·캐시 키에 포함하며, AI 판단은 `EXTENDED` 신규 주문 제한을 우회할 수 없음<br>• **검증**: `test_market_screener.py`, `test_ai_authority.py`, `test_gemini_prompt_contract.py`에 초입/확장·폴백 우회 차단 회귀 테스트 추가 |
 
 | **v8.30** | 2026-09-07 | • **Google Gemini 무료 티어(Free Tier) 쿼터 가드 & 하드 컷오프 패치**<br>• **15 RPM 한도 준수 (최소 6.0초 스로틀링)**: 연속 호출 간격을 3.5초에서 6.0초로 상향하여 분당 최대 10회 이하로 제한, 15 RPM 대비 33% 안전 마진 확보<br>• **모델별 85% 선제 하드 컷오프(Hard Cutoff)**: `can_call_model`에서 일반 Flash(한도 20회) 및 Flash-Lite(한도 500회)의 실제 한도 대비 85%(일반 Flash 17회, Flash-Lite 425회) 도달 시 Google API 호출을 원천 차단하고 즉시 로컬 퀀트 엔진으로 100% 무중단 전환하여 429 에러 원천 방지<br>• **보유 종목 적응형 캐시 정밀화**: 평시 횡보 구간(-2.0% ~ +2.0%)은 15분(900초) 캐시 유지, 실제 급락(-2.0% 이하) 또는 급등(+2.0% 이상) 변동 시에만 60초 적응형 진단으로 전환하여 사이클당 불필요한 AI 호출 누수 제거<br>• **브리핑 쿼터 가드 연동**: `get_briefing_candidate_models`에 모델별 쿼터 검증을 적용하여 일반 Flash 20회 소진 시 안전하게 Flash-Lite로 순차 폴백<br>• **단위 및 회귀 검증**: `test_gemini_quota_guard.py` 신규 작성 및 전체 330개 테스트 100% 통과 |

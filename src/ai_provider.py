@@ -584,23 +584,40 @@ class GeminiProvider:
         last_error = "no_model"
         last_model = ""
         last_status_code: int | None = None
+        is_entry_context = context not in ("macro_regime", "market_briefing") and "briefing" not in context
         for model in models:
             last_model = model
             try:
+                # 추론 모델(gemini-3.7-flash 등)의 불필요한 Thinking 토큰 소모 및 타임아웃 방지
+                generation_config: dict[str, Any] = {
+                    "temperature": 0.1, "topP": 0.8, "maxOutputTokens": max_tokens, "responseMimeType": "application/json",
+                }
+                if any(marker in model.lower() for marker in ("3.7", "thinking", "2.5")):
+                    generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+                payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": generation_config}
                 response = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}",
-                    json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {
-                        "temperature": 0.1, "topP": 0.8, "maxOutputTokens": max_tokens, "responseMimeType": "application/json",
-                    }}, timeout=timeout,
+                    json=payload, timeout=timeout,
                 )
                 last_status_code = response.status_code
                 GeminiTelemetry.record_http_attempt(model, context, "generate_content", response.status_code)
+                if response.status_code == 400 and "thinkingConfig" in generation_config:
+                    retry_config = dict(generation_config)
+                    retry_config.pop("thinkingConfig", None)
+                    payload["generationConfig"] = retry_config
+                    response = requests.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}",
+                        json=payload, timeout=timeout,
+                    )
+                    last_status_code = response.status_code
+                    GeminiTelemetry.record_http_attempt(model, context, "generate_content", response.status_code)
                 if response.status_code == 200:
                     value = _parse_json_text(self._extract_text(response.json()) or "")
                     if value is not None and _validate_schema(value, schema):
-                        AIProviderTelemetry.record_entry_safety(
-                            self.exchange, blocked=False, context=context, model=model, status_code=response.status_code,
-                        )
+                        if is_entry_context:
+                            AIProviderTelemetry.record_entry_safety(
+                                self.exchange, blocked=False, context=context, model=model, status_code=response.status_code,
+                            )
                         return ProviderResult(value, model)
                     last_error = "invalid_json" if value is None else "schema"
                     continue
@@ -615,10 +632,12 @@ class GeminiProvider:
                 last_error = "exception"
                 continue
 
-        AIProviderTelemetry.record_entry_safety(
-            self.exchange, blocked=True, reason=last_error, context=context, model=last_model,
-            status_code=last_status_code,
-        )
+        # 거시 레짐/브리핑 등 보조 분석은 로컬 규칙으로 방어하되, 직접 진입 분석 실패 시에만 신규 BUY를 차단한다.
+        if is_entry_context:
+            AIProviderTelemetry.record_entry_safety(
+                self.exchange, blocked=True, reason=last_error, context=context, model=last_model,
+                status_code=last_status_code,
+            )
         return ProviderResult(None, last_model, last_error)
 
     def complete_text(self, prompt: str, models: list[str], *, context: str, timeout: float, max_tokens: int) -> ProviderResult:
@@ -717,12 +736,14 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
             return ""
 
     def _record_entry_safety(self, result: ProviderResult, context: str) -> ProviderResult:
-        """정상 JSON 스키마 검증을 마친 호출만 신규 BUY 차단을 해제한다."""
-        AIProviderTelemetry.record_entry_safety(
-            self.exchange, blocked=not isinstance(result.value, (dict, list)),
-            reason=result.error_kind or "invalid_response", context=context,
-            model=result.model, status_code=result.status_code, error_code=result.error_code,
-        )
+        """정상 JSON 스키마 검증을 마친 호출만 신규 BUY 차단을 해제한다. 보조 분석은 신규 BUY를 차단하지 않는다."""
+        is_entry_context = context not in ("macro_regime", "market_briefing") and "briefing" not in context
+        if is_entry_context:
+            AIProviderTelemetry.record_entry_safety(
+                self.exchange, blocked=not isinstance(result.value, (dict, list)),
+                reason=result.error_kind or "invalid_response", context=context,
+                model=result.model, status_code=result.status_code, error_code=result.error_code,
+            )
         return result
 
     def _discover_models(self) -> list[str]:
@@ -823,14 +844,30 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
             error_kind = ""
             error_code = ""
             try:
+                generation_config: dict[str, Any] = {
+                    "temperature": 0.1, "topP": 0.8, "maxOutputTokens": max_tokens, "responseMimeType": "application/json",
+                }
+                if any(marker in model.lower() for marker in ("3.7", "thinking", "2.5")):
+                    generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+                payload = {
+                    "systemInstruction": {"parts": [{"text": self.SYSTEM_INSTRUCTION}]},
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": generation_config,
+                }
                 response = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}",
-                    json={"systemInstruction": {"parts": [{"text": self.SYSTEM_INSTRUCTION}]},
-                          "contents": [{"parts": [{"text": prompt}]}],
-                          "generationConfig": {"temperature": 0.1, "topP": 0.8, "maxOutputTokens": max_tokens,
-                                               "responseMimeType": "application/json"}}, timeout=timeout,
+                    json=payload, timeout=timeout,
                 )
                 status_code = response.status_code
+                if status_code == 400 and "thinkingConfig" in generation_config:
+                    retry_config = dict(generation_config)
+                    retry_config.pop("thinkingConfig", None)
+                    payload["generationConfig"] = retry_config
+                    response = requests.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}",
+                        json=payload, timeout=timeout,
+                    )
+                    status_code = response.status_code
                 if status_code != 200:
                     error_kind = "rate_limited" if status_code == 429 else "http_error"
                     error_code = self._safe_error_code(response)
