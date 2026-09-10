@@ -598,6 +598,7 @@ class TradingCycleEngine:
             logger.info("[성능 최적화] 신규 진입 차단 상태라 AI Provider 후보 랭킹을 생략합니다.")
 
         selection_started_at = time.monotonic()
+        market_selection_metrics: dict[str, float] = {}
         target_markets = ctx.orchestrator.select_target_markets(
             exchange,
             held_markets=held_markets,
@@ -609,9 +610,24 @@ class TradingCycleEngine:
             btc_regime=btc_regime,
             analyzer=screener_analyzer,
             on_screened_candidates=capture_screened_candidates,
+            metrics=market_selection_metrics,
         )
-        timings["마켓선정"] = time.monotonic() - selection_started_at
-        ctx.orchestrator.record_latency("market_selection", timings["마켓선정"])
+        selection_total = time.monotonic() - selection_started_at
+        timings["마켓선정"] = selection_total
+        sub_candidate_scan = max(0.0, market_selection_metrics.get("후보스캔", 0.0))
+        sub_ai_ranking = max(0.0, market_selection_metrics.get("AI후보랭킹", 0.0))
+        sub_swing_scan = max(0.0, market_selection_metrics.get("스윙스캔", 0.0))
+        sub_other = max(0.0, selection_total - sub_candidate_scan - sub_ai_ranking - sub_swing_scan)
+        timings["후보스캔"] = sub_candidate_scan
+        timings["AI후보랭킹"] = sub_ai_ranking
+        timings["스윙스캔"] = sub_swing_scan
+        timings["기타"] = sub_other
+
+        ctx.orchestrator.record_latency("market_selection", selection_total)
+        ctx.orchestrator.record_latency("market_candidate_scan", sub_candidate_scan)
+        ctx.orchestrator.record_latency("market_ai_ranking", sub_ai_ranking)
+        ctx.orchestrator.record_latency("market_swing_scan", sub_swing_scan)
+        ctx.orchestrator.record_latency("market_selection_overhead", sub_other)
         logger.info(
             f"{profile.markets_log_prefix}이번 사이클 최종 분석 대상 마켓 "
             f"({len(target_markets)}개): {target_markets}"

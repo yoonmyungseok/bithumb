@@ -70,11 +70,25 @@ class TradingOrchestrator:
             "주문대사", "포트폴리오", "레짐", "마켓선정", "구독갱신",
             "전략사전조회", "캔들사전조회", "마켓루프", "캐시저장",
         )
-        phase_text = " ".join(
-            f"{name}={max(0.0, timings.get(name, 0.0)):.3f}s"
-            for name in phase_order
-            if name in timings
-        ) or "측정 단계 없음"
+        has_screener_breakdown = any(k in timings for k in ("후보스캔", "AI후보랭킹", "스윙스캔"))
+
+        phase_parts: list[str] = []
+        for name in phase_order:
+            if name not in timings:
+                continue
+            elapsed_sec = max(0.0, timings.get(name, 0.0))
+            if name == "마켓선정" and has_screener_breakdown:
+                sub_scan = max(0.0, timings.get("후보스캔", 0.0))
+                sub_ai = max(0.0, timings.get("AI후보랭킹", 0.0))
+                sub_swing = max(0.0, timings.get("스윙스캔", 0.0))
+                sub_other = max(0.0, elapsed_sec - sub_scan - sub_ai - sub_swing)
+                phase_parts.append(
+                    f"마켓선정={elapsed_sec:.3f}s (후보스캔={sub_scan:.3f}s AI후보랭킹={sub_ai:.3f}s 스윙스캔={sub_swing:.3f}s 기타={sub_other:.3f}s)"
+                )
+            else:
+                phase_parts.append(f"{name}={elapsed_sec:.3f}s")
+
+        phase_text = " ".join(phase_parts) or "측정 단계 없음"
         market_text = ", ".join(
             f"{market}={elapsed:.3f}s"
             for market, elapsed in sorted(slow_markets, key=lambda item: item[1], reverse=True)[:3]
@@ -198,6 +212,7 @@ class TradingOrchestrator:
         btc_regime: str = "NORMAL",
         analyzer: Any | None = None,
         on_screened_candidates: Callable[[list[dict[str, Any]]], None] | None = None,
+        metrics: dict[str, float] | None = None,
     ) -> list[str]:
         """Select markets through one policy while retaining exchange exclusions."""
         held = [market for market in held_markets if exchange.is_tradeable_market(market)]
@@ -209,13 +224,20 @@ class TradingOrchestrator:
             except TypeError:
                 screened = screener.scan_markets(top_count=top_count, held_markets=held, btc_regime=btc_regime)
 
+            # 스크리너의 세부 계측(후보스캔, AI후보랭킹)을 안전하게 추출한다.
+            screener_metrics = getattr(screener, "last_scan_metrics", {}) or {}
+            candidate_scan_sec = max(0.0, float(screener_metrics.get("candidate_scan", 0.0) or 0.0))
+            ai_ranking_sec = max(0.0, float(screener_metrics.get("ai_ranking", 0.0) or 0.0))
+
             ticker_seed = getattr(screener, "last_scan_tickers", None) or []
             for ticker in ticker_seed:
                 if isinstance(ticker, dict) and isinstance(ticker.get("market"), str):
                     self._last_screener_ticker_seed[ticker["market"]] = ticker
 
             # [Dual-Track] 스윙 전용 유망 후보군 병합 스캔 (최대 1종목)
+            swing_scan_sec = 0.0
             if hasattr(screener, "scan_swing_markets"):
+                swing_started_at = time.monotonic()
                 try:
                     swing_kwargs: dict[str, Any] = {
                         "top_count": 1,
@@ -236,12 +258,23 @@ class TradingOrchestrator:
                         self.logger.debug("스윙 후보 스크리닝 폴백: %s", exc)
                 except Exception as exc:
                     self.logger.debug("스윙 후보 스크리닝 폴백: %s", exc)
+                finally:
+                    swing_scan_sec = max(0.0, time.monotonic() - swing_started_at)
+
+            if metrics is not None:
+                metrics["후보스캔"] = candidate_scan_sec
+                metrics["AI후보랭킹"] = ai_ranking_sec
+                metrics["스윙스캔"] = swing_scan_sec
 
             # 호출자가 후보 유형 등 선별 메타데이터를 주문 기록에 보존할 수 있게 전달한다.
             if on_screened_candidates is not None:
                 on_screened_candidates(screened)
             candidates = [item.get("market", "") for item in screened if isinstance(item, dict)]
         else:
+            if metrics is not None:
+                metrics["후보스캔"] = 0.0
+                metrics["AI후보랭킹"] = 0.0
+                metrics["스윙스캔"] = 0.0
             # 수동 종목 목록에는 스크리너 메타데이터가 없으므로 이전 사이클 정보를 비운다.
             if on_screened_candidates is not None:
                 on_screened_candidates([])

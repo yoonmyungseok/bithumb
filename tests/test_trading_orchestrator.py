@@ -207,6 +207,98 @@ class TradingOrchestratorPerformanceTests(unittest.TestCase):
         self.assertIn("레거시 폴백", reason)
         self.assertEqual(analyzer.diagnose_macro_regime.call_count, 2)
 
+    def test_slow_cycle_detail_logs_market_selection_breakdown(self):
+        """15초 초과 사이클 상세 로그에 마켓선정 세부 항목이 정상 포맷팅되어 노출되는지 검증."""
+        logger = MagicMock()
+        orchestrator = TradingOrchestrator(logger)
+
+        logged = orchestrator.log_slow_cycle_detail(
+            cycle_id="2026-09-10 10:45:00",
+            total_seconds=16.0,
+            interval_seconds=300.0,
+            timings={
+                "주문대사": 0.05,
+                "마켓선정": 10.806,
+                "후보스캔": 2.941,
+                "AI후보랭킹": 3.339,
+                "스윙스캔": 4.421,
+                "기타": 0.105,
+                "마켓루프": 4.5,
+            },
+            slow_markets=[],
+        )
+
+        self.assertTrue(logged)
+        self.assertTrue(logger.warning.called)
+        log_args = logger.warning.call_args.args
+        phase_str = log_args[5]
+        expected_part = "마켓선정=10.806s (후보스캔=2.941s AI후보랭킹=3.339s 스윙스캔=4.421s 기타=0.105s)"
+        self.assertIn(expected_part, phase_str)
+
+    def test_select_target_markets_collects_breakdown_metrics_and_preserves_candidates(self):
+        """AI 랭킹 유무, 스윙 스캔 지원 시 마켓 후보 결과 및 세부 계측 수집 검증."""
+        mock_screener = MagicMock()
+        mock_screener.scan_markets.return_value = [
+            {"market": "KRW-BTC", "is_held": True},
+            {"market": "KRW-ETH", "candidate_type": "CONFIRMED"},
+        ]
+        mock_screener.last_scan_tickers = [{"market": "KRW-BTC"}, {"market": "KRW-ETH"}]
+        mock_screener.last_scan_metrics = {
+            "candidate_scan": 1.234,
+            "ai_ranking": 0.567,
+        }
+        mock_screener.scan_swing_markets.return_value = [
+            {"market": "KRW-SOL", "candidate_type": "SWING"},
+        ]
+
+        metrics = {}
+        screened_meta = []
+        result = self.orchestrator.select_target_markets(
+            self.adapter,
+            held_markets=["KRW-BTC"],
+            is_auto_mode=True,
+            raw_markets="",
+            max_positions=3,
+            top_count=2,
+            create_screener=lambda: mock_screener,
+            btc_regime="NORMAL",
+            on_screened_candidates=screened_meta.extend,
+            metrics=metrics,
+        )
+
+        self.assertEqual(result, ["KRW-BTC", "KRW-ETH", "KRW-SOL"])
+        self.assertEqual(metrics["후보스캔"], 1.234)
+        self.assertEqual(metrics["AI후보랭킹"], 0.567)
+        self.assertGreaterEqual(metrics["스윙스캔"], 0.0)
+        self.assertEqual(len(screened_meta), 3)
+
+    def test_select_target_markets_fallback_without_metrics_and_swing_exception(self):
+        """세부 계측이 없는 구버전 스크리너나 스윙 스캔 예외 시에도 후보 결과가 보존되고 폴백하는지 검증."""
+        class LegacyScreener:
+            def scan_markets(self, top_count=3, held_markets=None, btc_regime="NORMAL"):
+                return [{"market": "KRW-BTC"}, {"market": "KRW-XRP"}]
+
+            def scan_swing_markets(self, **kwargs):
+                raise RuntimeError("스윙 스캔 장애")
+
+        metrics = {}
+        result = self.orchestrator.select_target_markets(
+            self.adapter,
+            held_markets=["KRW-BTC"],
+            is_auto_mode=True,
+            raw_markets="",
+            max_positions=3,
+            top_count=2,
+            create_screener=lambda: LegacyScreener(),
+            btc_regime="NORMAL",
+            metrics=metrics,
+        )
+
+        self.assertEqual(result, ["KRW-BTC", "KRW-XRP"])
+        self.assertEqual(metrics["후보스캔"], 0.0)
+        self.assertEqual(metrics["AI후보랭킹"], 0.0)
+        self.assertGreaterEqual(metrics["스윙스캔"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

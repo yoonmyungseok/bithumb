@@ -80,6 +80,11 @@ class MarketScreener:
         self.early_breakout_max_candidates = max(0, early_breakout_max_candidates)
         # 동일 사이클 prefetch가 스크리너 ticker 조회를 재사용할 수 있도록 마지막 스캔 결과를 보관한다.
         self.last_scan_tickers: list[dict[str, Any]] = []
+        # 마켓선정 성능 계측 세분화: 이번 호출의 후보스캔 및 AI 랭킹 지연을 보관한다.
+        self.last_scan_metrics: dict[str, float] = {
+            "candidate_scan": 0.0,
+            "ai_ranking": 0.0,
+        }
 
     def _exchange_name(self) -> str:
         return "upbit" if "upbit" in str(type(self.api)).lower() else "bithumb"
@@ -160,6 +165,8 @@ class MarketScreener:
         analyzer: Any | None = None,
         ticker_seed: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
+        scan_started_at = time.monotonic()
+        ai_ranking_duration = 0.0
         held_set: set[str] = {m.upper() for m in (held_markets or [])}
         is_risk_off = (btc_regime or "NORMAL").upper() == "RISK_OFF"
         is_bull_trend = (btc_regime or "NORMAL").upper() == "BULL_TREND"
@@ -184,6 +191,11 @@ class MarketScreener:
 
             if not krw_markets:
                 self.last_scan_tickers = []
+                total_duration = max(0.0, time.monotonic() - scan_started_at)
+                self.last_scan_metrics = {
+                    "candidate_scan": total_duration,
+                    "ai_ranking": 0.0,
+                }
                 return [{"market": m, "reason": "기본 마켓"} for m in (held_markets or ["KRW-BTC"])]
 
             if ticker_seed:
@@ -382,6 +394,7 @@ class MarketScreener:
             if active_analyzer is not None and hasattr(active_analyzer, "rank_candidate_markets"):
                 candidates_to_rank = [c for c in qualified_candidates if not c.get("is_held")]
                 if len(candidates_to_rank) >= 2:
+                    ai_rank_started_at = time.monotonic()
                     try:
                         ranked = active_analyzer.rank_candidate_markets(
                             candidates_to_rank,
@@ -392,6 +405,8 @@ class MarketScreener:
                             qualified_candidates = ranked
                     except Exception as exc:
                         logger.debug("AI 스크리너 랭킹 예외 폴백: %s", exc)
+                    finally:
+                        ai_ranking_duration += max(0.0, time.monotonic() - ai_rank_started_at)
 
             if not is_risk_off and len(qualified_candidates) < top_count:
                 min_fb_trade_val = min(self.min_trade_value_krw, 1_000_000_000.0)
@@ -498,10 +513,23 @@ class MarketScreener:
                     f"#{rank} {item['market']}{held_tag} | 현재가: {item['trade_price']:,.2f}원 | 24h변동: {item['change_rate']*100:+.2f}%{rs_info} | 24h거래대금: {trade_b_krw:,.0f}억 원"
                 )
 
+            total_duration = max(0.0, time.monotonic() - scan_started_at)
+            candidate_scan = max(0.0, total_duration - ai_ranking_duration)
+            self.last_scan_metrics = {
+                "candidate_scan": candidate_scan,
+                "ai_ranking": ai_ranking_duration,
+            }
+
             return final_selection
 
         except (requests.exceptions.RequestException, KeyError, ValueError, IndexError) as e:
             logger.error(f"마켓 스크리닝 중 오류 발생: {e}")
+            total_duration = max(0.0, time.monotonic() - scan_started_at)
+            candidate_scan = max(0.0, total_duration - ai_ranking_duration)
+            self.last_scan_metrics = {
+                "candidate_scan": candidate_scan,
+                "ai_ranking": ai_ranking_duration,
+            }
             fallback = [{"market": m} for m in (held_markets or ["KRW-BTC"])]
             return fallback
 
