@@ -203,7 +203,7 @@ class GeminiMacroFlashTests(unittest.TestCase):
 
     @patch("ai_provider.requests.post")
     def test_diagnose_macro_regime_background_stale_revalidate(self, mock_post):
-        """기존 캐시가 있고 30분(1800초) 이상 지난 경우, background=True 호출 시 기존 캐시를 즉시 반환하고 백그라운드 갱신을 트리거하는지 검증"""
+        """기존 캐시가 있고 2시간(7200초) 이상 지난 경우, background=True 호출 시 기존 캐시를 즉시 반환하고 백그라운드 갱신을 트리거하는지 검증"""
         mock_resp = MagicMock(status_code=200)
         mock_resp.json.return_value = {
             "candidates": [{
@@ -228,7 +228,7 @@ class GeminiMacroFlashTests(unittest.TestCase):
             "action_guideline": "분할 매매",
         }
         GeminiAnalyzer._MACRO_DIAG_CACHE = dict(old_diag)
-        GeminiAnalyzer._LAST_MACRO_DIAG_TS = time.time() - 2400.0  # 40분 전
+        GeminiAnalyzer._LAST_MACRO_DIAG_TS = time.time() - 9000.0  # 2.5시간 전 (2시간 TTL 초과)
 
         # background=True 호출
         start_ts = time.monotonic()

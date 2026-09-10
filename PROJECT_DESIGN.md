@@ -26,6 +26,7 @@
     3. **빗썸 5분 사이클 캔들 병렬 사전 조회 활성화**: `BithumbAPI` 커넥션 풀을 활용하여 빗썸도 사이클 시작 시점에 3개 워커(`max_workers=3`, 초당 Rate limit 안전 준수)로 5M/1H/4H 캔들을 병렬 프리패치(`prefetch_cycle_candles`)함으로써 사이클 내 18~30회 직렬 REST 호출 병목 해소 (마켓 루프 60% 단축).
     4. **SQLite 영속 계층 Thread-Local 커넥션 풀링**: `DatabaseManager`에 `threading.local()` 기반 단일 커넥션 재사용 및 PRAGMA 최초 1회 초기화를 도입하여 쿼리마다 반복되던 connect/close 오버헤드와 unclosed DB 리소스 경고 원천 제거.
     5. **통합 대시보드 경고 로그 역방향 I/O 캐싱**: `/api/alerts` 엔드포인트에 2.0초 TTL 및 파일 `mtime`(수정시각) 비교 캐싱을 적용해 로그 파일 변경이 없을 때 최대 10MB에 달하던 디스크 역방향 청크 스캔과 정규식 매칭 부하를 0ms로 캐시 반환.
+  - **업비트 REST 공용 제한기·캔들 단일 비행·사이클 계측 (2026-09-09)**: `create_exchange_client()`가 생성하는 다수 `UpbitAPI` 인스턴스는 프로세스 공용 그룹별 요청 예약표와 `Remaining-Req sec=0` 차단 시각을 공유한다. 따라서 캔들 제한 응답은 다른 인스턴스에도 즉시 반영되며, 주문·잔고 그룹은 캔들 그룹과 분리된다. `to`와 `force_refresh`가 없는 공개 캔들은 프로세스 공용 TTL 캐시를 사용하고 같은 키의 동시 미스는 하나의 REST 요청으로 합친다. 선행 조회 실패 또는 12초 대기 만료는 빈 캔들로 반환되어 기존 데이터 부족 신규 BUY 차단을 유지한다. 5분 사이클은 `cycle_reconcile`, `cycle_portfolio`, `cycle_regime`, `cycle_prefix`, `market_loop`, `cycle_suffix`, 기존 사전 조회 지연을 각각 p50/p95로 기록하여 `full_cycle` 지연의 실제 구간을 분리한다. **15초 초과 단일 사이클은** 주문 대사·포트폴리오·레짐·마켓 선정·구독·사전 조회·마켓 루프·캐시 저장 시간, 다음 실행까지의 `slack`, 2초 이상 느린 상위 3개 마켓을 하나의 `[성능 상세]` 경고로 기록한다. `slack`이 주기의 20% 이하일 때만 `주기여유부족`으로 구분하며, 단순 p95 목표 초과를 실행 중첩이나 체결 장애로 해석하지 않는다. Gemini 후보 랭킹은 캐시/외부호출 성공·실패 경로와 시간·후보 수만 계측하고 프롬프트·키·주문식별자는 기록하지 않는다.
   - **Dual-Track(단타 + 스윙) 병행 전략 (v8.34)**:
     - **단타 트랙(SCALP)**: 5분봉 기반 스캘핑, 1차 +3.5% 익절, 손절 -2.2%, 120분/180분 타임스탑을 통한 높은 회전율 및 리스크 방어 유지
     - **스윙 트랙(SWING)**: 대형 메이저(BTC/ETH/SOL/XRP) 및 24시간 거래대금 300억 원 이상 최상위 우량 코인 대상, 4H/1H 추세 지지 기반 장기 추세 추종
@@ -56,8 +57,8 @@
 - **거시 레짐(Macro Regime) 정밀 진단 및 브리핑 전담 모델 (v8.54)**: 
   - 시장의 거시 방향성과 권장 현금 비중을 결정하는 `diagnose_macro_regime()` 및 정기 브리핑은 일반 Flash 계열(`gemini-3.8-flash` ➜ `gemini-3.7-flash` ➜ `gemini-3.5-flash`)을 최우선 라우팅한다.
   - BTC 1시간봉 지표뿐 아니라 4시간봉 중장기 추세(EMA20/60 정·역배열), 7일 고저점 대비 이격도, 최근 변동성(ATR)을 복합 주입하여 Flash의 심층 추론 능력을 극대화한다.
-  - 무료 티어 쿼터(20 RPD) 방어를 위해 1시간(3600초) 캐시를 적용하고, 쿼터 소진(429/Threshold) 시 `gemini-3.5-flash-lite`로 무중단 순차 자동 폴백한다.
-  - **트레이딩 사이클 백그라운드 비동기화 (Stale-While-Revalidate)**: 5분 매매 사이클의 `classify_market_regime` 단계에서는 `diagnose_macro_regime(..., background=True)`를 사용하여 외부 Gemini API 호출 지연(2.5~8초)을 메인 스레드에서 완전히 제거(0ms)한다. 캐시 생성 후 30분 이상 경과 시 백그라운드 데몬 스레드에서 비동기 갱신을 트리거하고, 호출자는 기존 캐시(콜드 스타트 시 안전 fallback)를 즉시 반환받아 사이클 SLA(full_cycle <= 15s)를 완벽히 준수한다. 봇 부트스트랩 시점에도 선제적 웜업(Warm-up)을 통해 사전 캐시를 구성한다.
+  - 무료 티어 쿼터(20 RPD) 방어를 위해 2시간(7200초) 캐시를 적용하고(1H/4H 캔들 기반 거시 판단이므로 2시간 갱신이 적정), 쿼터 소진(429/Threshold) 시 `gemini-3.5-flash-lite`로 무중단 순차 자동 폴백한다.
+  - **트레이딩 사이클 백그라운드 비동기화 (Stale-While-Revalidate)**: 5분 매매 사이클의 `classify_market_regime` 단계에서는 `diagnose_macro_regime(..., background=True)`를 사용하여 외부 Gemini API 호출 지연(2.5~8초)을 메인 스레드에서 완전히 제거(0ms)한다. 캐시 생성 후 2시간 이상 경과 시 백그라운드 데몬 스레드에서 비동기 갱신을 트리거하고, 호출자는 기존 캐시(콜드 스타트 시 안전 fallback)를 즉시 반환받아 사이클 SLA(full_cycle <= 15s)를 완벽히 준수한다. 봇 부트스트랩 시점에도 선제적 웜업(Warm-up)을 통해 사전 캐시를 구성한다.
 - 구성 누락, ListModels 실패, 429/4xx/5xx, 타임아웃·네트워크 예외, 빈 응답, 잘못된 JSON 또는 로컬 JSON Schema 오류는 일반 후보·`MOMENTUM_BREAKOUT`·`RECOVERY_REBOUND`·`NEW_LISTING`을 포함한 모든 빗썸 신규 BUY를 fail-closed로 차단한다. 다른 모델 승격·로컬 BUY 폴백·다른 거래소 키 재사용은 허용하지 않는다. 기존 포지션의 주문·체결 대사·리스크 보호·청산은 계속 동작한다.
 - 업비트는 `UPBIT_GEMINI_API_KEY`와 `GeminiProvider`만 사용한다. HTTP 4xx/429/5xx, 타임아웃·네트워크 예외, 빈/스키마 오류, 가용 모델 없음 및 신규 진입용 쿼터 소진은 `data/upbit/gemini_entry_safety.json`에 기록하고 모든 신규 BUY를 fail-closed로 차단한다. 로컬 퀀트는 기존 보유 포지션의 보호·청산 보조에만 사용하며 로컬 BUY fallback은 허용하지 않는다. 거래소 REST/Private WebSocket, 주문 실행, 주문 저널 및 확정 체결 대사 계약은 Provider 전환 범위 밖이다.
 - 빗썸 Gemini 호출 계측은 `data/gemini_bithumb_telemetry.json`에 원자 저장·복원한다. 모델별 호출량·성공·429·오류·캐시·마지막 신규 BUY 안전 상태를 분리 보관하며, PT 자정 쿼터 리셋 정보를 표시한다. 저장 실패는 주문·체결·기존 포지션 보호를 막지 않는다.

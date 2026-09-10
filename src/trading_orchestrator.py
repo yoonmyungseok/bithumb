@@ -48,9 +48,49 @@ class TradingOrchestrator:
         )
         if name == "full_cycle" and p95 > 15.0:
             self.logger.warning(
-                "[성능 경고] full_cycle p95=%.3fs > 15s 목표 초과 (coalesce 위험 점검 필요)",
+                "[성능 경고] full_cycle p95=%.3fs > 15s 목표 초과 (실제 주기 위험은 사이클 상세 로그 확인)",
                 p95,
             )
+
+    def log_slow_cycle_detail(
+        self,
+        *,
+        cycle_id: str,
+        total_seconds: float,
+        interval_seconds: float,
+        timings: dict[str, float],
+        slow_markets: list[tuple[str, float]],
+    ) -> bool:
+        """목표를 넘긴 단일 사이클만 단계별 지연을 한 줄로 남긴다."""
+        if total_seconds <= 15.0:
+            return False
+
+        # 주문·응답 원문 대신 안전한 단계명과 경과 시간만 노출해 운영 원인을 연결한다.
+        phase_order = (
+            "주문대사", "포트폴리오", "레짐", "마켓선정", "구독갱신",
+            "전략사전조회", "캔들사전조회", "마켓루프", "캐시저장",
+        )
+        phase_text = " ".join(
+            f"{name}={max(0.0, timings.get(name, 0.0)):.3f}s"
+            for name in phase_order
+            if name in timings
+        ) or "측정 단계 없음"
+        market_text = ", ".join(
+            f"{market}={elapsed:.3f}s"
+            for market, elapsed in sorted(slow_markets, key=lambda item: item[1], reverse=True)[:3]
+        ) or "없음"
+        slack_seconds = interval_seconds - total_seconds
+        risk_level = "주기여유부족" if slack_seconds <= interval_seconds * 0.2 else "목표초과"
+        self.logger.warning(
+            "[성능 상세] cycle=%s total=%.3fs slack=%.3fs 상태=%s | %s | 느린마켓=%s",
+            cycle_id,
+            total_seconds,
+            slack_seconds,
+            risk_level,
+            phase_text,
+            market_text,
+        )
+        return True
 
     def get_balance_snapshot(
         self, exchange: ExchangeAdapter, *, force_refresh: bool = False, ttl_seconds: float = 2.0,

@@ -50,6 +50,24 @@ class UpbitAPI:
 
     API_ROOT = "https://api.upbit.com/v1"
 
+    # create_exchange_client()가 호출될 때마다 새 인스턴스가 만들어져도,
+    # 업비트가 동일 프로세스의 합산 요청량을 제한하는 상황에서는 한 개의 예약표를 공유해야 한다.
+    _shared_rate_limit_lock = threading.RLock()
+    _shared_rate_limit_next_at: dict[str, float] = {}
+    _shared_rate_limit_blocked_until: dict[str, float] = {}
+    _shared_rate_limit_remaining: dict[str, int] = {}
+    # 60분봉/240분봉은 계정 정보와 무관한 공개 데이터이므로 프로세스 내부에서만 안전하게 재사용한다.
+    _shared_candle_cache_lock = threading.RLock()
+    _shared_candle_cache: dict[tuple[str, int, int], tuple[float, list[dict[str, Any]]]] = {}
+    _shared_candle_inflight: dict[tuple[str, int, int], threading.Event] = {}
+    _shared_runtime_metrics: dict[str, float] = {
+        "rate_limit_wait_seconds": 0.0,
+        "rate_limit_wait_count": 0.0,
+        "candle_cache_hits": 0.0,
+        "candle_cache_misses": 0.0,
+        "candle_coalesced_waits": 0.0,
+    }
+
     def __init__(self, access_key: str = "", secret_key: str = ""):
         self.access_key = (access_key or os.getenv("UPBIT_ACCESS_KEY", "")).strip()
         self.secret_key = (secret_key or os.getenv("UPBIT_SECRET_KEY", "")).strip()
@@ -63,17 +81,35 @@ class UpbitAPI:
         self._last_remaining_min: int | None = None
         self._market_name_map: dict[str, str] = {}
         self._lock = threading.RLock()
-        # 업비트 응답 헤더의 Rate Limit 그룹별 예약 시각과 차단 시각을 관리한다.
-        self._rate_limit_next_at: dict[str, float] = {}
-        self._rate_limit_blocked_until: dict[str, float] = {}
-        self._rate_limit_remaining: dict[str, int] = {}
+        # 인스턴스별 제한기는 동시 인스턴스의 합산 한도를 막지 못하므로 공용 상태를 참조한다.
+        self._rate_limit_next_at = self._shared_rate_limit_next_at
+        self._rate_limit_blocked_until = self._shared_rate_limit_blocked_until
+        self._rate_limit_remaining = self._shared_rate_limit_remaining
         # 시장 스캔 결과를 재사용해 분석·대시보드의 중복 /ticker 요청을 줄인다.
         self._ticker_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._ticker_cache_ttl = 1.5
-        # 4시간봉(240분) 등 긴 주기의 캔들 재사용으로 초당 요청 제한(429)을 방지한다.
-        self._candle_cache: dict[tuple[str, int, int], tuple[float, list[dict[str, Any]]]] = {}
+        # 긴 주기 캔들은 모든 인스턴스가 같은 공개 응답을 재사용한다.
+        self._candle_cache = self._shared_candle_cache
         self._candle_cache_ttl_long = 180.0
         self._candle_cache_ttl_short = 5.0
+
+    @classmethod
+    def get_shared_runtime_metrics(cls) -> dict[str, float]:
+        """운영 계측용 공용 제한기·캔들 캐시 누적값을 복사본으로 반환한다."""
+        with cls._shared_rate_limit_lock, cls._shared_candle_cache_lock:
+            return dict(cls._shared_runtime_metrics)
+
+    @classmethod
+    def reset_shared_runtime_state_for_test(cls) -> None:
+        """테스트 간 공용 제한기 상태가 누적되지 않도록 초기화한다."""
+        with cls._shared_rate_limit_lock, cls._shared_candle_cache_lock:
+            cls._shared_rate_limit_next_at.clear()
+            cls._shared_rate_limit_blocked_until.clear()
+            cls._shared_rate_limit_remaining.clear()
+            cls._shared_candle_cache.clear()
+            cls._shared_candle_inflight.clear()
+            for key in cls._shared_runtime_metrics:
+                cls._shared_runtime_metrics[key] = 0.0
 
     @staticmethod
     def _normalize_rate_limit_group(group: str) -> str:
@@ -124,7 +160,7 @@ class UpbitAPI:
     def _throttle(self, group: str) -> None:
         """그룹별 요청 예약으로 동시 호출에도 초당 한도를 선제적으로 지킨다."""
         group = self._normalize_rate_limit_group(group)
-        with self._lock:
+        with self._shared_rate_limit_lock:
             now = time.monotonic()
             reserved_at = max(
                 now,
@@ -135,6 +171,9 @@ class UpbitAPI:
 
         wait_sec = reserved_at - time.monotonic()
         if wait_sec > 0:
+            with self._shared_rate_limit_lock:
+                self._shared_runtime_metrics["rate_limit_wait_seconds"] += wait_sec
+                self._shared_runtime_metrics["rate_limit_wait_count"] += 1
             time.sleep(wait_sec)
 
     def _update_rate_limit_from_response(self, response: requests.Response, fallback_group: str) -> tuple[str, int | None]:
@@ -165,7 +204,7 @@ class UpbitAPI:
             except (TypeError, ValueError):
                 pass
 
-        with self._lock:
+        with self._shared_rate_limit_lock:
             self._last_remaining_min = remaining_min
             if remaining_sec is not None:
                 self._rate_limit_remaining[group] = remaining_sec
@@ -180,7 +219,7 @@ class UpbitAPI:
         """429를 받은 그룹만 다음 초 경계까지 차단하고 실제 대기 시간을 반환한다."""
         group = self._normalize_rate_limit_group(group)
         wait_sec = self._seconds_until_next_boundary()
-        with self._lock:
+        with self._shared_rate_limit_lock:
             blocked_until = time.monotonic() + wait_sec
             self._rate_limit_blocked_until[group] = max(
                 self._rate_limit_blocked_until.get(group, 0.0), blocked_until
@@ -476,16 +515,39 @@ class UpbitAPI:
         if valid_set and market not in valid_set:
             return []
 
-        # to 파라미터가 없는 실시간 캔들에 대해 단기 TTL 캐시를 적용해 중복 요청(429)을 방지한다.
+        # to가 없는 공개 캔들은 인스턴스를 넘어 재사용하고, 동시 미스는 한 요청으로 합친다.
         cache_key = (market, unit, count)
+        cache_owner = False
+        wait_event: threading.Event | None = None
         if not to and not force_refresh:
             ttl = self._candle_cache_ttl_long if unit >= 60 else self._candle_cache_ttl_short
-            with self._lock:
+            with self._shared_candle_cache_lock:
                 cached = self._candle_cache.get(cache_key)
                 if cached:
                     ts, data = cached
                     if (time.time() - ts) < ttl and data:
+                        self._shared_runtime_metrics["candle_cache_hits"] += 1
                         return list(data)
+                self._shared_runtime_metrics["candle_cache_misses"] += 1
+                wait_event = self._shared_candle_inflight.get(cache_key)
+                if wait_event is None:
+                    wait_event = threading.Event()
+                    self._shared_candle_inflight[cache_key] = wait_event
+                    cache_owner = True
+                else:
+                    self._shared_runtime_metrics["candle_coalesced_waits"] += 1
+
+            if not cache_owner:
+                # 선행 공개 조회가 끝날 때까지만 기다리고, 실패하면 빈 데이터로 안전하게 폴백한다.
+                wait_event.wait(timeout=12.0)
+                with self._shared_candle_cache_lock:
+                    cached = self._candle_cache.get(cache_key)
+                    if cached:
+                        ts, data = cached
+                        if (time.time() - ts) < ttl and data:
+                            self._shared_runtime_metrics["candle_cache_hits"] += 1
+                            return list(data)
+                return []
 
         endpoint = f"/candles/minutes/{unit}"
         params: dict[str, Any] = {
@@ -498,12 +560,18 @@ class UpbitAPI:
             data = self._request("GET", endpoint, params=params)
             if isinstance(data, list) and data:
                 if not to:
-                    with self._lock:
+                    with self._shared_candle_cache_lock:
                         self._candle_cache[cache_key] = (time.time(), list(data))
                 return data
             return []
         except Exception:
             return []
+        finally:
+            if cache_owner and wait_event is not None:
+                # 실패도 대기자에게 즉시 전달해 같은 요청을 연속 재발행하지 않게 한다.
+                with self._shared_candle_cache_lock:
+                    self._shared_candle_inflight.pop(cache_key, None)
+                    wait_event.set()
 
     def get_orderbooks(self, markets: list[str]) -> list[dict[str, Any]]:
         """

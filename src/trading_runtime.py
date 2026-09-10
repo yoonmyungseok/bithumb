@@ -451,11 +451,13 @@ class TradingCycleEngine:
         else:
             load_dotenv(override=True)
 
-    def run_cycle_prefix(self) -> CyclePrefixResult:
+    def run_cycle_prefix(self, timings: dict[str, float] | None = None) -> CyclePrefixResult:
         """환경 로드 -> REST 대사 -> 포트폴리오 -> BTC 레짐 -> 스크리닝 -> WS -> audit."""
         ctx = self.context
         profile = self.profile
         logger = ctx.logger
+        prefix_started_at = time.monotonic()
+        timings = timings if timings is not None else {}
 
         self._load_cycle_environment()
 
@@ -488,10 +490,14 @@ class TradingCycleEngine:
             self.analyzer = None
         analyzer = self.analyzer
 
+        reconcile_started_at = time.monotonic()
         ctx.orchestrator.reconcile_orders(
             exchange, ctx.order_journal, ctx.fill_processor, label=profile.reconcile_label,
         )
+        timings["주문대사"] = time.monotonic() - reconcile_started_at
+        ctx.orchestrator.record_latency("cycle_reconcile", timings["주문대사"])
 
+        portfolio_started_at = time.monotonic()
         snapshot = ctx.orchestrator.refresh_portfolio(
             exchange,
             calculate_total_equity=ctx.calculate_total_equity,
@@ -503,6 +509,8 @@ class TradingCycleEngine:
             get_portfolio_tiers=ctx.get_portfolio_tiers,
             now=now_dt,
         )
+        timings["포트폴리오"] = time.monotonic() - portfolio_started_at
+        ctx.orchestrator.record_latency("cycle_portfolio", timings["포트폴리오"])
 
         balances = snapshot.balances
         krw_available = snapshot.krw_available
@@ -536,6 +544,7 @@ class TradingCycleEngine:
         fng = get_fear_and_greed_index()
         is_extreme_fear = bool(fng.get("is_extreme_fear", False))
 
+        regime_started_at = time.monotonic()
         is_btc_crashing, btc_regime, btc_status_msg = ctx.orchestrator.classify_market_regime(
             exchange,
             interval_minutes=self.config.interval_minutes,
@@ -543,6 +552,8 @@ class TradingCycleEngine:
             analyzer=analyzer,
             fng_index=fng,
         )
+        timings["레짐"] = time.monotonic() - regime_started_at
+        ctx.orchestrator.record_latency("cycle_regime", timings["레짐"])
         ctx.trailing_tracker.set_macro_defensive_mode(is_btc_crashing)
         if is_btc_crashing:
             logger.warning(
@@ -599,28 +610,35 @@ class TradingCycleEngine:
             analyzer=screener_analyzer,
             on_screened_candidates=capture_screened_candidates,
         )
-        ctx.orchestrator.record_latency("market_selection", time.monotonic() - selection_started_at)
+        timings["마켓선정"] = time.monotonic() - selection_started_at
+        ctx.orchestrator.record_latency("market_selection", timings["마켓선정"])
         logger.info(
             f"{profile.markets_log_prefix}이번 사이클 최종 분석 대상 마켓 "
             f"({len(target_markets)}개): {target_markets}"
         )
 
+        subscription_started_at = time.monotonic()
         ctx.ws_client.update_subscriptions(list(dict.fromkeys(target_markets + held_markets + ["KRW-BTC"])))
+        timings["구독갱신"] = time.monotonic() - subscription_started_at
         # 전략용 일괄 응답은 1초 이내에만 재사용하며, 이후 마켓은 기존 단건 조회로 폴백한다.
         ticker_seed = (
             ctx.orchestrator._last_screener_ticker_seed
             if profile.exchange_key == "upbit" and is_auto_mode
             else None
         )
+        input_prefetch_started_at = time.monotonic()
         prefetched_market_inputs = ctx.orchestrator.prefetch_market_inputs(
             exchange, target_markets, ticker_seed=ticker_seed,
         )
+        timings["전략사전조회"] = time.monotonic() - input_prefetch_started_at
         candle_prefetch_cache: dict[str, dict[str, Any]] = {}
         # 빗썸과 업비트 모두 캔들 병렬 사전 조회를 적용한다 (빗썸은 Rate Limit 안전을 위해 워커 3개 제한).
         prefetch_workers = 3 if profile.exchange_key == "bithumb" else 5
+        candle_prefetch_started_at = time.monotonic()
         candle_prefetch_cache = ctx.orchestrator.prefetch_cycle_candles(
             exchange, target_markets, self.config.interval_minutes, max_workers=prefetch_workers,
         )
+        timings["캔들사전조회"] = time.monotonic() - candle_prefetch_started_at
 
         ctx.decision_db.purge_strategy_decisions(
             profile.decision_exchange, time.time() - 30 * 24 * 60 * 60,
@@ -646,6 +664,8 @@ class TradingCycleEngine:
 
         excluded_source = profile.extra_excluded_markets
         excluded_markets = excluded_source() if callable(excluded_source) else excluded_source
+        # 공통 준비 단계가 전체 지연의 어느 정도를 차지하는지 시장 루프와 분리해 관찰한다.
+        ctx.orchestrator.record_latency("cycle_prefix", time.monotonic() - prefix_started_at)
 
         return CyclePrefixResult(
             exchange=exchange,
@@ -2041,7 +2061,9 @@ class TradingCycleEngine:
             return False
         return market in excluded_markets or market.replace("KRW-", "") in excluded_markets
 
-    def run_market_loop(self, prefix: CyclePrefixResult) -> None:
+    def run_market_loop(
+        self, prefix: CyclePrefixResult, slow_markets: list[tuple[str, float]] | None = None,
+    ) -> None:
         """마켓별 스냅샷 로드 -> 청산 -> 진입 -> 손절 -> 매수 실행."""
         ctx = self.context
         profile = self.profile
@@ -2067,6 +2089,7 @@ class TradingCycleEngine:
         now_str = prefix.now_str
         is_bot_paused = self.config.is_bot_paused()
         is_entry_ready = ctx.order_journal.is_entry_ready()
+        slow_markets = slow_markets if slow_markets is not None else []
 
         # 업비트 쿼터 가드와 빗썸 Gemini 전용 계측을 섞지 않는다.
         if getattr(profile, "exchange_key", "") == "bithumb":
@@ -2177,6 +2200,7 @@ class TradingCycleEngine:
                 logger.warning(f"🛑 [보호 규칙 작동] 관리 제외 종목 ({market}) 분석 건너뜀")
                 continue
 
+            market_started_at = time.monotonic()
             try:
                 candidate_metadata = screened_candidate_metadata.get(market, {})
                 candidate_type = str(candidate_metadata.get("candidate_type", "CONFIRMED")).upper()
@@ -2332,6 +2356,11 @@ class TradingCycleEngine:
                     continue
             except Exception as exc:
                 logger.error(f"[{market}] 매매 사이클 오류 발생: {exc}", exc_info=True)
+            finally:
+                market_elapsed = time.monotonic() - market_started_at
+                # 정상 종목 전부를 남기지 않고 2초 이상 지연된 종목만 원인 분석 대상으로 보존한다.
+                if market_elapsed >= 2.0:
+                    slow_markets.append((market, market_elapsed))
 
         if (snapshot_cache_hits + snapshot_cache_misses) > 0:
             hit_rate = snapshot_cache_hits / float(snapshot_cache_hits + snapshot_cache_misses)
@@ -2365,21 +2394,66 @@ class TradingCycleEngine:
         except Exception as exc:
             self.context.logger.debug("거시 레짐 선제 웜업 예외 (무시): %s", exc)
 
+    def _capture_upbit_rest_metrics(self) -> dict[str, float]:
+        """업비트 사이클 전후의 공용 REST 계측값을 비교하기 위한 안전한 스냅샷을 반환한다."""
+        if self.profile.exchange_key != "upbit":
+            return {}
+        try:
+            # 지연 계측은 업비트 전용 공개 요청 상태만 읽으며 주문·잔고 상태에는 접근하지 않는다.
+            from upbit_api import UpbitAPI
+
+            return UpbitAPI.get_shared_runtime_metrics()
+        except Exception as exc:
+            self.context.logger.debug("업비트 REST 계측 스냅샷 실패 (무시): %s", exc)
+            return {}
+
     def run_cycle(self) -> None:
         """5분 사이클 전체(prefix -> market loop -> suffix) 실행."""
         logger = self.context.logger
         error_prefix = self.profile.cycle_error_log_prefix
         cycle_started_at = time.monotonic()
+        api_metrics_before = self._capture_upbit_rest_metrics()
+        timings: dict[str, float] = {}
+        slow_markets: list[tuple[str, float]] = []
+        cycle_id = "unknown"
         try:
-            prefix = self.run_cycle_prefix()
+            prefix = self.run_cycle_prefix(timings)
+            cycle_id = prefix.now_str
             market_loop_started_at = time.monotonic()
-            self.run_market_loop(prefix)
-            self.context.orchestrator.record_latency("market_loop", time.monotonic() - market_loop_started_at)
+            self.run_market_loop(prefix, slow_markets=slow_markets)
+            timings["마켓루프"] = time.monotonic() - market_loop_started_at
+            self.context.orchestrator.record_latency("market_loop", timings["마켓루프"])
+            suffix_started_at = time.monotonic()
             self.run_cycle_suffix(prefix)
+            timings["캐시저장"] = time.monotonic() - suffix_started_at
+            self.context.orchestrator.record_latency("cycle_suffix", timings["캐시저장"])
         except Exception as exc:
             logger.error(
                 f"{error_prefix}전체 트레이딩 사이클 예외 발생: {exc}",
                 exc_info=True,
             )
         finally:
-            self.context.orchestrator.record_latency("full_cycle", time.monotonic() - cycle_started_at)
+            total_seconds = time.monotonic() - cycle_started_at
+            self.context.orchestrator.record_latency("full_cycle", total_seconds)
+            self.context.orchestrator.log_slow_cycle_detail(
+                cycle_id=cycle_id,
+                total_seconds=total_seconds,
+                interval_seconds=self.config.interval_minutes * 60.0,
+                timings=timings,
+                slow_markets=slow_markets,
+            )
+            api_metrics_after = self._capture_upbit_rest_metrics()
+            if api_metrics_before and api_metrics_after:
+                # 누적 카운터 차이만 남겨 한 사이클의 캐시·제한기 효과를 운영 로그에서 확인한다.
+                delta = {
+                    key: max(0.0, api_metrics_after.get(key, 0.0) - value)
+                    for key, value in api_metrics_before.items()
+                }
+                logger.info(
+                    "[업비트 REST 사이클 계측] 캔들 캐시 적중=%d 미스=%d 동시대기=%d 제한대기=%.3fs(%d회)",
+                    int(delta.get("candle_cache_hits", 0.0)),
+                    int(delta.get("candle_cache_misses", 0.0)),
+                    int(delta.get("candle_coalesced_waits", 0.0)),
+                    delta.get("rate_limit_wait_seconds", 0.0),
+                    int(delta.get("rate_limit_wait_count", 0.0)),
+                )

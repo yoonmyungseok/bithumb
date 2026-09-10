@@ -1,6 +1,7 @@
 import hashlib
 import os
 import sys
+import threading
 import unittest
 import urllib.parse
 from unittest.mock import MagicMock, patch
@@ -21,6 +22,8 @@ from upbit_api import UpbitAPI, get_upbit_excluded_markets
 
 class UpbitAPITests(unittest.TestCase):
     def setUp(self):
+        # 클래스 공용 제한기/캐시가 다른 테스트 결과를 물려받지 않게 초기화한다.
+        UpbitAPI.reset_shared_runtime_state_for_test()
         self.access_key = "test-access-key-12345"
         self.secret_key = "test-secret-key-67890"
         self.api = UpbitAPI(self.access_key, self.secret_key)
@@ -122,6 +125,17 @@ class UpbitAPITests(unittest.TestCase):
         self.api._block_rate_limit_group("candle")
         self.assertIn("candles", self.api._rate_limit_blocked_until)
 
+    def test_rate_limit_state_is_shared_between_instances(self):
+        # 별도 인스턴스가 만든 429 차단도 같은 업비트 프로세스 전체에 적용되어야 한다.
+        second_api = UpbitAPI(self.access_key, self.secret_key)
+        response = MagicMock()
+        response.headers = {"Remaining-Req": "group=candles; min=600; sec=0"}
+
+        self.api._update_rate_limit_from_response(response, "candles")
+
+        self.assertIs(self.api._rate_limit_blocked_until, second_api._rate_limit_blocked_until)
+        self.assertIn("candles", second_api._rate_limit_blocked_until)
+
 
     def test_get_tickers_reuses_short_lived_cache_and_force_refresh_bypasses_it(self):
         # 시장 스캔으로 받은 시세는 짧은 시간 동안 개별 현재가 조회에 재사용한다.
@@ -157,6 +171,63 @@ class UpbitAPITests(unittest.TestCase):
             c3 = self.api.get_candles(unit=240, count=25, market="KRW-BTC", force_refresh=True)
             self.assertEqual(len(c3), 1)
             self.assertEqual(mock_request.call_count, 2)
+
+    def test_long_candle_cache_is_shared_between_instances(self):
+        # 사이클과 실시간 리스크가 별도 클라이언트를 만들어도 60분봉은 한 번만 조회해야 한다.
+        second_api = UpbitAPI(self.access_key, self.secret_key)
+        self.api._valid_markets_cache = {"KRW-BTC"}
+        second_api._valid_markets_cache = {"KRW-BTC"}
+        fake_candles = [{"market": "KRW-BTC", "trade_price": 50000000.0}]
+
+        with patch.object(self.api, "_request", return_value=list(fake_candles)) as first_request:
+            with patch.object(second_api, "_request") as second_request:
+                self.assertEqual(
+                    self.api.get_candles(unit=60, count=50, market="KRW-BTC"), fake_candles,
+                )
+                self.assertEqual(
+                    second_api.get_candles(unit=60, count=50, market="KRW-BTC"), fake_candles,
+                )
+
+        self.assertEqual(first_request.call_count, 1)
+        self.assertEqual(second_request.call_count, 0)
+        self.assertGreaterEqual(UpbitAPI.get_shared_runtime_metrics()["candle_cache_hits"], 1)
+
+    def test_concurrent_long_candle_misses_are_coalesced(self):
+        # 동시에 시작한 60분봉 조회는 선행 요청 하나만 REST로 나가야 한다.
+        second_api = UpbitAPI(self.access_key, self.secret_key)
+        self.api._valid_markets_cache = {"KRW-BTC"}
+        second_api._valid_markets_cache = {"KRW-BTC"}
+        first_request_started = threading.Event()
+        allow_first_request = threading.Event()
+        fake_candles = [{"market": "KRW-BTC", "trade_price": 50000000.0}]
+        first_result: list[list[dict[str, float | str]]] = []
+
+        def first_request(*args, **kwargs):
+            first_request_started.set()
+            self.assertTrue(allow_first_request.wait(timeout=1.0))
+            return list(fake_candles)
+
+        def fetch_first() -> None:
+            first_result.append(self.api.get_candles(unit=60, count=50, market="KRW-BTC"))
+
+        with patch.object(self.api, "_request", side_effect=first_request) as first_mock:
+            with patch.object(second_api, "_request") as second_mock:
+                worker = threading.Thread(target=fetch_first)
+                worker.start()
+                self.assertTrue(first_request_started.wait(timeout=1.0))
+                # 두 번째 호출은 선행 요청의 Event를 기다린 뒤 같은 캐시 값을 받아야 한다.
+                release_timer = threading.Timer(0.02, allow_first_request.set)
+                release_timer.start()
+                second_result = second_api.get_candles(unit=60, count=50, market="KRW-BTC")
+                worker.join(timeout=1.0)
+                release_timer.join(timeout=1.0)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(first_result, [fake_candles])
+        self.assertEqual(second_result, fake_candles)
+        self.assertEqual(first_mock.call_count, 1)
+        self.assertEqual(second_mock.call_count, 0)
+        self.assertGreaterEqual(UpbitAPI.get_shared_runtime_metrics()["candle_coalesced_waits"], 1)
 
 
     @patch("requests.Session.get")

@@ -57,6 +57,42 @@ class TradingOrchestratorPerformanceTests(unittest.TestCase):
             "observed_at": time.monotonic(),
         }
 
+    def test_slow_cycle_detail_logs_phase_and_safe_market_timing(self):
+        """목표 초과 시에만 단계·종목 시간과 실제 주기 여유를 함께 기록한다."""
+        logger = MagicMock()
+        orchestrator = TradingOrchestrator(logger)
+
+        logged = orchestrator.log_slow_cycle_detail(
+            cycle_id="2026-09-09 19:44:37",
+            total_seconds=16.5,
+            interval_seconds=300.0,
+            timings={"주문대사": 0.1, "마켓선정": 3.2, "마켓루프": 7.4},
+            slow_markets=[("KRW-XRP", 2.4), ("KRW-LIT", 3.1)],
+        )
+
+        self.assertTrue(logged)
+        self.assertTrue(logger.warning.called)
+        log_args = logger.warning.call_args.args
+        self.assertIn("slack=", log_args[0])
+        self.assertIn("마켓선정=", log_args[5])
+        self.assertIn("느린마켓=", log_args[0])
+
+    def test_normal_cycle_does_not_write_detail_log(self):
+        """정상 사이클은 상세 성능 로그를 남기지 않아 운영 로그 폭증을 막는다."""
+        logger = MagicMock()
+        orchestrator = TradingOrchestrator(logger)
+
+        logged = orchestrator.log_slow_cycle_detail(
+            cycle_id="2026-09-09 19:44:37",
+            total_seconds=14.9,
+            interval_seconds=300.0,
+            timings={},
+            slow_markets=[],
+        )
+
+        self.assertFalse(logged)
+        logger.warning.assert_not_called()
+
     def test_priority_eval_snapshot_uses_prefetch_and_skips_balance(self):
         prefetched = self._fresh_prefetch()
         snap = self.orchestrator.load_priority_eval_snapshot(

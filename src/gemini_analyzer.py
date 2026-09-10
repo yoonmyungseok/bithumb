@@ -1754,13 +1754,13 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
         fng_index: dict[str, Any] | None = None,
         force_refresh: bool = False,
     ) -> dict[str, Any]:
-        """거시 레짐 정밀 진단 실제 동기 실행 엔진 (1시간 캐시 및 Flash 우선 라우팅)"""
+        """거시 레짐 정밀 진단 실제 동기 실행 엔진 (2시간 캐시 및 Flash 우선 라우팅)"""
         now_ts = time.time()
         if (
             not force_refresh
             and hasattr(self, "_macro_diag_cache")
             and self._macro_diag_cache
-            and (now_ts - getattr(self, "_last_macro_diag_ts", 0.0) < 3600.0)
+            and (now_ts - getattr(self, "_last_macro_diag_ts", 0.0) < 7200.0)
         ):
             self._record_cache_hit("MACRO")
             return dict(self._macro_diag_cache)
@@ -1886,7 +1886,7 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
         """
         [3순위] BTC 1시간봉/4시간봉 및 공포탐욕 지수를 종합 진단하여 매크로 레짐 및 권장 현금 비중 산출
         - 일반 Flash(gemini-3.8-flash) 최우선 라우팅 (소진/에러 시 Flash-Lite 순차 폴백)
-        - 1시간(3600초) 캐시 적용 (무료 티어 20 RPD 예산 철저 보호)
+        - 2시간(7200초) 캐시 적용 (무료 티어 20 RPD 예산 철저 보호, 1H/4H 캔들 기반이므로 2시간 갱신 적정)
         - background=True: Stale-While-Revalidate 패턴으로 백그라운드 스레드에서 비동기 갱신,
           호출자는 0ms로 기존 캐시(또는 fallback)를 즉시 반환받아 메인 트레이딩 사이클 블로킹 방지
         """
@@ -1895,8 +1895,9 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
         has_cache = bool(hasattr(self, "_macro_diag_cache") and self._macro_diag_cache)
         cache_age = (now_ts - cached_ts) if has_cache else float("inf")
 
-        # 1. 캐시가 30분 이내로 신선하면 동기/비동기 무관하게 즉시 반환
-        if has_cache and cache_age < 1800.0:
+        # 1. 캐시가 2시간 이내로 신선하면 동기/비동기 무관하게 즉시 반환
+        #    (1H/4H 캔들 기반 거시 판단이므로 2시간 간격이 적정 — 무료 티어 20 RPD 예산 보호)
+        if has_cache and cache_age < 7200.0:
             self._record_cache_hit("MACRO")
             return dict(self._macro_diag_cache)
 
@@ -1908,8 +1909,8 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
                 btc_candles_4h=btc_candles_4h,
                 fng_index=fng_index,
             )
-            # 기존 캐시가 있으면(설령 1800초가 지났더라도 백그라운드 갱신 전까지) 즉시 캐시 재사용 (최대 2시간)
-            if has_cache and cache_age < 7200.0:
+            # 기존 캐시가 있으면(설령 2시간이 지났더라도 백그라운드 갱신 전까지) 즉시 캐시 재사용 (최대 4시간)
+            if has_cache and cache_age < 14400.0:
                 self._record_cache_hit("MACRO")
                 return dict(self._macro_diag_cache)
 
