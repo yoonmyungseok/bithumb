@@ -169,8 +169,14 @@ def set_is_bot_paused(val: bool) -> None:
 # 전역 인스턴스 초기화
 chart_renderer = ChartRenderer()
 # data/는 빗썸 전용 저장소이므로 구형 무표기 기록은 빗썸으로 한 번만 승격한다.
-trade_memory = TradeMemoryManager(exchange_scope="bithumb", legacy_exchange="bithumb")
-order_journal = OrderJournal(exchange_scope="bithumb")
+trade_memory = TradeMemoryManager(data_dir=DATA_DIR, exchange_scope="bithumb", legacy_exchange="bithumb")
+order_journal = OrderJournal(data_dir=DATA_DIR, exchange_scope="bithumb")
+logger.info(
+    "주문 저널 초기화 완료: 거래소 범위=%s, JSON 경로=%s, SQLite 경로=%s",
+    order_journal.exchange_scope,
+    os.path.abspath(order_journal.path),
+    os.path.abspath(getattr(order_journal.db, "db_path", get_exchange_db_path(DATA_DIR))),
+)
 order_executor = SafeOrderExecutor(order_journal)
 cooldown_manager = CooldownManager(
     default_sl_cooldown=StrategyPolicy.COOLDOWN_STOP_LOSS_SEC,

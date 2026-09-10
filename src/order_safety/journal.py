@@ -15,6 +15,12 @@ from state_store import load_json_with_backup_recovery, write_json_atomically
 
 logger = logging.getLogger(__name__)
 
+# 재시작 시 저널 대사 시각의 오래됨을 판정하는 임계값(초).
+# 일반적인 REST 주문 대사 주기는 5분(300초)이며, 2주기(10분=600초)를 초과하여 대사가 실행되지 않은 상태에서
+# 재시작되면 직전 메모리의 READY 상태를 신뢰할 수 없으므로, PENDING 상태로 시작하여 최초 REST 대사 및
+# 영속화 검증이 완료될 때까지 신규 BUY 주문을 fail-closed로 차단한다.
+MAX_RECONCILIATION_STALENESS_SEC = 600.0
+
 class OrderJournal:
     """Small append-only JSON journal, written atomically for crash recovery (Schema v2)."""
 
@@ -22,7 +28,9 @@ class OrderJournal:
 
     def __init__(self, path: str | None = None, data_dir: str | None = None, exchange_scope: str = ""):
         self._lock = threading.RLock()
-        d_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+        # journal.py가 src/order_safety/에 위치하므로 3단계 상위가 프로젝트 루트이다.
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        d_dir = data_dir or os.path.join(project_root, "data")
         os.makedirs(d_dir, exist_ok=True)
         self.path = path or os.path.join(d_dir, "order_journal.json")
         # 주문 저널은 상위 data/가 아니라 해당 거래소의 data_dir DB를 사용한다.
@@ -60,6 +68,21 @@ class OrderJournal:
         if self.exchange_scope and stored_scope and stored_scope != self.exchange_scope:
             logger.warning("주문 저널 거래소 범위 불일치(%s != %s): 신규 매수를 차단합니다.", stored_scope, self.exchange_scope)
             self.reconciliation_state = "PENDING"
+
+        # 재시작 안전장치: 마지막 대사 완료 시각이 0이거나 오래된(10분 초과) 경우
+        # 저장된 파일의 reconciliation_state가 READY여도 신뢰하지 않고 PENDING으로 강제하여
+        # 재시작 후 첫 REST 대사 및 디스크 영속화 검증이 완료되기 전까지 신규 BUY를 차단한다.
+        now = time.time()
+        last_completed = float(self.reconciliation_metrics.get("last_completed_at", 0.0) or 0.0)
+        if last_completed <= 0.0 or (now - last_completed) > MAX_RECONCILIATION_STALENESS_SEC:
+            if self.reconciliation_state == "READY":
+                logger.warning(
+                    "주문 저널의 마지막 대사 시각이 오래되었거나(경과: %.1f초, 기준: %.1f초) 미완료 상태여서 재시작 시 신규 BUY를 안전하게 차단(PENDING)합니다.",
+                    max(0.0, now - last_completed) if last_completed > 0 else -1.0,
+                    MAX_RECONCILIATION_STALENESS_SEC,
+                )
+            self.reconciliation_state = "PENDING"
+
         if not self.exchange_scope:
             return orders
 
@@ -78,25 +101,80 @@ class OrderJournal:
             self.reconciliation_state = "PENDING"
         return active
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
+        """주문 저널을 원자적으로 디스크에 저장하고, 저장 결과를 재읽기하여 검증한다.
+
+        Returns:
+            bool: 원자 저장 및 디스크 재읽기 검증 성공 시 True, 실패 시 False
+        """
+        now = time.time()
+        payload = {
+            "schema_version": self.SCHEMA_VERSION,
+            "updated_at": now,
+            "exchange_scope": self.exchange_scope,
+            "reconciliation_state": self.reconciliation_state,
+            "reconciliation_metrics": dict(self.reconciliation_metrics),
+            "orders": self.orders[-500:],
+        }
         try:
-            payload = {
-                "schema_version": self.SCHEMA_VERSION,
-                "updated_at": time.time(),
-                "exchange_scope": self.exchange_scope,
-                "reconciliation_state": self.reconciliation_state,
-                "reconciliation_metrics": self.reconciliation_metrics,
-                "orders": self.orders[-500:],
-            }
             write_json_atomically(self.path, payload)
         except Exception as exc:
-            logger.warning("주문 저널 저장 경고: %s", exc)
+            logger.error("주문 저널 원자 저장 실패 (경로: %s): %s", os.path.abspath(self.path), exc)
+            return False
+
+        # 저장 직후 디스크의 JSON을 재읽기하여 영속화 정합성을 검증한다.
+        try:
+            verified = load_json_with_backup_recovery(self.path, default=None)
+            if not isinstance(verified, dict):
+                logger.error("주문 저널 영속화 검증 실패 (경로: %s): 저장된 데이터가 유효한 딕셔너리가 아닙니다.", os.path.abspath(self.path))
+                return False
+
+            if verified.get("schema_version") != self.SCHEMA_VERSION:
+                logger.error(
+                    "주문 저널 영속화 검증 실패 (경로: %s): 스키마 버전 불일치 (기대: %s, 실제: %s)",
+                    os.path.abspath(self.path), self.SCHEMA_VERSION, verified.get("schema_version"),
+                )
+                return False
+
+            saved_scope = str(verified.get("exchange_scope", "")).lower()
+            if self.exchange_scope and saved_scope != self.exchange_scope:
+                logger.error(
+                    "주문 저널 영속화 검증 실패 (경로: %s): 거래소 범위 불일치 (기대: %s, 실제: %s)",
+                    os.path.abspath(self.path), self.exchange_scope, saved_scope,
+                )
+                return False
+
+            saved_updated_at = float(verified.get("updated_at", 0.0) or 0.0)
+            if abs(saved_updated_at - now) > 1e-4:
+                logger.error(
+                    "주문 저널 영속화 검증 실패 (경로: %s): updated_at 미반영 (기대: %f, 실제: %f)",
+                    os.path.abspath(self.path), now, saved_updated_at,
+                )
+                return False
+
+            saved_metrics = verified.get("reconciliation_metrics", {})
+            if isinstance(saved_metrics, dict):
+                exp_completed = float(self.reconciliation_metrics.get("last_completed_at", 0.0) or 0.0)
+                saved_completed = float(saved_metrics.get("last_completed_at", 0.0) or 0.0)
+                if abs(saved_completed - exp_completed) > 1e-4:
+                    logger.error(
+                        "주문 저널 영속화 검증 실패 (경로: %s): last_completed_at 미반영 (기대: %f, 실제: %f)",
+                        os.path.abspath(self.path), exp_completed, saved_completed,
+                    )
+                    return False
+        except Exception as exc:
+            logger.error("주문 저널 재읽기 검증 중 예외 발생 (경로: %s): %s", os.path.abspath(self.path), exc)
+            return False
+
+        # SQLite 백업 동기화 (실패해도 JSON 영속화가 성공했으면 크리티컬 실패로 취급하지 않음)
         try:
             ex = self.exchange_scope or "bithumb"
             for order in self.orders[-5:]:
                 self.db.upsert_order(ex, order)
         except Exception as exc:
             logger.debug("SQLite 주문 동기화 예외: %s", exc)
+
+        return True
 
     def record_intent(
         self,
@@ -386,8 +464,12 @@ class OrderJournal:
             "last_updated_count": updated,
             "last_failed_count": self._last_reconcile_failed_count,
         })
-        # 대사 관측값은 신규 매수 차단 판단에 영향을 주므로 즉시 영속화한다.
-        self._save()
+        # 대사 관측값은 신규 매수 차단 판단에 영향을 주므로 즉시 영속화하고 검증한다.
+        saved_ok = self._save()
+        if not saved_ok:
+            self._last_reconcile_failed_count += 1
+            self.reconciliation_state = "PENDING"
+            logger.error("🛑 주문 저널 영속화 검증 실패로 대사 결과가 디스크에 확정되지 않아 신규 매수를 차단(PENDING)합니다.")
         logger.info(
             "REST 주문 대사 완료: 갱신=%d 실패=%d", updated, self._last_reconcile_failed_count,
         )
@@ -439,7 +521,7 @@ class OrderJournal:
             logger.warning("🛑 신규 매수 차단: %s", reason)
 
     def complete_reconciliation_if_safe(self) -> bool:
-        """모든 미완료 주문의 REST 대사가 성공한 경우에만 신규 진입을 재개한다."""
+        """모든 미완료 주문의 REST 대사 및 저널 영속화 검증이 성공한 경우에만 신규 진입을 재개한다."""
         with self._lock:
             unresolved = any(order.get("status") in {
                 OrderStatus.PENDING_SUBMISSION, OrderStatus.UNKNOWN, OrderStatus.ACKNOWLEDGED,
@@ -447,10 +529,14 @@ class OrderJournal:
             } for order in self.orders)
             if self._last_reconcile_failed_count or unresolved:
                 return False
-            if self.reconciliation_state != "READY":
+            was_ready = self.reconciliation_state == "READY"
+            if not was_ready:
                 self.reconciliation_state = "READY"
-                self._save()
-                logger.warning("✅ REST 주문 대사가 완료되어 신규 매수 안전 모드를 해제했습니다.")
+                if not self._save():
+                    self.reconciliation_state = "PENDING"
+                    logger.error("🛑 REST 주문 대사 완료 후 저널 영속화 검증에 실패하여 신규 매수 차단(PENDING)을 유지합니다.")
+                    return False
+                logger.warning("✅ REST 주문 대사 및 저널 영속화가 완료되어 신규 매수 안전 모드를 해제했습니다.")
             return True
 
     def apply_private_order_event(

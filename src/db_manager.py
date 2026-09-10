@@ -99,18 +99,44 @@ class DatabaseManager:
                     pass
                 self._local.conn = None
 
-        conn = sqlite3.connect(self.db_path, timeout=15.0, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        if _is_ephemeral_db_path(self.db_path):
-            conn.execute("PRAGMA journal_mode=DELETE;")
-        else:
-            conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA busy_timeout=5000;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        self._local.conn = conn
-        with self._conns_lock:
-            self._all_conns.add(conn)
-        return conn
+        # 프로세스 재시작 직후 이전 프로세스의 파일 잠금/핸들이 OS에서 완전히 해제되기까지
+        # 짧은 지연(경합)이 발생할 수 있으므로, 지수 백오프 기반 재시도로 disk I/O error를 방어한다.
+        last_exc: Exception | None = None
+        for attempt in range(5):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=15.0, check_same_thread=False)
+                conn.row_factory = sqlite3.Row
+                # busy_timeout을 최우선 설정하여 후속 PRAGMA 및 락 경합 시 SQLite 내부 핸들러가 대기하도록 보장
+                conn.execute("PRAGMA busy_timeout=10000;")
+                conn.execute("PRAGMA synchronous=NORMAL;")
+                if _is_ephemeral_db_path(self.db_path):
+                    conn.execute("PRAGMA journal_mode=DELETE;")
+                else:
+                    # 현재 모드가 이미 wal이면 불필요한 WAL 재전환(헤더 배타적 잠금)을 건너뛴다
+                    cur_mode = ""
+                    try:
+                        row = conn.execute("PRAGMA journal_mode;").fetchone()
+                        if row:
+                            cur_mode = str(row[0]).lower()
+                    except Exception:
+                        pass
+                    if cur_mode != "wal":
+                        conn.execute("PRAGMA journal_mode=WAL;")
+                self._local.conn = conn
+                with self._conns_lock:
+                    self._all_conns.add(conn)
+                return conn
+            except (sqlite3.OperationalError, OSError) as exc:
+                last_exc = exc
+                logger.warning(
+                    "SQLite DB 연결 초기화 경합/지연 (시도 %d/5, 경로: %s): %s",
+                    attempt + 1, self.db_path, exc,
+                )
+                time.sleep(0.4 * (attempt + 1))
+
+        if last_exc:
+            raise last_exc
+        raise sqlite3.OperationalError(f"SQLite DB 연결 실패: {self.db_path}")
 
     def _init_db(self) -> None:
         """Initialize database schema and indexes."""
