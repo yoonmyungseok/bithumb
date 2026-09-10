@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,6 +18,28 @@ from typing import Any, Callable
 
 from exchange_adapter import ExchangeAdapter
 from strategy_engine import classify_btc_regime, classify_listing_maturity
+
+# 단일 사이클 내 전략 입력 prefetch 유효 시간(초). 주문 직전 검증에는 사용하지 않는다.
+DEFAULT_STRATEGY_INPUT_PREFETCH_TTL_SEC = 45.0
+# RS(상대강도) 계산에 필요한 BTC 5분봉 최소 개수
+MIN_BTC_5M_CANDLES_FOR_RS = 10
+
+
+def resolve_strategy_input_prefetch_ttl(
+    interval_minutes: int,
+    *,
+    configured_ttl: float | None = None,
+) -> float:
+    """사이클 주기의 절반을 상한으로 prefetch TTL을 결정한다."""
+    if configured_ttl is None:
+        configured_ttl = float(
+            os.getenv(
+                "STRATEGY_INPUT_PREFETCH_TTL_SEC",
+                str(DEFAULT_STRATEGY_INPUT_PREFETCH_TTL_SEC),
+            )
+        )
+    cap_seconds = max(1.0, float(interval_minutes) * 60.0 * 0.5)
+    return min(max(1.0, float(configured_ttl)), cap_seconds)
 
 
 class TradingOrchestrator:
@@ -32,6 +55,11 @@ class TradingOrchestrator:
         self._latencies: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=40))
         # 스크리너가 이미 조회한 ticker를 같은 사이클 prefetch가 재사용한다.
         self._last_screener_ticker_seed: dict[str, dict[str, Any]] = {}
+        self._strategy_input_prefetch_ttl_seconds = DEFAULT_STRATEGY_INPUT_PREFETCH_TTL_SEC
+
+    def configure_strategy_input_prefetch_ttl(self, interval_minutes: int) -> None:
+        """사이클 시작 시 interval 기반 prefetch TTL을 갱신한다."""
+        self._strategy_input_prefetch_ttl_seconds = resolve_strategy_input_prefetch_ttl(interval_minutes)
 
     def record_latency(self, name: str, elapsed_seconds: float) -> None:
         """성능 측정값을 누적하고 20회마다 운영 로그로 요약한다."""
@@ -388,16 +416,40 @@ class TradingOrchestrator:
             self.record_latency("candle_prefetch", time.monotonic() - started_at)
         return cache
 
-    @staticmethod
-    def _resolve_prefetch_window(prefetched_input: dict[str, Any] | None) -> tuple[bool, float, dict[str, Any] | None]:
-        """전략 입력 prefetch TTL(1.0s) 안에서만 ticker·호가를 재사용한다."""
+    def _resolve_prefetch_window(
+        self,
+        prefetched_input: dict[str, Any] | None,
+        *,
+        ttl_seconds: float | None = None,
+    ) -> tuple[bool, float, dict[str, Any] | None]:
+        """단일 사이클 prefetch TTL 안에서만 ticker·호가를 재사용한다 (주문 경계 제외)."""
+        ttl = ttl_seconds if ttl_seconds is not None else self._strategy_input_prefetch_ttl_seconds
         is_fresh_prefetch = bool(
             prefetched_input
-            and time.monotonic() - float(prefetched_input.get("observed_at", 0.0) or 0.0) <= 1.0
+            and time.monotonic() - float(prefetched_input.get("observed_at", 0.0) or 0.0) <= ttl
         )
         prefetched_price = float((prefetched_input or {}).get("price", 0.0) or 0.0)
         prefetched_orderbook = (prefetched_input or {}).get("orderbook")
         return is_fresh_prefetch, prefetched_price, prefetched_orderbook if isinstance(prefetched_orderbook, dict) else None
+
+    @staticmethod
+    def resolve_cycle_btc_candles_5m(
+        exchange: ExchangeAdapter,
+        candle_prefetch_cache: dict[str, dict[str, Any]] | None,
+        interval_minutes: int,
+    ) -> list[dict[str, Any]]:
+        """사이클당 BTC 5분봉 1회 확보. 캐시·조회 실패 시 빈 리스트로 fail-closed 폴백한다."""
+        btc_payload = (candle_prefetch_cache or {}).get("KRW-BTC", {})
+        cached = btc_payload.get("candles_5m") if isinstance(btc_payload, dict) else None
+        if isinstance(cached, list) and len(cached) >= MIN_BTC_5M_CANDLES_FOR_RS:
+            return cached
+        try:
+            fetched = exchange.get_candles(unit=interval_minutes, count=30, market="KRW-BTC")
+            if isinstance(fetched, list) and len(fetched) >= MIN_BTC_5M_CANDLES_FOR_RS:
+                return fetched
+        except Exception:
+            pass
+        return []
 
     @staticmethod
     def _resolve_cached_candles(

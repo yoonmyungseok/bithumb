@@ -224,6 +224,8 @@ class MarketEntryInputs:
     candles_4h: list[dict[str, Any]] = field(default_factory=list)
     # 조회 장애와 실제 희소 상장 이력을 구분해 빈 응답이 신규상장 경로로 우회하지 못하게 한다.
     four_hour_history_status: str | None = None
+    # 사이클 prefix에서 1회 확보한 BTC 5분봉(RS 계산 공유용). 비어 있으면 per-market REST 폴백.
+    btc_candles_5m: list[dict[str, Any]] | None = None
 
 
 @dataclass
@@ -335,6 +337,7 @@ class CyclePrefixResult:
     audit_decision: Callable[[str, str, str, list[str], dict[str, Any]], None]
     bot_state_badge: str = field(default="")
     is_extreme_fear: bool = False
+    btc_candles_5m: list[dict[str, Any]] = field(default_factory=list)
 
 
 def validate_emergency_exit_safety(
@@ -458,6 +461,8 @@ class TradingCycleEngine:
         logger = ctx.logger
         prefix_started_at = time.monotonic()
         timings = timings if timings is not None else {}
+        # 마켓루프까지 유효한 전략 입력 prefetch TTL을 사이클 주기 기준으로 설정한다.
+        ctx.orchestrator.configure_strategy_input_prefetch_ttl(self.config.interval_minutes)
 
         self._load_cycle_environment()
 
@@ -655,6 +660,9 @@ class TradingCycleEngine:
             exchange, target_markets, self.config.interval_minutes, max_workers=prefetch_workers,
         )
         timings["캔들사전조회"] = time.monotonic() - candle_prefetch_started_at
+        btc_candles_5m = ctx.orchestrator.resolve_cycle_btc_candles_5m(
+            exchange, candle_prefetch_cache, self.config.interval_minutes,
+        )
 
         ctx.decision_db.purge_strategy_decisions(
             profile.decision_exchange, time.time() - 30 * 24 * 60 * 60,
@@ -711,6 +719,7 @@ class TradingCycleEngine:
             target_markets=target_markets,
             prefetched_market_inputs=prefetched_market_inputs,
             candle_prefetch_cache=candle_prefetch_cache,
+            btc_candles_5m=btc_candles_5m,
             screened_candidate_metadata=screened_candidate_metadata,
             excluded_markets=excluded_markets,
             cycle_id=cycle_id,
@@ -1434,9 +1443,11 @@ class TradingCycleEngine:
                 whale_flow_context = ""
             else:
                 whale_flow_context = ctx.ws_client.get_whale_flow_summary(market)
-            btc_candles_5m = exchange.get_candles(
-                unit=self.config.interval_minutes, count=30, market="KRW-BTC",
-            )
+            btc_candles_5m = market_inputs.btc_candles_5m
+            if not isinstance(btc_candles_5m, list) or len(btc_candles_5m) < 10:
+                btc_candles_5m = exchange.get_candles(
+                    unit=self.config.interval_minutes, count=30, market="KRW-BTC",
+                )
             rs_info = calculate_relative_strength(completed_candles_5m, btc_candles_5m)
             strategy = analyzer.analyze(
                 market=market,
@@ -2134,6 +2145,7 @@ class TradingCycleEngine:
         # 로컬 퀀트 알파 점수 및 매수 적격성(allow_buy)이 우수한 종목이 최우선으로 AI 심층 분석을 받도록 정렬한다.
         snapshot_cache: dict[str, Any] = {}
         candle_prefetch_cache = prefix.candle_prefetch_cache or {}
+        btc_candles_5m = list(getattr(prefix, "btc_candles_5m", None) or [])
         snapshot_cache_hits = 0
         snapshot_cache_misses = 0
         if ai_budget_remaining > 0 and len(target_markets) > 1:
@@ -2298,6 +2310,7 @@ class TradingCycleEngine:
                     audit_decision=audit_decision,
                     allow_ai_analysis=allow_ai_for_market,
                     momentum_entry_slot_available=momentum_entry_slot_available,
+                    btc_candles_5m=btc_candles_5m,
                 ))
                 if getattr(entry, "called_ai", False):
                     ai_budget_remaining = max(0, ai_budget_remaining - 1)

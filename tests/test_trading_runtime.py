@@ -720,6 +720,88 @@ class TradingRuntimePrefixTests(unittest.TestCase):
         self.assertEqual(result.effective_candidate_type, "NEW_LISTING")
 
     @patch("trading_runtime.recovery_rebound_signal", return_value={"allow_buy": False})
+    @patch("trading_runtime.is_night_session", return_value=False)
+    @patch("trading_runtime.select_completed_candles")
+    @patch("trading_runtime.entry_signal")
+    def test_entry_gating_reuses_shared_btc_candles_for_ai_rs(
+        self, mock_entry_signal, mock_select_candles, _mock_night, _mock_recovery,
+    ):
+        mock_select_candles.side_effect = lambda candles, minimum_count=25: candles or []
+        mock_entry_signal.return_value = {
+            "allow_buy": True,
+            "reason": "AI 후보",
+            "entry_price": 100.0,
+            "target_price": 103.0,
+            "stop_loss": 98.0,
+            "alpha_score": 75,
+            "checklist": {"hard_gates": {"all_passed": True}},
+        }
+        profile = ExchangeCycleProfile(
+            exchange_key="bithumb",
+            reconcile_label="",
+            decision_exchange="bithumb",
+            log_prefix="",
+            extra_excluded_markets=frozenset(),
+            create_screener=self.create_screener,
+            cycle_start_label="5분 AI 퀀트 트레이딩",
+            tier_label="스마트 자산 티어",
+            tier_top_wording="스크리닝 상위",
+            summary_label="자산 요약",
+            btc_crash_label="비트코인 급락 위험 감지",
+        )
+        engine = self._build_engine(profile)
+
+        class FakeAnalyzer:
+            def analyze(self, **kwargs):
+                return {
+                    "status": "ACTIVE",
+                    "action": "HOLD",
+                    "entry_price": 100.0,
+                    "target_price": 103.0,
+                    "stop_loss": 98.0,
+                    "alloc_pct": 0.0,
+                    "reason": "Gemini AI 관망",
+                    "alpha_score": 70,
+                }
+
+        shared_btc = [{"market": "KRW-BTC", "trade_price": 95_000_000.0}] * 15
+        candles_4h = [{"trade_price": 100.0 + i, "candle_date_time_kst": f"2026-09-08T{i:02d}:00:00"} for i in range(21)]
+        base_inputs = dict(
+            exchange=self.exchange,
+            korean_name="리플",
+            candidate_type="CONFIRMED",
+            candidate_metadata={"acc_trade_price_24h": 5_000_000_000.0},
+            analyzer=FakeAnalyzer(),
+            coin_available=0.0,
+            avg_buy_price=0.0,
+            current_price=100.0,
+            coin_value=0.0,
+            krw_available=1_000_000.0,
+            candles_5m=[{"trade_price": 100.0, "opening_price": 100.0} for _ in range(25)],
+            candles_1h=[{"trade_price": 100.0} for _ in range(20)],
+            candles_4h=candles_4h,
+            orderbook={"market": "KRW-XRP", "orderbook_units": [{"ask_price": 101.0, "bid_price": 99.0}]},
+            btc_regime="NORMAL",
+            btc_status_msg="정상",
+            is_btc_crashing=False,
+            is_cooldown=False,
+            is_extreme_fear=False,
+            is_bot_paused=False,
+            is_kill_switch=False,
+            is_entry_ready=True,
+            dyn_max_pos_pct=0.35,
+            now_str="2026-09-10 13:00:00",
+            audit_decision=lambda *args, **kwargs: None,
+            btc_candles_5m=shared_btc,
+        )
+        self.exchange.client.candle_calls = 0
+
+        for market in ("KRW-XRP", "KRW-ETH"):
+            engine.process_entry_gating(MarketEntryInputs(market=market, **base_inputs))
+
+        self.assertEqual(self.exchange.client.candle_calls, 0)
+
+    @patch("trading_runtime.recovery_rebound_signal", return_value={"allow_buy": False})
     @patch("trading_runtime.entry_signal", return_value={"allow_buy": False, "reason": "관망", "entry_price": 100.0, "target_price": 103.0, "stop_loss": 98.0})
     def test_insufficient_candles_block_before_entry_signal(self, _mock_entry, _mock_recovery):
         profile = ExchangeCycleProfile(

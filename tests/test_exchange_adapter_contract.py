@@ -106,14 +106,31 @@ class ExchangeAdapterContractTests(unittest.TestCase):
         self.assertEqual(snapshot.current_price, 123.0)
         self.assertTrue(snapshot.orderbook["prefetched"])
 
+    def test_prefetched_input_still_fresh_within_cycle_ttl(self):
+        client = FakeExchangeClient()
+        adapter = BithumbAdapter(client)
+        orchestrator = TradingOrchestrator(__import__("logging").getLogger("test"))
+        orchestrator.configure_strategy_input_prefetch_ttl(5)
+        aged = {
+            "price": 123.0,
+            "orderbook": {"market": "KRW-BTC", "prefetched": True},
+            "observed_at": __import__("time").monotonic() - 10.0,
+        }
+
+        snapshot = orchestrator.load_market_snapshot(adapter, "KRW-BTC", 5, aged)
+
+        self.assertEqual(snapshot.current_price, 123.0)
+        self.assertTrue(snapshot.orderbook["prefetched"])
+
     def test_stale_prefetched_input_falls_back_to_exchange_lookup(self):
         client = FakeExchangeClient()
         adapter = BithumbAdapter(client)
         orchestrator = TradingOrchestrator(__import__("logging").getLogger("test"))
+        orchestrator.configure_strategy_input_prefetch_ttl(5)
         stale = {
             "price": 123.0,
             "orderbook": {"market": "KRW-BTC", "prefetched": True},
-            "observed_at": __import__("time").monotonic() - 2.0,
+            "observed_at": __import__("time").monotonic() - 50.0,
         }
 
         snapshot = orchestrator.load_market_snapshot(adapter, "KRW-BTC", 5, stale)

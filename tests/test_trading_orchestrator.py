@@ -7,7 +7,11 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from exchange_adapter import BithumbAdapter
-from trading_orchestrator import TradingOrchestrator
+from trading_orchestrator import (
+    DEFAULT_STRATEGY_INPUT_PREFETCH_TTL_SEC,
+    TradingOrchestrator,
+    resolve_strategy_input_prefetch_ttl,
+)
 
 
 class CountingExchangeClient:
@@ -160,6 +164,41 @@ class TradingOrchestratorPerformanceTests(unittest.TestCase):
             self.assertIn("candles_5m", payload)
             self.assertIn("candles_1h", payload)
             self.assertIn("candles_4h", payload)
+
+    def test_strategy_input_prefetch_ttl_defaults_and_caps_by_interval(self):
+        self.assertEqual(resolve_strategy_input_prefetch_ttl(5), DEFAULT_STRATEGY_INPUT_PREFETCH_TTL_SEC)
+        self.assertEqual(resolve_strategy_input_prefetch_ttl(5, configured_ttl=200.0), 150.0)
+
+    def test_prefetch_reused_after_candle_prefetch_delay(self):
+        """캔들 사전조회(~1.6s) 이후 마켓루프에서도 prefetch가 유효해야 한다."""
+        self.orchestrator.configure_strategy_input_prefetch_ttl(5)
+        prefetched = self._fresh_prefetch()
+        prefetched["observed_at"] = time.monotonic() - 2.5
+
+        snap = self.orchestrator.load_market_snapshot(self.adapter, "KRW-XRP", 5, prefetched)
+
+        self.assertEqual(snap.current_price, 123.0)
+        self.assertEqual(self.client.price_calls, 0)
+        self.assertEqual(self.client.orderbook_calls, 0)
+
+    def test_resolve_cycle_btc_candles_reuses_prefetch_cache(self):
+        candle_cache = {
+            "KRW-BTC": {
+                "candles_5m": [{"market": "KRW-BTC", "trade_price": 100.0}] * 15,
+            }
+        }
+        before = self.client.candle_calls
+        candles = TradingOrchestrator.resolve_cycle_btc_candles_5m(self.adapter, candle_cache, 5)
+
+        self.assertEqual(len(candles), 15)
+        self.assertEqual(self.client.candle_calls, before)
+
+    def test_resolve_cycle_btc_candles_fetches_when_cache_missing(self):
+        before = self.client.candle_calls
+        candles = TradingOrchestrator.resolve_cycle_btc_candles_5m(self.adapter, {}, 5)
+
+        self.assertGreaterEqual(len(candles), 10)
+        self.assertEqual(self.client.candle_calls, before + 1)
 
     def test_classify_market_regime_passes_background_true(self):
         """classify_market_regime이 analyzer의 diagnose_macro_regime을 background=True로 호출하는지 검증"""
