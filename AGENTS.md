@@ -33,6 +33,8 @@
 - API 키, 시크릿, 토큰, 계좌 식별 정보, 주문 식별자를 코드·문서·로그·응답에 노출하지 않는다.
 - 빗썸 AI는 `BITHUMB_AI_PROVIDER=gemini`와 전용 Gemini 키(`BITHUMB_GEMINI_API_KEY`)를 사용하며, 신규 BUY 주문 진입은 Flash-Lite 계열(`gemini-3.5-flash-lite` 최우선 시도 후 `gemini-3.1-flash-lite` 순차 폴백)만 사용하고, 거시 레짐 진단 및 브리핑은 일반 Flash(`gemini-3.8-flash`) 우선 시도 후 Flash-Lite 순차 폴백을 허용한다. 업비트 Gemini 경계(`UPBIT_GEMINI_API_KEY`)와는 절대로 혼합하지 않는다.
 - 빗썸 Gemini에 전달하는 모든 모델 지침은 분석 보조·거래소 데이터 격리·제공 데이터만 사용·ACK 비체결·불확실 신규 BUY 금지·비밀정보 비출력 원칙을 포함해야 한다. Gemini 호출 실패는 신규 BUY를 fail-closed로 차단한다.
+- Groq 거시 시장 인텔리전스는 거래소별 전용 키(`BITHUMB_GROQ_API_KEY`, `UPBIT_GROQ_API_KEY`)만 사용하며, 공용 `GROQ_API_KEY`는 fallback으로도 읽거나 사용하지 않는다.
+- `BithumbAPI`와 `UpbitAPI`의 `exchange_name` 식별자를 훼손하거나 오케스트레이터의 거래소 스코프 판별을 우회하여 거래소 간 데이터 파일(`market_intelligence.json`)이 혼합되지 않도록 한다.
 
 ## 변경 작업 방식
 

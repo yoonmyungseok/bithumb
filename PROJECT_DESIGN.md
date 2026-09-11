@@ -1,4 +1,4 @@
-# Bithumb & Upbit AI Pro Quant Trading Bot (v8.67)
+# Bithumb & Upbit AI Pro Quant Trading Bot (v8.68)
 
 본 문서는 `c:\AI\bithumb` 디렉토리에 위치한 빗썸(Bithumb) 및 업비트(Upbit) 듀얼 거래소 지원 AI 퀀트 트레이딩 봇의 프로젝트 설명 및 아키텍처 설계서입니다. 이 문서는 다른 AI 에이전트 또는 개발자가 프로젝트의 전반적인 구조와 핵심 로직을 빠르고 명확하게 파악할 수 있도록 작성되었습니다.
 
@@ -10,13 +10,14 @@
 
 ## 1. 프로젝트 개요
 
-이 프로젝트는 빗썸(Bithumb)과 업비트(Upbit)의 서로 분리된 Google Gemini AI를 실시간 데이터와 결합하여, 유망한 단타/스윙 종목을 자동으로 탐색하고 매매를 수행하는 **듀얼 거래소 독립형 AI 퀀트 트레이딩 시스템**입니다.
+이 프로젝트는 빗썸(Bithumb)과 업비트(Upbit)의 서로 분리된 Google Gemini AI 및 Groq AI 거시 분석을 실시간 데이터와 결합하여, 유망한 단타/스윙 종목을 자동으로 탐색하고 매매를 수행하는 **듀얼 거래소 독립형 AI 퀀트 트레이딩 시스템**입니다.
 
 - **언어 및 환경**: Python 3, Windows 환경 (`.bat` 및 `process_manager.py` 기반 구동)
 - **핵심 기술**: 
   - 빗썸 REST API & WebSocket (v1/v2)
   - 업비트 REST API & WebSocket (Public: 시세/체결, Private: myOrder/myAsset, HS512 JWT + unencoded query string SHA-512 hash, `identifier` 멱등성)
   - 빗썸·업비트 분리 Google Gemini API (신규 BUY: Flash-Lite 계열 순차 폴백, 거시 진단 및 브리핑: 일반 Flash 최우선 라우팅 및 Flash-Lite 폴백, 추론 모델 ThinkingBudget=0 제어, 거시 레짐 타임아웃 15초 상향 및 신규 BUY 진입 게이트 격리 안전망 완비), Telegram API
+  - 거래소 전용 Groq API 거시 인텔리전스 (15분 주기 거시 레짐 진단 및 권장 현금 비중 도출: 빗썸 `BITHUMB_GROQ_API_KEY`, 업비트 `UPBIT_GROQ_API_KEY` 전용 키 격리, 공용 키 배제)
 - **주요 전략 및 아키텍처**: 
   - **다중 시간대(MTF) 분석**: 1시간봉 대세 추세 + 5분봉 정밀 타점 정렬
 - **거래대금 및 모멘텀 기반 동적 시장 스크리닝**: 모멘텀 후보를 `EARLY`(당일 상승률 +3% 이하의 RS 확인 초입)와 `EXTENDED`(확장 후반) 단계로 기록한다. 신규 주문은 `EARLY`에서만 소액으로 허용하고, `EXTENDED`는 분석·감사만 수행해 후발 추격을 방지한다. 동일 5분 사이클에서는 모멘텀 신규 주문을 1건으로 제한한다.
@@ -50,7 +51,7 @@
   - **대세 상승장(BULL_TREND) 파라미터 정상화**: 과다 손절 방어(손절 -2.0%), 선제적 조기 익절(+3.0%), 알파 65점 엄선, 타임스탑 120분 적용
   - **자산 연동형 3단계 스마트 Auto-Scaling**: 계좌 총 자산 규모에 따른 보유 슬롯(2~4개) 및 비중(25~50%) 자동 전환
   - **장중 자금 입출금 자동 보정 (Cashflow Adjustment)**: 입출금 시 시작 기준자산을 자동 보정하여 순수 매매 수익률 보존
-  - **완전한 거래소 물리적/논리적 격리**: 빗썸과 업비트의 환경변수, 데이터 디렉터리(`data/upbit/*`), 로그(`logs/trading_upbit.log`), 대시보드 포트(`7979` vs `7980`), 구글 시트, 실행 스크립트 분리
+  - **완전한 거래소 물리적/논리적 격리**: 빗썸과 업비트의 환경변수, 데이터 디렉터리(`data/upbit/*`), 로그(`logs/trading_upbit.log`), 대시보드 포트(`7979` vs `7980`), 구글 시트, 실행 스크립트 분리. `BithumbAPI`(`exchange_name = "bithumb"`)와 `UpbitAPI`(`exchange_name = "upbit"`)의 명시적 식별자를 통해 오케스트레이터 및 런타임에서 타 거래소 캐시(`data/bithumb/market_intelligence.json` vs `data/upbit/market_intelligence.json`) 오염을 원천 차단
   - **7중 KRW-HOLO 수동 종목 절대 보호망**: 업비트 `KRW-HOLO`는 스크리닝, 주문, 긴급매도, 자산평가, 실시간 청산, 시트, 대시보드에서 100% 영구 제외
   - **대시보드 비정상 운영 로그 역방향 청크 스캔 (v8.40)**: 트레이딩 봇의 정상 사이클(`INFO`) 로그가 대량 누적되어도 이전 WARNING/ERROR/CRITICAL이 누락되지 않도록 파일 끝에서 역방향으로 256KB 단위 청크 스캔(최대 10MB, 소스당 최소 20건 목표)을 수행하여 최신 비정상 운영 로그를 확실히 수집 및 최신순 노출한다.
 
@@ -87,6 +88,12 @@
 - Gemini `generateContent`의 수신 JSON은 로컬 `_parse_json_text()` 및 `_validate_schema()`를 통해 필수 필드와 타입을 엄격히 재검증하며, 검증 실패 시 fail-closed로 신규 BUY를 안전 차단한다.
 - Gemini HTTP 오류에서는 오류 코드/상태만 제한적으로 기록하며 API 키, 토큰, 계정정보, 프롬프트·응답 원문을 로그·대시보드·저장 파일에 남기지 않는다.
 
+### 빗썸 / 업비트 Groq 거시 시장 인텔리전스 격리 및 crash-safe 영속화 (v8.68)
+
+- **거래소 전용 Groq API 격리 및 공용 키 배제**: 빗썸은 `BITHUMB_GROQ_API_KEY`, 업비트는 `UPBIT_GROQ_API_KEY` 전용 환경변수만 조회하며, 공용 `GROQ_API_KEY`는 fallback으로도 읽거나 사용하지 않는다. `BithumbAPI`(`exchange_name = "bithumb"`)와 `UpbitAPI`(`exchange_name = "upbit"`)의 명시적 식별자를 통해 오케스트레이터 및 런타임에서 타 거래소 캐시(`data/bithumb/market_intelligence.json` vs `data/upbit/market_intelligence.json`) 오염을 원천 차단한다.
+- **crash-safe 영속 계층 표준화**: `MarketIntelligenceService`의 파일 입출력 시 `state_store.write_json_atomically` 및 `load_json_with_backup_recovery`를 적용하여 Windows 동시 접근 시 `PermissionError` 방지, 지수 백오프 재시도 및 `.bak` 자동 복구를 보장한다.
+- **대시보드 거시 시장 인텔리전스 UI**: 대시보드(`dashboard/index.html`, `dashboard/src/app.js`, `dashboard_server.py`)에 Groq AI 기반 실시간 거시 레짐 뱃지, 위험도 스코어 게이지, 권장 현금 비중, 시장 요약을 표출하는 모니터링 카드 컴포넌트를 연동하여 실시간 관측을 지원한다.
+
 ---
 
 ## 2. 디렉토리 구조 및 주요 파일
@@ -107,12 +114,14 @@ c:\AI\bithumb\
 │   ├── position_state.json    # 빗썸 포지션별 최고가·진입 시각·분할익절 상태
 │   ├── trade_memory.json      # 빗썸 거래 내역 및 자가학습 메모리
 │   ├── order_journal.json     # 빗썸 주문 의도·체결 대사 상태 저널
+│   ├── market_intelligence.json # 빗썸 거시 시장 레짐 분석 캐시
 │   └── upbit/                 # 업비트 전용 격리 데이터 폴더
 │       ├── trading.db             # 업비트 전용 SQLite DB (상위 data/trading.db와 분리, 전략 판단 이력 포함)
 │       ├── daily_stats.json       # 업비트 일일 손익 통계 및 킬스위치 상태
 │       ├── position_state.json    # 업비트 포지션별 최고가 및 1차 익절 상태
 │       ├── trade_memory.json      # 업비트 거래 내역 및 자가학습 메모리
 │       ├── order_journal.json     # 업비트 멱등성 보장 주문 상태 저널
+│       ├── market_intelligence.json # 업비트 거시 시장 레짐 분석 캐시
 │       ├── cooldown_state.json    # 업비트 재진입 쿨다운 상태
 │       └── paper_account.json     # 업비트 모의투자 가상 원장
 ├── config/               # 설정 파일 폴더
@@ -126,6 +135,8 @@ c:\AI\bithumb\
 │   ├── bithumb_api.py              # 빗썸 REST API 클라이언트
 │   ├── websocket_manager.py        # 빗썸 Public WebSocket 클라이언트
 │   ├── private_websocket_manager.py# 빗썸 Private WebSocket 클라이언트
+│   ├── groq_provider.py            # Groq API 클라이언트 (초저지연 거시 시장 레짐 분석, 키 격리)
+│   ├── market_intelligence.py      # 15분 주기 거시 시장 인텔리전스 서비스 (`MarketIntelligenceService`)
 │   ├── risk_manager.py             # 일일 손익/입출금보정/킬스위치(`DailyRiskManager`), 포지션추적(`TrailingStopTracker`), 자산평가
 │   ├── realtime_engine.py          # 0.1초 실시간 웹소켓 체결 틱 손절/익절 청산 엔진 (`RealtimeRiskEngine`), 미체결 정정/취소
 │   ├── bot_controller.py           # 텔레그램 양방향 제어, 웹 대시보드 API 공급자 (거래소별 독립 인스턴스)
@@ -148,7 +159,7 @@ c:\AI\bithumb\
 │   ├── trading_watchdog.py         # 워치독 공통 엔진 (`TradingBotWatchdog`, 하트비트 감시·자동 재시작·crash-loop 방어)
 │   ├── watchdog.py                 # 빗썸 워치독 진입점 (profile wiring)
 │   └── watchdog_upbit.py           # 업비트 워치독 진입점 (profile wiring)
-├── tests/                # 단위 테스트 디렉토리 (총 50개 테스트 스위트, 209개 테스트)
+├── tests/                # 단위 테스트 디렉토리 (총 546개 테스트)
 │   ├── test_dashboard_server.py    # 통합 대시보드 게이트웨이 및 멀티 거래소 집계/라우팅 검증
 │   ├── test_upbit_api.py           # 업비트 API JWT 인증, SHA-512 query_hash, 호가단위, identifier 검증
 │   ├── test_upbit_holo_guard.py    # KRW-HOLO 7중 방어선 (자산평가, 주문, 청산, 긴급매도, 시트 배제) 검증
@@ -158,6 +169,9 @@ c:\AI\bithumb\
 │   ├── test_storage_and_fill_boundaries.py # DB 경로 격리·확정 체결 뒤 쿨다운 검증
 │   ├── test_p0_p1_readiness.py     # 확정봉, 호가 플로우, 데이터 무결성 검증
 │   ├── test_strategy_ssot.py       # StrategyPolicy 단일 기준 일원화 검증
+│   ├── test_groq_provider.py       # Groq AI 프로바이더 및 환경변수 키 격리 검증
+│   ├── test_market_intelligence.py # 거시 시장 인텔리전스 및 원자적 영속화 검증
+│   ├── test_trading_bot_bootstrap.py # 부트스트랩 및 셧다운 라이프사이클 검증
 │   ├── test_market_screener.py
 │   ├── test_order_safety.py
 │   ├── test_paper_broker.py
@@ -261,6 +275,7 @@ c:\AI\bithumb\
 
 > 성능 경계: 전략 입력의 일괄 ticker·호가 값은 **단일 사이클 TTL(기본 45초, `STRATEGY_INPUT_PREFETCH_TTL_SEC`, 주기의 50% 상한)** 안에서만 재사용하며, 주문 직전 검증·체결 대사에는 사용하지 않습니다. AI RS(상대강도)용 **BTC 5분봉은 사이클 prefix에서 1회 확보**해 `process_entry_gating`이 공유하고, 캐시·조회 실패 시 per-market REST 폴백합니다. 신규 진입 차단 상태에서는 후보용 AI 호출을 생략하지만 보유 포지션 방어는 계속 수행합니다. **업비트 5분 사이클**은 `market_selection` ticker seed 재사용, `prefetch_cycle_candles`(bounded concurrent, 기본 5 workers, 5m/1h/4h 일괄 사전조회), AI 우선순위 정렬용 `load_priority_eval_snapshot`, 메인 루프 `load_market_snapshot` 캔들·스냅샷 공유로 `market_snapshot` REST를 줄입니다. `full_cycle` p95가 15초를 초과하면 WARNING 로그를 남기며, `priority_eval_snapshot`·`snapshot_cache_hit_rate`·`candle_prefetch` 계측을 추가합니다. 마켓선정 지연은 후보스캔·AI후보랭킹·스윙스캔·기타(오버헤드)로 세분화되어 20회 단위 운영 계측(`market_candidate_scan`, `market_ai_ranking`, `market_swing_scan`, `market_selection_overhead`) 및 15초 초과 사이클 상세 로그에 분리 기록됩니다.
 
+| **v8.68** | 2026-09-11 | • **Groq AI 연동 안전성 강화 및 아키텍처/테스트 7대 결함 종합 개선 (`groq_provider.py`, `market_intelligence.py`, `dashboard_server.py`, `trading_bot_bootstrap.py`)**<br>• **거래소 식별자 명시 및 Groq API 키 격리 원칙 완비**: `BithumbAPI`와 `UpbitAPI`에 `exchange_name` 속성을 명시하고 `TradingOrchestrator.classify_market_regime`의 스코프 추출 다중 폴백을 보강하여 업비트 루프가 빗썸 데이터 경로를 참조하던 결함 원천 차단. `GroqProvider`에서 공용 `GROQ_API_KEY` 조회를 전면 제거하고 거래소 전용 환경변수(`BITHUMB_GROQ_API_KEY`, `UPBIT_GROQ_API_KEY`)만 허용<br>• **원자적 저장소 표준화 (`state_store.py`)**: `MarketIntelligenceService`의 단순 `os.replace` 파일 I/O를 `write_json_atomically` 및 `load_json_with_backup_recovery`로 대체하여 Windows 동시 접근 시 `PermissionError` 방지 및 `.bak` 기반 무중단 복원력 확보<br>• **지수이동평균(EMA) 표준 모듈 일원화**: `market_intelligence.py`의 비표준 `_calculate_ema`를 제거하고 `strategy_engine.calculate_ema`를 사용하여 50봉 이동평균의 과거 캔들 누적 웜업 및 수렴 정밀도 일관화<br>• **스레드 라이프사이클 Graceful Shutdown 연동**: `TradingBotBootstrap._handle_exit`에 `MarketIntelligenceService.stop_periodic_updater()` 셧다운 훅을 등록하여 봇 종료 시 15분 주기 백그라운드 스레드 정상 회수<br>• **웹 대시보드 거시 시장 인텔리전스 UI 연동**: SPA 대시보드(`index.html`, `app.js`, `styles.css`) 및 `dashboard_server.py`에 Groq 거시 시장 분석 카드(레짐 뱃지, 위험도 점수, 권장 현금 비중, AI 요약 텍스트)를 렌더링하고 실시간 업데이트 지원<br>• **시간 의존적 캔들 타임스탬프 동적화 (`test_trading_runtime.py`)**: 72시간 경과로 실패하던 신규상장 단위 테스트(`test_new_listing_path_activates_without_four_hour_gate`, `test_upbit_new_listing_bypasses_twenty_candle_gate`)의 고정 타임스탬프를 `get_kst_now()` 기준 상대 시간으로 동적화하여 영속적 테스트 안정성 확보<br>• **Upbit API 단위 테스트 JWT 키 규격화 (`test_upbit_api.py`)**: RFC 7518 규격에 따라 SHA-512 HMAC dummy secret key를 64바이트 이상으로 교체하여 `InsecureKeyLengthWarning` 경고 완전 제거 (전체 546개 테스트 100% 통과) |
 | **v8.67** | 2026-09-10 | • **Groq API 기반 초저지연 주기적 거시 시장 분석 및 리스크 레짐 연동 (`groq_provider.py`, `market_intelligence.py`)**<br>• **15분 주기 거시 시장 인텔리전스**: BTC 1H/4H 기술지표(EMA20/50, EMA20/60, 변동률)와 공포/탐욕(FnG) 지수를 결합하여 Groq(`openai/gpt-oss-120b` 우선, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b` 순차 폴백)를 통해 15분 주기로 시장 레짐(`regime`, `risk_score`, `recommended_cash_ratio`, `market_summary`, `action_guideline`)을 비동기 분석 및 캐싱<br>• **트레이딩 오케스트레이터 연동 (`trading_orchestrator.py`)**: 5분 트레이딩 사이클의 `classify_market_regime`에서 Groq 시장 분석을 2순위로 참조. 위험도 85 이상 또는 `CRASH` 시 신규 BUY fail-closed 즉시 차단, `BEAR_REGIME`/`CAUTION_PULLBACK` 시 `RISK_OFF`로 전환하여 알파 컷오프 상향. Groq 미설정/장애 시 기존 Gemini 거시 진단으로 안전 폴백<br>• **개별 종목 주문 안전망 완전 분리 유지**: 개별 종목 최종 BUY 승인은 기존 원칙대로 Gemini Flash-Lite(`gemini-3.5-flash-lite`)와 7대 복합 팩터 하드게이트를 100% 유지하여 주문 안전성 확보<br>• **대시보드 및 내부 API 연동**: `bot_controller.py` 및 `dashboard_server.py`의 상태 응답에 `market_intelligence`를 포함하여 거시 시장 요약 및 레짐 상태 실시간 관측 지원<br>• **단위 및 회귀 검증**: `tests/test_groq_provider.py`, `tests/test_market_intelligence.py` 신규 작성 및 전체 회귀 테스트 통과 |
 | **v8.66** | 2026-09-10 | • **업비트 4H 캔들 사전조회 복원 및 캔들 데이터 부족 진입 차단 결함 수정 (`trading_runtime.py`)**<br>• **4H 캔들 사전조회 및 스냅샷 복원 (`prefetch_4h=True`, `load_4h=True`)**: v8.64의 업비트 4H lazy load 시도로 인해 일반 단타 후보 종목의 4H 캔들이 누락(`DEFERRED`)되어 `classify_listing_maturity()`가 `INSUFFICIENT`를 반환하고, 이로 인해 업비트의 모든 매수 후보가 `캔들 데이터 부족으로 진입 생략`되며 매수가 전면 차단되던 치명적 결함 수정<br>• **성숙도 판정 정합성 보장**: 신규 진입 게이팅 시 4시간봉 20개 이상 확정봉 검증(`MATURE`)이 정상 통과되어 일반 단타 및 모멘텀 돌파 매수가 정상적으로 진행되도록 보장<br>• **단위 및 회귀 검증**: `tests/test_trading_runtime.py`에 업비트 사이클의 4H 캔들 사전조회 및 캐싱 검증 단위 테스트(`test_upbit_cycle_loads_4h_candles_in_prefetch`) 추가 및 전체 테스트 통과 |
 | **v8.65** | 2026-09-10 | • **오케스트레이터 성능 계측 20회 주기 버그 수정 및 성능 경고 과다 발생 원천 차단 (`trading_orchestrator.py`)**<br>• **누적 호출 카운터 분리 (`_latency_counts`)**: 기존 `samples`(`deque(maxlen=40)`)의 길이를 기준으로 `len(samples) % 20 != 0`을 검사하던 결함으로 인해 40회 이후 길이가 40으로 고정되어 매 사이클마다 `40 % 20 == 0`이 성립하던 버그 수정. `TradingOrchestrator`에 `_latency_counts`(`defaultdict(int)`)를 도입하여 실제 누적 호출 횟수 기준으로 정확히 20회마다(약 100분 주기) 1회만 요약(`[성능 계측]`) 및 필요 시 경고(`[성능 경고]`)를 출력하도록 정상화<br>• **대시보드 경고 로그 폭증 해소**: 빗썸과 업비트에서 매 5분 사이클마다 쏟아지던 10여 개 항목의 계측 로그와 반복적인 `full_cycle` 초과 경고를 20회 주기로 억제하여 대시보드 이상 징후 창의 로그 도배 문제 해결<br>• **단위 및 회귀 검증**: `tests/test_trading_orchestrator.py`에 버퍼 포화 후 60회 연속 호출 시 20회 주기로만 요약/경고가 발생하는지 검증하는 `test_record_latency_only_logs_every_20_calls` 추가 및 전체 테스트 통과 |
