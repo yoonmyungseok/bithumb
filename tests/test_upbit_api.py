@@ -6,14 +6,7 @@ import unittest
 import urllib.parse
 from unittest.mock import MagicMock, patch
 
-import warnings
 import jwt
-
-try:
-    from jwt.warnings import InsecureKeyLengthWarning
-    warnings.filterwarnings("ignore", category=InsecureKeyLengthWarning)
-except ImportError:
-    pass
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -25,7 +18,8 @@ class UpbitAPITests(unittest.TestCase):
         # 클래스 공용 제한기/캐시가 다른 테스트 결과를 물려받지 않게 초기화한다.
         UpbitAPI.reset_shared_runtime_state_for_test()
         self.access_key = "test-access-key-12345"
-        self.secret_key = "test-secret-key-67890"
+        # RFC 7518 규격(SHA-512는 64바이트 이상)을 만족하여 InsecureKeyLengthWarning을 방지한다.
+        self.secret_key = "test_upbit_secret_key_long_enough_for_sha512_hmac_rfc7518_compliant_minimum_64_bytes!"
         self.api = UpbitAPI(self.access_key, self.secret_key)
 
     def test_jwt_token_generation_without_params(self):
