@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from groq_provider import GroqResult
 from market_intelligence import MarketIntelligenceService
+from strategy_engine import calculate_ema
 from trading_orchestrator import TradingOrchestrator
 
 
@@ -26,9 +27,18 @@ class TestMarketIntelligence(unittest.TestCase):
     def test_ema_calculation(self):
         # 최신값이 index 0
         values = [100.0, 90.0, 80.0, 70.0, 60.0]
-        ema = MarketIntelligenceService._calculate_ema(values, 3)
+        ema = calculate_ema(values, 3)
         self.assertGreater(ema, 80.0)
         self.assertLess(ema, 100.0)
+
+        # 100개 데이터 누적 시 20봉 EMA의 안정적 수렴 검증
+        # 과거 80개는 50.0으로 일정하다가 최근 20개에서 100.0으로 상승한 케이스
+        prices_100 = [100.0] * 20 + [50.0] * 80
+        ema20 = calculate_ema(prices_100, 20)
+        self.assertGreater(ema20, 50.0)
+        self.assertLess(ema20, 100.0)
+        # 100개 캔들에서 과거 데이터를 누적하여 안정적으로 계산됨을 확인
+        self.assertAlmostEqual(ema20, 93.38, delta=1.0)
 
     def test_update_and_cache_flow(self):
         service = MarketIntelligenceService(exchange_scope="bithumb", data_dir=self.temp_dir)

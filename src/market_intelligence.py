@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from groq_provider import GroqProvider
 from state_store import load_json_with_backup_recovery, write_json_atomically
+from strategy_engine import calculate_ema
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +149,8 @@ class MarketIntelligenceService:
             # 1. BTC 1시간 기술 지표 계산
             prices_1h = [float(c.get("trade_price", 0.0)) for c in btc_candles_1h]
             cur_btc = prices_1h[0]
-            ema20_1h = self._calculate_ema(prices_1h, min(len(prices_1h), 20))
-            ema50_1h = self._calculate_ema(prices_1h, min(len(prices_1h), 50))
+            ema20_1h = calculate_ema(prices_1h, 20)
+            ema50_1h = calculate_ema(prices_1h, 50)
             chg_1h = ((cur_btc - prices_1h[1]) / prices_1h[1] * 100.0) if len(prices_1h) > 1 else 0.0
             chg_24h = (
                 ((cur_btc - prices_1h[min(24, len(prices_1h) - 1)]) / prices_1h[min(24, len(prices_1h) - 1)] * 100.0)
@@ -161,8 +162,8 @@ class MarketIntelligenceService:
             btc_4h_desc = "4시간봉 데이터 없음"
             if btc_candles_4h and len(btc_candles_4h) >= 10:
                 prices_4h = [float(c.get("trade_price", 0.0)) for c in btc_candles_4h]
-                ema20_4h = self._calculate_ema(prices_4h, min(len(prices_4h), 20))
-                ema60_4h = self._calculate_ema(prices_4h, min(len(prices_4h), 60))
+                ema20_4h = calculate_ema(prices_4h, 20)
+                ema60_4h = calculate_ema(prices_4h, 60)
                 chg_4h = ((cur_btc - prices_4h[1]) / prices_4h[1] * 100.0) if len(prices_4h) > 1 else 0.0
                 high_7d = max(prices_4h[:min(len(prices_4h), 42)])
                 low_7d = min(prices_4h[:min(len(prices_4h), 42)])
@@ -285,18 +286,3 @@ class MarketIntelligenceService:
         """정기 시장 분석 스레드를 정지합니다."""
         self._stop_periodic.set()
 
-    @staticmethod
-    def _calculate_ema(values: list[float], period: int) -> float:
-        """지수이동평균(EMA)을 계산합니다 (최신값이 index 0)."""
-        if not values or period <= 0:
-            return 0.0
-        n = min(len(values), period)
-        if n == 1:
-            return values[0]
-        # 시간순으로 뒤집어서 계산
-        rev_values = values[:n][::-1]
-        multiplier = 2.0 / (period + 1)
-        ema = rev_values[0]
-        for val in rev_values[1:]:
-            ema = (val - ema) * multiplier + ema
-        return ema
