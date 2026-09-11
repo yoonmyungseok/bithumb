@@ -304,6 +304,23 @@ class TradingBotBootstrapTests(unittest.TestCase):
         self.assertGreaterEqual((next_run - before).total_seconds(), 149.0)
         self.assertLessEqual((next_run - after).total_seconds(), 151.0)
 
+    @patch("trading_bot_bootstrap.MarketIntelligenceService.get_instance")
+    @patch("trading_bot_bootstrap.sys.exit")
+    def test_handle_exit_stops_market_intelligence_updater(self, mock_sys_exit, mock_mi_get_instance):
+        mock_mi_service = MagicMock()
+        mock_mi_get_instance.return_value = mock_mi_service
+
+        bootstrap = TradingBotBootstrap(
+            _make_profile(exchange_key="bithumb"),
+            _make_context(),
+        )
+
+        bootstrap._handle_exit()
+
+        mock_mi_get_instance.assert_called_once_with(exchange_scope="bithumb")
+        mock_mi_service.stop_periodic_updater.assert_called_once()
+        mock_sys_exit.assert_called_once_with(0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,6 +17,7 @@ from typing import Any, Callable
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from db_manager import migrate_legacy_json_to_sqlite
+from market_intelligence import MarketIntelligenceService
 from web_server import DashboardWebServer
 
 
@@ -257,6 +258,11 @@ class TradingBotBootstrap:
                 self._scheduler.shutdown(wait=False)
             except Exception as exc:
                 self.ctx.logger.debug("%s스케줄러 종료 예외: %s", prefix, exc)
+        try:
+            scope = getattr(self.profile, "exchange_key", "bithumb").lower()
+            MarketIntelligenceService.get_instance(exchange_scope=scope).stop_periodic_updater()
+        except Exception as exc:
+            self.ctx.logger.debug("%s정기 시장 분석 스레드 종료 예외: %s", prefix, exc)
         self.ctx.logger.info(self.profile.shutdown_complete_message)
         sys.exit(0)
 
