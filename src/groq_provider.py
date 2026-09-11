@@ -60,13 +60,13 @@ class GroqProvider:
         else:
             self.models = list(DEFAULT_GROQ_MODELS)
 
-        # 거래소별 전용 키 우선 조회 후 공용 키 조회 (키 격리 준수)
+        # 거래소별 전용 키 엄격 조회 (공용 키 폴백 금지 - 키 격리 준수)
         resolved_key = (api_key or "").strip()
         if not resolved_key:
             if self.exchange_scope == "upbit":
-                resolved_key = os.getenv("UPBIT_GROQ_API_KEY", "").strip() or os.getenv("GROQ_API_KEY", "").strip()
+                resolved_key = os.getenv("UPBIT_GROQ_API_KEY", "").strip()
             else:
-                resolved_key = os.getenv("BITHUMB_GROQ_API_KEY", "").strip() or os.getenv("GROQ_API_KEY", "").strip()
+                resolved_key = os.getenv("BITHUMB_GROQ_API_KEY", "").strip()
         self._api_key = resolved_key
 
         # 운영 통계 (메모리)

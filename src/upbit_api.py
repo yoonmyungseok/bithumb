@@ -48,6 +48,7 @@ class UpbitAPI:
     업비트 REST API 클라이언트 (v1)
     """
 
+    exchange_name: str = "upbit"
     API_ROOT = "https://api.upbit.com/v1"
 
     # create_exchange_client()가 호출될 때마다 새 인스턴스가 만들어져도,

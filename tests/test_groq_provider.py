@@ -50,6 +50,13 @@ class TestGroqProvider(unittest.TestCase):
         self.assertTrue(up_provider2.is_available)
         self.assertEqual(up_provider2._api_key, "gsk_upbit_key")
 
+        # 공용 GROQ_API_KEY가 설정되어 있어도 거래소 전용 키가 없으면 격리 원칙에 따라 비활성(False)
+        for k in ["BITHUMB_GROQ_API_KEY", "UPBIT_GROQ_API_KEY"]:
+            os.environ.pop(k, None)
+        os.environ["GROQ_API_KEY"] = "gsk_shared_legacy_key"
+        self.assertFalse(GroqProvider(exchange_scope="upbit").is_available)
+        self.assertFalse(GroqProvider(exchange_scope="bithumb").is_available)
+
     @patch("requests.post")
     def test_complete_json_success(self, mock_post):
         mock_resp = MagicMock()

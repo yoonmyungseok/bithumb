@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 import os
 import sys
 import tempfile
@@ -8,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from strategy_engine import get_kst_now
 from exchange_adapter import BithumbAdapter
 from trading_orchestrator import TradingOrchestrator
 from trading_runtime import (
@@ -680,6 +682,10 @@ class TradingRuntimePrefixTests(unittest.TestCase):
             }
             for idx in range(7)
         ]
+        now = get_kst_now()
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        candle_4h_time = (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S")
+
         result = engine.process_entry_gating(MarketEntryInputs(
             exchange=self.exchange,
             market="KRW-USELESS",
@@ -699,7 +705,7 @@ class TradingRuntimePrefixTests(unittest.TestCase):
             krw_available=1_000_000.0,
             candles_5m=candles_5m,
             candles_1h=[{"trade_price": 300.0}],
-            candles_4h=[{"trade_price": 300.0, "candle_date_time_kst": "2026-09-08T12:00:00"}],
+            candles_4h=[{"trade_price": 300.0, "candle_date_time_kst": candle_4h_time}],
             orderbook={"market": "KRW-USELESS", "total_bid_size": 2000.0, "total_ask_size": 1000.0},
             btc_regime="NORMAL",
             btc_status_msg="정상",
@@ -710,7 +716,7 @@ class TradingRuntimePrefixTests(unittest.TestCase):
             is_kill_switch=False,
             is_entry_ready=True,
             dyn_max_pos_pct=0.35,
-            now_str="2026-09-08 14:40:49",
+            now_str=now_str,
             audit_decision=lambda *args, **kwargs: audit_calls.append(args),
         ))
 
@@ -940,13 +946,17 @@ class TradingRuntimePrefixTests(unittest.TestCase):
             require_minimum_candles=True,
         )
         engine = self._build_engine(profile, entry_profile=entry_profile)
+        now = get_kst_now()
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        candle_4h_time = (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S")
+
         candles_5m = [
             {
                 "trade_price": 28.0 + idx * 0.1,
                 "opening_price": 27.9 + idx * 0.1,
                 "high_price": 28.2 + idx * 0.1,
                 "candle_acc_trade_volume": 1000.0 * (idx + 1),
-                "candle_date_time_kst": f"2026-09-08T15:{30 - idx:02d}:00",
+                "candle_date_time_kst": (now - timedelta(minutes=5 * idx)).strftime("%Y-%m-%dT%H:%M:%S"),
             }
             for idx in range(11)
         ]
@@ -969,7 +979,7 @@ class TradingRuntimePrefixTests(unittest.TestCase):
             krw_available=1_000_000.0,
             candles_5m=candles_5m,
             candles_1h=[{"trade_price": 28.0}],
-            candles_4h=[{"trade_price": 28.0, "candle_date_time_kst": "2026-09-08T12:00:00"}],
+            candles_4h=[{"trade_price": 28.0, "candle_date_time_kst": candle_4h_time}],
             orderbook={"market": "KRW-CP", "total_bid_size": 2000.0, "total_ask_size": 1000.0},
             btc_regime="NORMAL",
             btc_status_msg="정상",
@@ -980,7 +990,7 @@ class TradingRuntimePrefixTests(unittest.TestCase):
             is_kill_switch=False,
             is_entry_ready=True,
             dyn_max_pos_pct=0.35,
-            now_str="2026-09-08 15:26:38",
+            now_str=now_str,
             audit_decision=lambda *args, **kwargs: None,
         ))
 

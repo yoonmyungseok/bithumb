@@ -32,6 +32,7 @@ class BithumbAPI:
     - HTTP Keep-Alive 커넥션 풀링을 통한 왕복 지연시간(RTT) 최적화
     """
 
+    exchange_name: str = "bithumb"
     API_ROOT = "https://api.bithumb.com"
 
     def __init__(self, access_key: str = "", secret_key: str = ""):

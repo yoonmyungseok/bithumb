@@ -62,8 +62,9 @@ class TestMarketIntelligence(unittest.TestCase):
         self.assertEqual(result["risk_score"], 65)
         self.assertEqual(result["latency_sec"], 0.25)
 
-        # 디스크 파일 생성 확인
+        # 디스크 파일 및 백업본 생성 확인
         self.assertTrue(os.path.exists(service.storage_path))
+        self.assertTrue(os.path.exists(f"{service.storage_path}.bak"))
         with open(service.storage_path, "r", encoding="utf-8") as f:
             disk_data = json.load(f)
             self.assertEqual(disk_data["regime"], "CAUTION_PULLBACK")
@@ -76,6 +77,47 @@ class TestMarketIntelligence(unittest.TestCase):
         # 만료 확인
         expired = service.get_latest_intelligence(max_age_sec=0.0)
         self.assertIsNone(expired)
+
+    def test_atomic_persistence_and_backup_recovery(self):
+        """원자적 저장 및 메인 파일 손상 시 .bak 자동 복구 동작을 검증합니다."""
+        service = MarketIntelligenceService(exchange_scope="bithumb", data_dir=self.temp_dir)
+        payload = {
+            "regime": "BULL_TREND",
+            "risk_score": 30,
+            "recommended_cash_ratio": 0.2,
+            "market_summary": "상승세 지속",
+            "action_guideline": "분할 매수 유지",
+            "analyzed_at": time.time(),
+        }
+
+        # 저장 수행
+        service._save_to_storage(payload)
+
+        # .json 및 .json.bak 생성 확인
+        backup_path = f"{service.storage_path}.bak"
+        self.assertTrue(os.path.exists(service.storage_path))
+        self.assertTrue(os.path.exists(backup_path))
+
+        with open(backup_path, "r", encoding="utf-8") as f:
+            backup_data = json.load(f)
+            self.assertEqual(backup_data["regime"], "BULL_TREND")
+
+        # 메인 파일 손상 시뮬레이션
+        with open(service.storage_path, "w", encoding="utf-8") as f:
+            f.write("corrupted json invalid {[[")
+
+        # 새 인스턴스로 복구 적재 검증
+        MarketIntelligenceService._instances.clear()
+        recovered_service = MarketIntelligenceService(exchange_scope="bithumb", data_dir=self.temp_dir)
+
+        self.assertIsNotNone(recovered_service._cached_data)
+        self.assertEqual(recovered_service._cached_data.get("regime"), "BULL_TREND")
+        self.assertEqual(recovered_service._cached_data.get("risk_score"), 30)
+
+        # 메인 파일이 백업본 내용으로 복구되었는지 확인
+        with open(service.storage_path, "r", encoding="utf-8") as f:
+            restored_data = json.load(f)
+            self.assertEqual(restored_data["regime"], "BULL_TREND")
 
     def test_orchestrator_market_state_integration(self):
         import logging

@@ -15,6 +15,7 @@ import time
 from typing import Any, Callable
 
 from groq_provider import GroqProvider
+from state_store import load_json_with_backup_recovery, write_json_atomically
 
 logger = logging.getLogger(__name__)
 
@@ -65,28 +66,22 @@ class MarketIntelligenceService:
         self._load_from_storage()
 
     def _load_from_storage(self) -> None:
-        """디스크에 저장된 최신 분석 결과를 메모리에 적재합니다."""
+        """디스크에 저장된 최신 분석 결과를 메모리에 적재합니다 (.bak 자동 복구 지원)."""
         try:
-            if os.path.exists(self.storage_path):
-                with open(self.storage_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict) and "regime" in data:
-                        self._cached_data = data
-                        logger.info(
-                            f"[{self.exchange_scope.upper()}] 기존 시장 분석 캐시 적재: "
-                            f"{data.get('regime')} (위험도: {data.get('risk_score')}/100)"
-                        )
+            data = load_json_with_backup_recovery(self.storage_path, default=None)
+            if isinstance(data, dict) and "regime" in data:
+                self._cached_data = data
+                logger.info(
+                    f"[{self.exchange_scope.upper()}] 기존 시장 분석 캐시 적재: "
+                    f"{data.get('regime')} (위험도: {data.get('risk_score')}/100)"
+                )
         except Exception as exc:
             logger.debug(f"시장 분석 캐시 파일 로드 예외 (무시): {exc}")
 
     def _save_to_storage(self, data: dict[str, Any]) -> None:
-        """분석 결과를 파일에 원자적으로 저장합니다."""
+        """분석 결과를 파일에 원자적으로 안전하게 저장합니다."""
         try:
-            os.makedirs(os.path.dirname(self.storage_path), exist_ok=True)
-            tmp_path = f"{self.storage_path}.tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, self.storage_path)
+            write_json_atomically(self.storage_path, data)
         except Exception as exc:
             logger.warning(f"시장 분석 캐시 저장 예외: {exc}")
 

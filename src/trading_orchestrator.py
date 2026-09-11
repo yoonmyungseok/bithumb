@@ -691,7 +691,13 @@ class TradingOrchestrator:
 
             # [2순위] Groq 실시간 거시 시장 분석(15분 주기 유효 캐시) 선제 반영
             try:
-                scope = getattr(exchange, "exchange_name", "bithumb").lower()
+                scope = (
+                    getattr(exchange, "exchange_name", None)
+                    or getattr(getattr(exchange, "client", None), "exchange_name", None)
+                    or getattr(exchange, "key", None)
+                    or "bithumb"
+                )
+                scope = str(scope).lower()
                 mi_service = MarketIntelligenceService.get_instance(exchange_scope=scope)
                 groq_intel = mi_service.get_latest_intelligence(max_age_sec=1200.0)
                 if groq_intel:

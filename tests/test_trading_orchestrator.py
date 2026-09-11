@@ -366,6 +366,45 @@ class TradingOrchestratorPerformanceTests(unittest.TestCase):
         self.assertIn("레거시 폴백", reason)
         self.assertEqual(analyzer.diagnose_macro_regime.call_count, 2)
 
+    def test_classify_market_regime_exchange_scope_resolution(self):
+        """classify_market_regime이 exchange 객체로부터 올바른 거래소 스코프(upbit/bithumb)를 추출하는지 검증"""
+        with unittest.mock.patch("trading_orchestrator.MarketIntelligenceService.get_instance") as mock_mi_get:
+            mock_mi = MagicMock()
+            mock_mi.get_latest_intelligence.return_value = None
+            mock_mi_get.return_value = mock_mi
+
+            # 1. exchange.exchange_name = 'upbit'
+            mock_upbit_ex = MagicMock()
+            mock_upbit_ex.exchange_name = "upbit"
+            mock_upbit_ex.get_candles.return_value = [{"trade_price": 100.0, "opening_price": 100.0, "high_price": 101.0, "low_price": 99.0} for _ in range(10)]
+            self.orchestrator.classify_market_regime(mock_upbit_ex, interval_minutes=5, crash_threshold_pct=0.015)
+            mock_mi_get.assert_called_with(exchange_scope="upbit")
+
+            # 2. exchange.client.exchange_name = 'upbit' (어댑터 형태)
+            mock_adapter = MagicMock()
+            del mock_adapter.exchange_name
+            del mock_adapter.key
+            mock_adapter.client = MagicMock()
+            mock_adapter.client.exchange_name = "upbit"
+            mock_adapter.get_candles.return_value = [{"trade_price": 100.0, "opening_price": 100.0, "high_price": 101.0, "low_price": 99.0} for _ in range(10)]
+            self.orchestrator.classify_market_regime(mock_adapter, interval_minutes=5, crash_threshold_pct=0.015)
+            mock_mi_get.assert_called_with(exchange_scope="upbit")
+
+            # 3. exchange.key = 'upbit'
+            mock_key_ex = MagicMock()
+            del mock_key_ex.exchange_name
+            mock_key_ex.client = None
+            mock_key_ex.key = "upbit"
+            mock_key_ex.get_candles.return_value = [{"trade_price": 100.0, "opening_price": 100.0, "high_price": 101.0, "low_price": 99.0} for _ in range(10)]
+            self.orchestrator.classify_market_regime(mock_key_ex, interval_minutes=5, crash_threshold_pct=0.015)
+            mock_mi_get.assert_called_with(exchange_scope="upbit")
+
+            # 4. 아무 식별자가 없으면 기본값 'bithumb'
+            mock_plain_ex = MagicMock(spec=["get_candles"])
+            mock_plain_ex.get_candles.return_value = [{"trade_price": 100.0, "opening_price": 100.0, "high_price": 101.0, "low_price": 99.0} for _ in range(10)]
+            self.orchestrator.classify_market_regime(mock_plain_ex, interval_minutes=5, crash_threshold_pct=0.015)
+            mock_mi_get.assert_called_with(exchange_scope="bithumb")
+
     def test_slow_cycle_detail_logs_market_selection_breakdown(self):
         """15초 초과 사이클 상세 로그에 마켓선정 세부 항목이 정상 포맷팅되어 노출되는지 검증."""
         logger = MagicMock()
