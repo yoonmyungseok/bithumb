@@ -1149,13 +1149,13 @@ class GeminiAnalyzer:
         elif normalized_candidate_type == "MOMENTUM_BREAKOUT":
             current_alpha_threshold = get_momentum_breakout_alpha_threshold(regime_upper, night_active)
             policy_details = (
-                f"모멘텀 돌파 전용입니다. 최신 확정 5분봉이 직전 {StrategyPolicy.MOMENTUM_BREAKOUT_LOOKBACK_BARS}봉 고점을 돌파하고, "
+                f"모멘텀 돌파 전용입니다. 최신 확정 5분봉이 직전 {StrategyPolicy.MOMENTUM_BREAKOUT_LOOKBACK_BARS}봉 고점을 돌파(RS 주도주는 99.2% 이상 근접 지지 허용)하고, "
                 f"거래량이 최근 20봉 평균의 {StrategyPolicy.MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN:.1f}배 이상, 양봉, "
                 f"RSI {StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MIN:.0f}~{StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MAX:.0f}, "
                 f"1시간 EMA20의 {StrategyPolicy.MOMENTUM_BREAKOUT_MTF_EMA20_RATIO:.3f}배 이상을 모두 충족해야 합니다. "
                 f"초기 주문 비중은 최대 종목 비중의 {StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO * 100:.0f}%를 넘지 않습니다. "
-                f"현재 단계는 {normalized_momentum_phase}이며, 신규 BUY는 EARLY 단계에서만 가능합니다(당일 변동률 +{StrategyPolicy.get_momentum_early_max_change_rate() * 100:.1f}% 이하). "
-                f"(EXTENDED 단계는 로컬 퀀트 통과 및 AI 알파 80점 이상 고확신 확인형 진입 시에만 제한 허용)"
+                f"현재 단계는 {normalized_momentum_phase}이며, 신규 BUY는 EARLY 단계에서만 가능합니다(일반 당일 변동률 +{StrategyPolicy.MOMENTUM_EARLY_MAX_CHANGE_RATE * 100:.1f}% 이하, RS 주도주는 최대 +{StrategyPolicy.RS_LEADER_EARLY_MAX_CHANGE_RATE * 100:.1f}% 이하). "
+                f"(EXTENDED 단계는 로컬 퀀트 통과 및 AI 알파 80점(RS 주도주는 75점) 이상 고확신 확인형 진입 시에만 제한 허용)"
             )
         elif normalized_candidate_type == "NEW_LISTING":
             current_alpha_threshold = get_new_listing_alpha_threshold(regime_upper, night_active)

@@ -711,7 +711,7 @@ class BithumbGeminiProvider:
 빗썸에서 제공한 데이터만 사용하고 업비트·다른 거래소 데이터, API 키, 계좌, 주문 상태를 절대로 혼합하지 마세요. 제공된 수치 외에는 추측하지 마세요.
 ACK는 체결이 아닙니다. REST 또는 Private WebSocket의 확정 체결 전에는 포지션·손익·쿨다운·주문 완료를 단정하지 마세요.
 불확실하거나 데이터가 누락·모순되면 BUY가 아닌 HOLD를 선택하세요. 주문 실행·취소·체결 확정 권한은 없습니다.
-현재 레짐, 후보 경로(SCALP, SWING, MOMENTUM_BREAKOUT, RECOVERY_REBOUND, NEW_LISTING), 신규상장 정책과 안전 차단 조건을 준수하세요. 스크리너 단계 신규상장 사전 필터로 `classify_listing_maturity()` + `is_new_listing_eligible()` SSOT에 따라 자격 미충족 NEW_LISTING 후보는 AI 입력 전에 제외됩니다. CRASH에서는 신규 진입을 제안하지 마세요.
+현재 레짐, 후보 경로(SCALP, SWING, MOMENTUM_BREAKOUT, RECOVERY_REBOUND, NEW_LISTING), RS 주도주(RS >= +3.0%) 특례 규정, 신규상장 정책과 안전 차단 조건을 준수하세요. 스크리너 단계 신규상장 사전 필터로 `classify_listing_maturity()` + `is_new_listing_eligible()` SSOT에 따라 자격 미충족 NEW_LISTING 후보는 AI 입력 전에 제외됩니다. CRASH에서는 신규 진입을 제안하지 마세요.
 API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·재현하지 마세요. JSON 요청에는 마크다운 없는 유효 JSON만 반환하고, 모든 설명 텍스트는 자연스러운 한국어로만 작성하세요."""
 
     def __init__(self, api_key: str):

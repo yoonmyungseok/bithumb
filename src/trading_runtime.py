@@ -1618,19 +1618,23 @@ class TradingCycleEngine:
                 stop_loss = strategy.get("stop_loss") or selected_entry["stop_loss"]
 
         if effective_candidate_type == "MOMENTUM_BREAKOUT" and not is_holding:
-            # 확장 구간은 단순 돌파 추격 주문을 차단하되, 1차 퀀트 하드게이트 통과 및 AI 심층 분석에서 고득점(알파 80점 이상) 확인형 승인을 받은 특급 주도주는 허용한다.
+            # 확장 구간은 단순 돌파 추격 주문을 차단하되, 1차 퀀트 하드게이트 통과 및 AI 심층 분석에서 고득점 확인형 승인을 받은 특급 주도주는 허용한다.
+            # RS 주도주(RS >= 3.0%)는 알파 75점 이상이면 고확신 확인형 진입을 허용한다.
+            is_rs_leader_item = bool(selected_entry.get("is_rs_leader", False))
             if momentum_phase != "EARLY":
+                required_alpha = 75 if is_rs_leader_item else 80
                 is_high_conviction_ai_entry = (
                     action == "BUY"
                     and is_ai_buy_signal
-                    and ai_alpha >= 80
+                    and ai_alpha >= required_alpha
                     and selected_entry.get("allow_buy", False)
                 )
                 if not is_high_conviction_ai_entry:
                     action = "HOLD"
                     reason = f"모멘텀 확장 후반 신규 추격 차단(단계={momentum_phase}) | {reason}"
                 else:
-                    reason = f"[EXTENDED 주도주 고확신 확인형 진입(알파 {ai_alpha}점)] {reason}"
+                    leader_label = "RS 주도주 " if is_rs_leader_item else ""
+                    reason = f"[{leader_label}고확신 확인형 진입(알파 {ai_alpha}점)] {reason}"
             elif not market_inputs.momentum_entry_slot_available:
                 action = "HOLD"
                 reason = f"동일 5분 사이클 모멘텀 신규 주문 1건 제한 | {reason}"
@@ -1653,7 +1657,7 @@ class TradingCycleEngine:
 
         if btc_regime == "RISK_OFF" and action == "BUY":
             alloc_ratio = StrategyPolicy.RISK_OFF_ALLOC_RATIO
-            if alpha_val >= 80:
+            if alpha_val >= 80 or bool(selected_entry.get("is_rs_leader", False)):
                 alloc_ratio = min(0.8, alloc_ratio * 1.3)
             alloc_pct = alloc_pct * alloc_ratio
             reason = f"[BTC 약세 레짐 비중 {int(alloc_ratio * 100)}% 적용 & 알파 {alpha_val}점 엄선] {reason}"

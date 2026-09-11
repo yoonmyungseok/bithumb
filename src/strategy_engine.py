@@ -268,9 +268,15 @@ class StrategyPolicy:
     # 모멘텀은 초입에서만 첫 주문을 허용한다. 확장 구간은 관찰·보유 관리용으로 남긴다.
     MOMENTUM_EARLY_MAX_CHANGE_RATE: float = 0.060
 
+    # RS 주도주(독자 강세 종목) 특례 정책
+    RS_LEADER_MIN_RS: float = 0.030                 # BTC 대비 상대강도 +3.0% 이상
+    RS_LEADER_EARLY_MAX_CHANGE_RATE: float = 0.120  # 주도주 모멘텀 초입(+12.0% 이하) 확장 허용
+    RS_LEADER_BREAKOUT_TOLERANCE: float = 0.992     # 직전 고점 99.2% 이상 근접 지지 양봉 허용
+    RS_LEADER_ALPHA_THRESHOLD_RISK_OFF: int = 65    # RISK_OFF 시 RS 주도주 알파 임계치 완화 (70->65)
+
     @classmethod
-    def get_momentum_early_max_change_rate(cls) -> float:
-        """환경 변수 MOMENTUM_EARLY_MAX_CHANGE_RATE 또는 기본 상한(0.060) 반환"""
+    def get_momentum_early_max_change_rate(cls, relative_strength: float = 0.0) -> float:
+        """환경 변수 또는 기본 상한 반환. RS 주도주(RS >= 3.0%)는 최대 12.0%까지 초입으로 인정"""
         raw = os.getenv("MOMENTUM_EARLY_MAX_CHANGE_RATE", "").strip()
         if raw:
             try:
@@ -279,6 +285,16 @@ class StrategyPolicy:
                     return val
             except ValueError:
                 pass
+        if relative_strength >= cls.RS_LEADER_MIN_RS:
+            raw_leader = os.getenv("RS_LEADER_EARLY_MAX_CHANGE_RATE", "").strip()
+            if raw_leader:
+                try:
+                    val_leader = float(raw_leader)
+                    if val_leader > 0.0:
+                        return val_leader
+                except ValueError:
+                    pass
+            return cls.RS_LEADER_EARLY_MAX_CHANGE_RATE
         return cls.MOMENTUM_EARLY_MAX_CHANGE_RATE
 
     # 5. 거시 시장 리스크 및 거래소 비용
@@ -352,18 +368,38 @@ def get_new_listing_alpha_threshold(btc_regime: str = "NORMAL", is_night: bool |
     return StrategyPolicy.NEW_LISTING_ALPHA_THRESHOLD_NORMAL
 
 
-def get_momentum_breakout_alpha_threshold(btc_regime: str = "NORMAL", is_night: bool | None = None) -> int:
-    """확정봉 모멘텀 돌파 전용 알파 기준을 세션과 BTC 레짐별로 반환한다."""
+def is_rs_leader(relative_strength: float = 0.0, btc_regime: str = "NORMAL") -> bool:
+    """비트코인 대비 상대강도(RS)가 높고 CRASH가 아닌 독자 강세 주도주인지 판정한다."""
+    regime_upper = str(btc_regime or "NORMAL").upper()
+    if regime_upper in ("CRASH", "BEAR_VOLATILE"):
+        return False
+    return relative_strength >= StrategyPolicy.RS_LEADER_MIN_RS
+
+
+def get_momentum_breakout_alpha_threshold(
+    btc_regime: str = "NORMAL",
+    is_night: bool | None = None,
+    relative_strength: float = 0.0,
+) -> int:
+    """확정봉 모멘텀 돌파 전용 알파 기준을 세션, BTC 레짐, RS 주도주 여부별로 반환한다."""
     regime_upper = str(btc_regime or "NORMAL").upper()
     night_active = is_night if is_night is not None else is_night_session()
+    is_leader = is_rs_leader(relative_strength, regime_upper)
+
     if night_active:
         if regime_upper == "RISK_OFF":
-            return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF
+            return (
+                StrategyPolicy.RS_LEADER_ALPHA_THRESHOLD_RISK_OFF + 5
+                if is_leader
+                else StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF
+            )
         elif regime_upper == "BULL_TREND":
             return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_BULL
         return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT
 
     if regime_upper == "RISK_OFF":
+        if is_leader:
+            return StrategyPolicy.RS_LEADER_ALPHA_THRESHOLD_RISK_OFF
         return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF
     elif regime_upper == "BULL_TREND":
         return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_BULL
@@ -1274,6 +1310,7 @@ def entry_signal(
     momentum_breakout_reason = "확인형 후보"
     momentum_mtf_allowed = mtf_allowed
     momentum_mtf_reason = mtf_reason
+    is_leader = is_rs_leader(relative_strength, regime_upper)
     if normalized_entry_type == "MOMENTUM_BREAKOUT":
         lookback = StrategyPolicy.MOMENTUM_BREAKOUT_LOOKBACK_BARS
         previous_candles = candles[1:lookback + 1]
@@ -1283,9 +1320,17 @@ def entry_signal(
         current_volume = float(candles[0].get("candle_acc_trade_volume", 0.0) or 0.0)
         current_open = float(candles[0].get("opening_price", current) or current)
         volume_confirmed = average_volume > 0 and current_volume >= average_volume * StrategyPolicy.MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN
-        price_breakout = previous_high > 0 and current > previous_high
+
+        breakout_target = (
+            previous_high * StrategyPolicy.RS_LEADER_BREAKOUT_TOLERANCE
+            if is_leader
+            else previous_high
+        )
+        price_breakout = previous_high > 0 and (current > previous_high or (is_leader and current >= breakout_target))
         bullish_candle = current >= current_open
-        momentum_rsi_passed = StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MIN <= rsi <= StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MAX
+        momentum_rsi_passed = StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MIN <= rsi <= (
+            StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MAX + 2.0 if is_leader else StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MAX
+        )
         if candles_1h and len(candles_1h) >= 20:
             momentum_ema20 = calculate_ema([float(c.get("trade_price", 0.0)) for c in candles_1h], 20)
             momentum_mtf_allowed = current_1h >= momentum_ema20 * StrategyPolicy.MOMENTUM_BREAKOUT_MTF_EMA20_RATIO
@@ -1294,15 +1339,18 @@ def entry_signal(
                 f"EMA20 {momentum_ema20:.1f} (모멘텀 기준 {StrategyPolicy.MOMENTUM_BREAKOUT_MTF_EMA20_RATIO:.3f})"
             )
         momentum_breakout_passed = price_breakout and volume_confirmed and bullish_candle and momentum_rsi_passed
+        leader_tag = " [RS 주도주 특례]" if is_leader else ""
         momentum_breakout_reason = (
-            f"직전 {lookback}봉 고점 돌파={'통과' if price_breakout else '차단'}, "
+            f"직전 {lookback}봉 고점 돌파={'통과' if price_breakout else '차단'}{leader_tag}, "
             f"거래량배수={(current_volume / average_volume) if average_volume > 0 else 0.0:.2f}, "
             f"양봉={'통과' if bullish_candle else '차단'}, RSI={'통과' if momentum_rsi_passed else '차단'}, "
             f"1H MTF={'통과' if momentum_mtf_allowed else '차단'}"
         )
     if normalized_entry_type == "MOMENTUM_BREAKOUT":
         # 반등형의 저점 근접 조건은 적용하지 않되, 급락·상위 추세·이격·윗꼬리 안전 게이트는 유지한다.
-        entry_alpha_threshold = get_momentum_breakout_alpha_threshold(btc_regime, night_active)
+        entry_alpha_threshold = get_momentum_breakout_alpha_threshold(
+            btc_regime, night_active, relative_strength=relative_strength
+        )
         # 모멘텀 돌파는 급등 캔들의 탄력을 감안하여 모멘텀 전용 이격도(최대 +5.0%)를 적용한다.
         hard_gate_disparity_momentum = current <= (ma20 * StrategyPolicy.MAX_MA20_DISPARITY_MOMENTUM)
         momentum_safety_passed = hard_gate_btc and momentum_mtf_allowed and hard_gate_disparity_momentum and hard_gate_shadow
@@ -1397,6 +1445,7 @@ def entry_signal(
         "pct_b": pct_b,
         "alpha_score": alpha_res["total_score"],
         "entry_type": normalized_entry_type,
+        "is_rs_leader": is_leader,
         "momentum_breakout_passed": momentum_breakout_passed,
         "momentum_breakout": {
             "pass": momentum_breakout_passed,

@@ -280,7 +280,7 @@ class MarketScreener:
                         and relative_strength >= 0.015
                     )
                     early_max_change_rate = (
-                        StrategyPolicy.get_momentum_early_max_change_rate()
+                        StrategyPolicy.get_momentum_early_max_change_rate(relative_strength)
                         if hasattr(StrategyPolicy, "get_momentum_early_max_change_rate")
                         else getattr(StrategyPolicy, "MOMENTUM_EARLY_MAX_CHANGE_RATE", 0.060)
                     )
@@ -290,15 +290,16 @@ class MarketScreener:
                         else "EXTENDED"
                     )
 
-                    # 상승 초입(+1.5% ~ +6.0%) 종목에 최고 가중치를 부여하고, 이미 많이 오른(+8% 초과) 종목은 감점
-                    if 0.015 <= change_rate <= 0.060:
+                    # 상승 초입(+1.5% ~ +6.0%, RS 주도주는 최대 12.0%) 종목에 우대 가중치를 부여
+                    is_rs_leader_flag = relative_strength >= getattr(StrategyPolicy, "RS_LEADER_MIN_RS", 0.030)
+                    if 0.015 <= change_rate <= 0.060 or (is_rs_leader_flag and change_rate <= 0.120):
                         momentum_multiplier = 2.0   # 상승 초입 골든존 최고 가중치
                     elif 0.005 <= change_rate < 0.015:
                         momentum_multiplier = 1.3   # 바닥 탈출 초기 구간
                     elif 0.060 < change_rate <= 0.090:
                         momentum_multiplier = 1.0   # 진행 중인 상승세
                     else:
-                        momentum_multiplier = 0.5   # +9% 이상 급등 과열 종목 (고점 피로도 감점)
+                        momentum_multiplier = 0.5   # 과열 급등 종목 (고점 피로도 감점)
 
                     rs_bonus = max(0.0, relative_strength * 60.0)
                     # 거래대금의 로그 스케일과 초입 모멘텀 가중치를 결합
