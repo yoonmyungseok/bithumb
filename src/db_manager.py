@@ -132,7 +132,7 @@ class DatabaseManager:
                     "SQLite DB 연결 초기화 경합/지연 (시도 %d/5, 경로: %s): %s",
                     attempt + 1, self.db_path, exc,
                 )
-                time.sleep(0.4 * (attempt + 1))
+                time.sleep(0.5 * (attempt + 1))
 
         if last_exc:
             raise last_exc

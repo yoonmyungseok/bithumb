@@ -338,6 +338,9 @@ class UnifiedDashboardServer:
                 "gemini_upbit": {},
                 "ai_provider_bithumb": {},
             },
+            "market_intelligence": {},
+            "market_intelligence_bithumb": {},
+            "market_intelligence_upbit": {},
         }
 
     def get_aggregated_status(self) -> dict[str, Any]:
@@ -607,6 +610,9 @@ class UnifiedDashboardServer:
             "bithumb_status": bt_status,
             "upbit_status": up_status,
             "active_positions_count": len(combined_positions),
+            "market_intelligence": bithumb_data.get("market_intelligence") or upbit_data.get("market_intelligence") or {},
+            "market_intelligence_bithumb": bithumb_data.get("market_intelligence", {}),
+            "market_intelligence_upbit": upbit_data.get("market_intelligence", {}),
             "api_usage": {
                 "bithumb": bithumb_data.get("api_usage", {}).get("exchange", {}),
                 "upbit": upbit_data.get("api_usage", {}).get("exchange", {}),

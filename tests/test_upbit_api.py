@@ -150,6 +150,33 @@ class UpbitAPITests(unittest.TestCase):
             self.assertEqual(self.api.get_current_price("KRW-BTC", force_refresh=True), 100.0)
             self.assertEqual(mock_request.call_count, 2)
 
+    def test_resolve_candle_cache_ttl_formula(self):
+        self.assertEqual(UpbitAPI._resolve_candle_cache_ttl(5), 270.0)
+        self.assertEqual(UpbitAPI._resolve_candle_cache_ttl(1), 30.0)
+        self.assertEqual(UpbitAPI._resolve_candle_cache_ttl(60), 600.0)
+        self.assertEqual(UpbitAPI._resolve_candle_cache_ttl(240), 1200.0)
+
+    def test_resolve_candle_cache_ttl_env_override(self):
+        with patch.dict(os.environ, {"UPBIT_CANDLE_CACHE_TTL_SHORT_SEC": "120"}, clear=False):
+            self.assertEqual(UpbitAPI._resolve_candle_cache_ttl(5), 120.0)
+        with patch.dict(os.environ, {"UPBIT_CANDLE_CACHE_TTL_LONG_SEC": "300"}, clear=False):
+            self.assertEqual(UpbitAPI._resolve_candle_cache_ttl(60), 300.0)
+        with patch.dict(os.environ, {"UPBIT_CANDLE_CACHE_TTL_4H_SEC": "900"}, clear=False):
+            self.assertEqual(UpbitAPI._resolve_candle_cache_ttl(240), 900.0)
+
+    def test_five_minute_candle_cache_reuses_within_ttl(self):
+        self.api._valid_markets_cache = {"KRW-BTC"}
+        fake_candles = [{"market": "KRW-BTC", "trade_price": 50000000.0}]
+        with patch.object(self.api, "_request") as mock_request:
+            mock_request.return_value = list(fake_candles)
+
+            self.api.get_candles(unit=5, count=30, market="KRW-BTC")
+            self.api.get_candles(unit=5, count=30, market="KRW-BTC")
+            self.assertEqual(mock_request.call_count, 1)
+
+            self.api.get_candles(unit=5, count=30, market="KRW-BTC", force_refresh=True)
+            self.assertEqual(mock_request.call_count, 2)
+
     def test_get_candles_reuses_cache_and_force_refresh_bypasses(self):
         # 4시간봉(unit=240) 등 긴 주기의 캔들은 캐시되어 429를 방지한다.
         self.api._valid_markets_cache = {"KRW-BTC"}

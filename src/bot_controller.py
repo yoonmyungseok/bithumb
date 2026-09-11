@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from ai_provider import AIProviderTelemetry
 from gemini_telemetry import GeminiTelemetry
+from market_intelligence import MarketIntelligenceService
 from operational_quality import build_slippage_enforcement_readiness
 from order_safety import OrderJournal, SafeOrderExecutor
 from risk_controls import RiskGuard
@@ -641,6 +642,9 @@ class BotController:
             "new_listing_slot_max": new_listing_slot_max,
             "new_listing_enabled": StrategyPolicy.is_new_listing_enabled(),
             "new_listing_enforcement": StrategyPolicy.is_new_listing_enforcement_enabled(),
+            "market_intelligence": MarketIntelligenceService.get_instance(
+                exchange_scope=str(getattr(getattr(self, "exchange", None), "exchange_name", exchange_key) or "bithumb").lower()
+            ).get_latest_intelligence(max_age_sec=3600.0) or {},
         }
 
     def get_diagnostics_message(self) -> str:

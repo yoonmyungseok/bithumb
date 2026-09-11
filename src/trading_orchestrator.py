@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from exchange_adapter import ExchangeAdapter
+from market_intelligence import MarketIntelligenceService
 from strategy_engine import classify_btc_regime, classify_listing_maturity
 
 # 단일 사이클 내 전략 입력 prefetch 유효 시간(초). 주문 직전 검증에는 사용하지 않는다.
@@ -53,6 +54,8 @@ class TradingOrchestrator:
         self._balance_snapshot_exchange_id: int | None = None
         # 최근 실행 구간만 보존해 장기 실행 중 메모리 증가 없이 p50/p95를 관찰한다.
         self._latencies: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=40))
+        # 항목별 누적 측정 횟수를 추적하여 maxlen 버퍼 포화 후에도 정확히 20회 주기로 요약한다.
+        self._latency_counts: dict[str, int] = defaultdict(int)
         # 스크리너가 이미 조회한 ticker를 같은 사이클 prefetch가 재사용한다.
         self._last_screener_ticker_seed: dict[str, dict[str, Any]] = {}
         self._strategy_input_prefetch_ttl_seconds = DEFAULT_STRATEGY_INPUT_PREFETCH_TTL_SEC
@@ -65,7 +68,9 @@ class TradingOrchestrator:
         """성능 측정값을 누적하고 20회마다 운영 로그로 요약한다."""
         samples = self._latencies[name]
         samples.append(max(0.0, float(elapsed_seconds)))
-        if len(samples) < 20 or len(samples) % 20 != 0:
+        self._latency_counts[name] += 1
+        count = self._latency_counts[name]
+        if count < 20 or count % 20 != 0:
             return
         ordered = sorted(samples)
         p50 = ordered[len(ordered) // 2]
@@ -74,9 +79,9 @@ class TradingOrchestrator:
             "[성능 계측] %s 최근 %d회: p50=%.3fs p95=%.3fs max=%.3fs",
             name, len(ordered), p50, p95, ordered[-1],
         )
-        if name == "full_cycle" and p95 > 15.0:
+        if name == "full_cycle" and p95 > 45.0:
             self.logger.warning(
-                "[성능 경고] full_cycle p95=%.3fs > 15s 목표 초과 (실제 주기 위험은 사이클 상세 로그 확인)",
+                "[성능 경고] full_cycle p95=%.3fs > 45s 임계 초과 (실제 주기 위험은 사이클 상세 로그 확인)",
                 p95,
             )
 
@@ -123,15 +128,27 @@ class TradingOrchestrator:
         ) or "없음"
         slack_seconds = interval_seconds - total_seconds
         risk_level = "주기여유부족" if slack_seconds <= interval_seconds * 0.2 else "목표초과"
-        self.logger.warning(
-            "[성능 상세] cycle=%s total=%.3fs slack=%.3fs 상태=%s | %s | 느린마켓=%s",
-            cycle_id,
-            total_seconds,
-            slack_seconds,
-            risk_level,
-            phase_text,
-            market_text,
-        )
+        log_format = "[성능 상세] cycle=%s total=%.3fs slack=%.3fs 상태=%s | %s | 느린마켓=%s"
+        if risk_level == "주기여유부족":
+            self.logger.warning(
+                log_format,
+                cycle_id,
+                total_seconds,
+                slack_seconds,
+                risk_level,
+                phase_text,
+                market_text,
+            )
+        else:
+            self.logger.info(
+                log_format,
+                cycle_id,
+                total_seconds,
+                slack_seconds,
+                risk_level,
+                phase_text,
+                market_text,
+            )
         return True
 
     def get_balance_snapshot(
@@ -378,6 +395,7 @@ class TradingOrchestrator:
         interval_minutes: int,
         *,
         max_workers: int = 5,
+        prefetch_4h: bool = True,
     ) -> dict[str, dict[str, Any]]:
         """사이클 내 스냅샷·우선순위 평가가 공유하는 캔들 사전 조회. 예외 시 단건 폴백을 허용한다."""
         unique_markets = list(dict.fromkeys(market for market in markets if market))
@@ -392,13 +410,17 @@ class TradingOrchestrator:
             try:
                 candles_5m = exchange.get_candles(unit=interval_minutes, count=30, market=market)
                 candles_1h = exchange.get_candles(unit=60, count=50, market=market)
-                four_hour_history = self._load_swing_candles_safely(exchange, market)
-                return market, {
+                payload: dict[str, Any] = {
                     "candles_5m": candles_5m,
                     "candles_1h": candles_1h,
-                    "candles_4h": four_hour_history.candles,
-                    "four_hour_history_status": four_hour_history.status,
                 }
+                if prefetch_4h:
+                    four_hour_history = self._load_swing_candles_safely(exchange, market)
+                    payload["candles_4h"] = four_hour_history.candles
+                    payload["four_hour_history_status"] = four_hour_history.status
+                else:
+                    payload["four_hour_history_status"] = "DEFERRED"
+                return market, payload
             except Exception as exc:
                 self.logger.debug("캔들 사전 조회 실패(%s): %s", market, exc)
                 return market, None
@@ -457,6 +479,8 @@ class TradingOrchestrator:
         interval_minutes: int,
         exchange: ExchangeAdapter,
         candle_cache: dict[str, dict[str, Any]] | None,
+        *,
+        load_4h: bool = True,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], FourHourHistoryResult]:
         """사전 조회 캐시가 없으면 단건 REST로 fail-closed 폴백한다."""
         cached = (candle_cache or {}).get(market, {})
@@ -467,6 +491,8 @@ class TradingOrchestrator:
                 cached.get("candles_4h") or [],
                 str(cached.get("four_hour_history_status", "AVAILABLE")),
             )
+        elif str(cached.get("four_hour_history_status", "")).upper() == "DEFERRED":
+            four_hour_history = FourHourHistoryResult([], "DEFERRED")
         else:
             four_hour_history = None
 
@@ -475,8 +501,48 @@ class TradingOrchestrator:
         if not isinstance(candles_1h, list):
             candles_1h = exchange.get_candles(unit=60, count=50, market=market)
         if four_hour_history is None:
-            four_hour_history = TradingOrchestrator._load_swing_candles_safely(exchange, market)
+            if load_4h:
+                four_hour_history = TradingOrchestrator._load_swing_candles_safely(exchange, market)
+            else:
+                four_hour_history = FourHourHistoryResult([], "DEFERRED")
         return candles_5m, candles_1h, four_hour_history
+
+    @staticmethod
+    def needs_four_hour_candles(
+        market: str,
+        *,
+        is_held_swing: bool,
+        candidate_metadata: dict[str, Any],
+    ) -> bool:
+        """스윙·신규상장·보유 스윙만 4시간봉 REST를 요청한다. 일반 단타는 5분+1시간만 사용."""
+        if is_held_swing:
+            return True
+        strategy_mode = str(candidate_metadata.get("strategy_mode", "")).upper()
+        candidate_type = str(candidate_metadata.get("candidate_type", "")).upper()
+        if strategy_mode == "SWING" or candidate_type == "SWING":
+            return True
+        if candidate_metadata.get("new_listing_screener_verified"):
+            return True
+        return False
+
+    @staticmethod
+    def cap_cycle_target_markets(
+        target_markets: list[str],
+        held_markets: list[str],
+        max_markets: int,
+    ) -> list[str]:
+        """보유 종목 순서를 보존한 뒤 나머지 후보를 상한까지 채운다."""
+        if max_markets <= 0:
+            return list(target_markets)
+        held_set = set(held_markets)
+        capped: list[str] = []
+        for market in target_markets:
+            if market in held_set:
+                capped.append(market)
+        for market in target_markets:
+            if market not in capped and len(capped) < max_markets:
+                capped.append(market)
+        return capped
 
     def load_priority_eval_snapshot(
         self,
@@ -486,13 +552,14 @@ class TradingOrchestrator:
         prefetched_input: dict[str, Any] | None = None,
         *,
         candle_cache: dict[str, dict[str, Any]] | None = None,
+        load_4h: bool = True,
     ) -> "MarketSnapshot":
         """AI 우선순위 정렬에 필요한 최소 필드만 조회한다. 주문·청산 경로에는 사용하지 않는다."""
         started_at = time.monotonic()
         currency = market.split("-")[-1] if "-" in market else market
         is_fresh_prefetch, prefetched_price, prefetched_orderbook = self._resolve_prefetch_window(prefetched_input)
         candles_5m, candles_1h, four_hour_history = self._resolve_cached_candles(
-            market, interval_minutes, exchange, candle_cache,
+            market, interval_minutes, exchange, candle_cache, load_4h=load_4h,
         )
         snapshot = MarketSnapshot(
             market=market,
@@ -533,6 +600,7 @@ class TradingOrchestrator:
         *,
         candle_cache: dict[str, dict[str, Any]] | None = None,
         priority_snapshot: "MarketSnapshot | None" = None,
+        load_4h: bool = True,
     ) -> "MarketSnapshot":
         """Load the common per-market inputs used by strategy and exit logic."""
         started_at = time.monotonic()
@@ -548,14 +616,19 @@ class TradingOrchestrator:
         ):
             candles_5m = priority_snapshot.candles_5m
             candles_1h = priority_snapshot.candles_1h
-            four_hour_history = FourHourHistoryResult(
-                priority_snapshot.candles_4h,
-                priority_snapshot.four_hour_history_status,
+            if load_4h and str(priority_snapshot.four_hour_history_status).upper() != "AVAILABLE":
+                four_hour_history = TradingOrchestrator._load_swing_candles_safely(exchange, market)
+            else:
+                four_hour_history = FourHourHistoryResult(
+                    priority_snapshot.candles_4h,
+                    priority_snapshot.four_hour_history_status,
+                )
+            listing_maturity = classify_listing_maturity(
+                four_hour_history.candles, candles_1h, candles_5m, four_hour_history.status,
             )
-            listing_maturity = priority_snapshot.listing_maturity
         else:
             candles_5m, candles_1h, four_hour_history = self._resolve_cached_candles(
-                market, interval_minutes, exchange, candle_cache,
+                market, interval_minutes, exchange, candle_cache, load_4h=load_4h,
             )
             listing_maturity = classify_listing_maturity(
                 four_hour_history.candles, candles_1h, candles_5m, four_hour_history.status,
@@ -615,6 +688,27 @@ class TradingOrchestrator:
             # 1차 로컬 판별에서 이미 급락이면 즉시 차단
             if regime == "CRASH":
                 return True, "CRASH", reason
+
+            # [2순위] Groq 실시간 거시 시장 분석(15분 주기 유효 캐시) 선제 반영
+            try:
+                scope = getattr(exchange, "exchange_name", "bithumb").lower()
+                mi_service = MarketIntelligenceService.get_instance(exchange_scope=scope)
+                groq_intel = mi_service.get_latest_intelligence(max_age_sec=1200.0)
+                if groq_intel:
+                    groq_regime = str(groq_intel.get("regime", "")).upper()
+                    groq_risk = int(groq_intel.get("risk_score", 50))
+                    groq_summary = str(groq_intel.get("market_summary", ""))
+
+                    if groq_regime == "CRASH" or groq_risk >= 85:
+                        return True, "CRASH", f"Groq 거시 위기 경보 (위험도 {groq_risk}/100): {groq_summary}"
+                    elif groq_regime in ("BEAR_REGIME", "CAUTION_PULLBACK") and regime != "CRASH":
+                        regime = "RISK_OFF"
+                        reason = f"{reason} | Groq: {groq_summary}"
+                    elif groq_regime == "BULL_TREND" and regime == "NORMAL":
+                        regime = "BULL_TREND"
+                        reason = f"{reason} | Groq: {groq_summary}"
+            except Exception as exc:
+                self.logger.debug("Groq 거시 시장 분석 참조 예외 (무시): %s", exc)
 
             # [3순위] AI 매크로 정밀 진단 결합 (백그라운드 비동기 갱신으로 사이클 지연 제거)
             if analyzer is not None and hasattr(analyzer, "diagnose_macro_regime") and candles_1h:

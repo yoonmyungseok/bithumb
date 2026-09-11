@@ -75,11 +75,22 @@ class TradingOrchestratorPerformanceTests(unittest.TestCase):
         )
 
         self.assertTrue(logged)
-        self.assertTrue(logger.warning.called)
-        log_args = logger.warning.call_args.args
+        self.assertTrue(logger.info.called)
+        log_args = logger.info.call_args.args
         self.assertIn("slack=", log_args[0])
         self.assertIn("마켓선정=", log_args[5])
         self.assertIn("느린마켓=", log_args[0])
+
+        # 슬랙 여유 부족(<=20%) 시 WARNING 기록 검증
+        logger.reset_mock()
+        orchestrator.log_slow_cycle_detail(
+            cycle_id="2026-09-09 19:44:37",
+            total_seconds=250.0,
+            interval_seconds=300.0,
+            timings={"마켓루프": 240.0},
+            slow_markets=[],
+        )
+        self.assertTrue(logger.warning.called)
 
     def test_normal_cycle_does_not_write_detail_log(self):
         """정상 사이클은 상세 성능 로그를 남기지 않아 운영 로그 폭증을 막는다."""
@@ -96,6 +107,44 @@ class TradingOrchestratorPerformanceTests(unittest.TestCase):
 
         self.assertFalse(logged)
         logger.warning.assert_not_called()
+
+    def test_record_latency_only_logs_every_20_calls(self):
+        """40회 버퍼 포화 후에도 매 사이클 찍히지 않고 20회 주기로만 요약/경고가 출력되는지 검증."""
+        logger = MagicMock()
+        orchestrator = TradingOrchestrator(logger)
+
+        # 1~19회 호출: 로그가 전혀 발생하지 않아야 함
+        for _ in range(19):
+            orchestrator.record_latency("full_cycle", 50.0)
+        self.assertEqual(logger.info.call_count, 0)
+        self.assertEqual(logger.warning.call_count, 0)
+
+        # 20회째 호출: 20회 요약 및 p95 > 45 경고 1회 발생
+        orchestrator.record_latency("full_cycle", 50.0)
+        self.assertEqual(logger.info.call_count, 1)
+        self.assertEqual(logger.warning.call_count, 1)
+
+        # 21~39회 호출: 로그 추가 발생 없어야 함
+        for _ in range(19):
+            orchestrator.record_latency("full_cycle", 50.0)
+        self.assertEqual(logger.info.call_count, 1)
+        self.assertEqual(logger.warning.call_count, 1)
+
+        # 40회째 호출: 2번째 요약 및 경고 발생
+        orchestrator.record_latency("full_cycle", 50.0)
+        self.assertEqual(logger.info.call_count, 2)
+        self.assertEqual(logger.warning.call_count, 2)
+
+        # 41~59회 호출: maxlen=40 버퍼가 꽉 찬 상태에서도 매 사이클 찍히지 않고 침묵 유지해야 함
+        for _ in range(19):
+            orchestrator.record_latency("full_cycle", 50.0)
+        self.assertEqual(logger.info.call_count, 2)
+        self.assertEqual(logger.warning.call_count, 2)
+
+        # 60회째 호출: 3번째 요약 및 경고 발생
+        orchestrator.record_latency("full_cycle", 16.0)
+        self.assertEqual(logger.info.call_count, 3)
+        self.assertEqual(logger.warning.call_count, 3)
 
     def test_priority_eval_snapshot_uses_prefetch_and_skips_balance(self):
         prefetched = self._fresh_prefetch()
@@ -164,6 +213,77 @@ class TradingOrchestratorPerformanceTests(unittest.TestCase):
             self.assertIn("candles_5m", payload)
             self.assertIn("candles_1h", payload)
             self.assertIn("candles_4h", payload)
+
+    def test_prefetch_cycle_candles_without_4h_defers_history(self):
+        before = self.client.candle_calls
+        cache = self.orchestrator.prefetch_cycle_candles(
+            self.adapter, ["KRW-A"], 5, max_workers=1, prefetch_4h=False,
+        )
+
+        payload = cache["KRW-A"]
+        self.assertNotIn("candles_4h", payload)
+        self.assertEqual(payload.get("four_hour_history_status"), "DEFERRED")
+        # 5분+1시간만 조회 (종목당 2회)
+        self.assertEqual(self.client.candle_calls - before, 2)
+
+    def test_resolve_cached_candles_load_4h_false_skips_rest(self):
+        candle_cache = {
+            "KRW-XRP": {
+                "candles_5m": [{"market": "KRW-XRP", "trade_price": 50.0}] * 30,
+                "candles_1h": [{"market": "KRW-XRP", "trade_price": 50.0, "unit": 60}] * 50,
+                "four_hour_history_status": "DEFERRED",
+            }
+        }
+        before = self.client.candle_calls
+        candles_5m, candles_1h, four_hour = TradingOrchestrator._resolve_cached_candles(
+            "KRW-XRP", 5, self.adapter, candle_cache, load_4h=False,
+        )
+
+        self.assertEqual(len(candles_5m), 30)
+        self.assertEqual(len(candles_1h), 50)
+        self.assertEqual(four_hour.status, "DEFERRED")
+        self.assertEqual(self.client.candle_calls, before)
+
+    def test_needs_four_hour_candles_conditions(self):
+        self.assertTrue(
+            TradingOrchestrator.needs_four_hour_candles(
+                "KRW-A", is_held_swing=True, candidate_metadata={},
+            )
+        )
+        self.assertTrue(
+            TradingOrchestrator.needs_four_hour_candles(
+                "KRW-A",
+                is_held_swing=False,
+                candidate_metadata={"strategy_mode": "SWING"},
+            )
+        )
+        self.assertTrue(
+            TradingOrchestrator.needs_four_hour_candles(
+                "KRW-A",
+                is_held_swing=False,
+                candidate_metadata={"candidate_type": "SWING"},
+            )
+        )
+        self.assertTrue(
+            TradingOrchestrator.needs_four_hour_candles(
+                "KRW-A",
+                is_held_swing=False,
+                candidate_metadata={"new_listing_screener_verified": True},
+            )
+        )
+        self.assertFalse(
+            TradingOrchestrator.needs_four_hour_candles(
+                "KRW-A",
+                is_held_swing=False,
+                candidate_metadata={"candidate_type": "CONFIRMED"},
+            )
+        )
+
+    def test_cap_cycle_target_markets_preserves_held_and_order(self):
+        target = ["KRW-A", "KRW-B", "KRW-C", "KRW-D", "KRW-E", "KRW-F", "KRW-G", "KRW-H"]
+        held = ["KRW-B", "KRW-F"]
+        capped = TradingOrchestrator.cap_cycle_target_markets(target, held, 6)
+        self.assertEqual(capped, ["KRW-B", "KRW-F", "KRW-A", "KRW-C", "KRW-D", "KRW-E"])
 
     def test_strategy_input_prefetch_ttl_defaults_and_caps_by_interval(self):
         self.assertEqual(resolve_strategy_input_prefetch_ttl(5), DEFAULT_STRATEGY_INPUT_PREFETCH_TTL_SEC)
@@ -268,8 +388,8 @@ class TradingOrchestratorPerformanceTests(unittest.TestCase):
         )
 
         self.assertTrue(logged)
-        self.assertTrue(logger.warning.called)
-        log_args = logger.warning.call_args.args
+        self.assertTrue(logger.info.called)
+        log_args = logger.info.call_args.args
         phase_str = log_args[5]
         expected_part = "마켓선정=10.806s (후보스캔=2.941s AI후보랭킹=3.339s 스윙스캔=4.421s 기타=0.105s)"
         self.assertIn(expected_part, phase_str)

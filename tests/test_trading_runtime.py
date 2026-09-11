@@ -851,6 +851,56 @@ class TradingRuntimePrefixTests(unittest.TestCase):
         _mock_entry.assert_not_called()
 
     @patch("trading_runtime.recovery_rebound_signal", return_value={"allow_buy": False})
+    @patch("trading_runtime.entry_signal", return_value={"allow_buy": False, "reason": "관망"})
+    def test_insufficient_candles_logs_info_not_warning(self, _mock_entry, _mock_recovery):
+        profile = ExchangeCycleProfile(
+            exchange_key="upbit",
+            reconcile_label="",
+            decision_exchange="upbit",
+            log_prefix="",
+            extra_excluded_markets=frozenset(),
+            create_screener=self.create_screener,
+            cycle_start_label="업비트 AI 퀀트 트레이딩",
+            tier_label="스마트 자산 티어",
+            tier_top_wording="스크리닝 상위",
+            summary_label="자산 요약",
+            btc_crash_label="비트코인 급락 위험 감지",
+        )
+        engine = self._build_engine(profile)
+        with self.assertLogs("test_trading_runtime", level="INFO") as log_cm:
+            result = engine.process_entry_gating(MarketEntryInputs(
+                exchange=self.exchange,
+                market="KRW-LA",
+                korean_name="라그랑주",
+                candidate_type="CONFIRMED",
+                candidate_metadata={},
+                analyzer=None,
+                coin_available=0.0,
+                avg_buy_price=0.0,
+                current_price=100.0,
+                coin_value=0.0,
+                krw_available=1_000_000.0,
+                candles_5m=[{"trade_price": 100.0} for _ in range(3)],
+                candles_1h=[{"trade_price": 100.0}],
+                candles_4h=[{"trade_price": 100.0}],
+                orderbook={"market": "KRW-LA"},
+                btc_regime="NORMAL",
+                btc_status_msg="정상",
+                is_btc_crashing=False,
+                is_cooldown=False,
+                is_extreme_fear=False,
+                is_bot_paused=False,
+                is_kill_switch=False,
+                is_entry_ready=True,
+                dyn_max_pos_pct=0.35,
+                now_str="2026-09-08 14:40:49",
+                audit_decision=lambda *args, **kwargs: None,
+            ))
+        self.assertTrue(result.should_continue)
+        self.assertTrue(any("INFO:test_trading_runtime:[KRW-LA] 캔들 데이터 부족으로 진입 생략" in record for record in log_cm.output))
+        self.assertFalse(any("WARNING" in record and "캔들 데이터 부족으로 진입 생략" in record for record in log_cm.output))
+
+    @patch("trading_runtime.recovery_rebound_signal", return_value={"allow_buy": False})
     @patch("trading_runtime.entry_signal")
     @patch("trading_runtime.select_completed_candles")
     def test_upbit_new_listing_bypasses_twenty_candle_gate(
@@ -1170,6 +1220,112 @@ class UpbitMarketLoopSnapshotBudgetTests(unittest.TestCase):
         # 사전조회된 캐시가 사용되어 루프 내 추가 캔들 호출이 대폭 억제되어야 함
         legacy_estimate = len(markets) * 3 * 2
         self.assertLessEqual(incremental_candles, int(legacy_estimate * 0.7))
+
+
+class UpbitCycleMarketCapTests(TradingRuntimePrefixTests):
+    def test_cap_cycle_target_markets_cases(self):
+        target = [f"KRW-{i}" for i in range(10)]
+        held = ["KRW-1", "KRW-5"]
+        capped = TradingOrchestrator.cap_cycle_target_markets(target, held, 6)
+        self.assertEqual(len(capped), 6)
+        self.assertEqual(capped[:2], ["KRW-1", "KRW-5"])
+
+        capped_no_held = TradingOrchestrator.cap_cycle_target_markets(
+            [f"KRW-{i}" for i in range(8)], [], 6,
+        )
+        self.assertEqual(len(capped_no_held), 6)
+        self.assertEqual(capped_no_held, [f"KRW-{i}" for i in range(6)])
+
+    @patch("trading_runtime.get_fear_and_greed_index", return_value={"desc": "중립"})
+    @patch("trading_runtime.load_runtime_risk_settings")
+    def test_upbit_prefix_applies_cycle_cap(self, mock_risk_settings, _mock_fng):
+        mock_risk_settings.return_value = types.SimpleNamespace(
+            btc_crash_threshold_pct=-0.03,
+            max_daily_loss_pct=0.05,
+            trailing_start_pct=0.02,
+            trailing_stop_pct=0.01,
+        )
+        many_markets = [f"KRW-{i}" for i in range(10)]
+        profile = ExchangeCycleProfile(
+            exchange_key="upbit",
+            reconcile_label="업비트 ",
+            decision_exchange="upbit",
+            log_prefix="업비트 ",
+            extra_excluded_markets=frozenset(),
+            create_screener=self.create_screener,
+            cycle_start_label="업비트 5분 AI 퀀트 트레이딩",
+            tier_label="업비트 스마트 자산 티어",
+            tier_top_wording="상위",
+            summary_label="업비트 자산 요약",
+            btc_crash_label="업비트 비트코인 급락 위험 감지",
+            markets_log_prefix="업비트 ",
+            max_cycle_markets=6,
+        )
+        engine = self._build_engine(profile)
+        engine.context.orchestrator.select_target_markets = MagicMock(return_value=list(many_markets))
+        prefix = engine.run_cycle_prefix()
+        self.assertEqual(len(prefix.target_markets), 6)
+
+    @patch("trading_runtime.get_fear_and_greed_index", return_value={"desc": "중립"})
+    @patch("trading_runtime.load_runtime_risk_settings")
+    def test_bithumb_prefix_does_not_apply_cycle_cap(self, mock_risk_settings, _mock_fng):
+        mock_risk_settings.return_value = types.SimpleNamespace(
+            btc_crash_threshold_pct=-0.03,
+            max_daily_loss_pct=0.05,
+            trailing_start_pct=0.02,
+            trailing_stop_pct=0.01,
+        )
+        many_markets = [f"KRW-{i}" for i in range(8)]
+        profile = ExchangeCycleProfile(
+            exchange_key="bithumb",
+            reconcile_label="",
+            decision_exchange="bithumb",
+            log_prefix="",
+            extra_excluded_markets=frozenset(),
+            create_screener=self.create_screener,
+            cycle_start_label="5분 AI 퀀트 트레이딩",
+            tier_label="스마트 자산 티어",
+            tier_top_wording="스크리닝 상위",
+            summary_label="자산 요약",
+            btc_crash_label="비트코인 급락 위험 감지",
+            max_cycle_markets=6,
+        )
+        engine = self._build_engine(profile)
+        engine.context.orchestrator.select_target_markets = MagicMock(return_value=list(many_markets))
+        prefix = engine.run_cycle_prefix()
+        self.assertEqual(len(prefix.target_markets), 8)
+
+    @patch("trading_runtime.get_fear_and_greed_index", return_value={"desc": "중립"})
+    @patch("trading_runtime.load_runtime_risk_settings")
+    def test_upbit_cycle_loads_4h_candles_in_prefetch(self, mock_risk_settings, _mock_fng):
+        """업비트 사이클에서도 4시간봉이 정상 사전조회되어 listing_maturity 판정이 가능함을 검증."""
+        mock_risk_settings.return_value = types.SimpleNamespace(
+            btc_crash_threshold_pct=-0.03,
+            max_daily_loss_pct=0.05,
+            trailing_start_pct=0.02,
+            trailing_stop_pct=0.01,
+        )
+        profile = ExchangeCycleProfile(
+            exchange_key="upbit",
+            reconcile_label="업비트 ",
+            decision_exchange="upbit",
+            log_prefix="업비트 ",
+            extra_excluded_markets=frozenset(),
+            create_screener=self.create_screener,
+            cycle_start_label="업비트 5분 AI 퀀트 트레이딩",
+            tier_label="업비트 스마트 자산 티어",
+            tier_top_wording="상위",
+            summary_label="업비트 자산 요약",
+            btc_crash_label="업비트 비트코인 급락 위험 감지",
+            markets_log_prefix="업비트 ",
+        )
+        engine = self._build_engine(profile)
+        prefix = engine.run_cycle_prefix()
+        # 캔들 캐시에 candles_4h가 누락 없이 채워져야 한다.
+        self.assertTrue(len(prefix.candle_prefetch_cache) > 0)
+        for market, payload in prefix.candle_prefetch_cache.items():
+            self.assertIn("candles_4h", payload)
+            self.assertNotEqual(payload.get("four_hour_history_status"), "DEFERRED")
 
 
 if __name__ == "__main__":

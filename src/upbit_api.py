@@ -90,8 +90,18 @@ class UpbitAPI:
         self._ticker_cache_ttl = 1.5
         # 긴 주기 캔들은 모든 인스턴스가 같은 공개 응답을 재사용한다.
         self._candle_cache = self._shared_candle_cache
-        self._candle_cache_ttl_long = 180.0
-        self._candle_cache_ttl_short = 5.0
+
+    @staticmethod
+    def _resolve_candle_cache_ttl(unit: int) -> float:
+        """봉 단위에 맞춘 캔들 캐시 TTL(초). 확정 봉은 select_completed_candles()로 별도 제외한다."""
+        if unit >= 240:
+            return float(os.getenv("UPBIT_CANDLE_CACHE_TTL_4H_SEC", "1200"))
+        if unit >= 60:
+            return float(os.getenv("UPBIT_CANDLE_CACHE_TTL_LONG_SEC", "600"))
+        short_override = os.getenv("UPBIT_CANDLE_CACHE_TTL_SHORT_SEC")
+        if short_override is not None and str(short_override).strip():
+            return float(short_override)
+        return max(30.0, float(unit) * 60.0 - 30.0)
 
     @classmethod
     def get_shared_runtime_metrics(cls) -> dict[str, float]:
@@ -520,7 +530,7 @@ class UpbitAPI:
         cache_owner = False
         wait_event: threading.Event | None = None
         if not to and not force_refresh:
-            ttl = self._candle_cache_ttl_long if unit >= 60 else self._candle_cache_ttl_short
+            ttl = self._resolve_candle_cache_ttl(unit)
             with self._shared_candle_cache_lock:
                 cached = self._candle_cache.get(cache_key)
                 if cached:

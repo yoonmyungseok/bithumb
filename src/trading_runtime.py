@@ -37,6 +37,7 @@ from strategy_engine import (
     select_completed_candles,
     should_force_swing_data_unavailable_exit,
 )
+from market_intelligence import MarketIntelligenceService
 from trading_orchestrator import TradingOrchestrator
 
 
@@ -67,6 +68,8 @@ class ExchangeCycleProfile:
     market_analysis_log_label: str = "AI 퀀트 분석 시작"
     skip_excluded_markets_in_loop: bool = False
     cycle_error_log_prefix: str = ""
+    # 업비트만 사용: 스크리너 관찰 폭과 무관하게 런타임 분석·prefetch 상한
+    max_cycle_markets: int | None = None
 
 
 @dataclass(frozen=True)
@@ -633,6 +636,24 @@ class TradingCycleEngine:
         ctx.orchestrator.record_latency("market_ai_ranking", sub_ai_ranking)
         ctx.orchestrator.record_latency("market_swing_scan", sub_swing_scan)
         ctx.orchestrator.record_latency("market_selection_overhead", sub_other)
+
+        max_cycle_markets = profile.max_cycle_markets
+        if profile.exchange_key == "upbit" and max_cycle_markets is not None and max_cycle_markets > 0:
+            original_count = len(target_markets)
+            capped_markets = ctx.orchestrator.cap_cycle_target_markets(
+                target_markets, held_markets, max_cycle_markets,
+            )
+            if len(capped_markets) < original_count:
+                excluded = [market for market in target_markets if market not in capped_markets]
+                logger.info(
+                    "📊 [업비트 사이클 분석 상한] %d개→%d개 축소 (상한=%d, 제외=%s)",
+                    original_count,
+                    len(capped_markets),
+                    max_cycle_markets,
+                    excluded,
+                )
+            target_markets = capped_markets
+
         logger.info(
             f"{profile.markets_log_prefix}이번 사이클 최종 분석 대상 마켓 "
             f"({len(target_markets)}개): {target_markets}"
@@ -657,7 +678,11 @@ class TradingCycleEngine:
         prefetch_workers = 3 if profile.exchange_key == "bithumb" else 5
         candle_prefetch_started_at = time.monotonic()
         candle_prefetch_cache = ctx.orchestrator.prefetch_cycle_candles(
-            exchange, target_markets, self.config.interval_minutes, max_workers=prefetch_workers,
+            exchange,
+            target_markets,
+            self.config.interval_minutes,
+            max_workers=prefetch_workers,
+            prefetch_4h=True,
         )
         timings["캔들사전조회"] = time.monotonic() - candle_prefetch_started_at
         btc_candles_5m = ctx.orchestrator.resolve_cycle_btc_candles_5m(
@@ -1238,7 +1263,7 @@ class TradingCycleEngine:
         candidate_relative_strength = float(candidate_metadata.get("relative_strength", 0.0) or 0.0)
 
         if listing_maturity == "INSUFFICIENT":
-            logger.warning("[%s] 캔들 데이터 부족으로 진입 생략", market)
+            logger.info("[%s] 캔들 데이터 부족으로 진입 생략", market)
             audit_decision(
                 market, "BLOCKED", "INSUFFICIENT_CANDLES",
                 ["신규상장·성숙 경로 모두 캔들 부족"],
@@ -2148,6 +2173,7 @@ class TradingCycleEngine:
         btc_candles_5m = list(getattr(prefix, "btc_candles_5m", None) or [])
         snapshot_cache_hits = 0
         snapshot_cache_misses = 0
+        priority_load_4h = True
         if ai_budget_remaining > 0 and len(target_markets) > 1:
             def _load_snapshot_for_priority(market: str):
                 prefetched = prefix.prefetched_market_inputs.get(market)
@@ -2157,6 +2183,7 @@ class TradingCycleEngine:
                     interval_minutes,
                     prefetched,
                     candle_cache=candle_prefetch_cache,
+                    load_4h=priority_load_4h,
                 )
 
             def _eval_ai_priority(market: str) -> tuple[int, int, int]:
@@ -2244,6 +2271,7 @@ class TradingCycleEngine:
                         prefix.prefetched_market_inputs.get(market),
                         candle_cache=candle_prefetch_cache,
                         priority_snapshot=market_snapshot,
+                        load_4h=True,
                     )
                     snapshot_cache[market] = market_snapshot
                 korean_name = market_snapshot.korean_name
@@ -2406,6 +2434,28 @@ class TradingCycleEngine:
 
     def warmup_macro_regime(self) -> None:
         """봇 기동 시 백그라운드로 거시 레짐 진단을 선제 웜업하여 첫 사이클 지연을 방지한다."""
+        scope = self.profile.exchange_key.lower()
+        try:
+            # 1. Groq 정기 시장 분석기 가동 (15분 주기) 및 즉시 웜업 요청
+            mi_service = MarketIntelligenceService.get_instance(exchange_scope=scope)
+            if mi_service.is_available():
+                def _fetch_data():
+                    ex = self.context.create_exchange_client()
+                    c1h = ex.get_candles(unit=60, count=50, market="KRW-BTC")
+                    c4h = ex.get_candles(unit=240, count=30, market="KRW-BTC") if hasattr(ex, "get_candles") else None
+                    fng_idx = get_fear_and_greed_index()
+                    return c1h, c4h, fng_idx
+
+                interval_sec = float(os.getenv("GROQ_MARKET_UPDATE_INTERVAL_SEC", "900.0"))
+                mi_service.start_periodic_updater(interval_sec=interval_sec, data_fetcher=_fetch_data)
+
+                # 첫 사이클 대비 선제 비동기 갱신 트리거
+                c1h, c4h, fng_idx = _fetch_data()
+                mi_service.update_intelligence(c1h, c4h, fng_idx, background=True)
+                self.context.logger.info(f"⚡ [{scope.upper()}] Groq 시장 분석 백그라운드 웜업 및 정기 스레드 가동")
+        except Exception as exc:
+            self.context.logger.debug("Groq 시장 분석 웜업 예외 (무시): %s", exc)
+
         analyzer = getattr(self.context, "analyzer", None)
         if analyzer is None or not hasattr(analyzer, "diagnose_macro_regime"):
             return
