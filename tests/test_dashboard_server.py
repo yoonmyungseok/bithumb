@@ -418,6 +418,71 @@ class UnifiedDashboardServerTests(unittest.TestCase):
                 self.assertEqual(len(res2["alerts"]), 1)
                 self.assertEqual(mock_read.call_count, 2, "2초 TTL 내에는 _read_recent_lines가 재호출되지 않아야 함")
 
+    def test_market_intelligence_ui_components_rendered(self):
+        """내장 HTML 템플릿에 거시 시장 인텔리전스 위젯 마크업 및 JS 로직이 포함되어 있는지 검증"""
+        html = self.server._render_unified_html()
+
+        # HTML 마크업 검증
+        self.assertIn('id="market_intelligence_card"', html)
+        self.assertIn('id="mi_regime_badge"', html)
+        self.assertIn('id="mi_risk_score"', html)
+        self.assertIn('id="mi_cash_ratio"', html)
+        self.assertIn('id="mi_summary"', html)
+        self.assertIn("거시 시장 인텔리전스 (Groq AI)", html)
+
+        # CSS 뱃지 클래스 검증
+        self.assertIn(".badge-danger", html)
+        self.assertIn(".badge-warning", html)
+        self.assertIn(".badge-secondary", html)
+        self.assertIn(".badge-success", html)
+        self.assertIn(".badge-info", html)
+
+        # JavaScript updateUI 함수 및 바인딩 검증
+        self.assertIn("function updateUI(data)", html)
+        self.assertIn("updateUI(latestData)", html)
+        self.assertIn("mi.risk_score", html)
+        self.assertIn("mi.recommended_cash_ratio", html)
+        self.assertIn("mi.market_summary", html)
+
+    def test_aggregated_status_includes_market_intelligence_at_root(self):
+        """get_aggregated_status 응답 최상위에 market_intelligence 데이터가 정확히 매핑되는지 검증"""
+        sample_mi = {
+            "regime": "BULL_TREND",
+            "risk_score": 25,
+            "recommended_cash_ratio": 0.15,
+            "market_summary": "비트코인 4H 강한 상승 추세 지속",
+            "action_guideline": "적극 매수 기조 유지",
+        }
+
+        def mock_fetch(url, exchange_name):
+            return {
+                "online": True,
+                "exchange": exchange_name,
+                "total_equity": 1_000_000.0,
+                "krw_available": 500_000.0,
+                "daily_start_equity": 1_000_000.0,
+                "positions": [],
+                "candidates": [],
+                "recent_trades": [],
+                "recent_orders": [],
+                "market_intelligence": sample_mi if exchange_name == "bithumb" else {},
+            }
+
+        self.server.fetch_exchange_status = MagicMock(side_effect=mock_fetch)
+        status = self.server.get_aggregated_status()
+
+        # 최상위 키 확인
+        self.assertIn("market_intelligence", status)
+        self.assertIn("market_intelligence_bithumb", status)
+        self.assertIn("market_intelligence_upbit", status)
+
+        # 데이터 값 검증
+        self.assertEqual(status["market_intelligence"]["regime"], "BULL_TREND")
+        self.assertEqual(status["market_intelligence"]["risk_score"], 25)
+        self.assertEqual(status["market_intelligence"]["recommended_cash_ratio"], 0.15)
+        self.assertEqual(status["market_intelligence_bithumb"]["regime"], "BULL_TREND")
+        self.assertEqual(status["market_intelligence_upbit"], {})
+
 
 if __name__ == "__main__":
     unittest.main()

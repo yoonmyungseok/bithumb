@@ -81,6 +81,21 @@
       </div>
     </header>
 
+    <!-- Macro Market Intelligence Card (Groq AI) -->
+    <div class="card-glass" id="market_intelligence_card" style="margin-bottom: 15px;">
+      <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+        <span>🌐 거시 시장 인텔리전스 (Groq AI)</span>
+        <span id="mi_regime_badge" class="badge">NORMAL</span>
+      </div>
+      <div class="card-body" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
+        <div><strong>위험도 점수:</strong> <span id="mi_risk_score">-</span> / 100</div>
+        <div><strong>권장 현금 비중:</strong> <span id="mi_cash_ratio">-%</span></div>
+        <div style="flex:1; min-width:250px;">
+          <strong>시장 요약:</strong> <span id="mi_summary" style="color:#aaa;">데이터 수신 대기 중</span>
+        </div>
+      </div>
+    </div>
+
     <!-- 4 Major Asset & Risk KPI Cards -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
       <!-- Card 1: Total Equity -->

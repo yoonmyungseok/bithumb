@@ -1177,6 +1177,38 @@
     return `<div class="font-mono text-slate-200">${quantity}</div><div class="text-[11px] text-slate-400">${remainingText}</div><div class="text-[10px] mt-1 ${lifecycle.tone === 'rose' ? 'text-rose-300' : (lifecycle.tone === 'amber' ? 'text-amber-300' : 'text-slate-400')}">${lifecycle.label}</div>`;
   }
 
+  // Render Macro Market Intelligence (Groq AI)
+  function renderMarketIntelligence(data, d) {
+    const mi = (d && d.market_intelligence && Object.keys(d.market_intelligence).length > 0)
+      ? d.market_intelligence
+      : ((data && data.market_intelligence) || (data && data.combined && data.combined.market_intelligence) || {});
+
+    const badgeEl = document.getElementById('mi_regime_badge');
+    const scoreEl = document.getElementById('mi_risk_score');
+    const cashEl = document.getElementById('mi_cash_ratio');
+    const summaryEl = document.getElementById('mi_summary');
+
+    if (badgeEl && mi && mi.regime) {
+      badgeEl.textContent = mi.regime;
+      // 레짐별 뱃지 색상 클래스 적용
+      badgeEl.className = 'badge ' + (
+        mi.regime === 'CRASH' ? 'badge-danger' :
+        mi.regime === 'BEAR_REGIME' ? 'badge-warning' :
+        mi.regime === 'CAUTION_PULLBACK' ? 'badge-secondary' :
+        mi.regime === 'BULL_TREND' ? 'badge-success' : 'badge-info'
+      );
+      if (scoreEl) scoreEl.textContent = mi.risk_score != null ? mi.risk_score : '-';
+      if (cashEl) cashEl.textContent = mi.recommended_cash_ratio != null ? (mi.recommended_cash_ratio * 100).toFixed(0) + '%' : '-%';
+      if (summaryEl) summaryEl.textContent = mi.market_summary || '특이사항 없음';
+    } else if (badgeEl) {
+      badgeEl.textContent = '대기 중';
+      badgeEl.className = 'badge badge-secondary';
+      if (scoreEl) scoreEl.textContent = '-';
+      if (cashEl) cashEl.textContent = '-%';
+      if (summaryEl) summaryEl.textContent = '데이터 수신 대기 중';
+    }
+  }
+
   // Render Core Dashboard Data
   function renderDashboard(data) {
     if (!data) return;
@@ -1192,6 +1224,9 @@
         d = data.combined;
       }
     }
+
+    // 0. Macro Market Intelligence Card (Groq AI)
+    renderMarketIntelligence(data, d);
 
     // Header Title
     const titleEl = document.getElementById('bot-header-title');

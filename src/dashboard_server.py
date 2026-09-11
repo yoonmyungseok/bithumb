@@ -699,6 +699,9 @@ class UnifiedDashboardServer:
             "combined": combined,
             "bithumb": bithumb_data,
             "upbit": upbit_data,
+            "market_intelligence": combined.get("market_intelligence", {}),
+            "market_intelligence_bithumb": combined.get("market_intelligence_bithumb", {}),
+            "market_intelligence_upbit": combined.get("market_intelligence_upbit", {}),
             "timestamp": time.time(),
         }
 
@@ -963,7 +966,14 @@ class UnifiedDashboardServer:
     <style>
         body { background-color: #0b0e14; color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
         .card { background-color: #151923; border: 1px solid #232a3b; border-radius: 12px; }
+        .card-header { padding: 12px 16px; border-bottom: 1px solid #232a3b; font-weight: 600; font-size: 0.875rem; }
+        .card-body { padding: 16px; font-size: 0.875rem; color: #cbd5e1; }
         .badge { padding: 3px 8px; border-radius: 6px; font-weight: bold; font-size: 0.75rem; white-space: nowrap; display: inline-block; }
+        .badge-danger { background-color: rgba(225, 29, 72, 0.2); color: #f43f5e; border: 1px solid rgba(225, 29, 72, 0.4); }
+        .badge-warning { background-color: rgba(234, 179, 8, 0.2); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.4); }
+        .badge-secondary { background-color: rgba(100, 116, 139, 0.2); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.4); }
+        .badge-success { background-color: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4); }
+        .badge-info { background-color: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
         .tab-btn.active { background-color: #2563eb; color: #ffffff; border-color: #3b82f6; }
     </style>
 </head>
@@ -1013,6 +1023,21 @@ class UnifiedDashboardServer:
                 </svg>
                 <span>업비트 (Upbit)</span>
             </button>
+        </div>
+
+        <!-- Macro Market Intelligence Card (Groq AI) -->
+        <div class="card" id="market_intelligence_card" style="margin-bottom: 15px;">
+          <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <span>🌐 거시 시장 인텔리전스 (Groq AI)</span>
+            <span id="mi_regime_badge" class="badge">NORMAL</span>
+          </div>
+          <div class="card-body" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
+            <div><strong>위험도 점수:</strong> <span id="mi_risk_score">-</span> / 100</div>
+            <div><strong>권장 현금 비중:</strong> <span id="mi_cash_ratio">-%</span></div>
+            <div style="flex:1; min-width:250px;">
+              <strong>시장 요약:</strong> <span id="mi_summary" style="color:#aaa;">데이터 수신 대기 중</span>
+            </div>
+          </div>
         </div>
 
         <!-- Major Metric Cards -->
@@ -1167,8 +1192,38 @@ class UnifiedDashboardServer:
             return `${sign}${num.toFixed(2)}%`;
         }
 
+        function updateUI(data) {
+            if (!data) return;
+            const mi = data.market_intelligence || (currentView === 'bithumb' ? (data.bithumb && data.bithumb.market_intelligence) : (currentView === 'upbit' ? (data.upbit && data.upbit.market_intelligence) : (data.combined && data.combined.market_intelligence))) || {};
+            const badgeEl = document.getElementById('mi_regime_badge');
+            const scoreEl = document.getElementById('mi_risk_score');
+            const cashEl = document.getElementById('mi_cash_ratio');
+            const summaryEl = document.getElementById('mi_summary');
+
+            if (badgeEl && mi.regime) {
+                badgeEl.textContent = mi.regime;
+                // 레짐별 뱃지 색상 클래스 적용
+                badgeEl.className = 'badge ' + (
+                    mi.regime === 'CRASH' ? 'badge-danger' :
+                    mi.regime === 'BEAR_REGIME' ? 'badge-warning' :
+                    mi.regime === 'CAUTION_PULLBACK' ? 'badge-secondary' :
+                    mi.regime === 'BULL_TREND' ? 'badge-success' : 'badge-info'
+                );
+                if (scoreEl) scoreEl.textContent = mi.risk_score != null ? mi.risk_score : '-';
+                if (cashEl) cashEl.textContent = mi.recommended_cash_ratio != null ? (mi.recommended_cash_ratio * 100).toFixed(0) + '%' : '-%';
+                if (summaryEl) summaryEl.textContent = mi.market_summary || '특이사항 없음';
+            } else if (badgeEl) {
+                badgeEl.textContent = '대기 중';
+                badgeEl.className = 'badge badge-secondary';
+                if (scoreEl) scoreEl.textContent = '-';
+                if (cashEl) cashEl.textContent = '-%';
+                if (summaryEl) summaryEl.textContent = '데이터 수신 대기 중';
+            }
+        }
+
         function render() {
             if (!latestData) return;
+            updateUI(latestData);
 
             const combined = latestData.combined || {};
             const bithumb = latestData.bithumb || {};
