@@ -112,6 +112,42 @@ class UpbitGeminiFailClosedTests(unittest.TestCase):
         self.assertTrue(safety["entry_blocked"])
         self.assertEqual(safety["http_status"], 429)
 
+    @patch("ai_provider.requests.get")
+    def test_upbit_macro_models_for_prefers_flash_and_includes_3_6(self, mock_get):
+        """업비트 거시 레짐 모델은 일반 Flash(3.8, 3.7, 3.6 등) 순차 폴백 후 Flash-Lite 목록을 반환해야 한다."""
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.7-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.5-flash-lite", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-2.5-pro", "supportedGenerationMethods": ["generateContent"]},
+        ]}
+        mock_get.return_value = response
+        provider = GeminiProvider("upbit-test-key")
+        macro_models = provider.models_for("macro")
+
+        self.assertEqual(macro_models, ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"])
+        self.assertNotIn("gemini-2.5-pro", macro_models)
+
+    @patch("ai_provider.requests.get")
+    def test_upbit_briefing_models_for_prefers_flash_and_falls_back_to_lite(self, mock_get):
+        """업비트 브리핑 모델은 일반 Flash 최우선 후 Flash-Lite 순차 폴백 목록을 반환해야 한다."""
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.7-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.6-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.5-flash-lite", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-2.5-pro", "supportedGenerationMethods": ["generateContent"]},
+        ]}
+        mock_get.return_value = response
+        provider = GeminiProvider("upbit-test-key")
+        briefing_models = provider.models_for("briefing")
+
+        self.assertEqual(briefing_models, ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"])
+        self.assertNotIn("gemini-2.5-pro", briefing_models)
+
 
 if __name__ == "__main__":
     unittest.main()

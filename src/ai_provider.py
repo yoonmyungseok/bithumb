@@ -572,10 +572,30 @@ class GeminiProvider:
         "gemini-3.1-flash-lite",
     ]
     TRADING_MODEL = TRADING_MODELS[0]
+    MACRO_FALLBACK_MODELS = [
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+    ]
+    BRIEFING_FALLBACK_MODELS = [
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+    ]
 
     def __init__(self, api_key: str):
         self.api_key = (api_key or "").strip()
         self._models: list[str] | None = None
+        self._macro_models: list[str] | None = None
+        self._briefing_models: list[str] | None = None
 
     @property
     def is_configured(self) -> bool:
@@ -651,8 +671,66 @@ class GeminiProvider:
         )
         return []
 
+    def _discover_macro_models(self) -> list[str]:
+        """업비트 전용 키로 거시 진단용 Flash 모델을 탐색하고, 우선순위대로 반환한다."""
+        if not self.is_configured:
+            return []
+        try:
+            response = requests.get(
+                f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}", timeout=10.0,
+            )
+            if response.status_code != 200:
+                return [self.TRADING_MODEL]
+            payload = response.json()
+            available = [
+                str(item.get("name", "")).replace("models/", "").strip()
+                for item in payload.get("models", []) if isinstance(item, dict)
+                and "generateContent" in item.get("supportedGenerationMethods", [])
+                and "pro" not in str(item.get("name", "")).lower()
+            ]
+            candidates = [m for m in self.MACRO_FALLBACK_MODELS if m in available]
+            if candidates:
+                return candidates
+            return [self.TRADING_MODEL]
+        except Exception:
+            return [self.TRADING_MODEL]
+
+    def _discover_briefing_models(self) -> list[str]:
+        """업비트 전용 키로 브리핑용 Flash 모델을 탐색하고, 우선순위대로 반환한다."""
+        if not self.is_configured:
+            return []
+        try:
+            response = requests.get(
+                f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}", timeout=10.0,
+            )
+            if response.status_code != 200:
+                return list(self.BRIEFING_FALLBACK_MODELS)
+            payload = response.json()
+            available = [
+                str(item.get("name", "")).replace("models/", "").strip()
+                for item in payload.get("models", []) if isinstance(item, dict)
+                and "generateContent" in item.get("supportedGenerationMethods", [])
+                and "pro" not in str(item.get("name", "")).lower()
+            ]
+            candidates = [m for m in self.BRIEFING_FALLBACK_MODELS if m in available]
+            if candidates:
+                return candidates
+            return list(self.BRIEFING_FALLBACK_MODELS)
+        except Exception:
+            return list(self.BRIEFING_FALLBACK_MODELS)
+
     def models_for(self, purpose: str) -> list[str]:
-        """신규 BUY 진입은 Flash-Lite 계열(3.5 우선 후 3.1 순차 폴백)만 허용하고, 거시/브리핑은 동적 라우터에 위임한다."""
+        """목적별 허용 모델을 반환하며, 신규 BUY(trading)는 Flash-Lite 계열 순차 폴백 목록을 반환한다."""
+        if purpose == "macro":
+            if self._macro_models is None:
+                self._macro_models = self._discover_macro_models()
+            return list(self._macro_models) if self._macro_models else [self.TRADING_MODEL]
+
+        if purpose == "briefing":
+            if self._briefing_models is None:
+                self._briefing_models = self._discover_briefing_models()
+            return list(self._briefing_models) if self._briefing_models else list(self.BRIEFING_FALLBACK_MODELS)
+
         if purpose == "trading":
             if self._models is None:
                 self._models = self._discover_models()

@@ -178,9 +178,18 @@ class StrategyPolicy:
     PARTIAL_TP_2_PCT: float = 0.070      # 2차 +7.0% 도달 시 분할 익절
     PARTIAL_TP_2_RATIO: float = 0.25     # 2차 익절 비중 (원금의 25% = 잔여 50% 중 50%)
     BREAKEVEN_STOP_PCT: float = 0.003    # 1차 익절 완료 후 본전 보장 스탑 (+0.3% 수수료 보장)
+    BREAKEVEN_MIN_PROFIT_PCT: float = 0.020 # 본전/상향 스탑(TIGHTEN_STOP) 발동에 필요한 최소 수익률 (+2.0%)
     TRAILING_START_PCT: float = 0.030    # +3.0% 트레일링 스탑 활성화
     TRAILING_DROP_PCT: float = 0.020     # 최고점 대비 2.0% 하락 시 시장가 청산 (알트 숨고르기 허용)
-    MIN_PROFIT_BUFFER_PCT: float = 0.005 # +0.5% 최소 보장 마진
+    TRAILING_ATR_MULTIPLIER: float = 1.5 # 트레일링 스탑 노이즈 방어용 ATR 승수 (1.5배)
+    MIN_TRAILING_GAP_PCT: float = 0.015  # 트레일링/상향 손절가 최소 여유 마진 (+1.5%)
+    MIN_PROFIT_BUFFER_PCT: float = 0.015 # 최소 보장 마진 (+1.5%로 상향하여 조기 털림 방지)
+
+    # 2-1. 알트코인 포지션 사이징 균등화 정책 (몰빵 및 극소액 정찰병 방지)
+    DEFAULT_ALT_ALLOC_PCT: float = 0.08  # 알트코인 기본 목표 배분 비중 8% (120만원 기준 약 9.6만원)
+    MAX_ALT_ALLOC_PCT: float = 0.10      # 알트코인 단일 종목 최대 비중 상한 10% (120만원 기준 12만원 한도)
+    MIN_ALT_ALLOC_PCT: float = 0.05      # 알트코인 단일 종목 최소 비중 하한 5% (120만원 기준 6만원 미만 극소액 방지)
+    NIGHT_SESSION_MAX_ALLOC_PCT: float = 0.05 # 심야 세션(00:00~06:00) 최대 비중 5% 하드 캡 (약 6만원)
 
     # 3. 시간 기반 청산 (타임스탑) & 15분 모멘텀 조기 탈출 & 쿨다운
     MOMENTUM_EARLY_EXIT_SECONDS: int = 2700 # 45분 모멘텀 소멸 조기 본전 탈출 (2700초로 유예 확대)

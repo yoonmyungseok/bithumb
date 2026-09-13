@@ -963,20 +963,53 @@ class TradingCycleEngine:
                             f"{guard_reason} (행동 조정: {ai_action} ➜ {fallback_action})"
                         )
                         ai_action = fallback_action
-                        if fallback_action == "TIGHTEN_STOP":
-                            def_sl = avg_buy_price * 0.998  # 평단가 -0.2% 방어 손절선
+
+                # TIGHTEN_STOP 발동 시 최소 수익률 버퍼 (+2.0%) 및 호가 여유 간격(Gap) 검증
+                if ai_action == "TIGHTEN_STOP":
+                    pnl_rate = (current_price - avg_buy_price) / avg_buy_price if avg_buy_price > 0 else 0.0
+                    min_req_rate = getattr(StrategyPolicy, "BREAKEVEN_MIN_PROFIT_PCT", 0.020)
+                    min_gap_pct = getattr(StrategyPolicy, "MIN_TRAILING_GAP_PCT", 0.015)
+
+                    if pnl_rate < min_req_rate:
+                        logger.info(
+                            f"🛡️ [{korean_name} / {market} TIGHTEN_STOP 안전 가드] "
+                            f"현재 수익률 {pnl_rate * 100:+.2f}% < 최소 요구치 +{min_req_rate * 100:.1f}% 미달 ➜ "
+                            f"조급한 휩쏘 털림 방지를 위해 손절선 상향을 취소하고 HOLD 유지"
+                        )
+                        ai_action = "HOLD"
+                    else:
+                        # 상향 손절선이 현재가에 너무 바짝 붙어 조기 털리지 않도록 여유 간격(최소 1.5%) 확보
+                        max_allowed_sl = current_price * (1.0 - min_gap_pct)
+                        min_guaranteed_sl = avg_buy_price * (1.0 + getattr(StrategyPolicy, "BREAKEVEN_STOP_PCT", 0.003))
+
+                        if max_allowed_sl <= min_guaranteed_sl:
+                            logger.info(
+                                f"🛡️ [{korean_name} / {market} TIGHTEN_STOP 여유 간격 부족] "
+                                f"현재가 여유 상한({max_allowed_sl:,.2f}원) <= 본전 보장선({min_guaranteed_sl:,.2f}원) ➜ "
+                                f"호가 노이즈 청산 방지를 위해 손절선 상향 보류(HOLD 유지)"
+                            )
+                            ai_action = "HOLD"
+                        else:
+                            raw_sl = float(ai_eval.get("adjusted_stop_loss") or 0.0)
+                            safe_sl = min(max(raw_sl, min_guaranteed_sl), max_allowed_sl)
                             ctx.trailing_tracker.update_dynamic_exit(
                                 market,
                                 target_price=ai_eval.get("adjusted_target_price"),
-                                stop_loss=max(def_sl, float(ai_eval.get("adjusted_stop_loss") or 0.0)),
+                                stop_loss=safe_sl,
                                 runner_mode=False,
                             )
-                if ai_action in ("RUNNER_HOLD", "TIGHTEN_STOP"):
+                            logger.info(
+                                f"🎯 [{korean_name} / {market} 손절선 상향 적용] "
+                                f"평단가 {avg_buy_price:,.2f}원 ➜ 상향 손절가 {safe_sl:,.2f}원 "
+                                f"(현재가 {current_price:,.2f}원 대비 -{((current_price - safe_sl) / current_price) * 100:.1f}% 여유 확보)"
+                            )
+
+                if ai_action == "RUNNER_HOLD":
                     ctx.trailing_tracker.update_dynamic_exit(
                         market,
                         target_price=ai_eval.get("adjusted_target_price"),
                         stop_loss=ai_eval.get("adjusted_stop_loss"),
-                        runner_mode=(ai_action == "RUNNER_HOLD"),
+                        runner_mode=True,
                     )
             except Exception as e:
                 logger.debug(f"[{market}] AI 포지션 평가 예외 무시 (로컬 룰 유지): {e}")
@@ -1994,6 +2027,30 @@ class TradingCycleEngine:
                 strategy_mode=strategy_mode,
             )
             trade_budget = min(krw_available, max_slot_budget, calculated_size)
+
+        # 알트코인 포지션 사이징 균등화 (5% ~ 10% 균등 분할 & 심야 5% 캡)
+        # 특정 종목 20~25% 몰빵 및 1만원 미만 푼돈 진입 쏠림을 원천 차단
+        is_major = is_major_market(market)
+        is_swing = (strategy_mode == "SWING")
+        if not is_major and not is_swing and current_total_equity > 0:
+            min_alt_budget = current_total_equity * getattr(StrategyPolicy, "MIN_ALT_ALLOC_PCT", 0.05)
+            max_alt_alloc = (
+                getattr(StrategyPolicy, "NIGHT_SESSION_MAX_ALLOC_PCT", 0.05)
+                if is_night_session()
+                else getattr(StrategyPolicy, "MAX_ALT_ALLOC_PCT", 0.10)
+            )
+            max_alt_budget = current_total_equity * max_alt_alloc
+
+            # 클램핑 적용 (가용 원화 한도 내에서 안전하게 제한)
+            clamped_budget = min(krw_available, max(min_alt_budget, min(trade_budget, max_alt_budget)))
+            if abs(clamped_budget - trade_budget) > 100.0:
+                logger.info(
+                    f"⚖️ [{korean_name} / {market} 알트 비중 균등화 조정] "
+                    f"기존 {int(trade_budget):,d}원 ➜ 균등화 조정 {int(clamped_budget):,d}원 "
+                    f"(시드 {int(current_total_equity):,d}원 대비 {((clamped_budget / current_total_equity) * 100):.1f}% | "
+                    f"허용범위: {getattr(StrategyPolicy, 'MIN_ALT_ALLOC_PCT', 0.05)*100:.0f}%~{max_alt_alloc*100:.0f}%)"
+                )
+                trade_budget = clamped_budget
 
         if trade_budget < safe_order_krw and krw_available >= safe_order_krw:
             trade_budget = min(krw_available, max(max_slot_budget, safe_order_krw))

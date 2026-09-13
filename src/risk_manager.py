@@ -610,7 +610,7 @@ class TrailingStopTracker:
 
                 trailing_stop_price = current_peak * (1.0 - active_drop_pct)
 
-                # 수수료 및 슬리피지 차감 후 최소 안전 마진 확보 (스윙 +1.5%, 메이저 +0.3%, 알트 +0.5%)
+                # 수수료 및 슬리피지 차감 후 최소 안전 마진 확보 (스윙 +1.5%, 메이저 +0.3%, 알트 +1.5%)
                 if is_swing:
                     min_buffer = 1.0 + StrategyPolicy.SWING_BREAKEVEN_STOP_PCT
                 elif is_new_listing:
@@ -618,9 +618,15 @@ class TrailingStopTracker:
                 elif is_major:
                     min_buffer = 1.003
                 else:
-                    min_buffer = 1.005
+                    min_buffer = 1.0 + getattr(StrategyPolicy, "MIN_PROFIT_BUFFER_PCT", 0.015)
                 min_guaranteed_profit = avg_buy_price * min_buffer
                 trailing_stop_price = max(trailing_stop_price, min_guaranteed_profit)
+
+                # 트레일링 손절선이 고점 대비 너무 바짝 붙어 조기 털리지 않도록 최소 여유 간격(Gap, 최소 1.5%) 확보
+                min_gap_pct = getattr(StrategyPolicy, "MIN_TRAILING_GAP_PCT", 0.015)
+                max_allowed_trailing = current_peak * (1.0 - min_gap_pct)
+                if max_allowed_trailing > min_guaranteed_profit:
+                    trailing_stop_price = min(trailing_stop_price, max_allowed_trailing)
 
                 now_ts = time.time()
                 is_new_peak = current_peak > (self._last_logged_peak.get(market, 0.0) + 1e-6)
