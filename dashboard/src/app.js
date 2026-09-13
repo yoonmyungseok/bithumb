@@ -1971,6 +1971,44 @@
     }
   }
 
+  function saveSlotsToLocalStorage() {
+    const scalp = document.getElementById('cfg_MAX_SCALP_POSITIONS')?.value;
+    const swing = document.getElementById('cfg_MAX_SWING_POSITIONS')?.value;
+    const nl = document.getElementById('cfg_MAX_NEW_LISTING_POSITIONS')?.value;
+    if (scalp === undefined || swing === undefined || nl === undefined) return;
+    try {
+      localStorage.setItem('bithumb_cfg_slots', JSON.stringify({
+        MAX_SCALP_POSITIONS: parseInt(scalp, 10) || 0,
+        MAX_SWING_POSITIONS: parseInt(swing, 10) || 0,
+        MAX_NEW_LISTING_POSITIONS: parseInt(nl, 10) || 0,
+      }));
+    } catch (_) {}
+  }
+
+  function updateSlotsBreakdownDisplay() {
+    const scalpInput = document.getElementById('cfg_MAX_SCALP_POSITIONS');
+    const swingInput = document.getElementById('cfg_MAX_SWING_POSITIONS');
+    const newListingInput = document.getElementById('cfg_MAX_NEW_LISTING_POSITIONS');
+    const openPosInput = document.getElementById('cfg_MAX_OPEN_POSITIONS');
+    const posPctInput = document.getElementById('cfg_MAX_POSITION_PCT');
+    const badge = document.getElementById('cfg_SLOTS_BREAKDOWN_BADGE');
+
+    const scalp = scalpInput ? (parseInt(scalpInput.value, 10) || 0) : 3;
+    const swing = swingInput ? (parseInt(swingInput.value, 10) || 0) : 1;
+    const newListing = newListingInput ? (parseInt(newListingInput.value, 10) || 0) : 1;
+    const total = Math.max(1, scalp + swing + newListing);
+
+    if (openPosInput) openPosInput.value = total;
+    if (badge) badge.innerText = `단타 ${scalp} + 스윙 ${swing} + 신규 ${newListing}`;
+
+    // 슬롯 수에 연동된 단일 포지션 최대 비중 자동 계산: min(50%, max(15%, round(100 / total + 5)))
+    if (posPctInput) {
+      const autoPct = Math.min(50, Math.max(15, Math.round((1.0 / total + 0.05) * 100)));
+      posPctInput.value = autoPct;
+    }
+    saveSlotsToLocalStorage();
+  }
+
   function populateConfigForm(settings) {
     for (const [key, item] of Object.entries(settings)) {
       const el = document.getElementById(`cfg_${key}`);
@@ -1983,12 +2021,65 @@
         el.value = item.value;
       }
     }
+
+    // 슬롯 3종에 대한 지능형 복원 및 localStorage 2중 방어 처리
+    let savedSlots = null;
+    try {
+      savedSlots = JSON.parse(localStorage.getItem('bithumb_cfg_slots') || '{}');
+    } catch (_) {}
+
+    const swingInput = document.getElementById('cfg_MAX_SWING_POSITIONS');
+    if (swingInput) {
+      if (settings.MAX_SWING_POSITIONS && settings.MAX_SWING_POSITIONS.value !== undefined) {
+        swingInput.value = settings.MAX_SWING_POSITIONS.value;
+      } else if (savedSlots && savedSlots.MAX_SWING_POSITIONS !== undefined) {
+        swingInput.value = savedSlots.MAX_SWING_POSITIONS;
+      } else if (!swingInput.value) {
+        swingInput.value = 1;
+      }
+    }
+
+    const newListingInput = document.getElementById('cfg_MAX_NEW_LISTING_POSITIONS');
+    if (newListingInput) {
+      if (settings.MAX_NEW_LISTING_POSITIONS && settings.MAX_NEW_LISTING_POSITIONS.value !== undefined) {
+        newListingInput.value = settings.MAX_NEW_LISTING_POSITIONS.value;
+      } else if (savedSlots && savedSlots.MAX_NEW_LISTING_POSITIONS !== undefined) {
+        newListingInput.value = savedSlots.MAX_NEW_LISTING_POSITIONS;
+      } else if (!newListingInput.value) {
+        newListingInput.value = 1;
+      }
+    }
+
+    const scalpInput = document.getElementById('cfg_MAX_SCALP_POSITIONS');
+    if (scalpInput) {
+      if (settings.MAX_SCALP_POSITIONS && settings.MAX_SCALP_POSITIONS.value !== undefined) {
+        scalpInput.value = settings.MAX_SCALP_POSITIONS.value;
+      } else if (savedSlots && savedSlots.MAX_SCALP_POSITIONS !== undefined) {
+        scalpInput.value = savedSlots.MAX_SCALP_POSITIONS;
+      } else {
+        const openVal = settings.MAX_OPEN_POSITIONS ? parseInt(settings.MAX_OPEN_POSITIONS.value, 10) : 5;
+        const curSwing = swingInput ? (parseInt(swingInput.value, 10) || 1) : 1;
+        const curNL = newListingInput ? (parseInt(newListingInput.value, 10) || 1) : 1;
+        scalpInput.value = Math.max(0, openVal - (curSwing + curNL));
+      }
+    }
+
     updateMinTradeValueDisplay();
+    updateSlotsBreakdownDisplay();
+
     const tradeValInput = document.getElementById('cfg_MIN_TRADE_VALUE');
     if (tradeValInput && !tradeValInput._hasListener) {
       tradeValInput.addEventListener('input', updateMinTradeValueDisplay);
       tradeValInput._hasListener = true;
     }
+
+    ['cfg_MAX_SCALP_POSITIONS', 'cfg_MAX_SWING_POSITIONS', 'cfg_MAX_NEW_LISTING_POSITIONS'].forEach(id => {
+      const input = document.getElementById(id);
+      if (input && !input._hasSlotListener) {
+        input.addEventListener('input', updateSlotsBreakdownDisplay);
+        input._hasSlotListener = true;
+      }
+    });
   }
 
   // ESC 키로 설정 모달 닫기 지원
@@ -2009,6 +2100,8 @@
         el.value = item.default;
       }
     }
+    updateMinTradeValueDisplay();
+    updateSlotsBreakdownDisplay();
     showConfigBanner('기본값으로 복원되었습니다. 적용하려면 [저장 및 즉시 적용]을 누르세요.', 'info');
   };
 
@@ -2047,6 +2140,14 @@
       }
     }
 
+    // 슬롯 3종이 cachedConfig에 없더라도 DOM에 있으면 반드시 payload에 포함
+    ['MAX_SCALP_POSITIONS', 'MAX_SWING_POSITIONS', 'MAX_NEW_LISTING_POSITIONS'].forEach(slotKey => {
+      const el = document.getElementById(`cfg_${slotKey}`);
+      if (el && el.value !== '' && payload[slotKey] === undefined) {
+        payload[slotKey] = parseInt(el.value, 10);
+      }
+    });
+
     if (saveBtn) {
       saveBtn.disabled = true;
       saveBtn.innerHTML = '<span>⏳</span><span>저장 중...</span>';
@@ -2079,6 +2180,7 @@
       }
 
       showConfigBanner('✅ 공통 설정이 .env에 저장되고 실행 중인 봇에 무중단(Hot-Reload) 반영되었습니다!', 'success');
+      saveSlotsToLocalStorage();
       setTimeout(() => {
         window.closeConfigModal();
         fetchStatus();

@@ -629,6 +629,15 @@ class BotController:
             if "MAX_ORDER_KRW" in settings and hasattr(self.risk_guard, "max_order_krw"):
                 settings["MAX_ORDER_KRW"]["value"] = self.risk_guard.max_order_krw
                 settings["MAX_ORDER_KRW"]["display_value"] = self.risk_guard.max_order_krw
+            if "MAX_SCALP_POSITIONS" in settings and hasattr(self.risk_guard, "max_scalp_positions"):
+                settings["MAX_SCALP_POSITIONS"]["value"] = self.risk_guard.max_scalp_positions
+                settings["MAX_SCALP_POSITIONS"]["display_value"] = self.risk_guard.max_scalp_positions
+            if "MAX_SWING_POSITIONS" in settings and hasattr(self.risk_guard, "max_swing_positions"):
+                settings["MAX_SWING_POSITIONS"]["value"] = self.risk_guard.max_swing_positions
+                settings["MAX_SWING_POSITIONS"]["display_value"] = self.risk_guard.max_swing_positions
+            if "MAX_NEW_LISTING_POSITIONS" in settings and hasattr(self.risk_guard, "max_new_listing_positions"):
+                settings["MAX_NEW_LISTING_POSITIONS"]["value"] = self.risk_guard.max_new_listing_positions
+                settings["MAX_NEW_LISTING_POSITIONS"]["display_value"] = self.risk_guard.max_new_listing_positions
 
         return {
             "success": True,
@@ -653,6 +662,27 @@ class BotController:
         if errors:
             return {"success": False, "exchange": self.exchange_name, "errors": errors, "applied": {}}
 
+        # 3대 슬롯 입력 시 MAX_OPEN_POSITIONS 자동 합산 동기화
+        if (
+            "MAX_SCALP_POSITIONS" in normalized_updates
+            or "MAX_SWING_POSITIONS" in normalized_updates
+            or "MAX_NEW_LISTING_POSITIONS" in normalized_updates
+        ):
+            scalp = normalized_updates.get(
+                "MAX_SCALP_POSITIONS",
+                getattr(self.risk_guard, "max_scalp_positions", 1) if self.risk_guard else 1,
+            )
+            swing = normalized_updates.get(
+                "MAX_SWING_POSITIONS",
+                getattr(self.risk_guard, "max_swing_positions", 1) if self.risk_guard else 1,
+            )
+            new_listing = normalized_updates.get(
+                "MAX_NEW_LISTING_POSITIONS",
+                getattr(self.risk_guard, "max_new_listing_positions", 1) if self.risk_guard else 1,
+            )
+            auto_total = max(1, int(scalp) + int(swing) + int(new_listing))
+            normalized_updates["MAX_OPEN_POSITIONS"] = auto_total
+
         # 2. os.environ 동기화
         for key, val in normalized_updates.items():
             if isinstance(val, bool):
@@ -675,12 +705,18 @@ class BotController:
             guard_updates = {}
             if "MAX_OPEN_POSITIONS" in normalized_updates:
                 guard_updates["max_open_positions"] = normalized_updates["MAX_OPEN_POSITIONS"]
+            if "MAX_SCALP_POSITIONS" in normalized_updates:
+                guard_updates["max_scalp_positions"] = normalized_updates["MAX_SCALP_POSITIONS"]
             if "MAX_POSITION_PCT" in normalized_updates:
                 guard_updates["max_position_pct"] = normalized_updates["MAX_POSITION_PCT"]
             if "MAX_TOTAL_EXPOSURE_PCT" in normalized_updates:
                 guard_updates["max_total_exposure_pct"] = normalized_updates["MAX_TOTAL_EXPOSURE_PCT"]
             if "MAX_ORDER_KRW" in normalized_updates:
                 guard_updates["max_order_krw"] = normalized_updates["MAX_ORDER_KRW"]
+            if "MAX_SWING_POSITIONS" in normalized_updates:
+                guard_updates["max_swing_positions"] = normalized_updates["MAX_SWING_POSITIONS"]
+            if "MAX_NEW_LISTING_POSITIONS" in normalized_updates:
+                guard_updates["max_new_listing_positions"] = normalized_updates["MAX_NEW_LISTING_POSITIONS"]
             if guard_updates:
                 self.risk_guard.update_limits(**guard_updates)
 

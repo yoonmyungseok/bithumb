@@ -33,7 +33,8 @@ class TestCommonConfigManager(unittest.TestCase):
             "TRAILING_START_PCT", "TRAILING_STOP_PCT", "MAX_DAILY_LOSS_PCT", "BTC_CRASH_THRESHOLD_PCT",
             "ORDERBOOK_SLIPPAGE_ENFORCEMENT", "TOP_COUNT", "MIN_TRADE_VALUE", "MIN_CHANGE_RATE",
             "MAX_CHANGE_RATE", "MOMENTUM_BREAKOUT_ENABLED", "NEW_LISTING_ENABLED", "NEW_LISTING_ENFORCEMENT",
-            "MAX_OPEN_POSITIONS", "MAX_POSITION_PCT", "MAX_TOTAL_EXPOSURE_PCT", "MAX_ORDER_KRW"
+            "MAX_OPEN_POSITIONS", "MAX_POSITION_PCT", "MAX_TOTAL_EXPOSURE_PCT", "MAX_ORDER_KRW",
+            "MAX_SWING_POSITIONS", "MAX_NEW_LISTING_POSITIONS", "MAX_SCALP_POSITIONS"
         ]
         settings = self.manager.get_all_settings()
         for k in expected_keys:
@@ -111,6 +112,36 @@ class TestCommonConfigManager(unittest.TestCase):
         self.assertIn("TOP_COUNT=5", content)
         self.assertIn("ORDERBOOK_SLIPPAGE_ENFORCEMENT=true", content)
 
+    def test_auto_sum_slots_into_max_open_positions(self):
+        """단타, 스윙, 신규상장 슬롯 변경 시 MAX_OPEN_POSITIONS 자동 합산 및 MAX_POSITION_PCT 자동 계산 검증"""
+        updates = {
+            "MAX_SCALP_POSITIONS": 4,
+            "MAX_SWING_POSITIONS": 2,
+            "MAX_NEW_LISTING_POSITIONS": 1,
+        }
+        ok, normalized, errors = self.manager.update_settings(updates)
+        self.assertTrue(ok)
+        self.assertEqual(len(errors), 0)
+        self.assertEqual(normalized["MAX_OPEN_POSITIONS"], 7)  # 4 + 2 + 1 = 7
+        self.assertEqual(os.environ.get("MAX_OPEN_POSITIONS"), "7")
+        # 7개 슬롯: min(0.50, max(0.15, round(1/7 + 0.05, 2))) = round(0.1428 + 0.05, 2) = 0.19
+        self.assertAlmostEqual(normalized["MAX_POSITION_PCT"], 0.19)
+        self.assertEqual(os.environ.get("MAX_POSITION_PCT"), "0.19")
+
+    def test_auto_max_position_pct_for_5_slots(self):
+        """단타 3 + 스윙 1 + 신규상장 1 (총 5개) 입력 시 MAX_POSITION_PCT 25% 자동 산출 검증"""
+        updates = {
+            "MAX_SCALP_POSITIONS": 3,
+            "MAX_SWING_POSITIONS": 1,
+            "MAX_NEW_LISTING_POSITIONS": 1,
+        }
+        ok, normalized, errors = self.manager.update_settings(updates)
+        self.assertTrue(ok)
+        self.assertEqual(normalized["MAX_OPEN_POSITIONS"], 5)
+        # 5개 슬롯: min(0.50, max(0.15, round(1/5 + 0.05, 2))) = 0.20 + 0.05 = 0.25 (25%)
+        self.assertAlmostEqual(normalized["MAX_POSITION_PCT"], 0.25)
+        self.assertEqual(os.environ.get("MAX_POSITION_PCT"), "0.25")
+
 
 class TestBotControllerRuntimeConfig(unittest.TestCase):
     def setUp(self):
@@ -122,6 +153,8 @@ class TestBotControllerRuntimeConfig(unittest.TestCase):
             max_position_pct=0.35,
             max_total_exposure_pct=0.90,
             max_order_krw=20000000,
+            max_swing_positions=1,
+            max_new_listing_positions=1,
         )
         self.controller = BotController(
             exchange_factory=MagicMock(),
@@ -144,13 +177,18 @@ class TestBotControllerRuntimeConfig(unittest.TestCase):
         self.assertAlmostEqual(settings["TRAILING_START_PCT"]["value"], 0.02)
         self.assertAlmostEqual(settings["TRAILING_START_PCT"]["display_value"], 2.0)
         self.assertEqual(settings["MAX_OPEN_POSITIONS"]["value"], 3)
+        self.assertEqual(settings["MAX_SWING_POSITIONS"]["value"], 1)
+        self.assertEqual(settings["MAX_NEW_LISTING_POSITIONS"]["value"], 1)
+        self.assertEqual(settings["MAX_SCALP_POSITIONS"]["value"], 1)
 
     def test_update_runtime_config_mutates_live_objects_immediately(self):
         updates = {
             "TRAILING_START_PCT": 2.5,
             "TRAILING_STOP_PCT": 1.5,
             "MAX_DAILY_LOSS_PCT": 6.0,
-            "MAX_OPEN_POSITIONS": 4,
+            "MAX_SCALP_POSITIONS": 3,
+            "MAX_SWING_POSITIONS": 1,
+            "MAX_NEW_LISTING_POSITIONS": 1,
             "MAX_POSITION_PCT": 40.0,
             "MAX_ORDER_KRW": 30_000_000,
         }
@@ -160,7 +198,11 @@ class TestBotControllerRuntimeConfig(unittest.TestCase):
         self.assertAlmostEqual(self.trailing_tracker.start_profit_pct, 0.025)
         self.assertAlmostEqual(self.trailing_tracker.trailing_drop_pct, 0.015)
         self.assertAlmostEqual(self.risk_manager.max_loss_pct, 0.06)
-        self.assertEqual(self.risk_guard.max_open_positions, 4)
+        # 단타 3 + 스윙 1 + 신규 1 = 총 포지션 5 자동 갱신 검증
+        self.assertEqual(self.risk_guard.max_open_positions, 5)
+        self.assertEqual(self.risk_guard.max_scalp_positions, 3)
+        self.assertEqual(self.risk_guard.max_swing_positions, 1)
+        self.assertEqual(self.risk_guard.max_new_listing_positions, 1)
         self.assertAlmostEqual(self.risk_guard.max_position_pct, 0.40)
         self.assertEqual(self.risk_guard.max_order_krw, 30_000_000)
 

@@ -50,6 +50,11 @@ class RiskGuard:
         self.max_swing_positions = max_swing_positions
         self.max_new_listing_positions = max_new_listing_positions
 
+    @property
+    def max_scalp_positions(self) -> int:
+        reserved = self.max_swing_positions + self.max_new_listing_positions
+        return max(0, self.max_open_positions - reserved)
+
     def update_limits(
         self,
         max_open_positions: int | None = None,
@@ -58,17 +63,20 @@ class RiskGuard:
         max_swing_positions: int | None = None,
         max_new_listing_positions: int | None = None,
         max_order_krw: float | None = None,
+        max_scalp_positions: int | None = None,
     ) -> None:
-        if max_open_positions is not None:
+        if max_swing_positions is not None:
+            self.max_swing_positions = max_swing_positions
+        if max_new_listing_positions is not None:
+            self.max_new_listing_positions = max_new_listing_positions
+        if max_scalp_positions is not None:
+            self.max_open_positions = max_scalp_positions + self.max_swing_positions + self.max_new_listing_positions
+        elif max_open_positions is not None:
             self.max_open_positions = max_open_positions
         if max_position_pct is not None:
             self.max_position_pct = max_position_pct
         if max_total_exposure_pct is not None:
             self.max_total_exposure_pct = max_total_exposure_pct
-        if max_swing_positions is not None:
-            self.max_swing_positions = max_swing_positions
-        if max_new_listing_positions is not None:
-            self.max_new_listing_positions = max_new_listing_positions
         if max_order_krw is not None:
             self.max_order_krw = max_order_krw
 

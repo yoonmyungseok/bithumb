@@ -200,15 +200,26 @@ COMMON_CONFIG_SCHEMA: dict[str, ConfigFieldDef] = {
     ),
 
     # 3. 포트폴리오 한도
+    "MAX_SCALP_POSITIONS": ConfigFieldDef(
+        key="MAX_SCALP_POSITIONS",
+        type_name="int",
+        default=1,
+        min_val=0,
+        max_val=10,
+        category="portfolio",
+        label="단타 예약 슬롯 수",
+        description="일반 5분봉 단타/스캘핑 전략에 배정할 최대 보유 종목 수입니다.",
+        unit="개",
+    ),
     "MAX_OPEN_POSITIONS": ConfigFieldDef(
         key="MAX_OPEN_POSITIONS",
         type_name="int",
         default=3,
         min_val=1,
-        max_val=10,
+        max_val=20,
         category="portfolio",
-        label="최대 보유 포지션 수",
-        description="동시에 보유할 수 있는 최대 코인 종목 수입니다.",
+        label="총 동시 보유 포지션 수 (자동 합산)",
+        description="단타 + 스윙 + 신규상장 슬롯의 합산으로 자동 결정되는 전체 최대 보유 종목 수입니다.",
         unit="개",
     ),
     "MAX_POSITION_PCT": ConfigFieldDef(
@@ -218,8 +229,8 @@ COMMON_CONFIG_SCHEMA: dict[str, ConfigFieldDef] = {
         min_val=0.05,
         max_val=1.00,
         category="portfolio",
-        label="단일 포지션 최대 비중",
-        description="단일 종목이 전체 운용 평가금액에서 차지할 수 있는 최대 비율입니다.",
+        label="단일 포지션 최대 비중 (자동 계산)",
+        description="총 동시 보유 슬롯 수에 맞춰 안전하게 자동 결정되는 종목당 최대 투자 비율입니다.",
         unit="%",
     ),
     "MAX_TOTAL_EXPOSURE_PCT": ConfigFieldDef(
@@ -243,6 +254,28 @@ COMMON_CONFIG_SCHEMA: dict[str, ConfigFieldDef] = {
         label="단일 주문 최대 금액",
         description="1회 매수 주문에 투입할 수 있는 절대 최대 금액 한도입니다.",
         unit="원",
+    ),
+    "MAX_SWING_POSITIONS": ConfigFieldDef(
+        key="MAX_SWING_POSITIONS",
+        type_name="int",
+        default=1,
+        min_val=0,
+        max_val=5,
+        category="portfolio",
+        label="스윙 예약 슬롯 수",
+        description="스윙 추세추종 전략에 배정할 최대 보유 종목 수입니다. (0이면 스윙 비활성화)",
+        unit="개",
+    ),
+    "MAX_NEW_LISTING_POSITIONS": ConfigFieldDef(
+        key="MAX_NEW_LISTING_POSITIONS",
+        type_name="int",
+        default=1,
+        min_val=0,
+        max_val=5,
+        category="portfolio",
+        label="신규상장 예약 슬롯 수",
+        description="상장 72시간 이내 단타 전략에 배정할 최대 보유 종목 수입니다. (0이면 비활성화)",
+        unit="개",
     ),
 }
 
@@ -353,6 +386,35 @@ class CommonConfigManager:
         if errors:
             return False, {}, errors
 
+        # 3대 슬롯(단타, 스윙, 신규상장) 입력 시 MAX_OPEN_POSITIONS 자동 합산 및 MAX_POSITION_PCT 자동 계산 동기화
+        if (
+            "MAX_SCALP_POSITIONS" in normalized_updates
+            or "MAX_SWING_POSITIONS" in normalized_updates
+            or "MAX_NEW_LISTING_POSITIONS" in normalized_updates
+        ):
+            scalp = normalized_updates.get(
+                "MAX_SCALP_POSITIONS",
+                self._parse_env_value(COMMON_CONFIG_SCHEMA["MAX_SCALP_POSITIONS"], os.getenv("MAX_SCALP_POSITIONS")),
+            )
+            swing = normalized_updates.get(
+                "MAX_SWING_POSITIONS",
+                self._parse_env_value(COMMON_CONFIG_SCHEMA["MAX_SWING_POSITIONS"], os.getenv("MAX_SWING_POSITIONS")),
+            )
+            new_listing = normalized_updates.get(
+                "MAX_NEW_LISTING_POSITIONS",
+                self._parse_env_value(COMMON_CONFIG_SCHEMA["MAX_NEW_LISTING_POSITIONS"], os.getenv("MAX_NEW_LISTING_POSITIONS")),
+            )
+            auto_total = max(1, int(scalp) + int(swing) + int(new_listing))
+            normalized_updates["MAX_OPEN_POSITIONS"] = auto_total
+
+            # 총 슬롯 수 기반 단일 포지션 최대 비중 자동 산출: min(0.50, max(0.15, round(1.0 / auto_total + 0.05, 2)))
+            auto_max_pct = round(min(0.50, max(0.15, 1.0 / auto_total + 0.05)), 2)
+            normalized_updates["MAX_POSITION_PCT"] = auto_max_pct
+        elif "MAX_OPEN_POSITIONS" in normalized_updates:
+            auto_total = max(1, int(normalized_updates["MAX_OPEN_POSITIONS"]))
+            auto_max_pct = round(min(0.50, max(0.15, 1.0 / auto_total + 0.05)), 2)
+            normalized_updates["MAX_POSITION_PCT"] = auto_max_pct
+
         if not normalized_updates:
             return True, {}, []
 
@@ -383,6 +445,14 @@ class CommonConfigManager:
     def _parse_env_value(self, field_def: ConfigFieldDef, raw_val: str | None) -> Any:
         """환경 변수 원본 문자열을 타입에 맞게 안전 변환"""
         if raw_val is None or not str(raw_val).strip():
+            if field_def.key == "MAX_SCALP_POSITIONS":
+                try:
+                    open_pos = int(float(os.getenv("MAX_OPEN_POSITIONS", "3")))
+                    swing_pos = int(float(os.getenv("MAX_SWING_POSITIONS", "1")))
+                    new_pos = int(float(os.getenv("MAX_NEW_LISTING_POSITIONS", "1")))
+                    return max(0, open_pos - (swing_pos + new_pos))
+                except Exception:
+                    return field_def.default
             return field_def.default
 
         try:
