@@ -50,10 +50,13 @@ if sys.stderr is not None:
 logging.basicConfig(level=logging.INFO, handlers=handlers)
 logger = logging.getLogger("UpbitWatchdog")
 
+COMMON_ENV_FILE = os.path.join(PROJECT_ROOT, ".env")
 UPBIT_ENV_FILE = os.path.join(PROJECT_ROOT, ".env.upbit")
+if os.path.exists(COMMON_ENV_FILE):
+    load_dotenv(COMMON_ENV_FILE, override=True)
 if os.path.exists(UPBIT_ENV_FILE):
     load_dotenv(UPBIT_ENV_FILE, override=True)
-else:
+elif not os.path.exists(COMMON_ENV_FILE):
     load_dotenv(override=True)
 
 TELEGRAM_BOT_TOKEN = os.getenv("UPBIT_TELEGRAM_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN", "").strip()

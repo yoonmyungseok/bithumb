@@ -45,7 +45,14 @@ if sys.stderr is not None:
 logging.basicConfig(level=logging.INFO, handlers=handlers)
 logger = logging.getLogger("Watchdog")
 
-load_dotenv(override=True)
+COMMON_ENV_FILE = os.path.join(PROJECT_ROOT, ".env")
+BITHUMB_ENV_FILE = os.path.join(PROJECT_ROOT, ".env.bithumb")
+if os.path.exists(COMMON_ENV_FILE):
+    load_dotenv(COMMON_ENV_FILE, override=True)
+if os.path.exists(BITHUMB_ENV_FILE):
+    load_dotenv(BITHUMB_ENV_FILE, override=True)
+elif not os.path.exists(COMMON_ENV_FILE):
+    load_dotenv(override=True)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 

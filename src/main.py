@@ -99,8 +99,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 2. .env 환경 변수 로드
-load_dotenv(override=True)
+# 2. 환경 변수 계층 로드 (공통 .env -> 빗썸 .env.bithumb)
+COMMON_ENV_FILE = os.path.join(PROJECT_ROOT, ".env")
+BITHUMB_ENV_FILE = os.path.join(PROJECT_ROOT, ".env.bithumb")
+if os.path.exists(COMMON_ENV_FILE):
+    load_dotenv(COMMON_ENV_FILE, override=True)
+if os.path.exists(BITHUMB_ENV_FILE):
+    load_dotenv(BITHUMB_ENV_FILE, override=True)
+elif not os.path.exists(COMMON_ENV_FILE):
+    load_dotenv(override=True)
 
 BITHUMB_ACCESS_KEY = os.getenv("BITHUMB_ACCESS_KEY", "")
 BITHUMB_SECRET_KEY = os.getenv("BITHUMB_SECRET_KEY", "")
@@ -399,11 +406,12 @@ cycle_engine = TradingCycleEngine(
         exit_profile=BITHUMB_EXIT_PROFILE,
         entry_profile=BITHUMB_ENTRY_PROFILE,
         buy_profile=BITHUMB_BUY_PROFILE,
-        env_file=None,
+        env_file=BITHUMB_ENV_FILE,
         interval_minutes=INTERVAL_MINUTES,
         gemini_api_key="",
         is_bot_paused=get_is_bot_paused,
         min_order_krw=MIN_ORDER_KRW,
+        common_env_file=COMMON_ENV_FILE,
         orderbook_slippage_enforcement=ORDERBOOK_SLIPPAGE_ENFORCEMENT,
         analyzer_factory=build_bithumb_analyzer,
         new_buy_block_reason=get_bithumb_ai_entry_block_reason,

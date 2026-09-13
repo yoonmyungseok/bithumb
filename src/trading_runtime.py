@@ -141,6 +141,7 @@ class TradingRuntimeConfig:
     gemini_api_key: str
     is_bot_paused: Callable[[], bool]
     min_order_krw: float
+    common_env_file: str | None = None
     orderbook_slippage_enforcement: bool = False
     # 빗썸만 AI 구성/분석 실패 시 전체 신규 BUY를 닫는 별도 안전 훅을 주입한다.
     analyzer_factory: Callable[[], GeminiAnalyzer | None] | None = None
@@ -450,10 +451,14 @@ class TradingCycleEngine:
         )
 
     def _load_cycle_environment(self) -> None:
+        """공통 .env 로드 후 거래소 전용 env_file로 오버라이드하여 계층적으로 환경을 갱신한다."""
+        common_env = self.config.common_env_file
+        if common_env and os.path.exists(common_env):
+            load_dotenv(common_env, override=True)
         env_file = self.config.env_file
         if env_file and os.path.exists(env_file):
             load_dotenv(env_file, override=True)
-        else:
+        elif not (common_env and os.path.exists(common_env)):
             load_dotenv(override=True)
 
     def run_cycle_prefix(self, timings: dict[str, float] | None = None) -> CyclePrefixResult:

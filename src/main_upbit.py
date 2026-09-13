@@ -85,7 +85,7 @@ file_handler = TimedRotatingFileHandler(
     LOG_FILE, when="midnight", interval=1, backupCount=30, encoding="utf-8"
 )
 file_handler.suffix = "%Y-%m-%d"
-formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] [%(filename)s:%(lineno)d] %(message)s")
+formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 file_handler.setFormatter(formatter)
 
 handlers = [file_handler]
@@ -99,11 +99,14 @@ if sys.stderr is not None:
 logging.basicConfig(level=logging.INFO, handlers=handlers)
 logger = logging.getLogger(__name__)
 
-# 2. 업비트 환경변수 우선 로드 (.env.upbit -> .env)
+# 2. 환경 변수 계층 로드 (공통 .env -> 업비트 .env.upbit)
+COMMON_ENV_FILE = os.path.join(PROJECT_ROOT, ".env")
 UPBIT_ENV_FILE = os.path.join(PROJECT_ROOT, ".env.upbit")
+if os.path.exists(COMMON_ENV_FILE):
+    load_dotenv(COMMON_ENV_FILE, override=True)
 if os.path.exists(UPBIT_ENV_FILE):
     load_dotenv(UPBIT_ENV_FILE, override=True)
-else:
+elif not os.path.exists(COMMON_ENV_FILE):
     load_dotenv(override=True)
 
 UPBIT_ACCESS_KEY = os.getenv("UPBIT_ACCESS_KEY", "").strip()
@@ -463,6 +466,7 @@ cycle_engine = TradingCycleEngine(
         entry_profile=UPBIT_ENTRY_PROFILE,
         buy_profile=UPBIT_BUY_PROFILE,
         env_file=UPBIT_ENV_FILE,
+        common_env_file=COMMON_ENV_FILE,
         interval_minutes=INTERVAL_MINUTES,
         gemini_api_key=GEMINI_API_KEY,
         is_bot_paused=get_is_bot_paused,

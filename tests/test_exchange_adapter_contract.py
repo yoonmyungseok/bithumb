@@ -138,6 +138,28 @@ class ExchangeAdapterContractTests(unittest.TestCase):
         self.assertEqual(snapshot.current_price, 100.0)
         self.assertNotIn("prefetched", snapshot.orderbook)
 
+    def test_get_current_price_forwards_force_refresh_and_supports_fallback(self):
+        # 1) force_refresh 지원 클라이언트: 플래그가 정상 전달되는지 검증
+        class ClientWithForceRefresh:
+            def __init__(self):
+                self.received_force_refresh = None
+            def get_current_price(self, market="KRW-BTC", force_refresh=False):
+                self.received_force_refresh = force_refresh
+                return 54321.0
+
+        client_rf = ClientWithForceRefresh()
+        adapter_rf = BithumbAdapter(client_rf)
+        price_rf = adapter_rf.get_current_price("KRW-BTC", force_refresh=True)
+        self.assertEqual(price_rf, 54321.0)
+        self.assertTrue(client_rf.received_force_refresh)
+
+        # 2) force_refresh 미지원 클라이언트: TypeError 없이 fallback 되는지 검증
+        client_legacy = FakeExchangeClient()
+        adapter_legacy = UpbitAdapter(client_legacy)
+        price_legacy = adapter_legacy.get_current_price("KRW-BTC", force_refresh=True)
+        self.assertEqual(price_legacy, 100.0)
+
 
 if __name__ == "__main__":
     unittest.main()
+

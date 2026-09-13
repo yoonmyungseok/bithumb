@@ -201,7 +201,54 @@ class TestGeminiEntryPromptContract(unittest.TestCase):
         self.assertIn("스크리너 단계 신규상장 사전 필터", sent_prompt)
         self.assertIn("is_new_listing_eligible()", sent_prompt)
 
+    @patch("requests.post")
+    def test_entry_prompt_relaxed_criteria_contract(self, mock_post):
+        """실전형 수급 완화(체결강도 75%, 호가갭 0.50%, 1H 조정 유연화, 손익비 1:1.3) 계약 검증"""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": (
+                '{"STATUS":"ACTIVE","ACTION":"HOLD","ENTRY_PRICE":1000,'
+                '"TARGET_PRICE":1030,"STOP_LOSS":980,"ALLOC_PCT":0,'
+                '"ALPHA_SCORE":0,"REASON":"판정불가"}'
+            )}]}}]
+        }
+        mock_post.return_value = mock_response
+
+        analyzer = GeminiAnalyzer(api_key="test-key")
+        candles = [
+            {
+                "trade_price": 1000.0,
+                "opening_price": 995.0,
+                "high_price": 1010.0,
+                "low_price": 990.0,
+                "candle_acc_trade_volume": 100.0,
+                "candle_date_time_utc": "2026-09-06T00:00:00",
+            }
+            for _ in range(30)
+        ]
+
+        analyzer.analyze(
+            market="KRW-TEST",
+            current_price=1000.0,
+            candles=candles,
+            krw_balance=1_000_000.0,
+            coin_balance=0.0,
+            avg_buy_price=0.0,
+            candidate_type="SCALP",
+            entry_policy_mode="STANDARD",
+            btc_regime="NORMAL",
+        )
+
+        sent_prompt = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
+        self.assertIn("호가 갭 <= 0.50%", sent_prompt)
+        self.assertIn("체결강도 75% 이상", sent_prompt)
+        self.assertIn("1시간봉이 약세/조정이더라도 5분봉 지지선 안착 및 기술적 반등 시그널이 확보될 것", sent_prompt)
+        self.assertIn("음의 모멘텀이 둔화되어 반등 전환 조짐일 것", sent_prompt)
+        self.assertIn("1.3 * (진입가 - 손절가)", sent_prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

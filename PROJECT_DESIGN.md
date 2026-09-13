@@ -1,4 +1,4 @@
-# Bithumb & Upbit AI Pro Quant Trading Bot (v8.73)
+# Bithumb & Upbit AI Pro Quant Trading Bot (v8.75)
 
 본 문서는 `c:\AI\bithumb` 디렉토리에 위치한 빗썸(Bithumb) 및 업비트(Upbit) 듀얼 거래소 지원 AI 퀀트 트레이딩 봇의 프로젝트 설명 및 아키텍처 설계서입니다. 이 문서는 다른 AI 에이전트 또는 개발자가 프로젝트의 전반적인 구조와 핵심 로직을 빠르고 명확하게 파악할 수 있도록 작성되었습니다.
 
@@ -20,6 +20,13 @@
   - 거래소 전용 Groq API 거시 인텔리전스 (15분 주기 거시 레짐 진단 및 권장 현금 비중 도출: 빗썸 `BITHUMB_GROQ_API_KEY`, 업비트 `UPBIT_GROQ_API_KEY` 전용 키 격리, 공용 키 배제)
 - **주요 전략 및 아키텍처**: 
   - **다중 시간대(MTF) 분석**: 1시간봉 대세 추세 + 5분봉 정밀 타점 정렬
+  - **주문 실행 직전 최신가 검증 인터페이스 결함 해소 (v8.75)**: `order_safety.executor`가 신규 매수 주문 직전 슬리피지 방지를 위해 호출하는 `exchange.get_current_price(market, force_refresh=True)`의 호출 계약을 `ExchangeClient` 프로토콜 및 `ExchangeAdapter`에 `force_refresh: bool = False` 매개변수로 명시하고 내부 클라이언트로 전달하도록 수정. 레거시/Mock 클라이언트에 대한 `TypeError` fallback을 적용하여 하위 호환성을 100% 보장하고 신규 BUY 실행 시의 부당 차단을 원천 해소.
+  - **AI 프롬프트 실전형 수급·추세 승인 기준 완화 (v8.74)**:
+    1. **실시간 체결강도 허용 기준 완화 (90% ➜ 75%)**: 약세 및 횡보장에서 실시간 체결강도가 80% 안팎인 유망 수급 종목의 매수 승인을 허용하여 불필요한 관망(`HOLD`) 방지.
+    2. **호가 갭(스프레드) 상한 현실화 (0.35% ➜ 0.50%)**: 원화 마켓 중소형 알트코인의 평균 호가 간격을 반영하여 0.4~0.5% 호가 갭 종목의 진입 기회 확보.
+    3. **1시간봉(MTF 1H) 추세 제약 유연화**: 1시간봉이 거시 조정/약세 구간이더라도 5분봉 기준 바닥 지지선 안착 및 반등 시그널이 확보되면 단타/반등 BUY를 적극 검토.
+    4. **MACD 가속도 및 손익비 기준 완화**: MACD 가속 확장은 물론 음의 모멘텀 둔화(반등 전환 조짐)도 충족으로 인정하며, 최소 손익비를 1:1.3 이상으로 현실화.
+    5. **증거 우선 의사결정 절차의 과도한 결벽증 완화**: 손익비와 과열 방지 등 핵심 안전 조건을 충족하고 종합 알파 점수가 기준선 이상이면 사소한 보조 팩터의 일시적 약세가 있어도 BUY 승인을 허용하도록 유연화.
   - **단기 반등 및 모멘텀 알트코인 적극 매수 & AI 단독 진입 활성화 (v8.73)**:
     1. **AI 단독 자율 승인 (`ENABLE_AI_DIRECT_ENTRY: True`)**: 로컬 퀀트 규칙이 관망(`allow_buy=False`)이더라도 사전 품질 기준(5분봉 음봉 폭락 아님, 1시간봉 지지, 복합 알파 50점 이상)을 통과한 유망 후보에 대해 Gemini AI의 독자적 BUY 승인을 허용하며, 리스크 방어를 위해 진입 비중은 기본 최대 비중의 50%(`AI_DIRECT_ENTRY_ALLOC_RATIO = 0.50`)로 안전 제한한다.
     2. **저점 반등 허용 거리 및 윗꼬리 필터 현실화**: `PULLBACK_MAX_DISTANCE_RISK_OFF`를 4.5%에서 6.5%로 상향하여 저점 반등 탄력이 붙은 유망 알트코인의 진입 기회를 확대하고, `MAX_UPPER_SHADOW_RATIO`를 50%에서 60%로 완화하여 급등 캔들의 일시적 윗꼬리로 인한 차단을 방지한다.
@@ -56,7 +63,7 @@
   - **대세 상승장(BULL_TREND) 파라미터 정상화**: 과다 손절 방어(손절 -2.0%), 선제적 조기 익절(+3.0%), 알파 65점 엄선, 타임스탑 120분 적용
   - **자산 연동형 3단계 스마트 Auto-Scaling**: 계좌 총 자산 규모에 따른 보유 슬롯(2~4개) 및 비중(25~50%) 자동 전환
   - **장중 자금 입출금 자동 보정 (Cashflow Adjustment)**: 입출금 시 시작 기준자산을 자동 보정하여 순수 매매 수익률 보존
-  - **완전한 거래소 물리적/논리적 격리**: 빗썸과 업비트의 환경변수, 데이터 디렉터리(`data/upbit/*`), 로그(`logs/trading_upbit.log`), 대시보드 포트(`7979` vs `7980`), 구글 시트, 실행 스크립트 분리. `BithumbAPI`(`exchange_name = "bithumb"`)와 `UpbitAPI`(`exchange_name = "upbit"`)의 명시적 식별자를 통해 오케스트레이터 및 런타임에서 타 거래소 캐시(`data/bithumb/market_intelligence.json` vs `data/upbit/market_intelligence.json`) 오염을 원천 차단
+  - **완전한 거래소 물리적/논리적 격리 및 3단계 환경변수 계층화**: 공통 설정(`.env`), 빗썸 전용(`.env.bithumb`), 업비트 전용(`.env.upbit`)의 3단계 계층 상속(`공통 .env` ➜ `거래소 전용 .env.* override`)을 적용하고, 데이터 디렉터리(`data/upbit/*`), 로그(`logs/trading_upbit.log`), 대시보드 포트(`7979` vs `7980`), 구글 시트, 실행 스크립트를 분리한다. `BithumbAPI`(`exchange_name = "bithumb"`)와 `UpbitAPI`(`exchange_name = "upbit"`)의 명시적 식별자를 통해 오케스트레이터 및 런타임에서 타 거래소 캐시(`data/bithumb/market_intelligence.json` vs `data/upbit/market_intelligence.json`) 오염을 원천 차단한다. 거래소 전용 파일이 없을 때는 공통 `.env`만으로 Fallback되어 하위 호환성을 100% 보장한다.
   - **7중 KRW-HOLO 수동 종목 절대 보호망**: 업비트 `KRW-HOLO`는 스크리닝, 주문, 긴급매도, 자산평가, 실시간 청산, 시트, 대시보드에서 100% 영구 제외
   - **대시보드 비정상 운영 로그 역방향 청크 스캔 (v8.40)**: 트레이딩 봇의 정상 사이클(`INFO`) 로그가 대량 누적되어도 이전 WARNING/ERROR/CRITICAL이 누락되지 않도록 파일 끝에서 역방향으로 256KB 단위 청크 스캔(최대 10MB, 소스당 최소 20건 목표)을 수행하여 최신 비정상 운영 로그를 확실히 수집 및 최신순 노출한다.
 
@@ -105,9 +112,12 @@
 
 ```text
 c:\AI\bithumb\
-├── .env / .env.bithumb   # 빗썸 환경변수 파일 (API 키, 텔레그램 토큰, 설정값 등)
-├── .env.upbit.template   # 업비트 환경변수 템플릿 파일
-├── .env.upbit            # 업비트 환경변수 파일
+├── .env                  # 공통 베이스 환경변수 (통합 대시보드, 내부 API URL, 원격 동기화 등)
+├── .env.sample           # 공통 베이스 환경변수 템플릿
+├── .env.bithumb          # 빗썸 전용 환경변수 (API 키, Gemini/Groq 키, 전략/리스크 파라미터)
+├── .env.bithumb.sample   # 빗썸 전용 환경변수 템플릿
+├── .env.upbit            # 업비트 전용 환경변수 (API 키, Gemini/Groq 키, 전략/리스크 파라미터)
+├── .env.upbit.sample     # 업비트 전용 환경변수 템플릿
 ├── requirements.txt      # Python 의존성 패키지 목록
 ├── PROJECT_DESIGN.md     # 프로젝트 아키텍처 및 시스템 설계서 (상시 최신 동기화)
 ├── logs/                 # 일자별 트레이딩 및 시스템 로그 보관 (30일 보존)
