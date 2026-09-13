@@ -125,6 +125,9 @@ class RealtimeRiskEngine:
         if journal_scope:
             return str(journal_scope).lower()
         client = getattr(exchange, "client", exchange)
+        ex_name = getattr(client, "exchange_name", None) or getattr(exchange, "exchange_name", None)
+        if ex_name:
+            return str(ex_name).lower()
         if hasattr(client, "get_candlestick"):
             return "bithumb"
         return "upbit"

@@ -111,8 +111,18 @@ class BithumbPrivateWebSocketClient:
         self._reconnect_delay = 2
         def run() -> None:
             while self.is_running:
-                self.ws = websocket.WebSocketApp(self.URL, header=self._headers(), on_open=self._on_open, on_message=self._on_message, on_error=lambda _ws, err: logger.warning("Private WebSocket 오류: %s", err))
-                self.ws.run_forever(ping_interval=30, ping_timeout=None)
+                try:
+                    self.ws = websocket.WebSocketApp(
+                        self.URL,
+                        header=self._headers(),
+                        on_open=self._on_open,
+                        on_message=self._on_message,
+                        on_error=lambda _ws, err: logger.warning("빗썸 Private WebSocket 오류: %s", err),
+                    )
+                    self.ws.run_forever(ping_interval=30, ping_timeout=20)
+                except Exception as e:
+                    logger.warning("빗썸 Private WebSocket 예외: %s", e)
+
                 if self.is_running:
                     time.sleep(self._reconnect_delay)
                     self._reconnect_delay = min(self._reconnect_delay * 2, 30)

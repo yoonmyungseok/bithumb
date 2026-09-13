@@ -669,7 +669,7 @@ class TradingCycleEngine:
         # 전략용 일괄 응답은 1초 이내에만 재사용하며, 이후 마켓은 기존 단건 조회로 폴백한다.
         ticker_seed = (
             ctx.orchestrator._last_screener_ticker_seed
-            if profile.exchange_key == "upbit" and is_auto_mode
+            if is_auto_mode
             else None
         )
         input_prefetch_started_at = time.monotonic()
@@ -2227,9 +2227,10 @@ class TradingCycleEngine:
         is_entry_ready = ctx.order_journal.is_entry_ready()
         slow_markets = slow_markets if slow_markets is not None else []
 
-        # 업비트 쿼터 가드와 빗썸 Gemini 전용 계측을 섞지 않는다.
+        # 거래소별 격리된 텔레메트리로부터 일일 쿼터 가드 상태를 도출한다.
         if getattr(profile, "exchange_key", "") == "bithumb":
-            quota_budget = {"is_critical": False, "is_tight": False}
+            from ai_provider import AIProviderTelemetry
+            quota_budget = AIProviderTelemetry.get_daily_quota_budget("bithumb")
         else:
             from gemini_telemetry import GeminiTelemetry
             quota_budget = GeminiTelemetry.get_daily_quota_budget()
@@ -2557,25 +2558,34 @@ class TradingCycleEngine:
         except Exception as exc:
             self.context.logger.debug("거시 레짐 선제 웜업 예외 (무시): %s", exc)
 
-    def _capture_upbit_rest_metrics(self) -> dict[str, float]:
-        """업비트 사이클 전후의 공용 REST 계측값을 비교하기 위한 안전한 스냅샷을 반환한다."""
-        if self.profile.exchange_key != "upbit":
-            return {}
-        try:
-            # 지연 계측은 업비트 전용 공개 요청 상태만 읽으며 주문·잔고 상태에는 접근하지 않는다.
-            from upbit_api import UpbitAPI
-
-            return UpbitAPI.get_shared_runtime_metrics()
-        except Exception as exc:
-            self.context.logger.debug("업비트 REST 계측 스냅샷 실패 (무시): %s", exc)
-            return {}
+    def _capture_rest_metrics(self) -> dict[str, float]:
+        """사이클 전후의 공용 REST 계측값을 비교하기 위한 안전한 스냅샷을 반환한다."""
+        if self.profile.exchange_key == "upbit":
+            try:
+                from upbit_api import UpbitAPI
+                return UpbitAPI.get_shared_runtime_metrics()
+            except Exception as exc:
+                self.context.logger.debug("업비트 REST 계측 스냅샷 실패 (무시): %s", exc)
+                return {}
+        elif self.profile.exchange_key == "bithumb":
+            try:
+                ex = self.context.create_exchange_client()
+                telem = ex.get_telemetry() if hasattr(ex, "get_telemetry") else {}
+                return {
+                    "total_calls": float(telem.get("total_calls", 0)),
+                    "rate_limited": float(telem.get("rate_limited", 0)),
+                }
+            except Exception as exc:
+                self.context.logger.debug("빗썸 REST 계측 스냅샷 실패 (무시): %s", exc)
+                return {}
+        return {}
 
     def run_cycle(self) -> None:
         """5분 사이클 전체(prefix -> market loop -> suffix) 실행."""
         logger = self.context.logger
         error_prefix = self.profile.cycle_error_log_prefix
         cycle_started_at = time.monotonic()
-        api_metrics_before = self._capture_upbit_rest_metrics()
+        api_metrics_before = self._capture_rest_metrics()
         timings: dict[str, float] = {}
         slow_markets: list[tuple[str, float]] = []
         cycle_id = "unknown"
@@ -2605,18 +2615,25 @@ class TradingCycleEngine:
                 timings=timings,
                 slow_markets=slow_markets,
             )
-            api_metrics_after = self._capture_upbit_rest_metrics()
+            api_metrics_after = self._capture_rest_metrics()
             if api_metrics_before and api_metrics_after:
                 # 누적 카운터 차이만 남겨 한 사이클의 캐시·제한기 효과를 운영 로그에서 확인한다.
                 delta = {
                     key: max(0.0, api_metrics_after.get(key, 0.0) - value)
                     for key, value in api_metrics_before.items()
                 }
-                logger.info(
-                    "[업비트 REST 사이클 계측] 캔들 캐시 적중=%d 미스=%d 동시대기=%d 제한대기=%.3fs(%d회)",
-                    int(delta.get("candle_cache_hits", 0.0)),
-                    int(delta.get("candle_cache_misses", 0.0)),
-                    int(delta.get("candle_coalesced_waits", 0.0)),
-                    delta.get("rate_limit_wait_seconds", 0.0),
-                    int(delta.get("rate_limit_wait_count", 0.0)),
-                )
+                if self.profile.exchange_key == "upbit":
+                    logger.info(
+                        "[업비트 REST 사이클 계측] 캔들 캐시 적중=%d 미스=%d 동시대기=%d 제한대기=%.3fs(%d회)",
+                        int(delta.get("candle_cache_hits", 0.0)),
+                        int(delta.get("candle_cache_misses", 0.0)),
+                        int(delta.get("candle_coalesced_waits", 0.0)),
+                        delta.get("rate_limit_wait_seconds", 0.0),
+                        int(delta.get("rate_limit_wait_count", 0.0)),
+                    )
+                elif self.profile.exchange_key == "bithumb" and delta.get("total_calls", 0.0) > 0:
+                    logger.info(
+                        "[빗썸 REST 사이클 계측] 총 호출=%d회 (RateLimit=%d회)",
+                        int(delta.get("total_calls", 0.0)),
+                        int(delta.get("rate_limited", 0.0)),
+                    )

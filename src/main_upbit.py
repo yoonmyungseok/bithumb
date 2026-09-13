@@ -40,7 +40,11 @@ from order_safety import (
 )
 from paper_broker import PaperBroker
 from realtime_engine import RealtimeRiskEngine
-from runtime_config import load_runtime_risk_settings
+from runtime_config import (
+    get_exchange_env_setting,
+    load_runtime_risk_settings,
+    normalize_trading_mode,
+)
 from risk_manager import (
     DailyRiskManager,
     StrategyCacheManager,
@@ -177,9 +181,9 @@ MAX_NEW_LISTING_POSITIONS = min(
 )
 # 관찰 기간에는 차단 후보만 기록하고, 검증 후 환경 변수로 신규 매수 차단을 활성화한다.
 ORDERBOOK_SLIPPAGE_ENFORCEMENT = os.getenv("ORDERBOOK_SLIPPAGE_ENFORCEMENT", "false").strip().lower() in {"1", "true", "yes", "on"}
-TRADING_MODE = os.getenv("TRADING_MODE", "LIVE").strip().upper()
+TRADING_MODE = normalize_trading_mode(os.getenv("TRADING_MODE", "LIVE"))
 PAPER_INITIAL_KRW = float(os.getenv("PAPER_INITIAL_KRW", "1000000"))
-PAPER_FEE_RATE = float(os.getenv("PAPER_FEE_RATE", "0.0005"))
+PAPER_FEE_RATE = float(get_exchange_env_setting("upbit", "PAPER_FEE_RATE", 0.0005, type_cast=float))
 
 # 3. 데이터 저장 디렉토리 분리 (data/upbit/)
 DATA_DIR = os.path.join(PROJECT_ROOT, "data", "upbit")
@@ -362,12 +366,14 @@ def _reconcile_after_private_ws_drain() -> None:
 
 def _create_upbit_screener(exchange: ExchangeAdapter) -> MarketScreener:
     """사이클마다 최신 env를 반영한 업비트 스크리너를 생성한다."""
-    is_momentum_enabled = os.getenv("MOMENTUM_BREAKOUT_ENABLED", os.getenv("EARLY_BREAKOUT_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
+    is_momentum_enabled = get_exchange_env_setting(
+        "upbit", "MOMENTUM_BREAKOUT_ENABLED", default=True, type_cast=bool,
+    )
     return MarketScreener(
         exchange,
-        min_trade_value_krw=float(os.getenv("MIN_TRADE_VALUE", "1000000000")),
-        min_change_rate=float(os.getenv("MIN_CHANGE_RATE", "0.005")),
-        max_change_rate=float(os.getenv("MAX_CHANGE_RATE", "0.25")),
+        min_trade_value_krw=float(get_exchange_env_setting("upbit", "MIN_TRADE_VALUE", 1000000000, type_cast=float)),
+        min_change_rate=float(get_exchange_env_setting("upbit", "MIN_CHANGE_RATE", 0.005, type_cast=float)),
+        max_change_rate=float(get_exchange_env_setting("upbit", "MAX_CHANGE_RATE", 0.25, type_cast=float)),
         enable_early_breakout=is_momentum_enabled,
         early_breakout_min_change_rate=MOMENTUM_BREAKOUT_MIN_CHANGE_RATE,
         early_breakout_max_candidates=MOMENTUM_BREAKOUT_MAX_CANDIDATES,

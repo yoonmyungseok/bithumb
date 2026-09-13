@@ -1391,12 +1391,15 @@ class GeminiAnalyzer:
         schema: dict[str, Any] | None = None,
         *,
         context: str = "macro_or_batch",
-        schema_name: str = "bithumb_batch_result",
+        schema_name: str | None = None,
         strict: bool | None = None,
     ) -> dict[str, Any] | list[Any] | None:
         """Provider를 통해 JSON 응답을 받고 공통 호출 계약을 유지합니다."""
         if not self.api_key:
             return None
+
+        ex = getattr(self.provider, "exchange", "bithumb")
+        resolved_schema_name = schema_name or f"{ex}_batch_result"
 
         provider_models = candidate_models or self.provider.models_for("trading")
         # 동적 모델 탐색은 분석 호출 수단일 뿐 BUY fallback이 아니므로 fail-closed와 병행한다.
@@ -1412,7 +1415,7 @@ class GeminiAnalyzer:
             context=context,
             timeout=timeout,
             max_tokens=max_tokens,
-            schema_name=schema_name,
+            schema_name=resolved_schema_name,
             strict=use_strict,
         )
         return result.value if isinstance(result.value, (dict, list)) else None
@@ -1521,7 +1524,8 @@ class GeminiAnalyzer:
 """
             parsed = self._call_gemini_json(
                 prompt, candidate_models=holding_models, timeout=12.0, schema=HOLDING_JSON_SCHEMA,
-                context=f"holding_eval:{market}", schema_name="bithumb_holding_result",
+                context=f"holding_eval:{market}",
+                schema_name=f"{getattr(self.provider, 'exchange', 'bithumb')}_holding_result",
             )
             if isinstance(parsed, dict):
                 act = str(parsed.get("ACTION", "HOLD")).upper()
@@ -1652,7 +1656,7 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
 """
             parsed = self._call_gemini_json(
                 prompt, timeout=15.0, schema=RANKING_JSON_SCHEMA, context="screener_rank",
-                schema_name="bithumb_ranking_result",
+                schema_name=f"{getattr(self.provider, 'exchange', 'bithumb')}_ranking_result",
             )
             rank_items: list[Any] = []
             if isinstance(parsed, dict) and isinstance(parsed.get("rankings"), list):
@@ -1849,7 +1853,7 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
                 timeout=15.0,
                 schema=MACRO_JSON_SCHEMA,
                 context="macro_regime",
-                schema_name="bithumb_macro_result",
+                schema_name=f"{getattr(self.provider, 'exchange', 'bithumb')}_macro_result",
             )
             if isinstance(parsed, dict) and "regime" in parsed:
                 rg = str(parsed.get("regime", "NORMAL")).upper()

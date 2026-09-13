@@ -36,7 +36,11 @@ from risk_manager import (
     get_held_markets,
     get_kst_now_str,
 )
-from runtime_config import load_runtime_risk_settings
+from runtime_config import (
+    get_exchange_env_setting,
+    load_runtime_risk_settings,
+    normalize_trading_mode,
+)
 from strategy_engine import StrategyPolicy
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
@@ -112,8 +116,10 @@ elif not os.path.exists(COMMON_ENV_FILE):
 BITHUMB_ACCESS_KEY = os.getenv("BITHUMB_ACCESS_KEY", "")
 BITHUMB_SECRET_KEY = os.getenv("BITHUMB_SECRET_KEY", "")
 # 빗썸 AI는 전용 Gemini 키만 사용하며 공용·업비트 키를 절대 공유하지 않는다.
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_BOT_TOKEN = get_exchange_env_setting("bithumb", "TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = get_exchange_env_setting("bithumb", "TELEGRAM_CHAT_ID", "").strip()
+
+WEB_PORT = int(get_exchange_env_setting("bithumb", "WEB_PORT", 7979, type_cast=int))
 
 INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "5"))
 # 타 거래소와의 동시 퀀트 사이클 호출 분산을 위한 오프셋 (기본값: 0초)
@@ -144,10 +150,9 @@ MAX_NEW_LISTING_POSITIONS = min(
 # 관찰 기간에는 차단 후보만 기록하고, 검증 후 환경 변수로 신규 매수 차단을 활성화한다.
 ORDERBOOK_SLIPPAGE_ENFORCEMENT = os.getenv("ORDERBOOK_SLIPPAGE_ENFORCEMENT", "false").strip().lower() in {"1", "true", "yes", "on"}
 # 모멘텀 돌파는 확정봉·호가·주문 안전 검증을 모두 통과한 소수 후보만 직접 진입한다.
-# 기존 EARLY_BREAKOUT 환경 변수도 읽어 기존 운영 설정과의 호환성을 유지한다.
-MOMENTUM_BREAKOUT_ENABLED = os.getenv("MOMENTUM_BREAKOUT_ENABLED", os.getenv("EARLY_BREAKOUT_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
-MOMENTUM_BREAKOUT_MIN_CHANGE_RATE = float(os.getenv("MOMENTUM_BREAKOUT_MIN_CHANGE_RATE", os.getenv("EARLY_BREAKOUT_MIN_CHANGE_RATE", "0.003")))
-MOMENTUM_BREAKOUT_MAX_CANDIDATES = int(os.getenv("MOMENTUM_BREAKOUT_MAX_CANDIDATES", os.getenv("EARLY_BREAKOUT_MAX_CANDIDATES", "2")))
+MOMENTUM_BREAKOUT_ENABLED = get_exchange_env_setting("bithumb", "MOMENTUM_BREAKOUT_ENABLED", default=True, type_cast=bool)
+MOMENTUM_BREAKOUT_MIN_CHANGE_RATE = float(get_exchange_env_setting("bithumb", "MOMENTUM_BREAKOUT_MIN_CHANGE_RATE", 0.003, type_cast=float))
+MOMENTUM_BREAKOUT_MAX_CANDIDATES = int(get_exchange_env_setting("bithumb", "MOMENTUM_BREAKOUT_MAX_CANDIDATES", 2, type_cast=int))
 # 비율 설정은 소수(0.05)와 기존 퍼센트 표기(5, -5)를 모두 지원한다.
 # 모든 실행 경로에서 동일한 정규화 함수를 사용해 200% 등의 오입력을 막는다.
 _risk_settings = load_runtime_risk_settings()
@@ -156,9 +161,9 @@ TRAILING_START_PCT = _risk_settings.trailing_start_pct
 TRAILING_STOP_PCT = _risk_settings.trailing_stop_pct
 BTC_CRASH_THRESHOLD_PCT = _risk_settings.btc_crash_threshold_pct
 
-TRADING_MODE = os.getenv("TRADING_MODE", "REAL").upper()
+TRADING_MODE = normalize_trading_mode(os.getenv("TRADING_MODE", "REAL"))
 PAPER_INITIAL_KRW = float(os.getenv("PAPER_INITIAL_KRW", "1000000.0"))
-PAPER_FEE_RATE = float(os.getenv("PAPER_FEE_RATE", "0.0004"))
+PAPER_FEE_RATE = float(get_exchange_env_setting("bithumb", "PAPER_FEE_RATE", 0.0004, type_cast=float))
 
 IS_BOT_PAUSED = False
 LATEST_STRATEGIES: dict[str, dict[str, Any]] = {}
@@ -226,11 +231,11 @@ def create_exchange_client() -> ExchangeAdapter:
     live_client = BithumbAPI(BITHUMB_ACCESS_KEY, BITHUMB_SECRET_KEY)
 
     if TRADING_MODE != "PAPER":
-        return BithumbAdapter(live_client, data_dir=DATA_DIR, web_port=7979)
+        return BithumbAdapter(live_client, data_dir=DATA_DIR, web_port=WEB_PORT)
     if paper_broker is None:
         paper_broker = PaperBroker(live_client, PAPER_INITIAL_KRW, PAPER_FEE_RATE)
         logger.warning("🧪 PAPER 모드: 실제 주문은 전송되지 않으며 data/paper_account.json만 갱신됩니다.")
-    return BithumbAdapter(paper_broker, data_dir=DATA_DIR, web_port=7979)
+    return BithumbAdapter(paper_broker, data_dir=DATA_DIR, web_port=WEB_PORT)
 
 
 # 실시간 리스크 엔진 및 봇 제어기 초기화
@@ -318,12 +323,14 @@ def _reconcile_after_private_ws_drain() -> None:
 
 def _create_bithumb_screener(exchange: ExchangeAdapter) -> MarketScreener:
     """사이클마다 최신 env를 반영한 빗썸 스크리너를 생성한다."""
-    is_momentum_enabled = os.getenv("MOMENTUM_BREAKOUT_ENABLED", os.getenv("EARLY_BREAKOUT_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
+    is_momentum_enabled = get_exchange_env_setting(
+        "bithumb", "MOMENTUM_BREAKOUT_ENABLED", default=True, type_cast=bool,
+    )
     return MarketScreener(
         exchange,
-        min_trade_value_krw=float(os.getenv("MIN_TRADE_VALUE", "1000000000")),
-        min_change_rate=float(os.getenv("MIN_CHANGE_RATE", "0.005")),
-        max_change_rate=float(os.getenv("MAX_CHANGE_RATE", "0.25")),
+        min_trade_value_krw=float(get_exchange_env_setting("bithumb", "MIN_TRADE_VALUE", 1000000000, type_cast=float)),
+        min_change_rate=float(get_exchange_env_setting("bithumb", "MIN_CHANGE_RATE", 0.005, type_cast=float)),
+        max_change_rate=float(get_exchange_env_setting("bithumb", "MAX_CHANGE_RATE", 0.25, type_cast=float)),
         enable_early_breakout=is_momentum_enabled,
         early_breakout_min_change_rate=MOMENTUM_BREAKOUT_MIN_CHANGE_RATE,
         early_breakout_max_candidates=MOMENTUM_BREAKOUT_MAX_CANDIDATES,
@@ -513,7 +520,7 @@ def send_daily_morning_report():
             f"• <b>가용 원화 잔고:</b> {krw_avail:,.0f} KRW\n"
             f"• <b>현재 보유 포지션:</b> {held_desc}\n"
             f"• <b>크립토 공포/탐욕 지수:</b> {fng['desc']}\n"
-            f"• <b>웹 대시보드:</b> <code>http://localhost:7979</code>\n"
+            f"• <b>웹 대시보드:</b> <code>http://localhost:{WEB_PORT}</code>\n"
             f"• <b>기준 일시:</b> {now_str}"
             f"{ai_briefing}"
         )

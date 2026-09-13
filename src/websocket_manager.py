@@ -350,8 +350,13 @@ class BithumbWebSocketClient:
                         if self.on_whale_callback:
                             self._enqueue_callback("whale", (code, price, val_krw, side))
 
-        except (json.JSONDecodeError, ValueError, KeyError):
-            pass
+        except (json.JSONDecodeError, ValueError, TypeError, KeyError) as exc:
+            logger.warning(
+                "빗썸 WebSocket 메시지 해석 실패: type=%s, code=%s, error=%s",
+                msg_type if "msg_type" in locals() else "unknown",
+                code if "code" in locals() else "unknown",
+                type(exc).__name__,
+            )
 
     def _on_open(self, ws: Any):
         with self._lock:
@@ -381,6 +386,7 @@ class BithumbWebSocketClient:
         self.is_running = True
 
         def _run_loop():
+            retry_delay = 2
             while self.is_running:
                 try:
                     with self._lock:
@@ -392,10 +398,15 @@ class BithumbWebSocketClient:
                         on_error=self._on_error,
                         on_close=self._on_close,
                     )
-                    self.ws.run_forever(ping_interval=30, ping_timeout=None)
-                except (websocket.WebSocketException, OSError) as e:
-                    logger.warning(f"웹소켓 루프 예외: {e}")
-                time.sleep(3)
+                    self.ws.run_forever(ping_interval=30, ping_timeout=20)
+                except Exception as e:
+                    logger.warning(f"빗썸 웹소켓 루프 예외: {e}")
+
+                if self.is_running:
+                    time.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 60)
+                else:
+                    break
 
         self._thread = threading.Thread(target=_run_loop, daemon=True, name="BithumbWebSocket")
         self._thread.start()

@@ -1,4 +1,4 @@
-# Bithumb & Upbit AI Pro Quant Trading Bot (v8.81)
+# Bithumb & Upbit AI Pro Quant Trading Bot (v8.82)
 
 본 문서는 `c:\AI\bithumb` 디렉토리에 위치한 빗썸(Bithumb) 및 업비트(Upbit) 듀얼 거래소 지원 AI 퀀트 트레이딩 봇의 프로젝트 설명 및 아키텍처 설계서입니다. 이 문서는 다른 AI 에이전트 또는 개발자가 프로젝트의 전반적인 구조와 핵심 로직을 빠르고 명확하게 파악할 수 있도록 작성되었습니다.
 
@@ -19,6 +19,11 @@
   - 빗썸·업비트 분리 Google Gemini API (신규 BUY: Flash-Lite 계열 순차 폴백, 거시 진단 및 브리핑: 일반 Flash 최우선 라우팅 및 Flash-Lite 폴백, 빗썸 브리핑 전용 시스템 지침 분리 및 유연한 3줄 시황 품질 검증, 추론 모델 ThinkingBudget=0 제어, 거시 레짐 타임아웃 15초 상향 및 신규 BUY 진입 게이트 격리 안전망 완비), Telegram API
   - 거래소 전용 Groq API 거시 인텔리전스 (15분 주기 거시 레짐 진단 및 권장 현금 비중 도출: 빗썸 `BITHUMB_GROQ_API_KEY`, 업비트 `UPBIT_GROQ_API_KEY` 전용 키 격리, 공용 키 배제)
 - **주요 전략 및 아키텍처**: 
+  - **듀얼 거래소 공통화 및 설정·안정성 일원화 (v8.82)**:
+    1. **설정 로더 일원화 (`get_exchange_env_setting`) & 버그 해소**: 거래소별 환경변수 우선순위(`{EXCHANGE}_{KEY}` ➜ `{KEY}` ➜ `DEFAULT`)를 단일 헬퍼로 정규화. 업비트 스크리너 생성 시 `UPBIT_MOMENTUM_BREAKOUT_ENABLED`가 무시되던 결함을 수정하고, 빗썸에 `BITHUMB_TELEGRAM_BOT_TOKEN`, `BITHUMB_WEB_PORT`, `BITHUMB_MOMENTUM_BREAKOUT_ENABLED`, `BITHUMB_PAPER_FEE_RATE` 등 전용 환경변수 우선 조회를 전면 지원. 빗썸 웹 포트 및 모닝 리포트 URL의 `7979` 하드코딩을 제거하고 동적 `WEB_PORT`로 일원화. `TRADING_MODE` 표기(`REAL`/`LIVE`)를 상호 호환 정규화(`normalize_trading_mode`).
+    2. **빗썸 AI 쿼터 가드 복원 & 동적 JSON 스키마 명칭**: `trading_runtime.py`에서 항상 `is_critical=False, is_tight=False`로 비활성화되어 있던 빗썸 AI 쿼터 가드를 `AIProviderTelemetry.get_daily_quota_budget("bithumb")`로 복원하여 일일 350회(70%)/450회(90%) 도달 시 AI 후보 축소/차단 가드가 빗썸에서도 정상 작동하도록 보장. `gemini_analyzer.py`의 고정 스키마명을 거래소별 동적 명칭(`f"{exchange}_holding_result"`, `f"{exchange}_ranking_result"`, `f"{exchange}_macro_result"`)으로 일원화.
+    3. **WebSocket 안정성 기능 동기화 (소켓 행 방지 & 지수 백오프)**: 빗썸 Public 및 Private WebSocket에 누락되었던 `ping_timeout=20` 설정을 적용하여 네트워크 묵통 시 무한 대기 행(Hang) 결함을 원천 방지. 빗썸 Public WebSocket 재연결에 지수 백오프(`retry_delay = min(retry_delay * 2, 60)`) 및 상세 예외 로깅을 적용하고, Private WebSocket에 try-except 안전망 보강.
+    4. **거래소 식별 인터페이스 표준화 & 런타임 최적화 대칭화**: `market_screener.py`와 `realtime_engine.py`에서 비정형 타입 문자열/덕타이핑 검사를 `exchange.key` 단일 규격으로 표준화. `trading_runtime.py`에서 업비트에만 적용되던 스크리너 티커 시드(`_last_screener_ticker_seed`) 재사용 최적화를 빗썸에도 공통 적용하여 1초 이내 시세 재조회 낭비를 제거하고, REST 사이클 계측(`_capture_rest_metrics`)을 빗썸에도 대칭 적용.
   - **다중 시간대(MTF) 분석**: 1시간봉 대세 추세 + 5분봉 정밀 타점 정렬
   - **TIGHTEN_STOP +2.0% 버퍼 가드 및 트레일링 노이즈 방어 & 알트코인 균등 분할 (v8.81)**:
     1. **`TIGHTEN_STOP` 최소 수익률 버퍼 (+2.0%) 하드 강제**: 기보유 포지션 AI 진단 시 현재 손익률이 최소 +2.0%(`StrategyPolicy.BREAKEVEN_MIN_PROFIT_PCT = 0.020`) 이상 확보된 경우에만 본전/수익 보전 스탑 상향을 허용. +2.0% 미만의 미세 수익 구간에서는 조급한 손절선 상향을 취소하고 `HOLD`로 자동 완화하여 일반 호가 흔들림에 의한 조기 털림(문버드 휩쏘 사례)을 원천 차단. 상향 손절가 또한 현재가 대비 최소 1.5%(`MIN_TRAILING_GAP_PCT = 0.015`)의 안전 여유 간격을 의무 확보.

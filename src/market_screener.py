@@ -87,6 +87,12 @@ class MarketScreener:
         }
 
     def _exchange_name(self) -> str:
+        key = getattr(self.api, "key", None)
+        if key:
+            return str(key).lower()
+        profile = getattr(self.api, "profile", None)
+        if profile and hasattr(profile, "key"):
+            return str(profile.key).lower()
         return "upbit" if "upbit" in str(type(self.api)).lower() else "bithumb"
 
     def _load_four_hour_history(self, market: str) -> tuple[list[dict[str, Any]], str]:
@@ -208,7 +214,7 @@ class MarketScreener:
                     all_tickers.extend(tickers_chunk)
             self.last_scan_tickers = list(all_tickers)
 
-            ex_name = "업비트" if "upbit" in str(type(self.api)).lower() else "빗썸"
+            ex_name = "업비트" if self._exchange_name() == "upbit" else "빗썸"
             logger.info(f"{ex_name} KRW 마켓 {len(all_tickers)}개 종목 시세 스캔 완료 (레짐: {btc_regime})")
 
             btc_ticker = next((t for t in all_tickers if t.get("market") == "KRW-BTC"), None)

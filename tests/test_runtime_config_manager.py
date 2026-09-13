@@ -266,5 +266,43 @@ class TestDashboardGatewayConfig(unittest.TestCase):
         self.assertGreater(len(res["errors"]), 0)
 
 
+class TestExchangeEnvHelpers(unittest.TestCase):
+    """거래소별 우선순위 환경변수 로더 및 TRADING_MODE 정규화 검증"""
+
+    def setUp(self):
+        self.orig_environ = dict(os.environ)
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self.orig_environ)
+
+    def test_exchange_prefix_priority(self):
+        from runtime_config import get_exchange_env_setting
+
+        os.environ["UPBIT_MOMENTUM_BREAKOUT_ENABLED"] = "false"
+        os.environ["MOMENTUM_BREAKOUT_ENABLED"] = "true"
+        # UPBIT 접두어가 공통 설정을 오버라이드해야 함
+        self.assertFalse(get_exchange_env_setting("upbit", "MOMENTUM_BREAKOUT_ENABLED", default=True, type_cast=bool))
+        # 빗썸은 UPBIT 접두어에 영향받지 않고 공통 설정을 읽어야 함
+        self.assertTrue(get_exchange_env_setting("bithumb", "MOMENTUM_BREAKOUT_ENABLED", default=False, type_cast=bool))
+
+    def test_exchange_prefix_fallback_to_common(self):
+        from runtime_config import get_exchange_env_setting
+
+        os.environ.pop("BITHUMB_MIN_TRADE_VALUE", None)
+        os.environ["MIN_TRADE_VALUE"] = "500000000"
+        self.assertEqual(get_exchange_env_setting("bithumb", "MIN_TRADE_VALUE", 1000000000, type_cast=float), 500000000.0)
+
+    def test_normalize_trading_mode(self):
+        from runtime_config import normalize_trading_mode
+
+        self.assertEqual(normalize_trading_mode("REAL"), "LIVE")
+        self.assertEqual(normalize_trading_mode("LIVE"), "LIVE")
+        self.assertEqual(normalize_trading_mode("PAPER"), "PAPER")
+        self.assertEqual(normalize_trading_mode("mock"), "PAPER")
+        self.assertEqual(normalize_trading_mode(None), "LIVE")
+
+
 if __name__ == "__main__":
     unittest.main()
+

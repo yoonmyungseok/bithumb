@@ -520,6 +520,21 @@ class AIProviderTelemetry:
                 "entry_safety": cls._normalize_entry_safety(cls._entry_safety.get(exchange, {})),
             }
 
+    @classmethod
+    def get_daily_quota_budget(cls, exchange: str = "bithumb") -> dict[str, Any]:
+        """거래소별 당일 AI 시도량 및 남은 쿼터 단계 정보 반환 (1,000회 기준)"""
+        snap = cls.snapshot(exchange)
+        calls = int(snap.get("total", {}).get("api_calls", 0))
+        limit = int(snap.get("quota_limit", 1000) or 1000)
+        return {
+            "api_calls": calls,
+            "quota_limit": limit,
+            "is_tight": calls >= int(limit * 0.70),
+            "is_critical": calls >= int(limit * 0.90),
+            "is_exhausted": calls >= int(limit * 0.98),
+        }
+
+
 
 def _parse_json_text(raw: str) -> dict[str, Any] | list[Any] | None:
     """Provider 공통으로 마크다운 없는 JSON만 보수적으로 수용합니다."""

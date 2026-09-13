@@ -31,6 +31,58 @@ def get_fraction_setting(name: str, default: float, *, positive: bool = True) ->
     return value
 
 
+def get_exchange_env_setting(
+    exchange_key: str,
+    key: str,
+    default: Any = "",
+    type_cast: Any = None,
+) -> Any:
+    """거래소 전용 환경변수를 우선 읽고 없으면 공통 환경변수, 기본값 순으로 반환한다.
+
+    예: exchange_key="upbit", key="MOMENTUM_BREAKOUT_ENABLED" ->
+        UPBIT_MOMENTUM_BREAKOUT_ENABLED -> MOMENTUM_BREAKOUT_ENABLED -> default
+    """
+    ex_prefix = (exchange_key or "").strip().upper()
+    ex_key = f"{ex_prefix}_{key}" if ex_prefix else ""
+
+    val_str = ""
+    if ex_key and ex_key in os.environ and os.environ[ex_key].strip():
+        val_str = os.environ[ex_key].strip()
+    elif key in os.environ and os.environ[key].strip():
+        val_str = os.environ[key].strip()
+    else:
+        return default
+
+    if type_cast is bool:
+        return val_str.lower() in {"1", "true", "yes", "on", "enable", "enabled"}
+    if type_cast is int:
+        try:
+            return int(float(val_str))
+        except (ValueError, TypeError):
+            return default
+    if type_cast is float:
+        try:
+            return float(val_str)
+        except (ValueError, TypeError):
+            return default
+    if type_cast is not None and callable(type_cast):
+        try:
+            return type_cast(val_str)
+        except Exception:
+            return default
+    return val_str
+
+
+def normalize_trading_mode(raw_mode: str | None, default: str = "LIVE") -> str:
+    """거래소별로 혼용되던 REAL/LIVE 모드 표기를 LIVE로 정규화한다."""
+    m = (raw_mode or default).strip().upper()
+    if m in ("REAL", "LIVE"):
+        return "LIVE"
+    if m in ("PAPER", "SIMULATION", "MOCK", "TEST"):
+        return "PAPER"
+    return m
+
+
 @dataclass(frozen=True)
 class RuntimeRiskSettings:
     """Normalized risk ratios consumed by every live trading cycle."""
