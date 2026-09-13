@@ -168,7 +168,6 @@ class MarketScreener:
         scan_started_at = time.monotonic()
         ai_ranking_duration = 0.0
         held_set: set[str] = {m.upper() for m in (held_markets or [])}
-        is_risk_off = (btc_regime or "NORMAL").upper() == "RISK_OFF"
         is_bull_trend = (btc_regime or "NORMAL").upper() == "BULL_TREND"
 
         try:

@@ -25,11 +25,9 @@ from gemini_analyzer import GeminiAnalyzer
 from gemini_telemetry import GeminiTelemetry
 from market_screener import MarketScreener
 from order_safety import (
-    AmbiguousOrderError,
     CooldownManager,
     OrderFillProcessor,
     OrderJournal,
-    OrderStatus,
     RiskGuard,
     SafeOrderExecutor,
     get_dynamic_portfolio_tiers,
@@ -42,18 +40,12 @@ from risk_manager import (
     DailyRiskManager,
     StrategyCacheManager,
     TrailingStopTracker,
-    build_positions_data,
     calculate_total_equity,
     get_fear_and_greed_index,
     get_held_markets,
-    get_kst_now,
     get_kst_now_str,
 )
-from strategy_engine import (
-    StrategyPolicy,
-    calculate_vwap,
-    classify_btc_regime,
-)
+from strategy_engine import StrategyPolicy
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
 from trading_bot_bootstrap import (

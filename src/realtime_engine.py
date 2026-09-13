@@ -4,7 +4,6 @@ import threading
 import time
 from typing import Any
 
-from bithumb_api import BithumbAPI
 from position_guard import is_exit_allowed
 from strategy_engine import StrategyPolicy
 from order_safety import (
@@ -460,7 +459,7 @@ class RealtimeRiskEngine:
                     )
                     self._invalidate_balance_cache()
 
-                    res_data = self._confirm_and_record_exit(
+                    self._confirm_and_record_exit(
                         exchange=bithumb,
                         market=market,
                         korean_name=korean_name,
@@ -549,7 +548,7 @@ class RealtimeRiskEngine:
                         )
                         self._invalidate_balance_cache()
 
-                        res_data = self._confirm_and_record_exit(
+                        self._confirm_and_record_exit(
                             exchange=bithumb,
                             market=market,
                             korean_name=korean_name,
@@ -562,7 +561,6 @@ class RealtimeRiskEngine:
                             now_str=now_str,
                         )
 
-                        be_note = "🛡️ 본전 보장(Break-Even +0.3%) 스탑 활성화" if not is_stage2 else "🚀 잔여 40% 대세 트레일링 러너 추종"
                         # [알림 최적화] 거래소 앱 자체 알림 활용을 위해 텔레그램 실시간 분할익절 알림 비활성화
                         pass
                     finally:
@@ -598,7 +596,7 @@ class RealtimeRiskEngine:
                     )
                     self._invalidate_balance_cache()
 
-                    res_data = self._confirm_and_record_exit(
+                    self._confirm_and_record_exit(
                         exchange=bithumb,
                         market=market,
                         korean_name=korean_name,
@@ -610,19 +608,6 @@ class RealtimeRiskEngine:
                         exit_reason="0.1초 실시간 최고점 대비 트레일링 스탑 익절",
                         now_str=now_str,
                     )
-
-                    pnl_krw = res_data['pnl_krw']
-                    pnl_pct = res_data['pnl_pct']
-
-                    if pnl_krw > 0:
-                        header = "🏆 <b>[실시간 트레일링 스탑 전량 익절 완료]</b>"
-                        pnl_line = f"• 확정 수익: +{pnl_krw:,.0f} KRW 💰"
-                    elif pnl_pct >= -0.5:
-                        header = "🛡️ <b>[실시간 트레일링 스탑 본전 방어 완료]</b>"
-                        pnl_line = f"• 실현 손익: {pnl_krw:+,.0f} KRW (수수료/슬리피지 본전 방어)"
-                    else:
-                        header = "🛑 <b>[실시간 트레일링 스탑 방어 매도 완료]</b>"
-                        pnl_line = f"• 실현 손익: {pnl_krw:+,.0f} KRW (고점 꺾임 후 비상 탈출)"
 
                     # [알림 최적화] 거래소 앱 자체 알림 활용을 위해 텔레그램 실시간 트레일링 익절 알림 비활성화
                     pass

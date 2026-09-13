@@ -352,43 +352,6 @@ class DatabaseManager:
                 results.append(item)
             return results
 
-    def get_trade_summary_stats(self, exchange: str | None = None) -> dict[str, Any]:
-        """Compute aggregate win rate, total PnL, profit factor from SQLite."""
-        query = "SELECT COUNT(*) as total_trades, SUM(pnl_krw) as total_pnl_krw, " \
-                "SUM(CASE WHEN pnl_krw > 0 THEN 1 ELSE 0 END) as win_trades, " \
-                "SUM(CASE WHEN pnl_krw < 0 THEN 1 ELSE 0 END) as loss_trades, " \
-                "SUM(CASE WHEN pnl_krw > 0 THEN pnl_krw ELSE 0 END) as gross_profit, " \
-                "SUM(CASE WHEN pnl_krw < 0 THEN ABS(pnl_krw) ELSE 0 END) as gross_loss " \
-                "FROM trade_memory WHERE 1=1"
-        params: list[Any] = []
-        if exchange:
-            query += " AND exchange = ?"
-            params.append(exchange.strip().lower())
-
-        with _DB_LOCK, self._get_connection() as conn:
-            cursor = conn.cursor()
-            row = cursor.execute(query, params).fetchone()
-            if not row:
-                return {"total_trades": 0, "win_rate": 0.0, "total_pnl_krw": 0.0, "profit_factor": 0.0}
-
-            total = row["total_trades"] or 0
-            wins = row["win_trades"] or 0
-            total_pnl = row["total_pnl_krw"] or 0.0
-            gross_profit = row["gross_profit"] or 0.0
-            gross_loss = row["gross_loss"] or 0.0
-
-            win_rate = (wins / total * 100.0) if total > 0 else 0.0
-            profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (99.0 if gross_profit > 0 else 1.0)
-
-            return {
-                "total_trades": total,
-                "win_trades": wins,
-                "loss_trades": row["loss_trades"] or 0,
-                "win_rate": round(win_rate, 2),
-                "total_pnl_krw": round(total_pnl, 2),
-                "profit_factor": round(profit_factor, 2),
-            }
-
     # =========================================================================
     # Orders & Journal Operations
     # =========================================================================
@@ -437,33 +400,6 @@ class DatabaseManager:
             ))
             conn.commit()
 
-    def get_orders(self, exchange: str | None = None, limit: int = 500) -> list[dict[str, Any]]:
-        """Fetch recent orders."""
-        query = "SELECT * FROM orders WHERE 1=1"
-        params: list[Any] = []
-        if exchange:
-            query += " AND exchange = ?"
-            params.append(exchange.strip().lower())
-        query += " ORDER BY id DESC LIMIT ?"
-        params.append(limit)
-
-        with _DB_LOCK, self._get_connection() as conn:
-            cursor = conn.cursor()
-            rows = cursor.execute(query, params).fetchall()
-            results = []
-            for row in rows:
-                item = dict(row)
-                try:
-                    payload = json.loads(row["raw_payload"])
-                    if isinstance(payload, dict):
-                        for k, v in payload.items():
-                            if k not in item or not item[k]:
-                                item[k] = v
-                except Exception:
-                    pass
-                results.append(item)
-            return results
-
     # =========================================================================
     # Daily Stats Operations
     # =========================================================================
@@ -505,29 +441,6 @@ class DatabaseManager:
                 kill_switch_latched_date, history_json
             ))
             conn.commit()
-
-    def load_daily_stats(self, exchange: str, date_str: str | None = None) -> dict[str, Any] | None:
-        """Load latest or specific date daily stats for an exchange."""
-        ex = exchange.strip().lower()
-        query = "SELECT * FROM daily_stats WHERE exchange = ?"
-        params: list[Any] = [ex]
-        if date_str:
-            query += " AND date = ?"
-            params.append(date_str)
-        query += " ORDER BY date DESC LIMIT 1"
-
-        with _DB_LOCK, self._get_connection() as conn:
-            cursor = conn.cursor()
-            row = cursor.execute(query, params).fetchone()
-            if not row:
-                return None
-            res = dict(row)
-            try:
-                res["history"] = json.loads(res.get("history_json", "[]"))
-            except Exception:
-                res["history"] = []
-            res["kill_switch_active"] = bool(res.get("kill_switch_active"))
-            return res
 
     def get_daily_stats_history(self, exchange: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
         """과거 일별 자산 및 손익 통계 이력을 최신순으로 조회한다."""
@@ -584,63 +497,6 @@ class DatabaseManager:
                     VALUES (?, ?, ?, ?, ?);
                 """, (ex, m_upper, peak_val, pt_val, et_val))
             conn.commit()
-
-    def load_position_state(self, exchange: str) -> dict[str, Any]:
-        """Load positions into standard peaks, partial_tp_done, and entry_times dicts."""
-        ex = exchange.strip().lower()
-        peaks: dict[str, float] = {}
-        partial_tp_done: dict[str, bool] = {}
-        entry_times: dict[str, float] = {}
-
-        with _DB_LOCK, self._get_connection() as conn:
-            cursor = conn.cursor()
-            rows = cursor.execute("SELECT * FROM positions WHERE exchange = ?", (ex,)).fetchall()
-            for row in rows:
-                mkt = row["market"]
-                if row["peak_price"]:
-                    peaks[mkt] = float(row["peak_price"])
-                if row["partial_tp_done"]:
-                    partial_tp_done[mkt] = bool(row["partial_tp_done"])
-                if row["entry_time"]:
-                    entry_times[mkt] = float(row["entry_time"])
-
-        return {
-            "peaks": peaks,
-            "partial_tp_done": partial_tp_done,
-            "entry_times": entry_times,
-        }
-
-    # =========================================================================
-    # Key-Value Store Operations
-    # =========================================================================
-    def kv_set(self, namespace: str, key: str, value: Any) -> None:
-        """Store a JSON-serializable value in kv_store."""
-        val_str = json.dumps(value, ensure_ascii=False)
-        with _DB_LOCK, self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO kv_store (namespace, key, value_json, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(namespace, key) DO UPDATE SET
-                    value_json = excluded.value_json,
-                    updated_at = CURRENT_TIMESTAMP;
-            """, (namespace, key, val_str))
-            conn.commit()
-
-    def kv_get(self, namespace: str, key: str, default: Any = None) -> Any:
-        """Retrieve a value from kv_store."""
-        with _DB_LOCK, self._get_connection() as conn:
-            cursor = conn.cursor()
-            row = cursor.execute(
-                "SELECT value_json FROM kv_store WHERE namespace = ? AND key = ?",
-                (namespace, key)
-            ).fetchone()
-            if not row:
-                return default
-            try:
-                return json.loads(row["value_json"])
-            except Exception:
-                return default
 
     # =========================================================================
     # Strategy Decision Audit Operations
@@ -747,15 +603,6 @@ def reset_db_manager_cache() -> None:
     for manager in managers:
         manager.dispose()
     gc.collect()
-
-
-def reset_db_manager_for_path(db_path: str) -> None:
-    """특정 DB 경로의 캐시된 DatabaseManager만 해제한다."""
-    resolved_path = os.path.abspath(os.path.normpath(db_path))
-    with _DB_LOCK:
-        manager = _DB_MANAGER_BY_PATH.pop(resolved_path, None)
-    if manager is not None:
-        manager.dispose()
 
 
 def dispose_all_db_managers() -> None:

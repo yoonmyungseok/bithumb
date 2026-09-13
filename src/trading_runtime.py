@@ -7,7 +7,6 @@ The cycle prefix, priority exit, entry gating, stop-loss, buy execution, and ful
 from __future__ import annotations
 
 import os
-import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -29,7 +28,6 @@ from strategy_engine import (
     should_block_for_minimum_candles,
     evaluate_swing_trend_exit,
     get_momentum_extended_alpha_threshold,
-    get_new_listing_alpha_threshold,
     has_confirmed_swing_trend_candles,
     is_new_listing_eligible,
     is_ai_direct_entry_eligible,

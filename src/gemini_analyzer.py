@@ -332,18 +332,6 @@ class GeminiAnalyzer:
         return cls._briefing_model_priority_key(name)
 
     @classmethod
-    def _set_model_cooldown(cls, model: str, duration_sec: float) -> None:
-        """스레드 안전하게 모델별 쿨다운을 등록합니다."""
-        with cls._CLASS_LOCK:
-            cls._MODEL_COOLDOWNS[model] = time.time() + duration_sec
-
-    @classmethod
-    def _set_model_blacklist(cls, model: str, duration_sec: float) -> None:
-        """스레드 안전하게 지원 종료 모델을 블랙리스트에 격리합니다."""
-        with cls._CLASS_LOCK:
-            cls._MODEL_BLACKLIST[model] = time.time() + duration_sec
-
-    @classmethod
     def fetch_available_models(cls, api_key: str = "") -> list[str]:
         """
         Google Generative Language API(ListModels)로부터 실시간 지원 모델 목록을 조회하여

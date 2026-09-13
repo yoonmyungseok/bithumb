@@ -14,7 +14,6 @@ import math
 import mimetypes
 import os
 import re
-import signal
 import sys
 import threading
 import time
@@ -1497,7 +1496,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception as e:
+    except Exception:
         try:
             with open(os.path.join(project_root, "logs", "dashboard_crash.log"), "w", encoding="utf-8") as f:
                 import traceback

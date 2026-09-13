@@ -469,14 +469,6 @@ class OrderbookFlowTracker:
         with self._lock:
             return len(self._history.get(market, []))
 
-    def get_smoothed_ratio(self, market: str, fallback_ratio: float = 1.0) -> float:
-        """현재 저장된 롤링 호가 잔량비 반환"""
-        with self._lock:
-            buf = self._history.get(market, [])
-            if not buf:
-                return fallback_ratio
-            return sum(buf) / len(buf)
-
 
 def build_orderbook_tracker_key(market: str, exchange: str = "") -> str:
     """거래소와 마켓을 함께 사용해 서로 다른 주문장 이력을 격리한다."""
@@ -1012,7 +1004,6 @@ def calculate_new_listing_alpha_score(
         return {"total_score": 0, "factor_breakdown": {}, "reason": "신규상장 5분봉 부족"}
 
     prices = [float(c.get("trade_price", 0.0)) for c in candles]
-    current = prices[0]
     rsi = calculate_rsi(prices)
     vols = [float(c.get("candle_acc_trade_volume", 0.0) or 0.0) for c in candles]
     average_volume = (sum(vols[1:]) / len(vols[1:])) if len(vols) > 1 else 0.0
@@ -1220,7 +1211,6 @@ def entry_signal(
     # 1. 1시간봉 MTF 추세 필터
     mtf_allowed = True
     mtf_reason = "1H MTF 미제공"
-    is_strong_rs_leader = (regime_upper == "RISK_OFF" and relative_strength >= 0.020)
     if candles_1h and len(candles_1h) >= 20:
         current_1h = float(candles_1h[0].get("trade_price", 0.0) or 0.0)
         cached_ema20 = float(alpha_res.get("ema20_1h") or 0.0)
