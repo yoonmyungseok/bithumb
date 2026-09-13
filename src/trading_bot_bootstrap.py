@@ -318,3 +318,99 @@ class TradingBotBootstrap:
                     exc_info=True,
                 )
                 time.sleep(1)
+
+
+def execute_daily_morning_report_shared(
+    *,
+    exchange_name: str,
+    exchange_client: Any,
+    risk_manager: Any,
+    telegram: Any,
+    logger: Any,
+    calculate_total_equity: Callable[[dict[str, Any], Any], float],
+    get_held_markets: Callable[[dict[str, Any], Any], list[str]],
+    get_fear_and_greed_index: Callable[[], dict[str, Any]],
+    build_analyzer: Callable[[], Any | None],
+    web_port: int,
+    now_str: str,
+) -> None:
+    """빗썸/업비트 공통 매일 아침 09:00 KST 일일 결산 모닝 리포트를 생성 및 전송한다."""
+    logger.info("📊 [%s 아침 9시 일일 결산 브리핑 발송: %s]", exchange_name, now_str)
+
+    try:
+        fng = get_fear_and_greed_index()
+        balances = exchange_client.get_balances()
+        total_equity = calculate_total_equity(balances, exchange_client)
+        krw_avail = balances.get("KRW", {}).get("balance", 0.0)
+
+        daily_pnl_krw = total_equity - risk_manager.daily_start_equity
+        daily_pnl_pct = (
+            (daily_pnl_krw / risk_manager.daily_start_equity) * 100.0
+            if risk_manager.daily_start_equity > 0
+            else 0.0
+        )
+
+        held_markets = get_held_markets(balances, exchange_client)
+        held_names = [f"{exchange_client.get_korean_name(m)}({m.split('-')[-1]})" for m in held_markets]
+        held_desc = ", ".join(held_names) if held_names else "없음 (100% 현금 보유)"
+
+        ai_briefing = ""
+        analyzer = build_analyzer()
+        if analyzer is not None and hasattr(analyzer, "generate_market_briefing"):
+            try:
+                candles_1h = exchange_client.get_candles(unit=60, count=30, market="KRW-BTC")
+                macro_diag = analyzer.diagnose_macro_regime(candles_1h, fng_index=fng)
+                ai_comment = analyzer.generate_market_briefing(
+                    exchange_name=exchange_name,
+                    total_equity=total_equity,
+                    daily_pnl_krw=daily_pnl_krw,
+                    daily_pnl_pct=daily_pnl_pct,
+                    held_positions_desc=held_desc,
+                    macro_diag=macro_diag,
+                    fng_desc=fng.get("desc", ""),
+                )
+                if ai_comment:
+                    ai_briefing = f"\n\n🤖 <b>[{exchange_name} Gemini AI 종합 시황 브리핑]</b>\n{ai_comment}"
+            except Exception as e:
+                logger.debug("%s AI 브리핑 생성 예외: %s", exchange_name, e)
+
+        telegram.send_message(
+            f"🌅 <b>[{exchange_name} AI 퀀트 봇 - 09:00 KST 일일 성과 결산 브리핑]</b>\n\n"
+            f"• <b>총 평가 자산:</b> {total_equity:,.0f} KRW\n"
+            f"• <b>금일 자산 변동:</b> {daily_pnl_krw:+,.0f} KRW ({daily_pnl_pct:+.2f}%)\n"
+            f"• <b>금일 확정 실현 손익:</b> {risk_manager.realized_pnl_krw:+,.0f} KRW (총 {risk_manager.total_trades_today}회 거래)\n"
+            f"• <b>가용 원화 잔고:</b> {krw_avail:,.0f} KRW\n"
+            f"• <b>현재 보유 포지션:</b> {held_desc}\n"
+            f"• <b>크립토 공포/탐욕 지수:</b> {fng['desc']}\n"
+            f"• <b>웹 대시보드:</b> <code>http://localhost:{web_port}</code>\n"
+            f"• <b>기준 일시:</b> {now_str}"
+            f"{ai_briefing}"
+        )
+    except Exception as e:
+        logger.error("%s 모닝 리포트 발송 실패: %s", exchange_name, e)
+
+
+def create_exchange_screener_shared(
+    exchange_name: str,
+    exchange: Any,
+    *,
+    get_env_setting: Callable[..., Any],
+    min_change_rate_early: float,
+    max_candidates_early: int,
+) -> Any:
+    """사이클마다 최신 env를 반영한 거래소별 스크리너를 생성한다."""
+    from market_screener import MarketScreener
+
+    is_momentum_enabled = get_env_setting(
+        exchange_name, "MOMENTUM_BREAKOUT_ENABLED", default=True, type_cast=bool,
+    )
+    return MarketScreener(
+        exchange,
+        min_trade_value_krw=float(get_env_setting(exchange_name, "MIN_TRADE_VALUE", 1000000000, type_cast=float)),
+        min_change_rate=float(get_env_setting(exchange_name, "MIN_CHANGE_RATE", 0.005, type_cast=float)),
+        max_change_rate=float(get_env_setting(exchange_name, "MAX_CHANGE_RATE", 0.25, type_cast=float)),
+        enable_early_breakout=is_momentum_enabled,
+        early_breakout_min_change_rate=min_change_rate_early,
+        early_breakout_max_candidates=max_candidates_early,
+    )
+

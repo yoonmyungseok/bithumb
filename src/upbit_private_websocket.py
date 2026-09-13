@@ -29,12 +29,14 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-class UpbitPrivateWebSocketClient:
-    """
-    업비트 실시간 Private WebSocket 클라이언트 (myOrder, myAsset)
-    """
+from base_websocket import BasePrivateWebSocketClient
+
+
+class UpbitPrivateWebSocketClient(BasePrivateWebSocketClient):
+    """업비트 실시간 Private WebSocket 클라이언트 (myOrder, myAsset)"""
 
     URL = "wss://api.upbit.com/websocket/v1/private"
+    CLIENT_NAME = "업비트 Private WebSocket"
 
     def __init__(
         self,
@@ -44,33 +46,17 @@ class UpbitPrivateWebSocketClient:
         on_asset: Callable[[dict[str, Any]], None] | None = None,
         on_queue_overflow: Callable[[], None] | None = None,
     ):
-        self.access_key = (access_key or os.getenv("UPBIT_ACCESS_KEY", "")).strip()
-        self.secret_key = (secret_key or os.getenv("UPBIT_SECRET_KEY", "")).strip()
-        self.ws_url = os.getenv("UPBIT_PRIVATE_WEBSOCKET_URL", self.URL).strip()
-        self.on_order = on_order
-        self.on_asset = on_asset
-        self.on_queue_overflow = on_queue_overflow
-        self.is_running = False
-        self.ws: websocket.WebSocketApp | None = None
-        self._thread: threading.Thread | None = None
-        # Private WebSocket 수신 스레드에서는 영속화·손익 계산을 하지 않는다.
-        self._order_event_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1000)
-        self._reconnect_delay = 2
-
-    def pending_order_event_count(self) -> int:
-        """메인 스레드가 아직 처리하지 않은 주문 이벤트 수."""
-        return self._order_event_queue.qsize()
-
-    def _handle_order_queue_overflow(self) -> None:
-        logger.warning(
-            "업비트 Private WebSocket 주문 이벤트 큐 포화(대기 %d건): REST 대사 전까지 신규 진입을 차단합니다.",
-            self.pending_order_event_count(),
+        eff_access = (access_key or os.getenv("UPBIT_ACCESS_KEY", "")).strip()
+        eff_secret = (secret_key or os.getenv("UPBIT_SECRET_KEY", "")).strip()
+        configured_url = os.getenv("UPBIT_PRIVATE_WEBSOCKET_URL", self.URL).strip()
+        super().__init__(
+            access_key=eff_access,
+            secret_key=eff_secret,
+            on_order=on_order,
+            on_asset=on_asset,
+            on_queue_overflow=on_queue_overflow,
+            ws_url=configured_url,
         )
-        if self.on_queue_overflow:
-            try:
-                self.on_queue_overflow()
-            except Exception as exc:
-                logger.warning("업비트 Private WebSocket 큐 포화 콜백 실패: %s", exc)
 
     def _headers(self) -> list[str]:
         """업비트 Private WebSocket용 JWT 토큰 헤더 생성"""
@@ -114,52 +100,3 @@ class UpbitPrivateWebSocketClient:
         except Exception as e:
             logger.debug(f"업비트 Private WebSocket 메시지 파싱 예외: {e}")
 
-    def drain_order_events(self, limit: int = 200) -> int:
-        """메인 스레드에서 주문 이벤트를 순차 반영해 파일·손익 갱신 경합을 방지한다."""
-        drained = 0
-        while drained < limit:
-            try:
-                event = self._order_event_queue.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                if self.on_order:
-                    self.on_order(event)
-            except Exception as exc:
-                logger.warning("Private WebSocket 주문 이벤트 후속 처리 실패: %s", exc)
-            drained += 1
-        return drained
-
-    def start(self) -> None:
-        if self.is_running or not self.access_key or not self.secret_key:
-            return
-        self.is_running = True
-
-        def run() -> None:
-            self._reconnect_delay = 2
-            while self.is_running:
-                try:
-                    self.ws = websocket.WebSocketApp(
-                        self.ws_url,
-                        header=self._headers(),
-                        on_open=self._on_open,
-                        on_message=self._on_message,
-                        on_error=lambda _ws, err: logger.warning(f"업비트 Private WebSocket 오류: {err}"),
-                    )
-                    self.ws.run_forever(ping_interval=30, ping_timeout=20)
-                except Exception as e:
-                    logger.warning(f"업비트 Private WebSocket 예외: {e}")
-
-                if self.is_running:
-                    time.sleep(self._reconnect_delay)
-                    self._reconnect_delay = min(self._reconnect_delay * 2, 30)
-
-        self._thread = threading.Thread(target=run, daemon=True, name="UpbitPrivateWebSocket")
-        self._thread.start()
-        logger.info("업비트 Private WebSocket 클라이언트 스레드 가동")
-
-    def stop(self) -> None:
-        self.is_running = False
-        if self.ws:
-            self.ws.close()
-        logger.info("업비트 Private WebSocket 클라이언트 종료 완료")

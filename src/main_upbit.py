@@ -61,6 +61,8 @@ from trading_bot_bootstrap import (
     ExchangeBootstrapProfile,
     TradingBootstrapContext,
     TradingBotBootstrap,
+    create_exchange_screener_shared,
+    execute_daily_morning_report_shared,
 )
 from trading_orchestrator import TradingOrchestrator
 from trading_runtime import (
@@ -366,17 +368,12 @@ def _reconcile_after_private_ws_drain() -> None:
 
 def _create_upbit_screener(exchange: ExchangeAdapter) -> MarketScreener:
     """사이클마다 최신 env를 반영한 업비트 스크리너를 생성한다."""
-    is_momentum_enabled = get_exchange_env_setting(
-        "upbit", "MOMENTUM_BREAKOUT_ENABLED", default=True, type_cast=bool,
-    )
-    return MarketScreener(
-        exchange,
-        min_trade_value_krw=float(get_exchange_env_setting("upbit", "MIN_TRADE_VALUE", 1000000000, type_cast=float)),
-        min_change_rate=float(get_exchange_env_setting("upbit", "MIN_CHANGE_RATE", 0.005, type_cast=float)),
-        max_change_rate=float(get_exchange_env_setting("upbit", "MAX_CHANGE_RATE", 0.25, type_cast=float)),
-        enable_early_breakout=is_momentum_enabled,
-        early_breakout_min_change_rate=MOMENTUM_BREAKOUT_MIN_CHANGE_RATE,
-        early_breakout_max_candidates=MOMENTUM_BREAKOUT_MAX_CANDIDATES,
+    return create_exchange_screener_shared(
+        exchange_name="upbit",
+        exchange=exchange,
+        get_env_setting=get_exchange_env_setting,
+        min_change_rate_early=MOMENTUM_BREAKOUT_MIN_CHANGE_RATE,
+        max_candidates_early=MOMENTUM_BREAKOUT_MAX_CANDIDATES,
     )
 
 
@@ -533,62 +530,15 @@ def check_btc_market_crash(upbit: UpbitAPI, threshold_pct: float = BTC_CRASH_THR
 
 def send_daily_morning_report():
     """매일 아침 09:00 KST 업비트 일일 결산 모닝 리포트를 전송한다."""
-    now_str = get_kst_now_str()
-    logger.info(f"📊 [업비트 아침 9시 일일 결산 브리핑 발송: {now_str}]")
-
-    try:
-        upbit = create_exchange_client()
-        fng = get_fear_and_greed_index()
-        balances = upbit.get_balances()
-        total_equity = calculate_total_equity(balances, upbit)
-        krw_avail = balances.get("KRW", {}).get("balance", 0.0)
-
-        daily_pnl_krw = total_equity - risk_manager.daily_start_equity
-        daily_pnl_pct = (
-            (daily_pnl_krw / risk_manager.daily_start_equity) * 100.0
-            if risk_manager.daily_start_equity > 0
-            else 0.0
-        )
-
-        held_markets = get_held_markets(balances, upbit)
-        held_names = [f"{upbit.get_korean_name(m)}({m.split('-')[-1]})" for m in held_markets]
-        held_desc = ", ".join(held_names) if held_names else "없음 (100% 현금 보유)"
-
-        ai_briefing = ""
-        # 브리핑도 업비트 Factory를 거쳐 전용 Gemini 키만 사용한다.
-        analyzer = build_upbit_analyzer()
-        if analyzer is not None and hasattr(analyzer, "generate_market_briefing"):
-            try:
-                candles_1h = upbit.get_candles(unit=60, count=30, market="KRW-BTC")
-                macro_diag = analyzer.diagnose_macro_regime(candles_1h, fng_index=fng)
-                ai_comment = analyzer.generate_market_briefing(
-                    exchange_name="업비트",
-                    total_equity=total_equity,
-                    daily_pnl_krw=daily_pnl_krw,
-                    daily_pnl_pct=daily_pnl_pct,
-                    held_positions_desc=held_desc,
-                    macro_diag=macro_diag,
-                    fng_desc=fng.get("desc", ""),
-                )
-                if ai_comment:
-                    ai_briefing = f"\n\n🤖 <b>[Gemini AI 종합 시황 브리핑]</b>\n{ai_comment}"
-            except Exception as e:
-                logger.debug(f"업비트 AI 브리핑 생성 예외: {e}")
-
-        telegram.send_message(
-            f"🌅 <b>[업비트 AI 퀀트 봇 - 09:00 KST 일일 성과 결산 브리핑]</b>\n\n"
-            f"• <b>총 평가 자산:</b> {total_equity:,.0f} KRW\n"
-            f"• <b>금일 자산 변동:</b> {daily_pnl_krw:+,.0f} KRW ({daily_pnl_pct:+.2f}%)\n"
-            f"• <b>금일 확정 실현 손익:</b> {risk_manager.realized_pnl_krw:+,.0f} KRW (총 {risk_manager.total_trades_today}회 거래)\n"
-            f"• <b>가용 원화 잔고:</b> {krw_avail:,.0f} KRW\n"
-            f"• <b>현재 보유 포지션:</b> {held_desc}\n"
-            f"• <b>크립토 공포/탐욕 지수:</b> {fng['desc']}\n"
-            f"• <b>웹 대시보드:</b> <code>http://localhost:{WEB_PORT}</code>\n"
-            f"• <b>기준 일시:</b> {now_str}"
-            f"{ai_briefing}"
-        )
-    except Exception as e:
-        logger.error(f"업비트 모닝 리포트 발송 실패: {e}")
+    execute_daily_morning_report_shared(
+        exchange_name="업비트",
+        create_exchange_client=create_exchange_client,
+        risk_manager=risk_manager,
+        telegram=telegram,
+        build_analyzer=build_upbit_analyzer,
+        logger=logger,
+        web_port=WEB_PORT,
+    )
 
 
 def run_cycle():

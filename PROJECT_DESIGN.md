@@ -1,4 +1,4 @@
-# Bithumb & Upbit AI Pro Quant Trading Bot (v8.82)
+# Bithumb & Upbit AI Pro Quant Trading Bot (v8.83)
 
 본 문서는 `c:\AI\bithumb` 디렉토리에 위치한 빗썸(Bithumb) 및 업비트(Upbit) 듀얼 거래소 지원 AI 퀀트 트레이딩 봇의 프로젝트 설명 및 아키텍처 설계서입니다. 이 문서는 다른 AI 에이전트 또는 개발자가 프로젝트의 전반적인 구조와 핵심 로직을 빠르고 명확하게 파악할 수 있도록 작성되었습니다.
 
@@ -19,6 +19,11 @@
   - 빗썸·업비트 분리 Google Gemini API (신규 BUY: Flash-Lite 계열 순차 폴백, 거시 진단 및 브리핑: 일반 Flash 최우선 라우팅 및 Flash-Lite 폴백, 빗썸 브리핑 전용 시스템 지침 분리 및 유연한 3줄 시황 품질 검증, 추론 모델 ThinkingBudget=0 제어, 거시 레짐 타임아웃 15초 상향 및 신규 BUY 진입 게이트 격리 안전망 완비), Telegram API
   - 거래소 전용 Groq API 거시 인텔리전스 (15분 주기 거시 레짐 진단 및 권장 현금 비중 도출: 빗썸 `BITHUMB_GROQ_API_KEY`, 업비트 `UPBIT_GROQ_API_KEY` 전용 키 격리, 공용 키 배제)
 - **주요 전략 및 아키텍처**: 
+  - **듀얼 거래소 공통 모듈화 및 아키텍처 일원화 (v8.83)**:
+    1. **호가단위 산출 수학 함수 단일화 (`src/order_safety/tick_utils.py`)**: `bithumb_api.py`와 `upbit_api.py`에 중복 존재하던 순수 수학/비즈니스 로직인 `adjust_price_to_tick()` 및 `round_price_to_tick()`을 `src/order_safety/tick_utils.py`로 분리 추출하고 단일 소스로 통합 위임.
+    2. **Gemini AI Provider 베이스 클래스 분리 (`BaseGeminiProvider`)**: `src/ai_provider.py`에 통신 및 모델 폴백 공통 베이스 클래스를 추출하여 `complete_json()`, `complete_text()`, 모델 검색 및 파싱 로직을 공유하고, 거래소별 텔레메트리(`GeminiTelemetry` vs `AIProviderTelemetry`) 및 시스템 프롬프트 격리는 완벽히 보존.
+    3. **웹소켓 클라이언트 프레임워크 단일화 (`src/base_websocket.py`)**: Public WebSocket(`BasePublicWebSocketClient`: 상태머신, 큐, 지수 백오프, ping_timeout=20, 헬스체크) 및 Private WebSocket(`BasePrivateWebSocketClient`: 큐 관리, 오버플로우 fail-closed 핸들링)을 공통 베이스로 추출. 빗썸/업비트 웹소켓 매니저는 파싱 및 구독 전송만 담당하도록 슬림화.
+    4. **부트스트랩 공유 헬퍼 분리 (`trading_bot_bootstrap.py`)**: `send_daily_morning_report()` 및 `_create_*_screener()`의 중복 템플릿 로직을 `execute_daily_morning_report_shared()` 및 `create_exchange_screener_shared()`로 일원화.
   - **듀얼 거래소 공통화 및 설정·안정성 일원화 (v8.82)**:
     1. **설정 로더 일원화 (`get_exchange_env_setting`) & 버그 해소**: 거래소별 환경변수 우선순위(`{EXCHANGE}_{KEY}` ➜ `{KEY}` ➜ `DEFAULT`)를 단일 헬퍼로 정규화. 업비트 스크리너 생성 시 `UPBIT_MOMENTUM_BREAKOUT_ENABLED`가 무시되던 결함을 수정하고, 빗썸에 `BITHUMB_TELEGRAM_BOT_TOKEN`, `BITHUMB_WEB_PORT`, `BITHUMB_MOMENTUM_BREAKOUT_ENABLED`, `BITHUMB_PAPER_FEE_RATE` 등 전용 환경변수 우선 조회를 전면 지원. 빗썸 웹 포트 및 모닝 리포트 URL의 `7979` 하드코딩을 제거하고 동적 `WEB_PORT`로 일원화. `TRADING_MODE` 표기(`REAL`/`LIVE`)를 상호 호환 정규화(`normalize_trading_mode`).
     2. **빗썸 AI 쿼터 가드 복원 & 동적 JSON 스키마 명칭**: `trading_runtime.py`에서 항상 `is_critical=False, is_tight=False`로 비활성화되어 있던 빗썸 AI 쿼터 가드를 `AIProviderTelemetry.get_daily_quota_budget("bithumb")`로 복원하여 일일 350회(70%)/450회(90%) 도달 시 AI 후보 축소/차단 가드가 빗썸에서도 정상 작동하도록 보장. `gemini_analyzer.py`의 고정 스키마명을 거래소별 동적 명칭(`f"{exchange}_holding_result"`, `f"{exchange}_ranking_result"`, `f"{exchange}_macro_result"`)으로 일원화.
@@ -160,17 +165,18 @@ c:\AI\bithumb\
 │   ├── main_upbit.py               # 업비트 진입점 (트레이딩 엔진 + 127.0.0.1:17980 내부 API)
 │   ├── dashboard_server.py         # [독립 프로세스] 통합 퀀트 대시보드 게이트웨이 서버 (포트 7979)
 │   ├── upbit_api.py                # 업비트 REST API 클라이언트 (HS512 JWT, query_hash, identifier)
-│   ├── upbit_websocket.py          # 업비트 Public WebSocket 클라이언트 (0.1초 실시간 틱/호가/고래 체결)
-│   ├── upbit_private_websocket.py  # 업비트 Private WebSocket 클라이언트 (myOrder, myAsset)
+│   ├── base_websocket.py           # Public 및 Private 웹소켓 공통 추상 베이스 클라이언트 (상태머신, 큐, 백오프)
+│   ├── upbit_websocket.py          # 업비트 Public WebSocket 클라이언트 (BasePublicWebSocketClient 상속)
+│   ├── upbit_private_websocket.py  # 업비트 Private WebSocket 클라이언트 (BasePrivateWebSocketClient 상속)
 │   ├── bithumb_api.py              # 빗썸 REST API 클라이언트
-│   ├── websocket_manager.py        # 빗썸 Public WebSocket 클라이언트
-│   ├── private_websocket_manager.py# 빗썸 Private WebSocket 클라이언트
+│   ├── websocket_manager.py        # 빗썸 Public WebSocket 클라이언트 (BasePublicWebSocketClient 상속)
+│   ├── private_websocket_manager.py# 빗썸 Private WebSocket 클라이언트 (BasePrivateWebSocketClient 상속)
 │   ├── groq_provider.py            # Groq API 클라이언트 (초저지연 거시 시장 레짐 분석, 키 격리)
 │   ├── market_intelligence.py      # 15분 주기 거시 시장 인텔리전스 서비스 (`MarketIntelligenceService`)
 │   ├── risk_manager.py             # 일일 손익/입출금보정/킬스위치(`DailyRiskManager`), 포지션추적(`TrailingStopTracker`), 자산평가
 │   ├── realtime_engine.py          # 0.1초 실시간 웹소켓 체결 틱 손절/익절 청산 엔진 (`RealtimeRiskEngine`), 미체결 정정/취소
 │   ├── bot_controller.py           # 텔레그램 양방향 제어, 웹 대시보드 API 공급자 (거래소별 독립 인스턴스)
-│   ├── order_safety/               # 주문 저널·멱등성 집행·체결 처리 패키지 (`journal`, `executor`, `fill_processor`, `cooldown`, `orderbook`)
+│   ├── order_safety/               # 주문 저널·멱등성 집행·체결 처리·호가단위 패키지 (`journal`, `executor`, `fill_processor`, `cooldown`, `orderbook`, `tick_utils`)
 │   ├── gemini_telemetry.py           # Gemini API 호출·429·로컬 폴백·캐시 적중 관측
 │   ├── operational_quality.py        # 호가 슬리피지 5거래일 관찰 준비도 리포트
 │   ├── risk_controls.py            # 매수 리스크 가드·포지션 사이징·동적 티어 (`RiskGuard`, `calculate_risk_position_size`)

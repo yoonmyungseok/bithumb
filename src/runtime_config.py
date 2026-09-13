@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Any
 
 
 def get_fraction_setting(name: str, default: float, *, positive: bool = True) -> float:

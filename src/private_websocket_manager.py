@@ -22,8 +22,14 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-class BithumbPrivateWebSocketClient:
+from base_websocket import BasePrivateWebSocketClient
+
+
+class BithumbPrivateWebSocketClient(BasePrivateWebSocketClient):
+    """빗썸 Private v2 WebSocket 클라이언트 (MyOrder, MyAsset)"""
+
     URL = "wss://ws-api.bithumb.com/websocket/v2/private"
+    CLIENT_NAME = "빗썸 Private WebSocket"
 
     def __init__(
         self,
@@ -33,31 +39,21 @@ class BithumbPrivateWebSocketClient:
         on_asset: Callable[[dict[str, Any]], None] | None = None,
         on_queue_overflow: Callable[[], None] | None = None,
     ):
-        self.access_key, self.secret_key = access_key, secret_key
-        self.on_order, self.on_asset = on_order, on_asset
-        self.on_queue_overflow = on_queue_overflow
-        self.is_running = False
-        self.ws: websocket.WebSocketApp | None = None
-        # 수신 스레드는 이벤트 큐에만 기록해 체결 파일과 손익 갱신 경합을 막는다.
-        self._order_event_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1000)
-
-    def pending_order_event_count(self) -> int:
-        """메인 스레드가 아직 처리하지 않은 주문 이벤트 수."""
-        return self._order_event_queue.qsize()
-
-    def _handle_order_queue_overflow(self) -> None:
-        logger.warning(
-            "빗썸 Private WebSocket 주문 이벤트 큐 포화(대기 %d건): REST 대사 전까지 신규 진입을 차단합니다.",
-            self.pending_order_event_count(),
+        super().__init__(
+            access_key=access_key,
+            secret_key=secret_key,
+            on_order=on_order,
+            on_asset=on_asset,
+            on_queue_overflow=on_queue_overflow,
+            ws_url=self.URL,
         )
-        if self.on_queue_overflow:
-            try:
-                self.on_queue_overflow()
-            except Exception as exc:
-                logger.warning("빗썸 Private WebSocket 큐 포화 콜백 실패: %s", exc)
 
     def _headers(self) -> list[str]:
-        token = jwt.encode({"access_key": self.access_key, "nonce": str(uuid.uuid4()), "timestamp": int(time.time() * 1000)}, self.secret_key, algorithm="HS256")
+        token = jwt.encode(
+            {"access_key": self.access_key, "nonce": str(uuid.uuid4()), "timestamp": int(time.time() * 1000)},
+            self.secret_key,
+            algorithm="HS256",
+        )
         return [f"Authorization: Bearer {token}"]
 
     def _on_open(self, ws: Any) -> None:
@@ -88,47 +84,3 @@ class BithumbPrivateWebSocketClient:
         except (ValueError, TypeError):
             logger.warning("Private WebSocket 메시지 파싱 실패")
 
-    def drain_order_events(self, limit: int = 200) -> int:
-        """메인 스레드에서 주문 이벤트를 순차 처리한다."""
-        drained = 0
-        while drained < limit:
-            try:
-                event = self._order_event_queue.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                if self.on_order:
-                    self.on_order(event)
-            except Exception as exc:
-                logger.warning("빗썸 Private WebSocket 주문 이벤트 후속 처리 실패: %s", exc)
-            drained += 1
-        return drained
-
-    def start(self) -> None:
-        if self.is_running or not self.access_key or not self.secret_key:
-            return
-        self.is_running = True
-        self._reconnect_delay = 2
-        def run() -> None:
-            while self.is_running:
-                try:
-                    self.ws = websocket.WebSocketApp(
-                        self.URL,
-                        header=self._headers(),
-                        on_open=self._on_open,
-                        on_message=self._on_message,
-                        on_error=lambda _ws, err: logger.warning("빗썸 Private WebSocket 오류: %s", err),
-                    )
-                    self.ws.run_forever(ping_interval=30, ping_timeout=20)
-                except Exception as e:
-                    logger.warning("빗썸 Private WebSocket 예외: %s", e)
-
-                if self.is_running:
-                    time.sleep(self._reconnect_delay)
-                    self._reconnect_delay = min(self._reconnect_delay * 2, 30)
-        threading.Thread(target=run, daemon=True, name="BithumbPrivateWebSocket").start()
-
-    def stop(self) -> None:
-        self.is_running = False
-        if self.ws:
-            self.ws.close()
