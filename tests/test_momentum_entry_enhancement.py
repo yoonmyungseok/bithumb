@@ -71,7 +71,7 @@ class MomentumEntryEnhancementTests(unittest.TestCase):
             self.assertTrue(res["allow_buy"])
 
     def test_strong_rs_leader_in_risk_off_relaxes_mtf_ratio(self):
-        """BTC 약세(RISK_OFF) 환경에서도 RS +2.5% 주도주는 1H MTF 0.985 수준에서 정상 진입 허용된다."""
+        """BTC 약세(RISK_OFF) 환경에서도 알트코인은 독립 매수 원칙에 따라 1H MTF 0.980 기준을 적용받아 정상 진입 허용된다."""
         candles_1h_dip = list(self.candles_1h)
         candles_1h_dip[0] = {"trade_price": 98.5, "high_price": 100.0, "low_price": 97.0, "opening_price": 99.0}
 
@@ -88,7 +88,8 @@ class MomentumEntryEnhancementTests(unittest.TestCase):
                 is_night=False,
                 relative_strength=0.005,
             )
-            self.assertFalse(res_normal_rs["allow_buy"])
+            # 알트코인 독립 매수: 비트코인 추세와 무관하게 1H EMA20 0.980 지지 만족 시 일반 종목도 매수 승인
+            self.assertTrue(res_normal_rs["allow_buy"])
 
             res_strong_rs = entry_signal(
                 self.candles,

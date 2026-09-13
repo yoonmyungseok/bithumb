@@ -220,11 +220,8 @@ class MarketScreener:
             held_candidates: list[dict[str, Any]] = []
             excluded_manual = get_excluded_manual_holdings()
 
-            min_trade_val = (
-                StrategyPolicy.MIN_TRADE_VALUE_RISK_OFF
-                if is_risk_off
-                else self.min_trade_value_krw
-            )
+            # 알트코인 독립 매수: 비트코인 급락(CRASH) 외에는 BTC 레짐(RISK_OFF 등)에 영향받지 않고 기본 최소 거래대금 기준 적용
+            min_trade_val = self.min_trade_value_krw
             if is_night_session():
                 min_trade_val = min_trade_val * StrategyPolicy.NIGHT_TRADE_VALUE_MULTIPLIER
 
@@ -266,9 +263,6 @@ class MarketScreener:
                     continue
 
                 if acc_price_24h < min_trade_val:
-                    continue
-
-                if is_risk_off and relative_strength < StrategyPolicy.RS_MIN_RISK_OFF:
                     continue
 
                 # 확인형 후보는 기존 상승률 조건을 그대로 사용한다.

@@ -13,7 +13,10 @@
     selectedCoin: null,
     lastData: null,
     countdown: 5,
-    countdownTimer: null
+    countdownTimer: null,
+    candidateFilter: '',
+    journalFilter: '',
+    pendingAction: null
   };
 
   // API Helper
@@ -1365,7 +1368,7 @@
       return `
         <tr class="hover:bg-slate-800/40 transition-colors border-b border-slate-800/80">
           <td class="p-3 whitespace-nowrap">
-            <div class="font-bold text-slate-100 flex items-center gap-1.5 cursor-pointer hover:text-blue-400" onclick="window.showChartModal('${pos.market}')">
+            <div class="font-bold text-slate-100 flex items-center gap-1.5 cursor-pointer hover:text-blue-400" onclick="window.showChartModal('${pos.market}', '${pos.exchange || state.activeExchange}')">
               <span>${pos.korean_name || pos.market}</span>
               <span class="text-xs text-slate-400 font-normal">(${pos.market})</span>
               ${pos.strategy_mode ? `<span class="text-xs text-amber-300">${formatStrategyModeLabel(pos.strategy_mode)}</span>` : '<span class="text-xs text-blue-400">📈</span>'}
@@ -1410,19 +1413,28 @@
     const tbody = document.getElementById('candidates_tbody');
     if (!tbody) return;
 
-    if (!candidates || candidates.length === 0) {
+    const allCandidates = candidates || [];
+    const q = (state.candidateFilter || '').trim().toLowerCase();
+    const filteredCandidates = q
+      ? allCandidates.filter(c => (c.market && c.market.toLowerCase().includes(q)) || (c.korean_name && c.korean_name.toLowerCase().includes(q)))
+      : allCandidates;
+
+    if (filteredCandidates.length === 0) {
+      const emptyMsg = q
+        ? `'${state.candidateFilter}' 검색 조건에 일치하는 후보 종목이 없습니다.`
+        : '현재 진입 기준을 통과한 신규 스캔 후보 종목이 없습니다.';
       tbody.innerHTML = `
         <tr>
           <td colspan="8" class="p-8 text-center text-slate-500">
             <div class="text-3xl mb-2">🎯</div>
-            <div class="text-sm font-medium">현재 진입 기준을 통과한 신규 스캔 후보 종목이 없습니다.</div>
+            <div class="text-sm font-medium">${emptyMsg}</div>
           </td>
         </tr>
       `;
       return;
     }
 
-    tbody.innerHTML = candidates.map((cand, idx) => {
+    tbody.innerHTML = filteredCandidates.map((cand, idx) => {
       const candidateTypeBadge = cand.candidate_type === 'EARLY_BREAKOUT'
         ? '<span class="text-xs text-emerald-400">🌱 초기 돌파</span>'
         : cand.candidate_type === 'NEW_LISTING'
@@ -1447,7 +1459,7 @@
       return `
         <tr class="hover:bg-slate-800/40 transition-colors border-b border-slate-800/80">
           <td class="p-3 whitespace-nowrap">
-            <div class="font-bold text-slate-100 flex items-center gap-1.5 cursor-pointer hover:text-blue-400" onclick="window.showChartModal('${cand.market}')">
+            <div class="font-bold text-slate-100 flex items-center gap-1.5 cursor-pointer hover:text-blue-400" onclick="window.showChartModal('${cand.market}', '${cand.exchange || state.activeExchange}')">
               <span class="text-slate-500 text-xs font-mono">#${idx + 1}</span>
               <span>${cand.korean_name || cand.market}</span>
               <span class="text-xs text-slate-400 font-normal">(${cand.market})</span>
@@ -1483,8 +1495,127 @@
     }).join('');
   }
 
+  // Render Daily Performance Canvas Chart (14일 자산 추이 및 일일 손익 히스토그램)
+  function renderDailyPerformanceChart(history) {
+    const canvas = document.getElementById('daily_pnl_canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const width = rect.width || canvas.parentElement.clientWidth || 600;
+    const height = rect.height || 160;
+    const dpr = window.devicePixelRatio || 1;
+
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, width, height);
+
+    if (!history || history.length === 0) {
+      ctx.fillStyle = '#64748b';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('표시할 14일 일일 성과 데이터가 없습니다.', width / 2, height / 2);
+      return;
+    }
+
+    // 시간 순서 정렬 (과거 -> 최근)
+    const items = [...history].sort((a, b) => (a.date || '').localeCompare(b.date || '')).slice(-14);
+    const n = items.length;
+    if (n === 0) return;
+
+    // 데이터 범위 추출
+    const pnls = items.map(d => Number(d.realized_pnl_krw || 0));
+    const equities = items.map(d => Number(d.start_equity || 0));
+
+    const maxPnl = Math.max(...pnls, 1000);
+    const minPnl = Math.min(...pnls, -1000);
+    const absMaxPnl = Math.max(Math.abs(maxPnl), Math.abs(minPnl));
+
+    const maxEq = Math.max(...equities);
+    const minEq = Math.min(...equities);
+    const eqRange = Math.max(maxEq - minEq, 1);
+
+    const padLeft = 10;
+    const padRight = 10;
+    const padTop = 20;
+    const padBottom = 26;
+    const chartW = width - padLeft - padRight;
+    const chartH = height - padTop - padBottom;
+
+    // 제로 라인 (손익 = 0)
+    const zeroY = padTop + chartH * (absMaxPnl / (absMaxPnl * 2));
+
+    // 제로 라인 점선 가이드
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(100, 116, 139, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.moveTo(padLeft, zeroY);
+    ctx.lineTo(width - padRight, zeroY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const slotW = chartW / n;
+    const barW = Math.max(6, Math.min(24, slotW * 0.55));
+
+    // 1. 손익 막대 그리기
+    items.forEach((item, i) => {
+      const pnl = pnls[i];
+      const cx = padLeft + slotW * i + slotW / 2;
+      const barH = (Math.abs(pnl) / absMaxPnl) * (chartH / 2 - 4);
+
+      ctx.fillStyle = pnl >= 0 ? '#10b981' : '#f43f5e';
+      if (pnl >= 0) {
+        ctx.fillRect(cx - barW / 2, zeroY - barH, barW, Math.max(2, barH));
+      } else {
+        ctx.fillRect(cx - barW / 2, zeroY, barW, Math.max(2, barH));
+      }
+
+      // 날짜 레이블 (MM-DD)
+      const dateStr = String(item.date || '').slice(5);
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(dateStr || `${i + 1}`, cx, height - 8);
+    });
+
+    // 2. 기준 자산 추이 라인 그리기 (Line Chart)
+    if (equities.some(eq => eq > 0)) {
+      ctx.beginPath();
+      ctx.strokeStyle = '#60a5fa';
+      ctx.lineWidth = 2;
+      const eqPoints = items.map((item, i) => {
+        const cx = padLeft + slotW * i + slotW / 2;
+        const normEq = (equities[i] - minEq) / eqRange;
+        const cy = padTop + (chartH - 8) * (1 - normEq) + 4;
+        return { x: cx, y: cy, val: equities[i] };
+      });
+
+      eqPoints.forEach((pt, i) => {
+        if (i === 0) ctx.moveTo(pt.x, pt.y);
+        else ctx.lineTo(pt.x, pt.y);
+      });
+      ctx.stroke();
+
+      // 포인트 원형 닷
+      eqPoints.forEach(pt => {
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = '#1e3a8a';
+        ctx.fill();
+        ctx.strokeStyle = '#93c5fd';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      });
+    }
+  }
+
   // Render Daily Asset & Performance History Table
   function renderDailyHistoryTable(history) {
+    renderDailyPerformanceChart(history);
     const tbody = document.getElementById('daily_history_tbody');
     if (!tbody) return;
 
@@ -1585,14 +1716,21 @@
     if (!tbody) return;
 
     // 최근 24시간 이내 데이터만 필터링
-    const filteredOrders = (orders || []).filter(o => isWithinLast24Hours(o.timestamp || o.created_at || o.updated_at));
+    const within24h = (orders || []).filter(o => isWithinLast24Hours(o.timestamp || o.created_at || o.updated_at));
+    const q = (state.journalFilter || '').trim().toLowerCase();
+    const filteredOrders = q
+      ? within24h.filter(o => (o.market && o.market.toLowerCase().includes(q)) || (o.korean_name && o.korean_name.toLowerCase().includes(q)))
+      : within24h;
 
     if (filteredOrders.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="7" class="p-4 text-center text-slate-500">최근 24시간 내 주문 저널 기록이 없습니다.</td></tr>`;
+      const emptyMsg = q
+        ? `'${state.journalFilter}' 검색 조건에 일치하는 주문 저널 기록이 없습니다.`
+        : '최근 24시간 내 주문 저널 기록이 없습니다.';
+      tbody.innerHTML = `<tr><td colspan="7" class="p-4 text-center text-slate-500">${emptyMsg}</td></tr>`;
       return;
     }
 
-    tbody.innerHTML = orders.map(o => {
+    tbody.innerHTML = filteredOrders.map(o => {
       const isBuy = (o.side || '').toLowerCase() === 'bid' || (o.side || '').toLowerCase() === 'buy';
 
       return `
@@ -1622,21 +1760,132 @@
     }).join('');
   }
 
-  // Quick Action Handler with Confirmation
-  window.triggerAction = async function (actionName) {
-    const actionTitles = {
-      panic: '🚨 [긴급 전량 매도] 정말로 모든 보유 코인을 시장가로 전량 매도하고 봇을 일시정지하시겠습니까?',
-      pause: '⏸️ [일시정지] 신규 매수를 중단하고 관망 모드로 전환하시겠습니까? (기존 보유분의 손절/익절은 유지됩니다)',
-      resume: '▶️ [매매 재개] 자동매매 및 신규 진입 분석을 다시 가동하시겠습니까?'
-    };
+  // Search Handlers
+  window.onCandidateSearch = function (val) {
+    state.candidateFilter = val || '';
+    if (state.lastData) {
+      const d = state.activeExchange === 'upbit'
+        ? (state.lastData.upbit || state.lastData.combined)
+        : (state.activeExchange === 'bithumb' ? (state.lastData.bithumb || state.lastData.combined) : (state.lastData.combined || state.lastData));
+      renderCandidatesTable(d.candidates || [], d.safety);
+    }
+  };
 
-    const confirmMsg = actionTitles[actionName] || `${actionName} 명령을 실행하시겠습니까?`;
-    if (!confirm(confirmMsg)) return;
+  window.onOrderSearch = function (val) {
+    state.journalFilter = val || '';
+    if (state.lastData) {
+      const d = state.activeExchange === 'upbit'
+        ? (state.lastData.upbit || state.lastData.combined)
+        : (state.activeExchange === 'bithumb' ? (state.lastData.bithumb || state.lastData.combined) : (state.lastData.combined || state.lastData));
+      renderOrderJournalTable(d.recent_orders || []);
+    }
+  };
+
+  // Quick Action Modal & Execution
+  const actionConfigs = {
+    panic: {
+      icon: '🚨',
+      title: '긴급 전량 매도 (Panic Sell)',
+      subtitle: '보유 코인을 시장가로 전량 매도하고 봇을 일시정지합니다.',
+      body: '<p class="text-rose-400 font-bold">⚠️ 모든 보유 포지션을 즉시 시장가로 청산합니다.</p><p>급격한 시장 폭락에 대응하기 위한 비상 탈출 명령입니다. 체결 후 신규 매수는 일시정지됩니다.</p>',
+      requireKeyword: true,
+      btnClass: 'bg-rose-600 hover:bg-rose-700'
+    },
+    pause: {
+      icon: '⏸️',
+      title: '트레이딩 일시정지',
+      subtitle: '신규 매수 진입을 중단하고 관망 모드로 전환합니다.',
+      body: '<p>신규 매수 스캔 및 자동 주문이 중단됩니다.</p><p class="text-amber-300">※ 기존 보유 포지션의 손절/익절 및 리스크 관리는 정상 유지됩니다.</p>',
+      requireKeyword: false,
+      btnClass: 'bg-amber-600 hover:bg-amber-700'
+    },
+    resume: {
+      icon: '▶️',
+      title: '트레이딩 매매 재개',
+      subtitle: '자동매매 및 신규 진입 분석을 다시 가동합니다.',
+      body: '<p class="text-emerald-400">일시정지 상태를 해제하고 7대 알파 모멘텀 스크리닝 및 자동 주문을 재개합니다.</p>',
+      requireKeyword: false,
+      btnClass: 'bg-emerald-600 hover:bg-emerald-700'
+    }
+  };
+
+  window.triggerAction = function (actionName) {
+    const config = actionConfigs[actionName];
+    if (!config) return;
+
+    state.pendingAction = actionName;
+    const modal = document.getElementById('action-confirm-modal');
+    if (!modal) {
+      // 모달 미존재 시 브라우저 confirm fallback
+      const confirmMsg = `${config.title}을(를) 실행하시겠습니까?`;
+      if (!confirm(confirmMsg)) return;
+      state.pendingAction = actionName;
+      window.confirmAndExecuteAction();
+      return;
+    }
+
+    document.getElementById('modal-action-icon').innerText = config.icon;
+    document.getElementById('modal-action-title').innerText = config.title;
+    document.getElementById('modal-action-subtitle').innerText = config.subtitle;
+    document.getElementById('modal-action-body').innerHTML = config.body;
+
+    const btn = document.getElementById('modal-action-btn');
+    if (btn) {
+      btn.className = `px-4 py-2 rounded-xl text-xs font-bold text-white transition ${config.btnClass}`;
+      btn.innerText = actionName === 'panic' ? '전량 매도 실행' : '확인 및 실행';
+    }
+
+    // 기본 대상 거래소: 현재 활성 탭
+    const radios = document.getElementsByName('modal_action_exchange');
+    radios.forEach(r => {
+      r.checked = (r.value === (state.activeExchange || 'all'));
+    });
+
+    const inputWrap = document.getElementById('modal-confirm-input-wrap');
+    const inputEl = document.getElementById('modal_confirm_input');
+    if (inputEl) inputEl.value = '';
+    if (config.requireKeyword) {
+      if (inputWrap) inputWrap.classList.remove('hidden');
+    } else {
+      if (inputWrap) inputWrap.classList.add('hidden');
+    }
+
+    modal.classList.remove('hidden');
+  };
+
+  window.closeActionModal = function () {
+    const modal = document.getElementById('action-confirm-modal');
+    if (modal) modal.classList.add('hidden');
+    state.pendingAction = null;
+  };
+
+  window.confirmAndExecuteAction = async function () {
+    const actionName = state.pendingAction;
+    if (!actionName) return;
+    const config = actionConfigs[actionName];
+
+    // 키워드 확인 (전량 매도 시)
+    if (config && config.requireKeyword) {
+      const inputEl = document.getElementById('modal_confirm_input');
+      const val = (inputEl ? inputEl.value : '').trim();
+      if (val !== '전량매도') {
+        alert('안전 확인을 위해 "전량매도"를 정확히 입력해야 합니다.');
+        if (inputEl) inputEl.focus();
+        return;
+      }
+    }
+
+    // 대상 거래소 가져오기
+    let targetEx = state.activeExchange || 'all';
+    const radios = document.getElementsByName('modal_action_exchange');
+    radios.forEach(r => {
+      if (r.checked) targetEx = r.value;
+    });
+
+    window.closeActionModal();
 
     try {
       const baseUrl = getApiBaseUrl();
-      const targetEx = state.activeExchange || 'all';
-      // 토큰은 브라우저 세션에만 보관하며 서버가 인증을 요구할 때만 입력받는다.
       const actionToken = window.sessionStorage.getItem('dashboardActionToken') || '';
       const headers = actionToken ? { 'X-Dashboard-Action-Token': actionToken } : {};
       const res = await fetch(`${baseUrl}/api/action/${actionName}?exchange=${targetEx}`, {
@@ -1698,8 +1947,8 @@
     fetchStatus();
   };
 
-  // Chart Modal Handler
-  window.showChartModal = function (market) {
+  // Chart Modal Handler (TradingView 심볼 & 거래소 명시 연동)
+  window.showChartModal = function (market, exchange) {
     const modal = document.getElementById('chart-modal');
     const container = document.getElementById('chart-container');
     const titleEl = document.getElementById('chart-coin-title');
@@ -1707,7 +1956,14 @@
 
     state.selectedCoin = market;
     const cleanSymbol = market.replace('KRW-', '');
-    if (titleEl) titleEl.innerText = `${market} 실시간 인터랙티브 차트 (TradingView)`;
+
+    // 거래소 판별: 파라미터 exchange > activeExchange > 기본값 bithumb
+    let targetEx = (exchange || state.activeExchange || 'bithumb').toLowerCase();
+    if (targetEx === 'combined') targetEx = 'bithumb';
+    const tvPrefix = targetEx === 'upbit' ? 'UPBIT' : 'BITHUMB';
+    const exNameKo = targetEx === 'upbit' ? '업비트' : '빗썸';
+
+    if (titleEl) titleEl.innerText = `[${exNameKo}] ${market} 실시간 인터랙티브 차트 (TradingView)`;
 
     container.innerHTML = `
       <div id="tradingview_widget" style="height: 480px; width: 100%;"></div>
@@ -1716,7 +1972,7 @@
     if (window.TradingView) {
       new window.TradingView.widget({
         autosize: true,
-        symbol: `${state.activeExchange === 'upbit' ? 'UPBIT' : 'BITHUMB'}:${cleanSymbol}KRW`,
+        symbol: `${tvPrefix}:${cleanSymbol}KRW`,
         interval: '15',
         timezone: 'Asia/Seoul',
         theme: 'dark',
@@ -1744,16 +2000,38 @@
     if (modal) modal.classList.add('hidden');
   };
 
-  // Setup Countdown and Periodic Polling
+  // Setup Countdown and Periodic Polling with Page Visibility Optimization
   function setupPolling() {
     fetchStatus();
-    state.timerId = setInterval(fetchStatus, state.autoRefreshInterval);
+
+    function startInterval(intervalMs) {
+      if (state.timerId) clearInterval(state.timerId);
+      state.autoRefreshInterval = intervalMs;
+      state.timerId = setInterval(fetchStatus, intervalMs);
+    }
+
+    startInterval(5000);
+
     state.countdownTimer = setInterval(() => {
+      if (document.hidden) return; // 백그라운드 탭에서는 불필요한 카운트다운 렌더링 생략
       state.countdown = Math.max(0, state.countdown - 1);
       const cdEl = document.getElementById('refresh-countdown');
       if (cdEl) cdEl.innerText = `${state.countdown}s`;
       if (state.countdown === 0) state.countdown = 5;
     }, 1000);
+
+    // Page Visibility API: 탭이 숨겨지면 15초로 완화, 탭으로 복귀 시 즉시 갱신 후 5초 복원
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        startInterval(15000);
+      } else {
+        startInterval(5000);
+        state.countdown = 5;
+        const cdEl = document.getElementById('refresh-countdown');
+        if (cdEl) cdEl.innerText = '5s';
+        fetchStatus();
+      }
+    });
   }
 
   // Initialize on DOM Ready

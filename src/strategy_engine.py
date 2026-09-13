@@ -187,10 +187,10 @@ class StrategyPolicy:
     MOMENTUM_EARLY_EXIT_BARS_5M: int = 9   # 5분봉 9개 캔들
     TIME_STOP_SECONDS: int = 7200        # 120분 타임스탑 (기본 정상장, 실거래 초 단위)
     TIME_STOP_SECONDS_NORMAL: int = 7200 # 정상장 120분 타임스탑
-    TIME_STOP_SECONDS_RISK_OFF: int = 3600 # RISK_OFF 약세장 60분 단축 타임스탑
+    TIME_STOP_SECONDS_RISK_OFF: int = 7200 # 알트코인 독립 매수: RISK_OFF 약세장에서도 정상장과 동일한 120분 타임스탑 유지
     TIME_STOP_MAX_HOLD_SECONDS: int = 10800 # 지지선 유지 시 최대 180분 반등 대기 유예
     TIME_STOP_BARS_5M: int = 24          # 5분봉 24개 = 120분 (백테스트 캔들 단위)
-    TIME_STOP_BARS_5M_RISK_OFF: int = 12 # 5분봉 12개 = 60분 (RISK_OFF 백테스트 캔들 단위)
+    TIME_STOP_BARS_5M_RISK_OFF: int = 24 # 알트코인 독립 매수: RISK_OFF 백테스트 캔들 단위 정상장(24봉) 일원화
     TIME_STOP_MAX_HOLD_BARS_5M: int = 36 # 최대 유예 36봉 (180분)
     TIME_STOP_BREAKEVEN_MIN_PNL_PCT: float = 0.003 # 타임스탑 실질 본전 기준 (+0.30% 완충 마진 확보)
     COOLDOWN_STOP_LOSS_SEC: float = 1800.0  # 손절 후 쿨다운 30분 (연속 손절 방어)
@@ -255,9 +255,9 @@ class StrategyPolicy:
 
     # 4-1. 공격형 모멘텀 돌파는 미완성 봉이 아닌 최신 확정봉만으로 평가한다.
     MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NORMAL: int = 55
-    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF: int = 70
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF: int = 55 # 알트코인 독립 매수: RISK_OFF 시에도 정상장과 동일한 55점 적용
     MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT: int = 65
-    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF: int = 75
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF: int = 65 # 알트코인 독립 매수: 심야 65점 일원화
     MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN: float = 1.1
     MOMENTUM_BREAKOUT_LOOKBACK_BARS: int = 4
     MOMENTUM_BREAKOUT_RSI_MIN: float = 52.0
@@ -276,7 +276,7 @@ class StrategyPolicy:
     RS_LEADER_MIN_RS: float = 0.030                 # BTC 대비 상대강도 +3.0% 이상
     RS_LEADER_EARLY_MAX_CHANGE_RATE: float = 0.120  # 주도주 모멘텀 초입(+12.0% 이하) 확장 허용
     RS_LEADER_BREAKOUT_TOLERANCE: float = 0.992     # 직전 고점 99.2% 이상 근접 지지 양봉 허용
-    RS_LEADER_ALPHA_THRESHOLD_RISK_OFF: int = 65    # RISK_OFF 시 RS 주도주 알파 임계치 완화 (70->65)
+    RS_LEADER_ALPHA_THRESHOLD_RISK_OFF: int = 55    # 알트코인 독립 매수: RISK_OFF 시 RS 주도주 임계값 55점 일원화
 
     @classmethod
     def get_momentum_early_max_change_rate(cls, relative_strength: float = 0.0) -> float:
@@ -385,27 +385,19 @@ def get_momentum_breakout_alpha_threshold(
     is_night: bool | None = None,
     relative_strength: float = 0.0,
 ) -> int:
-    """확정봉 모멘텀 돌파 전용 알파 기준을 세션, BTC 레짐, RS 주도주 여부별로 반환한다."""
+    """확정봉 모멘텀 돌파 전용 알파 기준을 반환한다.
+    알트코인 독립 매수: 비트코인 급락(CRASH)이 아닌 이상, BTC 레짐(RISK_OFF 등)에 영향없이
+    정상장 기준(주간 55점, 심야 65점)을 일관 적용한다.
+    """
     regime_upper = str(btc_regime or "NORMAL").upper()
     night_active = is_night if is_night is not None else is_night_session()
-    is_leader = is_rs_leader(relative_strength, regime_upper)
 
     if night_active:
-        if regime_upper == "RISK_OFF":
-            return (
-                StrategyPolicy.RS_LEADER_ALPHA_THRESHOLD_RISK_OFF + 5
-                if is_leader
-                else StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF
-            )
-        elif regime_upper == "BULL_TREND":
+        if regime_upper == "BULL_TREND":
             return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_BULL
         return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT
 
-    if regime_upper == "RISK_OFF":
-        if is_leader:
-            return StrategyPolicy.RS_LEADER_ALPHA_THRESHOLD_RISK_OFF
-        return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF
-    elif regime_upper == "BULL_TREND":
+    if regime_upper == "BULL_TREND":
         return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_BULL
     return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NORMAL
 
@@ -415,12 +407,7 @@ def get_momentum_extended_alpha_threshold(
     is_night: bool | None = None,
     relative_strength: float = 0.0,
 ) -> int:
-    """확장 후반 추격 진입의 AI 알파 기준을 단일 정책값으로 반환한다.
-
-    RISK_OFF에서는 확정봉·거래량·RSI·MTF 하드 게이트를 이미 통과한 후보만
-    일반 모멘텀과 같은 70/75점 기준으로 평가한다. 그 외 레짐은 기존 고확신
-    확인형 기준을 유지해 이번 완화 범위가 약세장 추격 경로로 한정되도록 한다.
-    """
+    """확장 후반 추격 진입의 AI 알파 기준을 반환한다."""
     regime_upper = str(btc_regime or "NORMAL").upper()
     night_active = is_night if is_night is not None else is_night_session()
 
@@ -431,7 +418,6 @@ def get_momentum_extended_alpha_threshold(
             else StrategyPolicy.MOMENTUM_EXTENDED_ALPHA_THRESHOLD_RISK_OFF
         )
 
-    # 기존 NORMAL/BULL 확장 구간은 RS 주도주만 75점, 일반 후보는 80점으로 유지한다.
     return 75 if is_rs_leader(relative_strength, regime_upper) else 80
 
 
@@ -442,8 +428,6 @@ def get_time_stop_bars_5m(btc_regime: str = "NORMAL", is_night: bool | None = No
 
     if night_active:
         profit_bars = max(1, int(StrategyPolicy.NIGHT_TIME_STOP_SECONDS / 300))
-    elif regime_upper == "RISK_OFF":
-        profit_bars = StrategyPolicy.TIME_STOP_BARS_5M_RISK_OFF
     elif regime_upper == "BULL_TREND":
         profit_bars = max(1, int(StrategyPolicy.BULL_TIME_STOP_SECONDS / 300))
     else:
@@ -1243,11 +1227,8 @@ def entry_signal(
         else:
             prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
             ema20_1h = calculate_ema(prices_1h, 20)
-        if regime_upper == "RISK_OFF":
-            # 약세장에서는 상위 시간봉 지지 확인을 우선하되, BTC 대비 독자 수급 주도주(RS >= +2%)는 정상장(0.980)으로 완화
-            mtf_ratio = 0.980 if is_strong_rs_leader else 0.998
-        else:
-            mtf_ratio = 0.980
+        # 알트코인 독립 매수: 비트코인 급락(CRASH) 외에는 BTC 추세와 무관하게 1H EMA20 지지선 기준을 정상장(0.980)으로 일관 적용
+        mtf_ratio = 0.980
         mtf_allowed = current_1h >= (ema20_1h * mtf_ratio)
         mtf_reason = f"1H {current_1h:.1f} {'>=' if mtf_allowed else '<'} EMA20 {ema20_1h:.1f} (기준 {mtf_ratio:.3f})"
 

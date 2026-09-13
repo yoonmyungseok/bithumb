@@ -411,7 +411,7 @@
             </tr>
           </thead>
           <tbody id="positions_tbody" class="divide-y divide-slate-800 bg-slate-900/30">
-            <tr><td colspan="7" class="p-6 text-center text-slate-500">데이터 로딩 중...</td></tr>
+            <tr><td colspan="9" class="p-6 text-center text-slate-500">데이터 로딩 중...</td></tr>
           </tbody>
         </table>
       </div>
@@ -419,12 +419,18 @@
 
     <!-- Section 2: Scanned Non-Held Candidates Watchlist -->
     <div id="section_candidates" class="card-glass p-5 sm:p-6">
-      <div class="flex flex-wrap justify-between items-center mb-4">
+      <div class="flex flex-wrap justify-between items-center mb-4 gap-2">
         <div>
           <h2 class="text-lg font-bold text-white flex items-center">
             <span class="mr-2">🎯</span> 신규 스캔 종목 AI 진입 전략 후보군 (Watchlist)
           </h2>
           <p class="text-xs text-slate-400 mt-0.5">실시간 거래대금 & 급등 모멘텀 스크리너가 발굴한 7대 알파 분석 결과</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <div class="relative">
+            <input type="text" id="candidate_search_input" placeholder="종목명/티커 검색..." oninput="window.onCandidateSearch(this.value)" class="bg-slate-950/80 border border-slate-700/80 rounded-lg px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 w-44">
+            <span class="absolute right-2.5 top-1.5 text-slate-500 text-xs">🔍</span>
+          </div>
         </div>
       </div>
       <div class="table-scroll-watchlist overflow-x-auto rounded-xl border border-slate-800/80" aria-label="신규 스캔 종목 AI 진입 전략 후보군 목록">
@@ -442,7 +448,7 @@
             </tr>
           </thead>
           <tbody id="candidates_tbody" class="divide-y divide-slate-800 bg-slate-900/30">
-            <tr><td colspan="7" class="p-6 text-center text-slate-500">후보 종목 데이터를 불러오는 중...</td></tr>
+            <tr><td colspan="8" class="p-6 text-center text-slate-500">후보 종목 데이터를 불러오는 중...</td></tr>
           </tbody>
         </table>
       </div>
@@ -459,6 +465,22 @@
         </div>
         <div class="text-xs text-slate-400 mt-2 sm:mt-0">
           <span class="px-2 py-0.5 rounded bg-slate-800 text-slate-300 font-mono text-[11px]">최근 14일 기록</span>
+        </div>
+      </div>
+      <!-- 14일 일일 성과 미니 차트 (손익 막대 + 누적 자산 추이) -->
+      <div id="daily_chart_wrapper" class="mb-4 bg-slate-950/50 rounded-xl p-3 border border-slate-800/80">
+        <div class="flex justify-between items-center mb-2 text-xs text-slate-400">
+          <span class="font-semibold text-slate-300 flex items-center gap-1.5">
+            <span>📈</span> 14일 자산 추이 및 일일 손익 히스토그램
+          </span>
+          <div class="flex items-center gap-3 text-[11px]">
+            <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block"></span> 수익</span>
+            <span class="flex items-center gap-1"><span class="w-2.5 h-2.5 rounded-sm bg-rose-500 inline-block"></span> 손실</span>
+            <span class="flex items-center gap-1"><span class="w-3 h-0.5 bg-blue-400 inline-block"></span> 기준 자산</span>
+          </div>
+        </div>
+        <div class="w-full relative" style="height: 160px;">
+          <canvas id="daily_pnl_canvas" class="w-full h-full block"></canvas>
         </div>
       </div>
       <div class="overflow-x-auto rounded-xl border border-slate-800/80">
@@ -508,9 +530,15 @@
 
       <!-- Real-time Order Journal -->
       <div class="card-glass p-5 sm:p-6">
-        <h2 class="text-base font-bold text-white mb-3 flex items-center">
-          <span class="mr-2">🛡️</span> 실시간 주문 저널 (Order Journal) <span class="text-xs font-normal text-slate-400 ml-1">(최근 24시간)</span>
-        </h2>
+        <div class="flex flex-wrap justify-between items-center mb-3 gap-2">
+          <h2 class="text-base font-bold text-white flex items-center">
+            <span class="mr-2">🛡️</span> 실시간 주문 저널 (Order Journal) <span class="text-xs font-normal text-slate-400 ml-1">(최근 24시간)</span>
+          </h2>
+          <div class="relative">
+            <input type="text" id="order_search_input" placeholder="주문 종목 검색..." oninput="window.onOrderSearch(this.value)" class="bg-slate-950/80 border border-slate-700/80 rounded-lg px-3 py-1 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 w-36">
+            <span class="absolute right-2 top-1 text-slate-500 text-xs">🔍</span>
+          </div>
+        </div>
         <p class="text-[11px] text-slate-500 mb-3">최근 24시간 주문 내역입니다. 접수(ACK)는 체결이 아니며, 체결·포지션 반영은 Private WebSocket 또는 REST 대사 확인 뒤에만 확정됩니다.</p>
         <div class="table-scroll-order-journal overflow-x-auto rounded-xl border border-slate-800/80" aria-label="실시간 주문 저널 목록">
           <table class="w-full text-left text-xs text-slate-300">
@@ -622,6 +650,46 @@
       </div>
       <div id="chart-container" class="p-2 bg-slate-950">
         <!-- TradingView Widget Injected Here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Action Confirmation Modal -->
+  <div id="action-confirm-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-150 p-6 space-y-4">
+      <div class="flex items-center gap-3">
+        <span id="modal-action-icon" class="text-2xl">🚨</span>
+        <div>
+          <h3 id="modal-action-title" class="text-base font-bold text-white">명령 실행 확인</h3>
+          <p id="modal-action-subtitle" class="text-xs text-slate-400">주의사항을 확인 후 실행하십시오.</p>
+        </div>
+      </div>
+      <div id="modal-action-body" class="text-xs text-slate-300 bg-slate-950/60 p-3 rounded-xl border border-slate-800 space-y-2">
+      </div>
+      <div class="space-y-2">
+        <label class="text-xs text-slate-400 block font-medium">대상 거래소 선택</label>
+        <div class="grid grid-cols-3 gap-2 text-xs">
+          <label class="flex items-center gap-1.5 p-2 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-600">
+            <input type="radio" name="modal_action_exchange" value="all" checked class="accent-blue-500">
+            <span class="text-slate-200 font-semibold">전체</span>
+          </label>
+          <label class="flex items-center gap-1.5 p-2 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-600">
+            <input type="radio" name="modal_action_exchange" value="bithumb" class="accent-amber-500">
+            <span class="text-amber-300 font-semibold">빗썸만</span>
+          </label>
+          <label class="flex items-center gap-1.5 p-2 rounded-lg bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-600">
+            <input type="radio" name="modal_action_exchange" value="upbit" class="accent-blue-400">
+            <span class="text-blue-300 font-semibold">업비트만</span>
+          </label>
+        </div>
+      </div>
+      <div id="modal-confirm-input-wrap" class="hidden space-y-1">
+        <label class="text-xs text-rose-400 block font-medium">안전 확인: "<span class="font-bold underline">전량매도</span>"를 입력하세요</label>
+        <input type="text" id="modal_confirm_input" placeholder="전량매도" class="w-full bg-slate-950 border border-rose-500/50 rounded-lg px-3 py-2 text-xs text-rose-200 placeholder-slate-600 focus:outline-none focus:border-rose-500">
+      </div>
+      <div class="flex justify-end gap-2 pt-2">
+        <button onclick="window.closeActionModal()" class="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 transition">취소</button>
+        <button id="modal-action-btn" onclick="window.confirmAndExecuteAction()" class="px-4 py-2 rounded-xl text-xs font-bold text-white transition bg-rose-600 hover:bg-rose-700">실행</button>
       </div>
     </div>
   </div>

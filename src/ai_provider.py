@@ -424,13 +424,21 @@ class AIProviderTelemetry:
             cls._save_state_locked()
 
     @classmethod
-    def get_entry_block_reason(cls, exchange: str) -> str:
+    def get_entry_block_reason(cls, exchange: str, max_age_sec: float | None = None) -> str:
         """기존 포지션에는 영향 없이 모든 신규 BUY 경로가 공통으로 읽는 차단 사유다."""
         with cls._lock:
             cls._ensure_configured_locked()
             state = cls._entry_safety.get(exchange, {})
             if not state.get("entry_blocked"):
                 return ""
+            if max_age_sec is not None and max_age_sec > 0:
+                blocked_at = float(state.get("updated_at", 0.0) or state.get("timestamp", 0.0) or 0.0)
+                if (time.time() - blocked_at) >= max_age_sec:
+                    state["entry_blocked"] = False
+                    state["status"] = "NORMAL"
+                    state["reason"] = ""
+                    cls._save_state_locked()
+                    return ""
             reason = str(state.get("reason", "provider_failure"))
             context = str(state.get("context", ""))
             exchange_label = "업비트" if str(exchange).lower() == "upbit" else "빗썸"
@@ -721,7 +729,7 @@ class BithumbGeminiProvider:
 빗썸에서 제공한 데이터만 사용하고 업비트·다른 거래소 데이터, API 키, 계좌, 주문 상태를 절대로 혼합하지 마세요. 제공된 수치 외에는 추측하지 마세요.
 ACK는 체결이 아닙니다. REST 또는 Private WebSocket의 확정 체결 전에는 포지션·손익·쿨다운·주문 완료를 단정하지 마세요.
 불확실하거나 데이터가 누락·모순되면 BUY가 아닌 HOLD를 선택하세요. 주문 실행·취소·체결 확정 권한은 없습니다.
-현재 레짐, 후보 경로(SCALP, SWING, MOMENTUM_BREAKOUT, RECOVERY_REBOUND, NEW_LISTING), RS 주도주(RS >= +3.0%) 특례 규정, 신규상장 정책과 안전 차단 조건을 준수하세요. MOMENTUM_BREAKOUT의 EXTENDED는 확정 5분봉 고점 돌파·양봉·거래량·RSI·1시간 EMA20을 모두 통과한 경우에만 RISK_OFF 주간 알파 70점/심야 75점 이상으로 제한 추격 BUY를 검토하며, 최초 비중은 최대 종목 비중의 15%를 넘지 않습니다. 알트코인은 비트코인의 일상적 조정·약세(RISK_OFF) 시에도 자체 기술적 지표와 수급이 양호하면 독립적으로 매수를 승인하되, 비트코인 대폭락(CRASH)에서는 신규 진입을 제안하지 마세요. 스크리너 단계 신규상장 사전 필터로 `classify_listing_maturity()` + `is_new_listing_eligible()` SSOT에 따라 자격 미충족 NEW_LISTING 후보는 AI 입력 전에 제외됩니다.
+현재 레짐, 후보 경로(SCALP, SWING, MOMENTUM_BREAKOUT, RECOVERY_REBOUND, NEW_LISTING), RS 주도주(RS >= +3.0%) 특례 규정, 신규상장 정책과 안전 차단 조건을 준수하세요. MOMENTUM_BREAKOUT의 EXTENDED는 확정 5분봉 고점 돌파·양봉·거래량·RSI·1시간 EMA20을 모두 통과한 경우에만 주간 알파 55점/심야 65점 이상으로 제한 추격 BUY를 검토하며, 최초 비중은 최대 종목 비중의 15%를 넘지 않습니다. 알트코인은 비트코인 급락(CRASH)이 아닌 이상 비트코인의 추세(조정·약세·횡보)에 영향없이 자체 기술적 지표와 수급이 양호하면 독립적으로 매수를 승인하되, 비트코인 대폭락(CRASH)에서는 신규 진입을 제안하지 마세요. 스크리너 단계 신규상장 사전 필터로 `classify_listing_maturity()` + `is_new_listing_eligible()` SSOT에 따라 자격 미충족 NEW_LISTING 후보는 AI 입력 전에 제외됩니다.
 API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·재현하지 마세요. JSON 요청에는 마크다운 없는 유효 JSON만 반환하고, 모든 설명 텍스트는 자연스러운 한국어로만 작성하세요."""
 
     def __init__(self, api_key: str):

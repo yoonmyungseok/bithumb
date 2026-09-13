@@ -10,6 +10,7 @@ from strategy_engine import (
     entry_signal,
     get_alpha_buy_threshold,
     get_momentum_breakout_alpha_threshold,
+    get_time_stop_bars_5m,
 )
 from market_screener import MarketScreener
 
@@ -23,13 +24,21 @@ class TestAltcoinIndependentBuying(unittest.TestCase):
         self.assertEqual(StrategyPolicy.RISK_OFF_ALLOC_RATIO, 1.0)
 
     def test_momentum_alpha_threshold_risk_off_equals_normal(self):
-        """모멘텀 돌파 알파 임계치는 RISK_OFF에서 일반 70점, RS 주도주는 65점으로 우대되어야 한다."""
-        self.assertEqual(get_momentum_breakout_alpha_threshold("RISK_OFF", is_night=False, relative_strength=0.01), 70)
-        self.assertEqual(get_momentum_breakout_alpha_threshold("RISK_OFF", is_night=False, relative_strength=0.04), 65)
+        """알트코인 독립 매수에 따라 모멘텀 돌파 알파 임계치도 RISK_OFF에서 NORMAL과 동일한 55점이어야 한다."""
+        self.assertEqual(get_momentum_breakout_alpha_threshold("RISK_OFF", is_night=False, relative_strength=0.00), 55)
+        self.assertEqual(get_momentum_breakout_alpha_threshold("NORMAL", is_night=False, relative_strength=0.00), 55)
+        self.assertEqual(get_momentum_breakout_alpha_threshold("RISK_OFF", is_night=True, relative_strength=0.00), 65)
+
+    def test_timestop_risk_off_equals_normal(self):
+        """알트코인 독자 추세 완주를 위해 RISK_OFF 타임스탑이 NORMAL(7200초, 24봉)과 동일해야 한다."""
+        self.assertEqual(StrategyPolicy.TIME_STOP_SECONDS_RISK_OFF, 7200)
+        self.assertEqual(StrategyPolicy.TIME_STOP_BARS_5M_RISK_OFF, 24)
+        profit_bars, _ = get_time_stop_bars_5m("RISK_OFF", is_night=False)
+        self.assertEqual(profit_bars, 24)
 
     @patch("strategy_engine.calculate_composite_alpha_score")
-    def test_entry_signal_allows_buy_in_risk_off_with_alpha_60(self, mock_alpha):
-        """BTC 레짐이 RISK_OFF이더라도 독자 강세(RS >= 2%) 알트코인은 알파 60점 이상이면 매수가 승인되어야 한다."""
+    def test_entry_signal_allows_buy_in_risk_off_without_rs_privilege(self, mock_alpha):
+        """BTC 레짐이 RISK_OFF이더라도 일반 알트코인(RS 특례 없음)이 1H EMA20 0.980 지지 및 알파 60점이면 매수가 승인되어야 한다."""
         candles_5m = [
             {"trade_price": 100.0, "opening_price": 99.5, "high_price": 100.2, "low_price": 99.4, "candle_acc_trade_volume": 5000.0}
             for _ in range(30)
@@ -54,9 +63,9 @@ class TestAltcoinIndependentBuying(unittest.TestCase):
             orderbook={"orderbook_units": [{"ask_price": 100.1, "bid_price": 100.0, "bid_size": 1000}]},
             market="KRW-ALT",
             is_night=False,
-            relative_strength=0.025,
+            relative_strength=0.00,
         )
-        self.assertTrue(res["allow_buy"], f"RISK_OFF 매수 허용 실패: {res.get('reason')}")
+        self.assertTrue(res["allow_buy"], f"RISK_OFF 일반 알트코인 매수 허용 실패: {res.get('reason')}")
 
     def test_entry_signal_blocks_on_btc_crash(self):
         """BTC 레짐이 CRASH인 경우 알트코인 매수는 fail-closed로 전면 차단되어야 한다."""

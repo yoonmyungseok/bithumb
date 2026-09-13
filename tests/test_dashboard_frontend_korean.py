@@ -326,6 +326,22 @@ class DashboardFrontendKoreanTests(unittest.TestCase):
         self.assertEqual(results["NORMAL"], "🔵 정상 안정세")
         self.assertEqual(results[""], "대기 중")
 
+    def test_order_journal_filtered_orders_mapping(self):
+        """주문 저널 렌더러가 orders.map 대신 filteredOrders.map을 순회하는지 검증"""
+        func_code = self._extract_function("renderOrderJournalTable")
+        self.assertIn("filteredOrders.map", func_code, "주문 저널은 반드시 24시간 필터링된 filteredOrders를 순회해야 합니다.")
+        self.assertNotIn("tbody.innerHTML = orders.map", func_code, "원본 orders를 직접 map 순회해서는 안 됩니다.")
+
+    def test_show_chart_modal_exchange_routing(self):
+        """showChartModal이 전달된 exchange 파라미터를 우선 반영하는지 검증"""
+        self.assertIn("window.showChartModal = function (market, exchange)", self.app_js_content)
+        self.assertIn("targetEx = (exchange || state.activeExchange || 'bithumb')", self.app_js_content)
+
+    def test_daily_performance_chart_exists(self):
+        """일일 성과 14일 캔버스 차트 렌더러가 구현되어 있는지 검증"""
+        func_code = self._extract_function("renderDailyPerformanceChart")
+        self.assertIn("daily_pnl_canvas", func_code, "차트 렌더러는 daily_pnl_canvas 엘리먼트를 참조해야 합니다.")
+
 
 if __name__ == "__main__":
     unittest.main()

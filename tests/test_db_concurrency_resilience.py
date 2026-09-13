@@ -86,6 +86,19 @@ class DbConcurrencyResilienceTests(unittest.TestCase):
         mock_mgr2.dispose.assert_called_once()
         self.assertEqual(len(db_manager._DB_MANAGER_BY_PATH), 0)
 
+    def test_ai_entry_safety_ttl_auto_unblock(self):
+        """일시적 Gemini 오류로 인한 신규 BUY 차단은 TTL 경과 후 자동 만료되어 다음 사이클 복구를 허용한다."""
+        from ai_provider import AIProviderTelemetry
+        # 1. 일시적 통신 오류 기록 시 즉시 차단
+        AIProviderTelemetry.record_entry_safety("bithumb", blocked=True, reason="exception", context="KRW-SUI")
+        self.assertTrue(AIProviderTelemetry.get_entry_block_reason("bithumb"))
+
+        # 2. TTL(0.01초 지정) 경과 후 조회 시 자동 만료 및 차단 해제
+        import time
+        time.sleep(0.02)
+        reason_after_ttl = AIProviderTelemetry.get_entry_block_reason("bithumb", max_age_sec=0.01)
+        self.assertEqual(reason_after_ttl, "")
+
 
 if __name__ == "__main__":
     unittest.main()

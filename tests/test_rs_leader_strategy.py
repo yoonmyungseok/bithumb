@@ -35,18 +35,18 @@ class RSLeaderStrategyTests(unittest.TestCase):
         self.assertEqual(StrategyPolicy.get_momentum_early_max_change_rate(relative_strength=0.035), 0.120)
 
     def test_momentum_breakout_alpha_threshold_relaxation(self):
-        """RISK_OFF 레짐에서 RS 주도주 알파 기준 완화 검증 (70점 -> 65점)"""
-        # 주간 RISK_OFF: 일반 70점 vs RS 주도주 65점
+        """알트코인 독립 매수에 따라 RISK_OFF 레짐에서도 모멘텀 돌파 알파 기준이 정상장(주간 55점, 심야 65점)과 동일함을 검증"""
+        # 주간 RISK_OFF: 정상장과 동일한 55점 일원화
         threshold_normal = get_momentum_breakout_alpha_threshold("RISK_OFF", is_night=False, relative_strength=0.01)
         threshold_leader = get_momentum_breakout_alpha_threshold("RISK_OFF", is_night=False, relative_strength=0.04)
-        self.assertEqual(threshold_normal, 70)
-        self.assertEqual(threshold_leader, 65)
+        self.assertEqual(threshold_normal, 55)
+        self.assertEqual(threshold_leader, 55)
 
-        # 심야 RISK_OFF: 일반 75점 vs RS 주도주 70점
+        # 심야 RISK_OFF: 정상장과 동일한 65점 일원화
         threshold_night_normal = get_momentum_breakout_alpha_threshold("RISK_OFF", is_night=True, relative_strength=0.01)
         threshold_night_leader = get_momentum_breakout_alpha_threshold("RISK_OFF", is_night=True, relative_strength=0.04)
-        self.assertEqual(threshold_night_normal, 75)
-        self.assertEqual(threshold_night_leader, 70)
+        self.assertEqual(threshold_night_normal, 65)
+        self.assertEqual(threshold_night_leader, 65)
 
     def test_momentum_breakout_near_high_tolerance(self):
         """직전 4봉 고점 대비 -0.8% 이내 근접 시 RS 주도주 돌파 셋업 통과 검증"""

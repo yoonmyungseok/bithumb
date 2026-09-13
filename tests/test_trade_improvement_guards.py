@@ -170,7 +170,7 @@ class TestTradeImprovementGuards(unittest.TestCase):
         momentum_prompt = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
         self.assertEqual(mock_post.call_count, 2)
         self.assertIn("후보 유형: MOMENTUM_BREAKOUT", momentum_prompt)
-        self.assertIn("현재 알파 승인 기준: 70점 이상", momentum_prompt)
+        self.assertIn("현재 알파 승인 기준: 55점 이상", momentum_prompt)
         self.assertIn("모멘텀 단계: EXTENDED", momentum_prompt)
         self.assertIn("최대 종목 비중의 15% 제한 추격 진입", momentum_prompt)
 
