@@ -559,18 +559,104 @@ def _validate_schema(value: Any, schema: dict[str, Any]) -> bool:
 
 
 class GeminiProvider:
-    """업비트 Gemini 장애 시 신규 BUY를 닫는 Provider입니다."""
+    """업비트 전용 Gemini 경계이며 공용/빗썸 키와 절대로 혼합하지 않습니다."""
 
     name = "gemini"
     exchange = "upbit"
     # AI 확인이 필수인 신규 진입에서 통신 실패를 로컬 BUY 승인으로 대체하지 않는다.
     is_entry_fail_closed = True
 
+    # 신규 BUY 진입은 Flash-Lite 계열(3.5 우선 후 3.1 순차 폴백)만 허용해 안정성과 복원력을 유지한다.
+    TRADING_MODELS = [
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+    ]
+    TRADING_MODEL = TRADING_MODELS[0]
+
     def __init__(self, api_key: str):
         self.api_key = (api_key or "").strip()
+        self._models: list[str] | None = None
+
+    @property
+    def is_configured(self) -> bool:
+        """업비트 Gemini 전용 키가 있을 때만 모델 탐색과 분석을 허용한다."""
+        return bool(self.api_key)
+
+    @staticmethod
+    def _safe_error_code(response: requests.Response) -> str:
+        """외부 오류에서 식별자 형식 코드만 추출해 원문 노출을 막는다."""
+        try:
+            payload = response.json()
+            error = payload.get("error", {}) if isinstance(payload, dict) else {}
+            return re.sub(r"[^A-Za-z0-9_.:-]", "", str(error.get("status") or error.get("code") or ""))[:80]
+        except (ValueError, TypeError, AttributeError):
+            return ""
+
+    def _discover_models(self) -> list[str]:
+        """업비트 신규 BUY용 구체 Flash-Lite 모델이 있을 때만 분석을 허용한다."""
+        if not self.is_configured:
+            AIProviderTelemetry.record_entry_safety(
+                self.exchange, blocked=True, reason="configuration", context="list_models",
+            )
+            return []
+        started = time.monotonic()
+        status_code: int | None = None
+        error_kind = ""
+        error_code = ""
+        try:
+            response = requests.get(
+                f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}", timeout=10.0,
+            )
+            status_code = response.status_code
+            if status_code != 200:
+                error_kind = "rate_limited" if status_code == 429 else "http_error"
+                error_code = self._safe_error_code(response)
+                AIProviderTelemetry.record_entry_safety(
+                    self.exchange, blocked=True, reason=error_kind, context="list_models",
+                    status_code=status_code, error_code=error_code,
+                )
+                return []
+            payload = response.json()
+            models = [
+                str(item.get("name", "")).replace("models/", "").strip()
+                for item in payload.get("models", []) if isinstance(item, dict)
+                and "generateContent" in item.get("supportedGenerationMethods", [])
+                and "flash-lite" in str(item.get("name", "")).lower()
+            ]
+            if not models:
+                AIProviderTelemetry.record_entry_safety(
+                    self.exchange, blocked=True, reason="no_flash_lite", context="list_models",
+                    status_code=status_code,
+                )
+                return []
+            available_trading = [m for m in self.TRADING_MODELS if m in models]
+            if not available_trading:
+                # 허용된 구체 Flash-Lite 모델이 전혀 없으면 신규 BUY를 차단한다.
+                AIProviderTelemetry.record_entry_safety(
+                    self.exchange, blocked=True, reason="required_model_unavailable", context="list_models",
+                    status_code=status_code,
+                )
+                return []
+            return available_trading
+        except requests.exceptions.Timeout:
+            error_kind = "timeout"
+        except (requests.exceptions.RequestException, ValueError, TypeError, KeyError, IndexError):
+            error_kind = "exception"
+        finally:
+            AIProviderTelemetry.record(self.name, self.exchange, "list_models", "list_models", status_code,
+                                       (time.monotonic() - started) * 1000.0, error_kind)
+        AIProviderTelemetry.record_entry_safety(
+            self.exchange, blocked=True, reason=error_kind or "exception", context="list_models",
+            status_code=status_code, error_code=error_code,
+        )
+        return []
 
     def models_for(self, purpose: str) -> list[str]:
-        """기존 동적 모델 라우터가 후보를 전달하므로 여기서는 선택하지 않습니다."""
+        """신규 BUY 진입은 Flash-Lite 계열(3.5 우선 후 3.1 순차 폴백)만 허용하고, 거시/브리핑은 동적 라우터에 위임한다."""
+        if purpose == "trading":
+            if self._models is None:
+                self._models = self._discover_models()
+            return list(self._models)
         return []
 
     @staticmethod

@@ -105,8 +105,6 @@ class GeminiAnalyzer:
     FALLBACK_MODELS: ClassVar[list[str]] = [
         "gemini-3.5-flash-lite",
         "gemini-3.1-flash-lite",
-        "gemini-flash-lite-latest",
-        "gemini-2.5-flash-lite",
     ]
     # 하위 호환성을 위한 참조
     STABLE_MODELS = FALLBACK_MODELS

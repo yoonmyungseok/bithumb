@@ -17,6 +17,11 @@ from typing import Any
 from dotenv import load_dotenv
 
 from ai_provider import AIProviderTelemetry
+from upbit_ai import (
+    build_upbit_analyzer,
+    get_upbit_ai_config_block_reason,
+    get_upbit_ai_entry_block_reason,
+)
 from bot_controller import BotController
 from chart_renderer import ChartRenderer
 from db_manager import get_db_manager, get_exchange_db_path
@@ -135,8 +140,8 @@ MOMENTUM_BREAKOUT_MIN_CHANGE_RATE = float(os.getenv("UPBIT_MOMENTUM_BREAKOUT_MIN
 MOMENTUM_BREAKOUT_MAX_CANDIDATES = int(os.getenv("UPBIT_MOMENTUM_BREAKOUT_MAX_CANDIDATES", os.getenv("MOMENTUM_BREAKOUT_MAX_CANDIDATES", os.getenv("EARLY_BREAKOUT_MAX_CANDIDATES", "2"))))
 
 INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "5"))
-# 업비트 전용 Gemini API 키 (미설정 시 공용 GEMINI_API_KEY 사용)
-GEMINI_API_KEY = (os.getenv("UPBIT_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY", "")).strip()
+# 업비트 전용 Gemini API 키 (공용 키 fallback 절대 금지)
+GEMINI_API_KEY = os.getenv("UPBIT_GEMINI_API_KEY", "").strip()
 # 타 거래소와의 동시 퀀트 사이클 호출 분산을 위한 오프셋 (기본값: 0초, 독립 계정 운영 시 동시 즉시 가동)
 CYCLE_OFFSET_SECONDS = int(os.getenv("UPBIT_CYCLE_OFFSET_SECONDS", os.getenv("CYCLE_OFFSET_SECONDS", "0")))
 # 스크리너 top_count와 무관하게 한 사이클 런타임 분석·캔들 prefetch 상한
@@ -468,11 +473,12 @@ cycle_engine = TradingCycleEngine(
         env_file=UPBIT_ENV_FILE,
         common_env_file=COMMON_ENV_FILE,
         interval_minutes=INTERVAL_MINUTES,
-        gemini_api_key=GEMINI_API_KEY,
+        gemini_api_key="",
+        analyzer_factory=build_upbit_analyzer,
         is_bot_paused=get_is_bot_paused,
         min_order_krw=MIN_ORDER_KRW,
         orderbook_slippage_enforcement=ORDERBOOK_SLIPPAGE_ENFORCEMENT,
-        new_buy_block_reason=lambda: AIProviderTelemetry.get_entry_block_reason("upbit"),
+        new_buy_block_reason=get_upbit_ai_entry_block_reason,
     ),
     TradingRuntimeContext(
         logger=logger,
@@ -531,8 +537,8 @@ def send_daily_morning_report():
         held_desc = ", ".join(held_names) if held_names else "없음 (100% 현금 보유)"
 
         ai_briefing = ""
-        upbit_gemini_key = os.getenv("UPBIT_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
-        analyzer = GeminiAnalyzer(api_key=upbit_gemini_key) if upbit_gemini_key else None
+        # 브리핑도 업비트 Factory를 거쳐 전용 Gemini 키만 사용한다.
+        analyzer = build_upbit_analyzer()
         if analyzer is not None and hasattr(analyzer, "generate_market_briefing"):
             try:
                 candles_1h = upbit.get_candles(unit=60, count=30, market="KRW-BTC")
