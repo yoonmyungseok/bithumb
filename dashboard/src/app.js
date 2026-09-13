@@ -1959,6 +1959,18 @@
     });
   };
 
+  function updateMinTradeValueDisplay() {
+    const input = document.getElementById('cfg_MIN_TRADE_VALUE');
+    const display = document.getElementById('cfg_MIN_TRADE_VALUE_display');
+    if (!input || !display) return;
+    const val = parseFloat(input.value) || 0;
+    if (val >= 100000000) {
+      display.innerText = `💡 현재 설정: ${(val / 100000000).toFixed(1).replace(/\.0$/, '')}억 원 (${val.toLocaleString()}원)`;
+    } else {
+      display.innerText = `💡 현재 설정: ${val.toLocaleString()}원`;
+    }
+  }
+
   function populateConfigForm(settings) {
     for (const [key, item] of Object.entries(settings)) {
       const el = document.getElementById(`cfg_${key}`);
@@ -1971,7 +1983,20 @@
         el.value = item.value;
       }
     }
+    updateMinTradeValueDisplay();
+    const tradeValInput = document.getElementById('cfg_MIN_TRADE_VALUE');
+    if (tradeValInput && !tradeValInput._hasListener) {
+      tradeValInput.addEventListener('input', updateMinTradeValueDisplay);
+      tradeValInput._hasListener = true;
+    }
   }
+
+  // ESC 키로 설정 모달 닫기 지원
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      window.closeConfigModal();
+    }
+  });
 
   window.resetConfigDefaults = function () {
     if (!cachedConfig) return;

@@ -1755,6 +1755,7 @@ class UnifiedDashboardServer:
                         <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
                             <label class="text-xs font-semibold block mb-1">24시간 최소 거래대금 (원)</label>
                             <input type="number" id="cfg_MIN_TRADE_VALUE" step="100000000" min="100000000" max="100000000000" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                            <div id="cfg_MIN_TRADE_VALUE_display" class="text-[11px] text-indigo-300 font-medium mt-1"></div>
                         </div>
                         <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
                             <label class="text-xs font-semibold block mb-1">후보 최소 등락률 (%)</label>

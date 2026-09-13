@@ -319,10 +319,10 @@ class CommonConfigManager:
                 return True, val_float, ""
 
             elif field_def.type_name == "percent":
-                # 사용자가 2.5(백분율) 또는 0.025(소수 비율) 중 어떤 형식으로 입력해도 안전하게 처리
+                # 사용자가 백분율(예: 2.5, 40, 100) 또는 소수 비율(예: 0.025, 0.40, 1.0) 중 어떤 형식으로 입력해도 안전하게 처리
                 val_pct = abs(float(str(input_value).strip()))
-                # 1.0 이상이면 백분율(%)로 간주
-                normalized = val_pct / 100.0 if val_pct >= 1.0 else val_pct
+                threshold = field_def.max_val if (field_def.max_val is not None and field_def.max_val < 1.0) else 1.0
+                normalized = val_pct / 100.0 if val_pct > threshold else val_pct
 
                 if field_def.min_val is not None and normalized < field_def.min_val:
                     return False, None, f"{field_def.label}은(는) 최소 {field_def.min_val * 100:.1f}% 이상이어야 합니다."

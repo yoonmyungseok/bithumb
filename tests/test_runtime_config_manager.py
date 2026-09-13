@@ -51,6 +51,24 @@ class TestCommonConfigManager(unittest.TestCase):
         self.assertTrue(ok)
         self.assertAlmostEqual(val, 0.025)
 
+        # 100% 입력 시 1%(0.01)로 왜곡되지 않고 1.0(100%)으로 정상 정규화되는지 검증
+        ok, val, err = self.manager.validate_and_normalize("MAX_POSITION_PCT", 1.0)
+        self.assertTrue(ok)
+        self.assertAlmostEqual(val, 1.0)
+
+        ok, val, err = self.manager.validate_and_normalize("MAX_POSITION_PCT", 100)
+        self.assertTrue(ok)
+        self.assertAlmostEqual(val, 1.0)
+
+        # 1% 미만(0.5%)을 백분율(0.5)로 입력 시 50%가 아닌 0.005(0.5%)로 정상 정규화되는지 검증
+        ok, val, err = self.manager.validate_and_normalize("MIN_CHANGE_RATE", 0.5)
+        self.assertTrue(ok)
+        self.assertAlmostEqual(val, 0.005)
+
+        ok, val, err = self.manager.validate_and_normalize("MIN_CHANGE_RATE", 0.005)
+        self.assertTrue(ok)
+        self.assertAlmostEqual(val, 0.005)
+
         # 하한(0.5%) 미만 실패 테스트 (0.1% = 0.001)
         ok, val, err = self.manager.validate_and_normalize("TRAILING_START_PCT", 0.001)
         self.assertFalse(ok)
@@ -134,6 +152,7 @@ class TestBotControllerRuntimeConfig(unittest.TestCase):
             "MAX_DAILY_LOSS_PCT": 6.0,
             "MAX_OPEN_POSITIONS": 4,
             "MAX_POSITION_PCT": 40.0,
+            "MAX_ORDER_KRW": 30_000_000,
         }
         res = self.controller.update_runtime_config(updates)
         self.assertTrue(res["success"])
@@ -143,6 +162,40 @@ class TestBotControllerRuntimeConfig(unittest.TestCase):
         self.assertAlmostEqual(self.risk_manager.max_loss_pct, 0.06)
         self.assertEqual(self.risk_guard.max_open_positions, 4)
         self.assertAlmostEqual(self.risk_guard.max_position_pct, 0.40)
+        self.assertEqual(self.risk_guard.max_order_krw, 30_000_000)
+
+
+class TestRuntimePortfolioTiers(unittest.TestCase):
+    """런타임 포트폴리오 티어 래퍼가 동적 설정을 올바르게 보존하는지 검증"""
+
+    def test_get_dynamic_portfolio_tiers_respects_custom_pct_and_positions(self):
+        from risk_controls import get_dynamic_portfolio_tiers
+
+        # 기본(자산 50만 원): 5개, 25%, 12개
+        pos, pct, top = get_dynamic_portfolio_tiers(500_000.0)
+        self.assertEqual(pos, 5)
+        self.assertAlmostEqual(pct, 0.25)
+        self.assertEqual(top, 12)
+
+        # 동적 커스텀 포지션 수(4개)와 비중(40%) 지정 시 그대로 유지되는지 검증
+        pos, pct, top = get_dynamic_portfolio_tiers(500_000.0, custom_max_positions=4, custom_max_position_pct=0.40)
+        self.assertEqual(pos, 4)
+        self.assertAlmostEqual(pct, 0.40)
+        self.assertEqual(top, 12)
+
+    def test_screener_creation_reads_live_env(self):
+        """환경 변수 MOMENTUM_BREAKOUT_ENABLED 런타임 변경 시 스크리너에 즉시 반영되는지 검증"""
+        import main
+        from exchange_adapter import ExchangeAdapter
+
+        mock_exchange = MagicMock(spec=ExchangeAdapter)
+        os.environ["MOMENTUM_BREAKOUT_ENABLED"] = "false"
+        screener1 = main._create_bithumb_screener(mock_exchange)
+        self.assertFalse(screener1.enable_early_breakout)
+
+        os.environ["MOMENTUM_BREAKOUT_ENABLED"] = "true"
+        screener2 = main._create_bithumb_screener(mock_exchange)
+        self.assertTrue(screener2.enable_early_breakout)
 
 
 class TestDashboardGatewayConfig(unittest.TestCase):

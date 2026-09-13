@@ -10,15 +10,23 @@ from market_policy import is_protected_market
 from strategy_engine import StrategyPolicy
 
 
-def get_dynamic_portfolio_tiers(total_equity: float, custom_max_positions: int | None = None) -> tuple[int, float, int]:
+def get_dynamic_portfolio_tiers(
+    total_equity: float,
+    custom_max_positions: int | None = None,
+    custom_max_position_pct: float | None = None,
+) -> tuple[int, float, int]:
     if custom_max_positions and custom_max_positions > 0:
-        max_pct = round(min(0.50, max(0.15, 1.0 / custom_max_positions + 0.05)), 2)
+        max_pct = custom_max_position_pct if (custom_max_position_pct is not None and custom_max_position_pct > 0) else round(min(0.50, max(0.15, 1.0 / custom_max_positions + 0.05)), 2)
         return custom_max_positions, max_pct, max(10, min(20, custom_max_positions * 3))
     if total_equity < 300_000.0:
-        return 3, 0.35, 10
-    if total_equity < 1_000_000.0:
-        return 5, 0.25, 12
-    return 6, 0.20, 15
+        base_pos, base_pct, base_top = 3, 0.35, 10
+    elif total_equity < 1_000_000.0:
+        base_pos, base_pct, base_top = 5, 0.25, 12
+    else:
+        base_pos, base_pct, base_top = 6, 0.20, 15
+    if custom_max_position_pct is not None and custom_max_position_pct > 0:
+        base_pct = custom_max_position_pct
+    return base_pos, base_pct, base_top
 
 
 class RiskGuard:
@@ -49,6 +57,7 @@ class RiskGuard:
         max_total_exposure_pct: float | None = None,
         max_swing_positions: int | None = None,
         max_new_listing_positions: int | None = None,
+        max_order_krw: float | None = None,
     ) -> None:
         if max_open_positions is not None:
             self.max_open_positions = max_open_positions
@@ -60,6 +69,8 @@ class RiskGuard:
             self.max_swing_positions = max_swing_positions
         if max_new_listing_positions is not None:
             self.max_new_listing_positions = max_new_listing_positions
+        if max_order_krw is not None:
+            self.max_order_krw = max_order_krw
 
     def validate_buy(
         self,

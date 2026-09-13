@@ -679,10 +679,10 @@ class BotController:
                 guard_updates["max_position_pct"] = normalized_updates["MAX_POSITION_PCT"]
             if "MAX_TOTAL_EXPOSURE_PCT" in normalized_updates:
                 guard_updates["max_total_exposure_pct"] = normalized_updates["MAX_TOTAL_EXPOSURE_PCT"]
+            if "MAX_ORDER_KRW" in normalized_updates:
+                guard_updates["max_order_krw"] = normalized_updates["MAX_ORDER_KRW"]
             if guard_updates:
                 self.risk_guard.update_limits(**guard_updates)
-            if "MAX_ORDER_KRW" in normalized_updates and hasattr(self.risk_guard, "max_order_krw"):
-                self.risk_guard.max_order_krw = normalized_updates["MAX_ORDER_KRW"]
 
         logger.info(f"⚙️ [{self.exchange_name}] 런타임 설정 동적 갱신 완료: {list(normalized_updates.keys())}")
         return {

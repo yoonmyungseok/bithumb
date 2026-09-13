@@ -362,14 +362,26 @@ def _reconcile_after_private_ws_drain() -> None:
 
 def _create_upbit_screener(exchange: ExchangeAdapter) -> MarketScreener:
     """사이클마다 최신 env를 반영한 업비트 스크리너를 생성한다."""
+    is_momentum_enabled = os.getenv("MOMENTUM_BREAKOUT_ENABLED", os.getenv("EARLY_BREAKOUT_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
     return MarketScreener(
         exchange,
         min_trade_value_krw=float(os.getenv("MIN_TRADE_VALUE", "1000000000")),
         min_change_rate=float(os.getenv("MIN_CHANGE_RATE", "0.005")),
         max_change_rate=float(os.getenv("MAX_CHANGE_RATE", "0.25")),
-        enable_early_breakout=MOMENTUM_BREAKOUT_ENABLED,
+        enable_early_breakout=is_momentum_enabled,
         early_breakout_min_change_rate=MOMENTUM_BREAKOUT_MIN_CHANGE_RATE,
         early_breakout_max_candidates=MOMENTUM_BREAKOUT_MAX_CANDIDATES,
+    )
+
+
+def _get_upbit_portfolio_tiers(total_equity: float) -> tuple[int, float, int]:
+    """런타임 동적 설정(MAX_OPEN_POSITIONS, MAX_POSITION_PCT)을 최우선 존중하는 업비트 자산 티어 도출"""
+    custom_positions = getattr(risk_guard, "max_open_positions", None)
+    custom_pos_pct = getattr(risk_guard, "max_position_pct", None)
+    return get_dynamic_portfolio_tiers(
+        total_equity,
+        custom_max_positions=custom_positions,
+        custom_max_position_pct=custom_pos_pct,
     )
 
 
@@ -495,7 +507,7 @@ cycle_engine = TradingCycleEngine(
         decision_db=decision_db,
         calculate_total_equity=calculate_total_equity,
         get_held_markets=get_held_markets,
-        get_portfolio_tiers=get_dynamic_portfolio_tiers,
+        get_portfolio_tiers=_get_upbit_portfolio_tiers,
         order_executor=order_executor,
         chart_renderer=chart_renderer,
         cancel_bot_open_orders=cancel_bot_open_orders,

@@ -1,4 +1,4 @@
-# Bithumb & Upbit AI Pro Quant Trading Bot (v8.75)
+# Bithumb & Upbit AI Pro Quant Trading Bot (v8.76)
 
 본 문서는 `c:\AI\bithumb` 디렉토리에 위치한 빗썸(Bithumb) 및 업비트(Upbit) 듀얼 거래소 지원 AI 퀀트 트레이딩 봇의 프로젝트 설명 및 아키텍처 설계서입니다. 이 문서는 다른 AI 에이전트 또는 개발자가 프로젝트의 전반적인 구조와 핵심 로직을 빠르고 명확하게 파악할 수 있도록 작성되었습니다.
 
@@ -20,6 +20,11 @@
   - 거래소 전용 Groq API 거시 인텔리전스 (15분 주기 거시 레짐 진단 및 권장 현금 비중 도출: 빗썸 `BITHUMB_GROQ_API_KEY`, 업비트 `UPBIT_GROQ_API_KEY` 전용 키 격리, 공용 키 배제)
 - **주요 전략 및 아키텍처**: 
   - **다중 시간대(MTF) 분석**: 1시간봉 대세 추세 + 5분봉 정밀 타점 정렬
+  - **공통 런타임 설정 매니저 및 무중단 핫 리로드 (v8.76)**:
+    1. **SSOT 공통 설정 스키마 (`COMMON_CONFIG_SCHEMA`) & `CommonConfigManager`**: 리스크(`TRAILING_START_PCT`, `TRAILING_STOP_PCT`, `MAX_DAILY_LOSS_PCT`, `BTC_CRASH_THRESHOLD_PCT`, `ORDERBOOK_SLIPPAGE_ENFORCEMENT`), 스크리닝(`TOP_COUNT`, `MIN_TRADE_VALUE`, `MIN_CHANGE_RATE`, `MAX_CHANGE_RATE`, `MOMENTUM_BREAKOUT_ENABLED`, `NEW_LISTING_ENABLED`, `NEW_LISTING_ENFORCEMENT`), 포트폴리오(`MAX_OPEN_POSITIONS`, `MAX_POSITION_PCT`, `MAX_TOTAL_EXPOSURE_PCT`, `MAX_ORDER_KRW`) 등 16개 핵심 런타임 설정의 메타데이터와 안전 범위를 통합 관리하며 `.env` 원자적 영속화 지원.
+    2. **지능형 백분율/비율 정규화 및 수치 왜곡 원천 차단**: `field_def.max_val` 기반 임계치 판별을 적용하여 100%(1.0) 입력 시 1%로 급감하는 왜곡을 원천 해소하고 1% 미만(0.5%) 백분율 입력도 안전하게 정규화.
+    3. **런타임 포트폴리오 티어 및 스크리너 무중단 동기화**: `main.py` 및 `main_upbit.py`의 `_get_*_portfolio_tiers` 래퍼를 통해 런타임에 변경된 `MAX_OPEN_POSITIONS` 및 `MAX_POSITION_PCT`가 5분 사이클마다 고정 기본값으로 덮어써지지 않도록 유지 보장. 매 사이클 스크리너 생성 시 `MOMENTUM_BREAKOUT_ENABLED` 등의 실시간 환경변수를 평가하여 즉시 반영.
+    4. **대시보드 게이트웨이 및 원격 REST API (`/api/config`)**: 대시보드 UI 모달 및 REST API를 통해 활성 거래소 코어로 설정을 즉시 전파(Hot-Reload)하며, 최소 거래대금 실시간 억 단위 환산 가이드 및 ESC 모달 닫기 지원.
   - **주문 실행 직전 최신가 검증 인터페이스 결함 해소 (v8.75)**: `order_safety.executor`가 신규 매수 주문 직전 슬리피지 방지를 위해 호출하는 `exchange.get_current_price(market, force_refresh=True)`의 호출 계약을 `ExchangeClient` 프로토콜 및 `ExchangeAdapter`에 `force_refresh: bool = False` 매개변수로 명시하고 내부 클라이언트로 전달하도록 수정. 레거시/Mock 클라이언트에 대한 `TypeError` fallback을 적용하여 하위 호환성을 100% 보장하고 신규 BUY 실행 시의 부당 차단을 원천 해소.
   - **AI 프롬프트 실전형 수급·추세 승인 기준 완화 (v8.74)**:
     1. **실시간 체결강도 허용 기준 완화 (90% ➜ 75%)**: 약세 및 횡보장에서 실시간 체결강도가 80% 안팎인 유망 수급 종목의 매수 승인을 허용하여 불필요한 관망(`HOLD`) 방지.
