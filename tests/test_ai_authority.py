@@ -87,7 +87,9 @@ class AIAuthorityTests(unittest.TestCase):
         )
 
         with patch("trading_runtime.select_completed_candles", side_effect=lambda c, **kw: c), \
-             patch("trading_runtime.entry_signal") as mock_entry_rules:
+             patch("trading_runtime.entry_signal") as mock_entry_rules, \
+             patch.object(StrategyPolicy, "ENABLE_AI_DIRECT_ENTRY", False), \
+             patch.dict(os.environ, {"ENABLE_AI_DIRECT_ENTRY": "false"}):
             mock_entry_rules.return_value = {
                 "allow_buy": False,
                 "reason": "하드게이트 차단, 최근고점대비 관망",
@@ -101,10 +103,10 @@ class AIAuthorityTests(unittest.TestCase):
             self.mock_ctx.ws_client.get_health_status.return_value = {"is_healthy": True}
             self.mock_ctx.decision_db.has_recovery_entry_since.return_value = False
 
-            # When: 기본 설정(ENABLE_AI_DIRECT_ENTRY=False)
+            # When: 비활성화 설정(ENABLE_AI_DIRECT_ENTRY=False)
             res = self.runtime.process_entry_gating(inputs)
 
-            # Then: 로컬 룰 관망으로 인해 HOLD로 차단되어야 함
+            # Then: 로컬 룰 관망 및 AI 단독 매수 차단 정책으로 인해 HOLD로 차단되어야 함
             self.assertEqual(res.action, "HOLD")
             self.assertIn("관망", res.reason)
 
@@ -182,6 +184,7 @@ class AIAuthorityTests(unittest.TestCase):
             self.assertIn("[AI 단독 자율 승인]", res.reason)
             self.assertEqual(res.target_price, 1050.0)
             self.assertEqual(res.stop_loss, 970.0)
+            self.assertAlmostEqual(res.alloc_pct, 0.35 * 0.50)
 
     def test_extended_momentum_risk_off_buy_is_blocked_below_threshold(self):
         """RISK_OFF 확장 후반은 로컬·AI BUY여도 주간 70점 미만이면 추격 주문을 차단한다."""

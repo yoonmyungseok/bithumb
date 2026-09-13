@@ -14,13 +14,13 @@ from strategy_engine import (
 
 class RSLeaderStrategyTests(unittest.TestCase):
     def test_is_rs_leader_qualification(self):
-        """RS 주도주 자격 검증 (RS >= 3% 및 BTC CRASH 배제)"""
+        """RS 주도주 자격 검증 (RS >= 2% 및 BTC CRASH 배제)"""
         # RS 부족
         self.assertFalse(is_rs_leader(relative_strength=0.015, btc_regime="NORMAL"))
-        self.assertFalse(is_rs_leader(relative_strength=0.029, btc_regime="NORMAL"))
+        self.assertFalse(is_rs_leader(relative_strength=0.019, btc_regime="NORMAL"))
 
-        # RS 충족 & 정상장/약세장
-        self.assertTrue(is_rs_leader(relative_strength=0.030, btc_regime="NORMAL"))
+        # RS 충족 & 정상장/약세장 (RS >= 2.0%)
+        self.assertTrue(is_rs_leader(relative_strength=0.020, btc_regime="NORMAL"))
         self.assertTrue(is_rs_leader(relative_strength=0.080, btc_regime="RISK_OFF"))
 
         # BTC CRASH 또는 BEAR_VOLATILE 시에는 주도주라도 전면 차단
@@ -28,11 +28,11 @@ class RSLeaderStrategyTests(unittest.TestCase):
         self.assertFalse(is_rs_leader(relative_strength=0.080, btc_regime="BEAR_VOLATILE"))
 
     def test_early_max_change_rate_dynamic_scaling(self):
-        """RS 주도주에 대한 모멘텀 초입(EARLY) 상한 확장 검증 (+6% -> +12%)"""
-        # 일반 종목
-        self.assertEqual(StrategyPolicy.get_momentum_early_max_change_rate(relative_strength=0.010), 0.060)
-        # RS 주도주
-        self.assertEqual(StrategyPolicy.get_momentum_early_max_change_rate(relative_strength=0.035), 0.120)
+        """RS 주도주에 대한 모멘텀 초입(EARLY) 상한 확장 검증 (+8% -> +12%)"""
+        # 일반 종목 (기본 8.0%)
+        self.assertEqual(StrategyPolicy.get_momentum_early_max_change_rate(relative_strength=0.010), 0.080)
+        # RS 주도주 (RS >= 2.0% -> 12.0%)
+        self.assertEqual(StrategyPolicy.get_momentum_early_max_change_rate(relative_strength=0.025), 0.120)
 
     def test_momentum_breakout_alpha_threshold_relaxation(self):
         """알트코인 독립 매수에 따라 RISK_OFF 레짐에서도 모멘텀 돌파 알파 기준이 정상장(주간 55점, 심야 65점)과 동일함을 검증"""

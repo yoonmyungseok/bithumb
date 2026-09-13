@@ -221,18 +221,20 @@ class StrategyPolicy:
     PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.80  # RISK_OFF 반등 후보 상한: 하드 상한과 같게 유지
     PULLBACK_LOOKBACK_BARS: int = 12      # 최근 지지 저점 산정에 사용하는 5분봉 수
     PULLBACK_MAX_DISTANCE_NORMAL: float = 0.035  # 정상장 최근 저점 대비 최대 허용 거리
-    PULLBACK_MAX_DISTANCE_RISK_OFF: float = 0.045  # RISK_OFF 최근 저점 대비 최대 허용 거리 (4.5%로 현실화)
+    PULLBACK_MAX_DISTANCE_RISK_OFF: float = 0.065  # RISK_OFF 최근 저점 대비 최대 허용 거리 (기존 4.5% -> 6.5%로 현실화)
     MAX_MA20_DISPARITY: float = 1.035    # MA20 대비 최대 이격도 +3.5% (기본 눌림목/반등형)
     MAX_MA20_DISPARITY_MOMENTUM: float = 1.050 # MA20 대비 모멘텀 돌파 최대 이격도 +5.0% (급등 돌파 캔들 수용)
-    MAX_UPPER_SHADOW_RATIO: float = 0.50 # 캔들 윗꼬리 최대 허용 비율 (50%로 강화하여 피뢰침 차단)
+    MAX_UPPER_SHADOW_RATIO: float = 0.60 # 캔들 윗꼬리 최대 허용 비율 (50% -> 60%로 완화하여 단기 수급 수용)
     MA_ALIGNMENT_RATIO: float = 0.995    # MA5 >= MA20 * 0.995
     PULLBACK_MA_ALIGNMENT_RATIO: float = 0.990  # 저점 반등은 MA20 아래 1% 이내 회복까지 허용
     RISK_OFF_ALLOC_RATIO: float = 1.0    # 알트코인 독립 매수: BTC 약세 레짐이어도 알트코인 진입 비중 100% 정상 유지
+    MTF_EMA20_RATIO: float = 0.970       # 1시간봉 EMA20 지지선 기준 (기존 0.980 -> 0.970 완화로 V자 반등 수용)
 
-    # 4-0. AI 단독 자율 승인 (AI Direct Entry) 기본 비활성화
-    # 로컬 퀀트 관망(allow_buy=False) 상태에서 AI 단독 매수 진입 시 승률 20~30%로 저조하므로 기본 차단한다.
-    # AI는 로컬 퀀트 1차 통과 종목의 2차 컨펌 및 보유 포지션 리스크 관리(탈출/목표가)에 집중한다.
-    ENABLE_AI_DIRECT_ENTRY: bool = False
+    # 4-0. AI 단독 자율 승인 (AI Direct Entry) 활성화
+    # 로컬 퀀트 관망(allow_buy=False) 상태여도 품질 게이트(알파 50점 이상, 음봉 폭락 아님)를 통과한
+    # 유망 종목에 대해 Gemini AI의 자율 매수 승인을 허용하며, 리스크 방어를 위해 초기 비중을 50% 축소한다.
+    ENABLE_AI_DIRECT_ENTRY: bool = True
+    AI_DIRECT_ENTRY_ALLOC_RATIO: float = 0.50
 
     @classmethod
     def is_ai_direct_entry_enabled(cls) -> bool:
@@ -263,24 +265,24 @@ class StrategyPolicy:
     MOMENTUM_BREAKOUT_RSI_MIN: float = 52.0
     MOMENTUM_BREAKOUT_RSI_MAX: float = 78.0
     MOMENTUM_BREAKOUT_RS_MIN: float = 0.008
-    MOMENTUM_BREAKOUT_MTF_EMA20_RATIO: float = 0.980
+    MOMENTUM_BREAKOUT_MTF_EMA20_RATIO: float = 0.970
     MOMENTUM_BREAKOUT_ALLOC_RATIO: float = 0.25
     # 확장 후반 추격은 수익 기회를 열되, 초입보다 작은 금액으로만 첫 주문을 허용한다.
     MOMENTUM_EXTENDED_ALPHA_THRESHOLD_RISK_OFF: int = 70
     MOMENTUM_EXTENDED_ALPHA_THRESHOLD_NIGHT_RISK_OFF: int = 75
     MOMENTUM_EXTENDED_ALLOC_RATIO: float = 0.15
     # 모멘텀은 초입에서만 첫 주문을 허용한다. 확장 구간은 관찰·보유 관리용으로 남긴다.
-    MOMENTUM_EARLY_MAX_CHANGE_RATE: float = 0.060
+    MOMENTUM_EARLY_MAX_CHANGE_RATE: float = 0.080
 
     # RS 주도주(독자 강세 종목) 특례 정책
-    RS_LEADER_MIN_RS: float = 0.030                 # BTC 대비 상대강도 +3.0% 이상
+    RS_LEADER_MIN_RS: float = 0.020                 # BTC 대비 상대강도 +2.0% 이상 (기존 +3.0% 완화)
     RS_LEADER_EARLY_MAX_CHANGE_RATE: float = 0.120  # 주도주 모멘텀 초입(+12.0% 이하) 확장 허용
     RS_LEADER_BREAKOUT_TOLERANCE: float = 0.992     # 직전 고점 99.2% 이상 근접 지지 양봉 허용
     RS_LEADER_ALPHA_THRESHOLD_RISK_OFF: int = 55    # 알트코인 독립 매수: RISK_OFF 시 RS 주도주 임계값 55점 일원화
 
     @classmethod
     def get_momentum_early_max_change_rate(cls, relative_strength: float = 0.0) -> float:
-        """환경 변수 또는 기본 상한 반환. RS 주도주(RS >= 3.0%)는 최대 12.0%까지 초입으로 인정"""
+        """환경 변수 또는 기본 상한 반환. RS 주도주(RS >= 2.0%)는 최대 12.0%까지 초입으로 인정"""
         raw = os.getenv("MOMENTUM_EARLY_MAX_CHANGE_RATE", "").strip()
         if raw:
             try:
@@ -1227,8 +1229,8 @@ def entry_signal(
         else:
             prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
             ema20_1h = calculate_ema(prices_1h, 20)
-        # 알트코인 독립 매수: 비트코인 급락(CRASH) 외에는 BTC 추세와 무관하게 1H EMA20 지지선 기준을 정상장(0.980)으로 일관 적용
-        mtf_ratio = 0.980
+        # 알트코인 독립 매수: 비트코인 급락(CRASH) 외에는 1H EMA20 지지선 기준을 StrategyPolicy SSOT(0.970)로 일관 적용
+        mtf_ratio = StrategyPolicy.MTF_EMA20_RATIO
         mtf_allowed = current_1h >= (ema20_1h * mtf_ratio)
         mtf_reason = f"1H {current_1h:.1f} {'>=' if mtf_allowed else '<'} EMA20 {ema20_1h:.1f} (기준 {mtf_ratio:.3f})"
 

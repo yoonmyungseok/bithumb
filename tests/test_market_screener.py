@@ -107,7 +107,7 @@ class MarketScreenerTests(unittest.TestCase):
                 return [
                     {"market": "KRW-BTC", "trade_price": "100000", "signed_change_rate": "0.039", "acc_trade_price_24h": "0"},
                     {"market": "KRW-EARLY5", "trade_price": "1000", "signed_change_rate": "0.055", "acc_trade_price_24h": "5000000000"},
-                    {"market": "KRW-EXT", "trade_price": "1000", "signed_change_rate": "0.065", "acc_trade_price_24h": "5000000000"},
+                    {"market": "KRW-EXT", "trade_price": "1000", "signed_change_rate": "0.130", "acc_trade_price_24h": "5000000000"},
                 ]
 
             def get_orderbook(self, market):
@@ -115,7 +115,7 @@ class MarketScreenerTests(unittest.TestCase):
 
         selected = MarketScreener(
             ExtendedMomentumAPI(), min_trade_value_krw=1, min_change_rate=0.01,
-            enable_early_breakout=True,
+            max_change_rate=0.15, enable_early_breakout=True,
         ).scan_markets(top_count=2)
         early5 = next(item for item in selected if item["market"] == "KRW-EARLY5")
         self.assertEqual(early5["candidate_type"], "MOMENTUM_BREAKOUT")

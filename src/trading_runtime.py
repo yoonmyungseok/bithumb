@@ -1574,6 +1574,7 @@ class TradingCycleEngine:
             )
         )
         ai_alpha = int(strategy.get("alpha_score", 0) or selected_entry.get("alpha_score", 0) or 0)
+        is_ai_direct_adopted = False
 
         if action == "BUY" and not selected_entry.get("allow_buy", False):
             # AI Direct Entry: 로컬 하드게이트는 관망이지만 기본 안전망을 통과하고 AI가 심층 분석으로 BUY를 승인한 경우
@@ -1600,6 +1601,7 @@ class TradingCycleEngine:
                 )
                 action = "BUY"
                 reason = f"[AI 단독 자율 승인] {reason}"
+                is_ai_direct_adopted = True
                 if strategy.get("target_price", 0) > current_price:
                     target_price = strategy["target_price"]
                 if 0 < strategy.get("stop_loss", 0) < current_price:
@@ -1672,6 +1674,10 @@ class TradingCycleEngine:
 
         if is_extreme_fear and action == "BUY":
             alloc_pct = min(alloc_pct, 0.4)
+
+        if is_ai_direct_adopted and action == "BUY":
+            ai_alloc_ratio = getattr(StrategyPolicy, "AI_DIRECT_ENTRY_ALLOC_RATIO", 0.50)
+            alloc_pct = min(alloc_pct, dyn_max_pos_pct * ai_alloc_ratio)
 
         if use_new_listing_path and not is_holding:
             if momentum_phase == "EXTENDED":
