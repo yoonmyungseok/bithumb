@@ -129,6 +129,8 @@ class TradingBotBootstrap:
             port=internal_port,
             data_provider=self.ctx.bot_controller.get_dashboard_data,
             action_handler=self.ctx.bot_controller.handle_web_action,
+            config_provider=self.ctx.bot_controller.get_runtime_config,
+            config_updater=self.ctx.bot_controller.update_runtime_config,
             title=self.profile.internal_api_title,
             is_api_only=True,
         )

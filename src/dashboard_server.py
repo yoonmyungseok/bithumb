@@ -26,6 +26,7 @@ import requests
 from dotenv import load_dotenv
 
 from market_intelligence import MarketIntelligenceService
+from runtime_config import CommonConfigManager
 
 # UTF-8 표준 출력 보장
 if sys.platform == "win32":
@@ -762,6 +763,77 @@ class UnifiedDashboardServer:
             "message": f"[{action.upper()}] 명령 전달 완료 ({target})",
         }
 
+    def get_common_config(self) -> dict[str, Any]:
+        """통합 공통 설정 조회 (영구 설정 + 활성 거래소 실시간 상태 병합)"""
+        manager = CommonConfigManager()
+        settings = manager.get_all_settings()
+
+        # 활성 거래소 코어에서 인메모리 런타임 설정이 있다면 병합
+        headers = {"X-Dashboard-Action-Token": self.action_token} if self.action_token else None
+        for api_url in (self.bithumb_api_url, self.upbit_api_url):
+            try:
+                res = self.http_session.get(f"{api_url}/api/config", timeout=1.5, headers=headers)
+                if res.status_code == 200:
+                    remote_data = res.json()
+                    if isinstance(remote_data, dict) and "settings" in remote_data:
+                        remote_settings = remote_data["settings"]
+                        for k, v in remote_settings.items():
+                            if k in settings and isinstance(v, dict):
+                                settings[k]["value"] = v.get("value", settings[k]["value"])
+                                settings[k]["display_value"] = v.get("display_value", settings[k]["display_value"])
+                        break
+            except Exception:
+                pass
+
+        return {
+            "success": True,
+            "settings": settings,
+        }
+
+    def update_common_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """통합 공통 설정 검증, .env 영구 저장 및 활성 거래소 봇 핫 리로드 전파"""
+        manager = CommonConfigManager()
+        ok, normalized, errors = manager.update_settings(payload)
+        if not ok:
+            return {
+                "success": False,
+                "message": "설정 유효성 검증 실패",
+                "errors": errors,
+            }
+
+        # 대시보드 프로세스 환경 변수 동기화
+        for k, v in normalized.items():
+            if isinstance(v, bool):
+                os.environ[k] = "true" if v else "false"
+            else:
+                os.environ[k] = str(v)
+
+        # 거래소 코어로 핫 리로드 전파
+        broadcast_results = {}
+        headers = {"X-Dashboard-Action-Token": self.action_token} if self.action_token else None
+
+        for name, api_url in [("bithumb", self.bithumb_api_url), ("upbit", self.upbit_api_url)]:
+            try:
+                res = self.http_session.post(
+                    f"{api_url}/api/config",
+                    json=normalized,
+                    timeout=2.5,
+                    headers=headers,
+                )
+                if res.status_code == 200:
+                    broadcast_results[name] = res.json()
+                else:
+                    broadcast_results[name] = {"success": False, "message": f"HTTP {res.status_code}"}
+            except Exception as e:
+                broadcast_results[name] = {"success": False, "message": f"연결 불가 (오프라인): {e}"}
+
+        return {
+            "success": True,
+            "message": "공통 설정이 영구 저장되고 활성 봇에 즉시 반영되었습니다.",
+            "applied": normalized,
+            "broadcast": broadcast_results,
+        }
+
     def get_cached_status(self) -> dict[str, Any]:
         """메모리에 캐시된 최신 통합 지표를 즉각 반환하며, 캐시가 비어있으면 즉시 조회"""
         with self._cache_lock:
@@ -879,6 +951,18 @@ class UnifiedDashboardServer:
                         self.wfile.write(body)
                         return
 
+                    # 2-1. 공통 설정 조회 API
+                    if path == "/api/config":
+                        body = json.dumps(server_self.get_common_config(), ensure_ascii=False).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+
                     # 3. 정적 SPA 파일 서빙
                     if server_self.static_dir:
                         rel_path = path.lstrip("/")
@@ -974,6 +1058,38 @@ class UnifiedDashboardServer:
                         self.wfile.write(body)
                         return
 
+                    # 공통 설정 갱신 엔드포인트 (.env 저장 및 양 거래소 봇 핫 리로드)
+                    if path == "/api/config":
+                        if not server_self.is_action_authorized(self.headers.get("X-Dashboard-Action-Token", "")):
+                            body = json.dumps({"success": False, "message": "원격 제어 인증이 필요합니다."}, ensure_ascii=False).encode("utf-8")
+                            self.send_response(401)
+                            self.send_header("Content-Type", "application/json; charset=utf-8")
+                            self.send_header("Access-Control-Allow-Origin", "*")
+                            self.send_header("Content-Length", str(len(body)))
+                            self.send_header("Connection", "close")
+                            self.end_headers()
+                            self.wfile.write(body)
+                            return
+
+                        content_len = int(self.headers.get("Content-Length", 0))
+                        raw_body = self.rfile.read(content_len).decode("utf-8", errors="ignore") if content_len > 0 else "{}"
+                        try:
+                            payload = json.loads(raw_body)
+                        except Exception:
+                            payload = {}
+
+                        res = server_self.update_common_config(payload)
+                        status_code = 200 if res.get("success") else 400
+                        body = json.dumps(res, ensure_ascii=False).encode("utf-8")
+                        self.send_response(status_code)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+
                     self.send_response(404)
                     self.end_headers()
                 except Exception as e:
@@ -1020,6 +1136,7 @@ class UnifiedDashboardServer:
             </div>
             <!-- Quick Actions -->
             <div class="flex flex-wrap gap-2 mt-4 sm:mt-0">
+                <button onclick="openConfigModal()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 font-bold rounded-lg text-sm text-white shadow-lg transition">⚙️ 공통 설정</button>
                 <button onclick="triggerAction('panic')" class="px-4 py-2 bg-rose-600 hover:bg-rose-700 font-bold rounded-lg text-sm text-white shadow-lg transition">🚨 긴급 전량 매도</button>
                 <button onclick="triggerAction('pause')" class="px-4 py-2 bg-amber-600 hover:bg-amber-700 font-bold rounded-lg text-sm text-white shadow-lg transition">⏸️ 전체 일시정지</button>
                 <button onclick="triggerAction('resume')" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 font-bold rounded-lg text-sm text-white shadow-lg transition">▶️ 전체 재개</button>
@@ -1441,7 +1558,264 @@ class UnifiedDashboardServer:
 
         fetchStatus();
         setInterval(fetchStatus, 3000);
+
+        // ----------------------------------------------------
+        // 공통 설정 모달 (Hot-Reload) 제어 로직
+        // ----------------------------------------------------
+        let cachedUnifiedConfig = null;
+
+        async function openConfigModal() {
+            const modal = document.getElementById('config-modal');
+            if (!modal) return;
+            modal.classList.remove('hidden');
+            switchConfigTab('risk');
+            const banner = document.getElementById('cfg-status-banner');
+            if (banner) { banner.classList.add('hidden'); banner.innerText = ''; }
+
+            try {
+                const res = await fetch('/api/config');
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                if (data && data.settings) {
+                    cachedUnifiedConfig = data.settings;
+                    for (const [k, item] of Object.entries(data.settings)) {
+                        const el = document.getElementById('cfg_' + k);
+                        if (!el) continue;
+                        if (item.type === 'bool') {
+                            el.checked = Boolean(item.value);
+                        } else if (item.type === 'percent') {
+                            el.value = item.display_value !== undefined ? item.display_value : (item.value * 100);
+                        } else {
+                            el.value = item.value;
+                        }
+                    }
+                }
+            } catch (err) {
+                showConfigBanner('설정 로드 실패: ' + err.message, 'error');
+            }
+        }
+
+        function closeConfigModal() {
+            const modal = document.getElementById('config-modal');
+            if (modal) modal.classList.add('hidden');
+        }
+
+        function switchConfigTab(tabName) {
+            ['risk', 'screening', 'portfolio'].forEach(t => {
+                const btn = document.getElementById('cfg-tab-' + t);
+                const panel = document.getElementById('cfg-panel-' + t);
+                if (t === tabName) {
+                    if (btn) btn.className = 'cfg-tab-btn active px-3.5 py-2 rounded-t-lg text-xs font-bold transition border-b-2 border-indigo-500 text-indigo-400 bg-slate-800/60';
+                    if (panel) panel.classList.remove('hidden');
+                } else {
+                    if (btn) btn.className = 'cfg-tab-btn px-3.5 py-2 rounded-t-lg text-xs font-bold transition border-b-2 border-transparent text-slate-400 hover:text-slate-200';
+                    if (panel) panel.classList.add('hidden');
+                }
+            });
+        }
+
+        function resetConfigDefaults() {
+            if (!cachedUnifiedConfig) return;
+            for (const [k, item] of Object.entries(cachedUnifiedConfig)) {
+                const el = document.getElementById('cfg_' + k);
+                if (!el) continue;
+                if (item.type === 'bool') {
+                    el.checked = Boolean(item.default);
+                } else {
+                    el.value = item.default;
+                }
+            }
+            showConfigBanner('기본값으로 복원되었습니다. 적용하려면 [저장 및 즉시 적용]을 누르세요.', 'info');
+        }
+
+        function showConfigBanner(msg, type) {
+            const banner = document.getElementById('cfg-status-banner');
+            if (!banner) return;
+            banner.classList.remove('hidden');
+            banner.innerText = msg;
+            if (type === 'error') {
+                banner.className = 'p-3 rounded-xl text-xs font-medium border bg-rose-500/20 text-rose-300 border-rose-500/40';
+            } else if (type === 'success') {
+                banner.className = 'p-3 rounded-xl text-xs font-medium border bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
+            } else {
+                banner.className = 'p-3 rounded-xl text-xs font-medium border bg-blue-500/20 text-blue-300 border-blue-500/40';
+            }
+        }
+
+        async function saveAndApplyConfig() {
+            const saveBtn = document.getElementById('cfg-save-btn');
+            if (!cachedUnifiedConfig) return;
+
+            const payload = {};
+            for (const [k, item] of Object.entries(cachedUnifiedConfig)) {
+                const el = document.getElementById('cfg_' + k);
+                if (!el) continue;
+                if (item.type === 'bool') payload[k] = el.checked;
+                else if (item.type === 'int') payload[k] = parseInt(el.value, 10);
+                else if (item.type === 'krw') payload[k] = parseFloat(el.value);
+                else if (item.type === 'percent') payload[k] = parseFloat(el.value) / 100.0;
+                else payload[k] = el.value;
+            }
+
+            if (saveBtn) {
+                saveBtn.disabled = true;
+                saveBtn.innerText = '저장 중...';
+            }
+
+            try {
+                const token = sessionStorage.getItem('dashboardActionToken') || '';
+                const headers = { 'Content-Type': 'application/json' };
+                if (token) headers['X-Dashboard-Action-Token'] = token;
+
+                const res = await fetch('/api/config', {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify(payload)
+                });
+
+                if (res.status === 401) {
+                    const suppliedToken = prompt('원격 제어 토큰을 입력하세요:');
+                    if (!suppliedToken) throw new Error('원격 제어 인증이 필요합니다.');
+                    sessionStorage.setItem('dashboardActionToken', suppliedToken);
+                    showConfigBanner('토큰이 저장되었습니다. 다시 시도하세요.', 'info');
+                    return;
+                }
+
+                const json = await res.json();
+                if (!res.ok || !json.success) {
+                    const errMsg = (json.errors && json.errors.length) ? json.errors.join(', ') : (json.message || '저장 실패');
+                    throw new Error(errMsg);
+                }
+
+                showConfigBanner('✅ 공통 설정이 .env에 저장되고 실행 중인 봇에 무중단 반영되었습니다!', 'success');
+                setTimeout(() => { closeConfigModal(); fetchStatus(); }, 1200);
+            } catch (err) {
+                showConfigBanner('❌ 저장 실패: ' + err.message, 'error');
+            } finally {
+                if (saveBtn) {
+                    saveBtn.disabled = false;
+                    saveBtn.innerText = '💾 저장 및 즉시 적용';
+                }
+            }
+        }
     </script>
+
+    <!-- Common Config Modal Markup -->
+    <div id="config-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden max-h-[90vh] flex flex-col">
+            <div class="p-5 border-b border-slate-800 flex justify-between items-center bg-slate-950/50">
+                <div>
+                    <h3 class="text-base font-bold text-slate-100 flex items-center gap-2">
+                        <span>⚙️ 공통 트레이딩 & 리스크 설정</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Hot-Reload</span>
+                    </h3>
+                    <p class="text-xs text-slate-400">변경 즉시 .env에 저장되고 빗썸/업비트 봇 코어에 무중단 적용됩니다.</p>
+                </div>
+                <button onclick="closeConfigModal()" class="text-slate-400 hover:text-white p-1 rounded">✕</button>
+            </div>
+            <div class="flex border-b border-slate-800 px-5 pt-3 bg-slate-950/30 gap-2">
+                <button onclick="switchConfigTab('risk')" id="cfg-tab-risk" class="cfg-tab-btn active px-3.5 py-2 rounded-t-lg text-xs font-bold border-b-2 border-indigo-500 text-indigo-400 bg-slate-800/60">🛡️ 리스크 & 손익</button>
+                <button onclick="switchConfigTab('screening')" id="cfg-tab-screening" class="cfg-tab-btn px-3.5 py-2 rounded-t-lg text-xs font-bold text-slate-400 hover:text-slate-200">🔍 스크리닝 & 전략</button>
+                <button onclick="switchConfigTab('portfolio')" id="cfg-tab-portfolio" class="cfg-tab-btn px-3.5 py-2 rounded-t-lg text-xs font-bold text-slate-400 hover:text-slate-200">💼 포트폴리오 한도</button>
+            </div>
+            <div class="p-5 overflow-y-auto flex-1 space-y-4">
+                <div id="cfg-status-banner" class="hidden p-3 rounded-xl text-xs font-medium border"></div>
+                <div id="cfg-panel-risk" class="cfg-panel space-y-4">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-xs font-semibold block mb-1">트레일링 스탑 시작 수익률 (%)</label>
+                            <input type="number" id="cfg_TRAILING_START_PCT" step="0.1" min="0.5" max="20" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                        </div>
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-xs font-semibold block mb-1">트레일링 청산 하락폭 (%)</label>
+                            <input type="number" id="cfg_TRAILING_STOP_PCT" step="0.1" min="0.5" max="10" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                        </div>
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-xs font-semibold block mb-1">일일 누적 손실 한도 (%)</label>
+                            <input type="number" id="cfg_MAX_DAILY_LOSS_PCT" step="0.5" min="1" max="20" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                        </div>
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-xs font-semibold block mb-1">BTC 급락 감지 임계치 (%)</label>
+                            <input type="number" id="cfg_BTC_CRASH_THRESHOLD_PCT" step="0.1" min="0.5" max="10" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                        </div>
+                    </div>
+                    <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                        <label class="flex items-center justify-between cursor-pointer text-xs font-semibold">
+                            <span>호가 슬리피지 강제 차단 집행</span>
+                            <input type="checkbox" id="cfg_ORDERBOOK_SLIPPAGE_ENFORCEMENT" class="accent-indigo-500">
+                        </label>
+                    </div>
+                </div>
+                <div id="cfg-panel-screening" class="cfg-panel hidden space-y-4">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-xs font-semibold block mb-1">분석 대상 후보 수 (개)</label>
+                            <input type="number" id="cfg_TOP_COUNT" step="1" min="1" max="10" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                        </div>
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-xs font-semibold block mb-1">24시간 최소 거래대금 (원)</label>
+                            <input type="number" id="cfg_MIN_TRADE_VALUE" step="100000000" min="100000000" max="100000000000" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                        </div>
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-xs font-semibold block mb-1">후보 최소 등락률 (%)</label>
+                            <input type="number" id="cfg_MIN_CHANGE_RATE" step="0.1" min="0" max="10" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                        </div>
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-xs font-semibold block mb-1">후보 최대 등락률 (%)</label>
+                            <input type="number" id="cfg_MAX_CHANGE_RATE" step="1" min="5" max="100" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                        </div>
+                    </div>
+                    <div class="space-y-2">
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="flex items-center justify-between cursor-pointer text-xs font-semibold">
+                                <span>확정봉 모멘텀 돌파 경로 활성화</span>
+                                <input type="checkbox" id="cfg_MOMENTUM_BREAKOUT_ENABLED" class="accent-indigo-500">
+                            </label>
+                        </div>
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="flex items-center justify-between cursor-pointer text-xs font-semibold">
+                                <span>신규 상장 코인 추적 활성화</span>
+                                <input type="checkbox" id="cfg_NEW_LISTING_ENABLED" class="accent-indigo-500">
+                            </label>
+                        </div>
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="flex items-center justify-between cursor-pointer text-xs font-semibold">
+                                <span>신규 상장 코인 실주문 집행 (Enforcement)</span>
+                                <input type="checkbox" id="cfg_NEW_LISTING_ENFORCEMENT" class="accent-indigo-500">
+                            </label>
+                        </div>
+                    </div>
+                </div>
+                <div id="cfg-panel-portfolio" class="cfg-panel hidden space-y-4">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-xs font-semibold block mb-1">동시 최대 보유 포지션 수 (개)</label>
+                            <input type="number" id="cfg_MAX_OPEN_POSITIONS" step="1" min="1" max="10" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                        </div>
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-xs font-semibold block mb-1">단일 포지션 최대 비중 (%)</label>
+                            <input type="number" id="cfg_MAX_POSITION_PCT" step="5" min="5" max="100" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                        </div>
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-xs font-semibold block mb-1">총 익스포저 최대 비중 (%)</label>
+                            <input type="number" id="cfg_MAX_TOTAL_EXPOSURE_PCT" step="5" min="10" max="100" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                        </div>
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-xs font-semibold block mb-1">단일 주문 최대 금액 (원)</label>
+                            <input type="number" id="cfg_MAX_ORDER_KRW" step="1000000" min="100000" max="500000000" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="p-4 border-t border-slate-800 bg-slate-950/50 flex justify-between items-center">
+                <button onclick="resetConfigDefaults()" class="px-3 py-1.5 rounded text-xs text-slate-400 hover:text-white">기본값 불러오기</button>
+                <div class="flex gap-2">
+                    <button onclick="closeConfigModal()" class="px-4 py-1.5 rounded text-xs bg-slate-800 text-slate-300">닫기</button>
+                    <button id="cfg-save-btn" onclick="saveAndApplyConfig()" class="px-4 py-1.5 rounded text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700">💾 저장 및 즉시 적용</button>
+                </div>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
 """

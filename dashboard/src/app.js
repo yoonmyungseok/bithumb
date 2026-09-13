@@ -1907,6 +1907,168 @@
     }
   };
 
+  // Config Modal State & Handlers
+  let cachedConfig = null;
+
+  window.openConfigModal = async function () {
+    const modal = document.getElementById('config-modal');
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    window.switchConfigTab('risk');
+    const banner = document.getElementById('cfg-status-banner');
+    if (banner) {
+      banner.classList.add('hidden');
+      banner.innerText = '';
+    }
+
+    try {
+      const baseUrl = getApiBaseUrl();
+      const res = await fetch(`${baseUrl}/api/config`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data && data.settings) {
+        cachedConfig = data.settings;
+        populateConfigForm(data.settings);
+      }
+    } catch (err) {
+      showConfigBanner(`설정 로드 실패: ${err.message}`, 'error');
+    }
+  };
+
+  window.closeConfigModal = function () {
+    const modal = document.getElementById('config-modal');
+    if (modal) modal.classList.add('hidden');
+  };
+
+  window.switchConfigTab = function (tabName) {
+    const tabs = ['risk', 'screening', 'portfolio'];
+    tabs.forEach(t => {
+      const btn = document.getElementById(`cfg-tab-${t}`);
+      const panel = document.getElementById(`cfg-panel-${t}`);
+      if (t === tabName) {
+        if (btn) {
+          btn.className = 'cfg-tab-btn active px-3.5 py-2 rounded-t-lg text-xs font-bold transition border-b-2 border-indigo-500 text-indigo-400 bg-slate-800/60';
+        }
+        if (panel) panel.classList.remove('hidden');
+      } else {
+        if (btn) {
+          btn.className = 'cfg-tab-btn px-3.5 py-2 rounded-t-lg text-xs font-bold transition border-b-2 border-transparent text-slate-400 hover:text-slate-200';
+        }
+        if (panel) panel.classList.add('hidden');
+      }
+    });
+  };
+
+  function populateConfigForm(settings) {
+    for (const [key, item] of Object.entries(settings)) {
+      const el = document.getElementById(`cfg_${key}`);
+      if (!el) continue;
+      if (item.type === 'bool') {
+        el.checked = Boolean(item.value);
+      } else if (item.type === 'percent') {
+        el.value = item.display_value !== undefined ? item.display_value : (item.value * 100);
+      } else {
+        el.value = item.value;
+      }
+    }
+  }
+
+  window.resetConfigDefaults = function () {
+    if (!cachedConfig) return;
+    for (const [key, item] of Object.entries(cachedConfig)) {
+      const el = document.getElementById(`cfg_${key}`);
+      if (!el) continue;
+      if (item.type === 'bool') {
+        el.checked = Boolean(item.default);
+      } else {
+        el.value = item.default;
+      }
+    }
+    showConfigBanner('기본값으로 복원되었습니다. 적용하려면 [저장 및 즉시 적용]을 누르세요.', 'info');
+  };
+
+  function showConfigBanner(msg, type = 'info') {
+    const banner = document.getElementById('cfg-status-banner');
+    if (!banner) return;
+    banner.classList.remove('hidden');
+    banner.innerText = msg;
+    if (type === 'error') {
+      banner.className = 'p-3 rounded-xl text-xs font-medium border bg-rose-500/20 text-rose-300 border-rose-500/40';
+    } else if (type === 'success') {
+      banner.className = 'p-3 rounded-xl text-xs font-medium border bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
+    } else {
+      banner.className = 'p-3 rounded-xl text-xs font-medium border bg-blue-500/20 text-blue-300 border-blue-500/40';
+    }
+  }
+
+  window.saveAndApplyConfig = async function () {
+    const saveBtn = document.getElementById('cfg-save-btn');
+    if (!cachedConfig) return;
+
+    const payload = {};
+    for (const [key, item] of Object.entries(cachedConfig)) {
+      const el = document.getElementById(`cfg_${key}`);
+      if (!el) continue;
+      if (item.type === 'bool') {
+        payload[key] = el.checked;
+      } else if (item.type === 'int') {
+        payload[key] = parseInt(el.value, 10);
+      } else if (item.type === 'krw') {
+        payload[key] = parseFloat(el.value);
+      } else if (item.type === 'percent') {
+        payload[key] = parseFloat(el.value) / 100.0;
+      } else {
+        payload[key] = el.value;
+      }
+    }
+
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.innerHTML = '<span>⏳</span><span>저장 중...</span>';
+    }
+
+    try {
+      const baseUrl = getApiBaseUrl();
+      const actionToken = window.sessionStorage.getItem('dashboardActionToken') || '';
+      const headers = { 'Content-Type': 'application/json' };
+      if (actionToken) headers['X-Dashboard-Action-Token'] = actionToken;
+
+      const res = await fetch(`${baseUrl}/api/config`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload)
+      });
+
+      if (res.status === 401) {
+        const suppliedToken = window.prompt('원격 제어 토큰을 입력하세요. 토큰은 이 브라우저 세션에만 저장됩니다.');
+        if (!suppliedToken) throw new Error('원격 제어 인증이 필요합니다.');
+        window.sessionStorage.setItem('dashboardActionToken', suppliedToken);
+        showConfigBanner('인증 토큰이 저장되었습니다. [저장 및 즉시 적용]을 다시 눌러주세요.', 'info');
+        return;
+      }
+
+      const result = await res.json();
+      if (!res.ok || !result.success) {
+        const errMsg = (result.errors && result.errors.length) ? result.errors.join(', ') : (result.message || '저장 실패');
+        throw new Error(errMsg);
+      }
+
+      showConfigBanner('✅ 공통 설정이 .env에 저장되고 실행 중인 봇에 무중단(Hot-Reload) 반영되었습니다!', 'success');
+      setTimeout(() => {
+        window.closeConfigModal();
+        fetchStatus();
+      }, 1200);
+
+    } catch (err) {
+      showConfigBanner(`❌ 저장 실패: ${err.message}`, 'error');
+    } finally {
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = '<span>💾</span><span>저장 및 즉시 적용</span>';
+      }
+    }
+  };
+
   // Tab Switcher
   window.switchStrategyTab = function (tab) {
     state.currentTab = tab;

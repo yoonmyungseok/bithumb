@@ -25,6 +25,7 @@ from risk_manager import (
 from strategy_engine import StrategyPolicy, get_new_listing_alpha_threshold
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
+from runtime_config import CommonConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -589,6 +590,107 @@ class BotController:
         elif action == "resume":
             return self.resume_bot()
         return "알 수 없는 작업"
+
+    def get_runtime_config(self) -> dict[str, Any]:
+        """현재 코어가 참조 중인 런타임 공통 설정값 반환"""
+        manager = CommonConfigManager()
+        settings = manager.get_all_settings()
+
+        # 인메모리 실시간 객체 상태 오버라이드
+        if self.trailing_tracker:
+            if "TRAILING_START_PCT" in settings:
+                val = getattr(self.trailing_tracker, "start_profit_pct", None)
+                if val is not None:
+                    settings["TRAILING_START_PCT"]["value"] = val
+                    settings["TRAILING_START_PCT"]["display_value"] = round(val * 100.0, 2)
+            if "TRAILING_STOP_PCT" in settings:
+                val = getattr(self.trailing_tracker, "trailing_drop_pct", None)
+                if val is not None:
+                    settings["TRAILING_STOP_PCT"]["value"] = val
+                    settings["TRAILING_STOP_PCT"]["display_value"] = round(val * 100.0, 2)
+
+        if self.risk_manager:
+            if "MAX_DAILY_LOSS_PCT" in settings:
+                val = getattr(self.risk_manager, "max_loss_pct", None)
+                if val is not None:
+                    settings["MAX_DAILY_LOSS_PCT"]["value"] = val
+                    settings["MAX_DAILY_LOSS_PCT"]["display_value"] = round(val * 100.0, 2)
+
+        if self.risk_guard:
+            if "MAX_OPEN_POSITIONS" in settings and hasattr(self.risk_guard, "max_open_positions"):
+                settings["MAX_OPEN_POSITIONS"]["value"] = self.risk_guard.max_open_positions
+                settings["MAX_OPEN_POSITIONS"]["display_value"] = self.risk_guard.max_open_positions
+            if "MAX_POSITION_PCT" in settings and hasattr(self.risk_guard, "max_position_pct"):
+                settings["MAX_POSITION_PCT"]["value"] = self.risk_guard.max_position_pct
+                settings["MAX_POSITION_PCT"]["display_value"] = round(self.risk_guard.max_position_pct * 100.0, 2)
+            if "MAX_TOTAL_EXPOSURE_PCT" in settings and hasattr(self.risk_guard, "max_total_exposure_pct"):
+                settings["MAX_TOTAL_EXPOSURE_PCT"]["value"] = self.risk_guard.max_total_exposure_pct
+                settings["MAX_TOTAL_EXPOSURE_PCT"]["display_value"] = round(self.risk_guard.max_total_exposure_pct * 100.0, 2)
+            if "MAX_ORDER_KRW" in settings and hasattr(self.risk_guard, "max_order_krw"):
+                settings["MAX_ORDER_KRW"]["value"] = self.risk_guard.max_order_krw
+                settings["MAX_ORDER_KRW"]["display_value"] = self.risk_guard.max_order_krw
+
+        return {
+            "success": True,
+            "exchange": self.exchange_name,
+            "settings": settings,
+        }
+
+    def update_runtime_config(self, updates: dict[str, Any]) -> dict[str, Any]:
+        """런타임 공통 설정 동적 반영 (Hot-Reload)"""
+        manager = CommonConfigManager()
+        normalized_updates = {}
+        errors = []
+
+        # 1. 유효성 검증
+        for key, raw_val in updates.items():
+            ok, val, err = manager.validate_and_normalize(key, raw_val)
+            if not ok:
+                errors.append(err)
+            else:
+                normalized_updates[key] = val
+
+        if errors:
+            return {"success": False, "exchange": self.exchange_name, "errors": errors, "applied": {}}
+
+        # 2. os.environ 동기화
+        for key, val in normalized_updates.items():
+            if isinstance(val, bool):
+                os.environ[key] = "true" if val else "false"
+            else:
+                os.environ[key] = str(val)
+
+        # 3. 인메모리 컴포넌트 실시간 주입
+        if self.trailing_tracker:
+            if "TRAILING_START_PCT" in normalized_updates:
+                self.trailing_tracker.start_profit_pct = normalized_updates["TRAILING_START_PCT"]
+            if "TRAILING_STOP_PCT" in normalized_updates:
+                self.trailing_tracker.trailing_drop_pct = normalized_updates["TRAILING_STOP_PCT"]
+
+        if self.risk_manager:
+            if "MAX_DAILY_LOSS_PCT" in normalized_updates:
+                self.risk_manager.max_loss_pct = normalized_updates["MAX_DAILY_LOSS_PCT"]
+
+        if self.risk_guard:
+            guard_updates = {}
+            if "MAX_OPEN_POSITIONS" in normalized_updates:
+                guard_updates["max_open_positions"] = normalized_updates["MAX_OPEN_POSITIONS"]
+            if "MAX_POSITION_PCT" in normalized_updates:
+                guard_updates["max_position_pct"] = normalized_updates["MAX_POSITION_PCT"]
+            if "MAX_TOTAL_EXPOSURE_PCT" in normalized_updates:
+                guard_updates["max_total_exposure_pct"] = normalized_updates["MAX_TOTAL_EXPOSURE_PCT"]
+            if guard_updates:
+                self.risk_guard.update_limits(**guard_updates)
+            if "MAX_ORDER_KRW" in normalized_updates and hasattr(self.risk_guard, "max_order_krw"):
+                self.risk_guard.max_order_krw = normalized_updates["MAX_ORDER_KRW"]
+
+        logger.info(f"⚙️ [{self.exchange_name}] 런타임 설정 동적 갱신 완료: {list(normalized_updates.keys())}")
+        return {
+            "success": True,
+            "exchange": self.exchange_name,
+            "applied": normalized_updates,
+            "message": f"[{self.exchange_name}] 런타임 설정이 성공적으로 반영되었습니다.",
+        }
 
     def get_diagnostics_data(self) -> dict[str, Any]:
         """실시간 원격 시스템 진단 텔레메트리 데이터 반환"""

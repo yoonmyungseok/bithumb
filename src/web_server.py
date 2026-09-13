@@ -44,12 +44,16 @@ class DashboardWebServer:
         title: str = "Bithumb AI 퀀트 트레이딩 Pro",
         static_dir: str | None = None,
         is_api_only: bool = False,
+        config_provider: Callable[[], dict[str, Any]] | None = None,
+        config_updater: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         **kwargs,
     ):
         self.port = port
         self.host = host
         self.get_status_data = get_status_data_func or data_provider or kwargs.get("data_provider")
         self.action_handler = action_handler_func or action_handler or kwargs.get("action_handler")
+        self.config_provider = config_provider or kwargs.get("config_provider")
+        self.config_updater = config_updater or kwargs.get("config_updater")
         self.title = title or kwargs.get("title", "Bithumb AI 퀀트 트레이딩 Pro")
         self.is_api_only = is_api_only or kwargs.get("is_api_only", False)
         # 설정된 경우에만 원격 제어에 토큰을 요구해 기존 로컬 운영 환경의 호환을 유지한다.
@@ -142,6 +146,19 @@ class DashboardWebServer:
                         self.wfile.write(body)
                         return
 
+                    # 1-1. 런타임 공통 설정 반환
+                    if path == "/api/config":
+                        data = server_self.config_provider() if server_self.config_provider else {"success": False, "message": "설정 제공자가 구성되지 않았습니다."}
+                        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+
                     # 2. 정적 SPA 파일 서빙 (dashboard/ 디렉터리가 존재하는 경우)
                     if server_self.static_dir:
                         rel_path = path.lstrip("/")
@@ -224,6 +241,42 @@ class DashboardWebServer:
                             reply = server_self.action_handler(action_name)
                         body = json.dumps({"success": True, "message": reply}, ensure_ascii=False).encode("utf-8")
                         self.send_response(200)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+
+                    # 공통 설정 런타임 갱신 엔드포인트
+                    if self.path == "/api/config":
+                        if not server_self.is_action_authorized(self.headers.get("X-Dashboard-Action-Token", "")):
+                            body = json.dumps({"success": False, "message": "원격 제어 인증이 필요합니다."}, ensure_ascii=False).encode("utf-8")
+                            self.send_response(401)
+                            self.send_header("Content-Type", "application/json; charset=utf-8")
+                            self.send_header("Access-Control-Allow-Origin", "*")
+                            self.send_header("Content-Length", str(len(body)))
+                            self.send_header("Connection", "close")
+                            self.end_headers()
+                            self.wfile.write(body)
+                            return
+
+                        content_len = int(self.headers.get("Content-Length", 0))
+                        raw_body = self.rfile.read(content_len).decode("utf-8", errors="ignore") if content_len > 0 else "{}"
+                        try:
+                            json_body = json.loads(raw_body)
+                        except Exception:
+                            json_body = {}
+
+                        if server_self.config_updater:
+                            res = server_self.config_updater(json_body)
+                        else:
+                            res = {"success": False, "message": "설정 갱신 핸들러가 구성되지 않았습니다."}
+
+                        status_code = 200 if res.get("success") else 400
+                        body = json.dumps(res, ensure_ascii=False).encode("utf-8")
+                        self.send_response(status_code)
                         self.send_header("Content-Type", "application/json; charset=utf-8")
                         self.send_header("Access-Control-Allow-Origin", "*")
                         self.send_header("Content-Length", str(len(body)))
