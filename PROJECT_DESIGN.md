@@ -16,7 +16,7 @@
 - **핵심 기술**: 
   - 빗썸 REST API & WebSocket (v1/v2)
   - 업비트 REST API & WebSocket (Public: 시세/체결, Private: myOrder/myAsset, HS512 JWT + unencoded query string SHA-512 hash, `identifier` 멱등성)
-  - 빗썸·업비트 분리 Google Gemini API (신규 BUY: Flash-Lite 계열 순차 폴백, 거시 진단 및 브리핑: 일반 Flash 최우선 라우팅 및 Flash-Lite 폴백, 추론 모델 ThinkingBudget=0 제어, 거시 레짐 타임아웃 15초 상향 및 신규 BUY 진입 게이트 격리 안전망 완비), Telegram API
+  - 빗썸·업비트 분리 Google Gemini API (신규 BUY: Flash-Lite 계열 순차 폴백, 거시 진단 및 브리핑: 일반 Flash 최우선 라우팅 및 Flash-Lite 폴백, 빗썸 브리핑 전용 시스템 지침 분리 및 유연한 3줄 시황 품질 검증, 추론 모델 ThinkingBudget=0 제어, 거시 레짐 타임아웃 15초 상향 및 신규 BUY 진입 게이트 격리 안전망 완비), Telegram API
   - 거래소 전용 Groq API 거시 인텔리전스 (15분 주기 거시 레짐 진단 및 권장 현금 비중 도출: 빗썸 `BITHUMB_GROQ_API_KEY`, 업비트 `UPBIT_GROQ_API_KEY` 전용 키 격리, 공용 키 배제)
 - **주요 전략 및 아키텍처**: 
   - **다중 시간대(MTF) 분석**: 1시간봉 대세 추세 + 5분봉 정밀 타점 정렬

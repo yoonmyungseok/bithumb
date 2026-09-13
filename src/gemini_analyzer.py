@@ -1971,7 +1971,7 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
 
 ### [작성 규칙]
 1. 불필요한 서론/인사말 생략.
-2. 3개의 글머리 기호(•)로 작성.
+2. 반드시 정확히 아래 3개의 글머리 기호(•)와 태그 형식으로 작성 (JSON이나 번호 목록이 아닌 텍스트로 작성):
    • [거시 시황]: BTC 추세와 시장 심리 핵심 요약
    • [계좌 진단]: 현재 포트폴리오 상태 및 손익 평가
    • [전략 제언]: 향후 몇 시간 동안의 안전 운용 지침
@@ -1985,12 +1985,18 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
                 prompt, models, context=f"{exchange_name}_briefing", timeout=12.0, max_tokens=3000,
             )
             text = result.value if isinstance(result.value, str) else ""
-            # Provider 응답도 기존 3줄 브리핑 품질 조건을 통과해야만 외부 전송한다.
-            has_bullets = text.count("•") >= 2 or ("[거시" in text and "[전략" in text) or ("[거시" in text and "[계좌" in text)
-            if has_bullets and len(text) >= 40:
+            clean_text = re.sub(r"^```[a-zA-Z]*\n?|\n?```$", "", text.strip()).strip()
+            # Provider 응답 품질 검증: 글머리 기호(•, -, *, 번호 목록) 또는 핵심 섹션 키워드(거시, 전략, 계좌) 포함 여부 및 길이 확인
+            has_bullets = (
+                clean_text.count("•") >= 2
+                or len(re.findall(r"(?:^|\n)\s*(?:[•\-\*]|\d+[\.\)])\s+", clean_text)) >= 2
+                or ("거시" in clean_text and "전략" in clean_text)
+                or ("거시" in clean_text and "계좌" in clean_text)
+            )
+            if has_bullets and len(clean_text) >= 40:
                 logger.info("✨ [%s] 09:00 종합 시황 브리핑 생성 성공 (Provider: %s, 모델: %s)", exchange_name, self.provider.name, result.model)
-                return text
-            if text:
+                return clean_text
+            if clean_text:
                 logger.warning("[%s] AI 브리핑 품질 검증 실패로 기본 브리핑을 사용합니다.", exchange_name)
         except Exception as e:
             logger.debug(f"generate_market_briefing 예외: {e}")

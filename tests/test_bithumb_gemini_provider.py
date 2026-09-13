@@ -301,6 +301,84 @@ class BithumbGeminiProviderTests(unittest.TestCase):
         self.assertIn("[전략 제언]", briefing)
         self.assertNotIn("리스크 안전선 내에서 정상 운용 중입니다", briefing)
 
+    @patch("ai_provider.requests.post")
+    def test_bithumb_briefing_uses_briefing_system_instruction(self, mock_post):
+        """브리핑 context 호출 시 매매 진입 지침 대신 BRIEFING_SYSTEM_INSTRUCTION이 주입되어야 한다."""
+        prompt = BithumbGeminiProvider.BRIEFING_SYSTEM_INSTRUCTION
+        for phrase in ("빗썸", "업비트", "ACK는 체결이 아닙니다", "신규 BUY", "주문 실행", "한국어"):
+            self.assertIn(phrase, prompt)
+
+        success_resp = MagicMock(status_code=200)
+        success_resp.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "• [거시 시황]: 정상\n• [계좌 진단]: 정상\n• [전략 제언]: 정상"}]}}]
+        }
+        mock_post.return_value = success_resp
+
+        provider = BithumbGeminiProvider("bithumb-only-key")
+        provider.complete_text("시황 작성", ["gemini-3.8-flash"], context="bithumb_briefing", timeout=5.0, max_tokens=1000)
+
+        call_json = mock_post.call_args[1]["json"]
+        self.assertIn("systemInstruction", call_json)
+        sys_text = call_json["systemInstruction"]["parts"][0]["text"]
+        self.assertEqual(sys_text, BithumbGeminiProvider.BRIEFING_SYSTEM_INSTRUCTION)
+        self.assertNotIn("SCALP", sys_text)
+        self.assertNotIn("MOMENTUM_BREAKOUT", sys_text)
+
+    @patch("ai_provider.requests.post")
+    def test_generate_market_briefing_supports_flexible_formats(self, mock_post):
+        """번호 목록, 하이픈 글머리 기호, 마크다운 코드블록도 유연하게 인식하고 정상 반환해야 한다."""
+        from gemini_analyzer import GeminiAnalyzer
+
+        provider = BithumbGeminiProvider("bithumb-only-key")
+        provider._briefing_models = ["gemini-3.8-flash"]
+        analyzer = GeminiAnalyzer(provider=provider)
+
+        # 1. 번호 목록 형식
+        resp1 = MagicMock(status_code=200)
+        resp1.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": (
+                "1. 거시 시황: BTC는 단기 횡보 중이며 공포탐욕 지수는 56점 탐욕 상태입니다.\n"
+                "2. 계좌 진단: 100% 현금 보유 상태로 하방 리스크가 완벽히 통제되고 있습니다.\n"
+                "3. 전략 제언: 무리한 진입을 자제하고 주요 저항선 돌파 시 분할 진입을 권장합니다."
+            )}]}}]
+        }
+        mock_post.return_value = resp1
+        res1 = analyzer.generate_market_briefing(
+            "빗썸", 1000000.0, 0.0, 0.0, "100% 현금", {"regime": "NORMAL", "risk_score": 35}, "탐욕"
+        )
+        self.assertIn("거시 시황", res1)
+        self.assertNotIn("리스크 안전선 내에서 정상 운용 중입니다", res1)
+
+        # 2. 마크다운 코드블록 감싸인 형식
+        resp2 = MagicMock(status_code=200)
+        resp2.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": (
+                "```markdown\n"
+                "• [거시 시황]: BTC 강세 추세 속 기관 자금 유입이 지속되고 있습니다.\n"
+                "• [계좌 진단]: 안전하게 현금을 보유하여 변동성에 대비하고 있습니다.\n"
+                "• [전략 제언]: 1시간 지지선 반등 확인 후 신규 진입을 추천합니다.\n"
+                "```"
+            )}]}}]
+        }
+        mock_post.return_value = resp2
+        res2 = analyzer.generate_market_briefing(
+            "빗썸", 1000000.0, 0.0, 0.0, "100% 현금", {"regime": "NORMAL", "risk_score": 35}, "탐욕"
+        )
+        self.assertFalse(res2.startswith("```"))
+        self.assertIn("[거시 시황]", res2)
+        self.assertNotIn("리스크 안전선 내에서 정상 운용 중입니다", res2)
+
+        # 3. 비정상 단문/오류 응답 시 안전 fallback 확인
+        resp3 = MagicMock(status_code=200)
+        resp3.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": '{"status": "HOLD"}'}]}}]
+        }
+        mock_post.return_value = resp3
+        res3 = analyzer.generate_market_briefing(
+            "빗썸", 1000000.0, 0.0, 0.0, "100% 현금", {"regime": "NORMAL", "risk_score": 35}, "탐욕"
+        )
+        self.assertIn("리스크 안전선 내에서 정상 운용 중입니다", res3)
+
 
 if __name__ == "__main__":
     unittest.main()
