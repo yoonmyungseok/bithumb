@@ -336,8 +336,8 @@ class GeminiAnalyzer:
         flash-lite 최우선 및 최신 버전 순으로 자동 정렬합니다.
         (이미지·오디오·TTS 등 미디어 전용 모델은 엄격히 배제하고 순수 텍스트/추론 모델만 선별)
         """
-        key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
-        if not key:
+        key = str(api_key or "").strip()
+        if not key or key == "provider-configured":
             return list(cls.FALLBACK_MODELS)
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
@@ -403,7 +403,7 @@ class GeminiAnalyzer:
         """
         now_ts = time.time()
         with self._CLASS_LOCK:
-            all_models = self.get_available_models(self.api_key)
+            all_models = self.get_available_models(self._effective_api_key)
             usable = [m for m in all_models if self._MODEL_COOLDOWNS.get(m, 0.0) <= now_ts]
             # 모델별 일일 쿼터(Flash-Lite 425회 / 일반 Flash 17회) 여유가 있는 모델만 선별
             quota_available = [m for m in usable if GeminiTelemetry.can_call_model(m, for_emergency_exit=for_emergency_exit)]
@@ -416,8 +416,8 @@ class GeminiAnalyzer:
         최신 flash 계열 우선(3.8-flash 최우선)으로 자동 정렬합니다.
         (이미지·오디오·임베딩 등 미디어/특수 목적 모델은 제외)
         """
-        key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
-        if not key:
+        key = str(api_key or "").strip()
+        if not key or key == "provider-configured":
             return list(cls.BRIEFING_FALLBACK_MODELS)
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
@@ -489,7 +489,7 @@ class GeminiAnalyzer:
         """
         now_ts = time.time()
         with self._CLASS_LOCK:
-            all_models = self.get_available_briefing_models(self.api_key)
+            all_models = self.get_available_briefing_models(self._effective_api_key)
             usable = [
                 m for m in all_models
                 if self._MODEL_COOLDOWNS.get(m, 0.0) <= now_ts
@@ -514,8 +514,8 @@ class GeminiAnalyzer:
         최신 flash 계열 우선(3.8-flash 최우선) ➜ flash-lite 순으로 자동 정렬합니다.
         (이미지·오디오·임베딩 등 미디어/특수 목적 모델 및 Pro 모델은 제외)
         """
-        key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
-        if not key:
+        key = str(api_key or "").strip()
+        if not key or key == "provider-configured":
             return list(cls.MACRO_FALLBACK_MODELS)
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
@@ -583,7 +583,7 @@ class GeminiAnalyzer:
         """
         now_ts = time.time()
         with self._CLASS_LOCK:
-            all_models = self.get_available_macro_models(self.api_key)
+            all_models = self.get_available_macro_models(self._effective_api_key)
             usable = [
                 m for m in all_models
                 if self._MODEL_COOLDOWNS.get(m, 0.0) <= now_ts
@@ -608,6 +608,17 @@ class GeminiAnalyzer:
                 if flash_models and lite_models and limit >= 3:
                     return flash_models[:limit - 1] + lite_models[:1]
             return fallback_usable[:limit]
+
+    @property
+    def _effective_api_key(self) -> str:
+        """Provider 또는 분석기 인스턴스에 설정된 실제 API 키를 반환합니다 ('provider-configured' 플레이스홀더 제외)."""
+        provider_key = str(getattr(self.provider, "api_key", "")).strip()
+        if provider_key and provider_key != "provider-configured":
+            return provider_key
+        raw_key = str(self.api_key).strip()
+        if raw_key and raw_key != "provider-configured":
+            return raw_key
+        return ""
 
     @property
     def _analysis_cache(self) -> dict[str, dict[str, Any]]:

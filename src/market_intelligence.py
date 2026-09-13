@@ -110,21 +110,14 @@ class MarketIntelligenceService:
         if not self.is_available:
             return None
 
+        with self._lock:
+            if self._is_updating:
+                return self._cached_data
+
         if background:
-            with self._lock:
-                if self._is_updating:
-                    return self._cached_data
-                self._is_updating = True
-
-            def _worker() -> None:
-                try:
-                    self._sync_update(btc_candles_1h, btc_candles_4h, fng_index)
-                finally:
-                    with self._lock:
-                        self._is_updating = False
-
             t = threading.Thread(
-                target=_worker,
+                target=self._sync_update,
+                args=(btc_candles_1h, btc_candles_4h, fng_index),
                 daemon=True,
                 name=f"{self.exchange_scope}_GroqMarketIntelligenceWorker",
             )
@@ -143,6 +136,11 @@ class MarketIntelligenceService:
         if not btc_candles_1h or len(btc_candles_1h) < 10:
             logger.debug("시장 분석 생략: BTC 1H 캔들 데이터 부족")
             return None
+
+        with self._lock:
+            if self._is_updating:
+                return self._cached_data
+            self._is_updating = True
 
         try:
             # 1. BTC 1시간 기술 지표 계산
@@ -242,6 +240,9 @@ class MarketIntelligenceService:
 
         except Exception as exc:
             logger.warning(f"Groq 시장 분석 수행 중 예외 발생: {exc}")
+        finally:
+            with self._lock:
+                self._is_updating = False
 
         return None
 
@@ -263,6 +264,8 @@ class MarketIntelligenceService:
 
             def _loop() -> None:
                 logger.info(f"🚀 [{self.exchange_scope.upper()}] Groq 주기적 시장 분석 스레드 가동 (주기: {int(interval_sec)}초)")
+                # 최초 시작 시 선제 웜업과의 동시 중복 호출 방지를 위해 주기만큼 대기 후 정기 갱신
+                self._stop_periodic.wait(interval_sec)
                 while not self._stop_periodic.is_set():
                     try:
                         if data_fetcher:

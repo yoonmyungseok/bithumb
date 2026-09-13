@@ -265,6 +265,43 @@ class GeminiMacroFlashTests(unittest.TestCase):
         finally:
             GeminiAnalyzer._MACRO_DIAG_RUNNING = False
 
+    def test_effective_api_key_with_provider(self):
+        """Provider로 생성된 GeminiAnalyzer가 provider-configured 대신 provider 내부의 실제 키를 반환하는지 검증"""
+        from ai_provider import GeminiProvider
+
+        provider = GeminiProvider(api_key="upbit-secret-key")
+        analyzer = GeminiAnalyzer(provider=provider)
+
+        self.assertEqual(analyzer.api_key, "provider-configured")
+        self.assertEqual(analyzer._effective_api_key, "upbit-secret-key")
+
+    @patch("requests.get")
+    def test_fetch_available_macro_models_skips_network_on_provider_configured_or_empty(self, mock_get):
+        """api_key가 provider-configured이거나 빈 문자열일 때 HTTP 호출 없이 바로 fallback 목록을 반환하는지 검증"""
+        # 1. provider-configured 인자 시 네트워크 호출 생략
+        models = GeminiAnalyzer.fetch_available_macro_models(api_key="provider-configured")
+        self.assertEqual(models, list(GeminiAnalyzer.MACRO_FALLBACK_MODELS))
+        self.assertEqual(mock_get.call_count, 0)
+
+        # 2. 빈 문자열 시 네트워크 호출 생략
+        models_empty = GeminiAnalyzer.fetch_available_macro_models(api_key="")
+        self.assertEqual(models_empty, list(GeminiAnalyzer.MACRO_FALLBACK_MODELS))
+        self.assertEqual(mock_get.call_count, 0)
+
+    @patch("gemini_analyzer.GeminiAnalyzer.fetch_available_macro_models")
+    def test_get_macro_candidate_models_uses_provider_key_not_placeholder(self, mock_fetch):
+        """get_macro_candidate_models 호출 시 fetch_available_macro_models에 provider-configured 대신 실제 provider 키가 전달되는지 검증"""
+        from ai_provider import GeminiProvider
+
+        mock_fetch.return_value = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
+        provider = GeminiProvider(api_key="upbit-actual-key")
+        analyzer = GeminiAnalyzer(provider=provider)
+
+        models = analyzer.get_macro_candidate_models(limit=2)
+        self.assertTrue(len(models) > 0)
+        mock_fetch.assert_called_once_with("upbit-actual-key")
+
 
 if __name__ == "__main__":
     unittest.main()
+

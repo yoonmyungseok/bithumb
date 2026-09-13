@@ -109,6 +109,34 @@ class TestGroqProvider(unittest.TestCase):
         self.assertEqual(provider.failed_calls, 1)
         self.assertEqual(provider.success_calls, 1)
 
+    @patch("requests.post")
+    def test_complete_json_max_tokens_and_error_logging(self, mock_post):
+        """payload에 max_tokens 2048이 포함되고 400 에러 시 safe error detail이 추출되는지 검증"""
+        resp_400 = MagicMock()
+        resp_400.status_code = 400
+        resp_400.json.return_value = {
+            "error": {"code": "json_validate_failed", "message": "Failed to validate JSON"}
+        }
+        mock_post.return_value = resp_400
+
+        provider = GroqProvider(api_key="gsk_dummy_key")
+        result = provider.complete_json("prompt", models=["test-model"])
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.status_code, 400)
+        self.assertEqual(result.error_kind, "HTTP_400")
+
+        # 전송된 payload의 max_tokens 검증
+        call_kwargs = mock_post.call_args[1]
+        self.assertEqual(call_kwargs["json"]["max_tokens"], 2048)
+
+    def test_default_models_resilience(self):
+        """기본 Groq 모델 목록에 70k TPM의 compound-mini가 포함되어 있는지 검증"""
+        self.assertIn("groq/compound-mini", DEFAULT_GROQ_MODELS)
+        self.assertIn("openai/gpt-oss-20b", DEFAULT_GROQ_MODELS)
+        self.assertGreaterEqual(len(DEFAULT_GROQ_MODELS), 5)
+
 
 if __name__ == "__main__":
     unittest.main()
+

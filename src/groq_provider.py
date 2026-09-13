@@ -22,6 +22,8 @@ DEFAULT_GROQ_MODELS = [
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
     "qwen/qwen3.8-27b",
+    "qwen/qwen3.6-27b",
+    "groq/compound-mini",
 ]
 
 
@@ -124,7 +126,7 @@ class GroqProvider:
                 ],
                 "response_format": {"type": "json_object"},
                 "temperature": 0.2,
-                "max_tokens": 1024,
+                "max_tokens": 2048,
             }
 
             try:
@@ -179,7 +181,15 @@ class GroqProvider:
                     logger.warning(f"Groq API 429 Rate Limit (모델: {model}) -> 다음 모델 폴백")
                 else:
                     last_error_kind = f"HTTP_{resp.status_code}"
-                    logger.warning(f"Groq API 오류 HTTP {resp.status_code} (모델: {model})")
+                    err_detail = ""
+                    try:
+                        err_payload = resp.json().get("error", {})
+                        err_code = err_payload.get("code") or err_payload.get("type") or ""
+                        raw_msg = str(err_payload.get("message") or "")[:80]
+                        err_detail = f" ({err_code}: {raw_msg})" if err_code or raw_msg else ""
+                    except Exception:
+                        pass
+                    logger.warning(f"Groq API 오류 HTTP {resp.status_code}{err_detail} (모델: {model})")
 
                 self.failed_calls += 1
 

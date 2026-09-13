@@ -3,6 +3,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -187,6 +188,41 @@ class TestMarketIntelligence(unittest.TestCase):
         self.assertEqual(regime2, "RISK_OFF")
         self.assertIn("Groq: 단기 숨고르기", reason2)
 
+    def test_concurrent_update_deduplication(self):
+        """동시에 update_intelligence 호출 시 중복 실행되지 않고 기존 작업이 완료될 때까지 단일 실행만 보장되는지 검증"""
+        service = MarketIntelligenceService(exchange_scope="bithumb", data_dir=self.temp_dir)
+        service.groq_provider = MagicMock()
+        service.groq_provider.is_available = True
+
+        call_count = 0
+        def slow_complete_json(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            time.sleep(0.05)
+            return GroqResult(
+                value={"regime": "NORMAL", "risk_score": 40, "recommended_cash_ratio": 0.3, "market_summary": "정상", "action_guideline": "유지"},
+                model="test-model",
+                success=True,
+                latency_sec=0.05,
+            )
+
+        service.groq_provider.complete_json = slow_complete_json
+
+        candles_1h = [{"trade_price": 95000000.0} for _ in range(20)]
+
+        # 2개의 스레드에서 동시에 update_intelligence 호출
+        t1 = threading.Thread(target=service.update_intelligence, args=(candles_1h, None, None, False))
+        t2 = threading.Thread(target=service.update_intelligence, args=(candles_1h, None, None, False))
+
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # 동시에 실행된 두 요청 중 하나는 _is_updating 락에 걸려 complete_json이 1회만 호출되어야 함
+        self.assertEqual(call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
+
