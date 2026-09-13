@@ -225,6 +225,83 @@ class BithumbGeminiProviderTests(unittest.TestCase):
         self.assertIn("if provider_block_reason and not is_holding:", runtime)
         self.assertIn("AI Provider 불확실성은 기존 포지션 보호를 건드리지 않고 신규 BUY 경로만 닫는다", runtime)
 
+    @patch("ai_provider.requests.get")
+    def test_bithumb_briefing_models_for_prefers_flash_and_falls_back_to_lite(self, mock_get):
+        """빗썸 브리핑 모델은 일반 Flash 최우선 후 Flash-Lite 순차 폴백 목록을 반환해야 한다."""
+        response = MagicMock(status_code=200)
+        response.json.return_value = {"models": [
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.7-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.5-flash-lite", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-2.5-pro", "supportedGenerationMethods": ["generateContent"]},
+        ]}
+        mock_get.return_value = response
+        provider = BithumbGeminiProvider("bithumb-only-key")
+        briefing_models = provider.models_for("briefing")
+
+        self.assertEqual(briefing_models, ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite"])
+        self.assertNotIn("gemini-2.5-pro", briefing_models)
+
+    @patch("ai_provider.requests.post")
+    def test_bithumb_complete_text_multi_models_and_fallback(self, mock_post):
+        """다중 모델 목록을 받아 첫 번째 모델 실패 시 차순위 모델로 정상 폴백해야 한다."""
+        fail_resp = MagicMock(status_code=429)
+        success_resp = MagicMock(status_code=200)
+        success_resp.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": (
+                "• [거시 시황]: 비트코인 1억 돌파 및 시장 활성화\n"
+                "• [계좌 진단]: 현금 100% 보유로 안정성 최우선\n"
+                "• [전략 제언]: 무리한 추격 매수 지양 및 돌파 타점 대기"
+            )}]}}]
+        }
+        mock_post.side_effect = [fail_resp, success_resp]
+
+        provider = BithumbGeminiProvider("bithumb-only-key")
+        models = ["gemini-3.8-flash", "gemini-3.7-flash"]
+        result = provider.complete_text("시황 작성", models, context="bithumb_briefing", timeout=5.0, max_tokens=1000)
+
+        self.assertIsNotNone(result.value)
+        self.assertEqual(result.model, "gemini-3.7-flash")
+        self.assertIn("[거시 시황]", result.value)
+        self.assertIn("[계좌 진단]", result.value)
+        self.assertIn("[전략 제언]", result.value)
+
+    @patch("ai_provider.requests.post")
+    def test_bithumb_generate_market_briefing_integration(self, mock_post):
+        """GeminiAnalyzer와 BithumbGeminiProvider 연동 시 3줄 종합 시황 브리핑이 성공적으로 반환되어야 한다."""
+        from gemini_analyzer import GeminiAnalyzer
+
+        success_resp = MagicMock(status_code=200)
+        success_resp.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": (
+                "• [거시 시황]: BTC 강세 추세 속 기관 유입 지속\n"
+                "• [계좌 진단]: 100% 현금 보유로 하방 리스크 완전 통제\n"
+                "• [전략 제언]: 변동성 완화 확인 후 분할 매수 진입 검토"
+            )}]}}]
+        }
+        mock_post.return_value = success_resp
+
+        provider = BithumbGeminiProvider("bithumb-only-key")
+        # briefing_models 캐시 설정
+        provider._briefing_models = ["gemini-3.8-flash", "gemini-3.7-flash"]
+        analyzer = GeminiAnalyzer(provider=provider)
+
+        briefing = analyzer.generate_market_briefing(
+            exchange_name="빗썸",
+            total_equity=1000000.0,
+            daily_pnl_krw=0.0,
+            daily_pnl_pct=0.0,
+            held_positions_desc="없음 (100% 현금 보유)",
+            macro_diag={"regime": "NORMAL", "risk_score": 35, "summary": "정상"},
+            fng_desc="탐욕 (65)",
+        )
+
+        self.assertIn("[거시 시황]", briefing)
+        self.assertIn("[계좌 진단]", briefing)
+        self.assertIn("[전략 제언]", briefing)
+        self.assertNotIn("리스크 안전선 내에서 정상 운용 중입니다", briefing)
+
 
 if __name__ == "__main__":
     unittest.main()
+

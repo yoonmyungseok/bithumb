@@ -409,7 +409,8 @@ class MarketScreener:
                     finally:
                         ai_ranking_duration += max(0.0, time.monotonic() - ai_rank_started_at)
 
-            if not is_risk_off and len(qualified_candidates) < top_count:
+            # 알트코인 독립 매수: RISK_OFF 상태에서도 후보 종목 풀을 정상 발굴
+            if len(qualified_candidates) < top_count:
                 min_fb_trade_val = min(self.min_trade_value_krw, 1_000_000_000.0)
                 fallback_tickers = [
                     t for t in all_tickers

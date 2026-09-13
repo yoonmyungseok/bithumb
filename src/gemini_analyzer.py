@@ -1216,8 +1216,7 @@ class GeminiAnalyzer:
                     f"당일 상승률 {StrategyPolicy.NEW_LISTING_MIN_CHANGE_RATE_RISK_OFF * 100:.1f}%~"
                     f"{StrategyPolicy.NEW_LISTING_MAX_CHANGE_RATE_RISK_OFF * 100:.1f}%, "
                     f"BTC 대비 RS +{StrategyPolicy.NEW_LISTING_MIN_RS_RISK_OFF * 100:.1f}% 이상, "
-                    f"알파 승인선 {current_alpha_threshold}점 이상과 독자 수급이 모두 확인된 경우에만 "
-                    "제한적으로 BUY를 검토하세요."
+                    f"알파 승인선 {current_alpha_threshold}점 이상 및 자체 수급이 확인되면 독립적으로 BUY를 검토하세요."
                 )
             elif normalized_policy_mode == "RECOVERY_REBOUND":
                 risk_off_instruction = (
@@ -1226,11 +1225,13 @@ class GeminiAnalyzer:
                 )
             else:
                 risk_off_instruction = (
-                    f"약세장 스크리닝 기준인 BTC 대비 RS +{StrategyPolicy.RS_MIN_RISK_OFF * 100:.1f}% 이상을 충족하고, "
-                    "비트코인과 동조하지 않는 독자 수급이 확인된 종목만 제한적으로 검토하세요."
+                    "알트코인 독립 매수 원칙: 비트코인이 일상적 조정 또는 약세(RISK_OFF)이더라도, "
+                    "개별 알트코인이 자체 거래량 폭발, 모멘텀 돌파, 우수한 기술적 지표 및 지지선을 확보하고 있다면 "
+                    "비트코인 거시 상태에 얽매이지 말고 독립적으로 매수를 적극 승인하세요. "
+                    "단, 비트코인 15분 대폭락(CRASH) 상황에서만 신규 매수를 차단합니다."
                 )
         else:
-            risk_off_instruction = "BTC가 급락하거나 시장 데이터가 불확실하면 신규 매수를 제안하지 말고 HOLD를 반환하세요."
+            risk_off_instruction = "비트코인 15분 대폭락(CRASH)이거나 시장 데이터가 불확실한 경우에만 신규 매수를 차단하고 HOLD를 반환하세요. 그 외에는 개별 종목의 기술적 지표와 수급을 최우선 평가하여 독립적으로 승인하세요."
 
         # 7. 기관 퀀트 헤지펀드 시스템 프롬프트 v5.2
         memory_section = f"\n{trade_memory_context}\n" if trade_memory_context else ""

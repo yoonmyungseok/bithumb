@@ -247,7 +247,7 @@ class AIAuthorityTests(unittest.TestCase):
             result = self.runtime.process_entry_gating(inputs)
 
         self.assertEqual(result.action, "BUY")
-        self.assertIn("EXTENDED 주도주 고확신 확인형 진입", result.reason)
+        self.assertIn("고확신 확인형 진입", result.reason)
 
     def test_bithumb_ai_runtime_failure_blocks_momentum_direct_entry(self):
         """빗썸 AI 분석 장애면 AI를 우회하는 초기 모멘텀 직접 진입도 주문 후보가 되면 안 된다."""

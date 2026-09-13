@@ -705,13 +705,23 @@ class BithumbGeminiProvider:
         "gemini-3.5-flash",
         "gemini-3-flash",
         "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+    ]
+    BRIEFING_FALLBACK_MODELS = [
+        "gemini-3.8-flash",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
     ]
     # Flash-Lite만 탐색해 고비용 모델 승격과 암묵적 모델 폴백을 금지한다.
     SYSTEM_INSTRUCTION = """당신은 빗썸 전용 Gemini AI 분석 보조자입니다.
 빗썸에서 제공한 데이터만 사용하고 업비트·다른 거래소 데이터, API 키, 계좌, 주문 상태를 절대로 혼합하지 마세요. 제공된 수치 외에는 추측하지 마세요.
 ACK는 체결이 아닙니다. REST 또는 Private WebSocket의 확정 체결 전에는 포지션·손익·쿨다운·주문 완료를 단정하지 마세요.
 불확실하거나 데이터가 누락·모순되면 BUY가 아닌 HOLD를 선택하세요. 주문 실행·취소·체결 확정 권한은 없습니다.
-현재 레짐, 후보 경로(SCALP, SWING, MOMENTUM_BREAKOUT, RECOVERY_REBOUND, NEW_LISTING), RS 주도주(RS >= +3.0%) 특례 규정, 신규상장 정책과 안전 차단 조건을 준수하세요. 스크리너 단계 신규상장 사전 필터로 `classify_listing_maturity()` + `is_new_listing_eligible()` SSOT에 따라 자격 미충족 NEW_LISTING 후보는 AI 입력 전에 제외됩니다. CRASH에서는 신규 진입을 제안하지 마세요.
+현재 레짐, 후보 경로(SCALP, SWING, MOMENTUM_BREAKOUT, RECOVERY_REBOUND, NEW_LISTING), RS 주도주(RS >= +3.0%) 특례 규정, 신규상장 정책과 안전 차단 조건을 준수하세요. 알트코인은 비트코인의 일상적 조정·약세(RISK_OFF) 시에도 자체 기술적 지표와 수급이 양호하면 독립적으로 매수를 승인하되, 비트코인 대폭락(CRASH)에서는 신규 진입을 제안하지 마세요. 스크리너 단계 신규상장 사전 필터로 `classify_listing_maturity()` + `is_new_listing_eligible()` SSOT에 따라 자격 미충족 NEW_LISTING 후보는 AI 입력 전에 제외됩니다.
 API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·재현하지 마세요. JSON 요청에는 마크다운 없는 유효 JSON만 반환하고, 모든 설명 텍스트는 자연스러운 한국어로만 작성하세요."""
 
     def __init__(self, api_key: str):
@@ -719,6 +729,7 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
         self.api_key = (api_key or "").strip()
         self._models: list[str] | None = None
         self._macro_models: list[str] | None = None
+        self._briefing_models: list[str] | None = None
 
     @property
     def is_configured(self) -> bool:
@@ -817,12 +828,41 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
         except Exception:
             return [self.TRADING_MODEL]
 
+    def _discover_briefing_models(self) -> list[str]:
+        """빗썸 전용 키로 브리핑용 Flash 모델을 탐색하고, 우선순위대로 반환한다."""
+        if not self.is_configured:
+            return []
+        try:
+            response = requests.get(
+                f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}", timeout=10.0,
+            )
+            if response.status_code != 200:
+                return list(self.BRIEFING_FALLBACK_MODELS)
+            payload = response.json()
+            available = [
+                str(item.get("name", "")).replace("models/", "").strip()
+                for item in payload.get("models", []) if isinstance(item, dict)
+                and "generateContent" in item.get("supportedGenerationMethods", [])
+                and "pro" not in str(item.get("name", "")).lower()
+            ]
+            candidates = [m for m in self.BRIEFING_FALLBACK_MODELS if m in available]
+            if candidates:
+                return candidates
+            return list(self.BRIEFING_FALLBACK_MODELS)
+        except Exception:
+            return list(self.BRIEFING_FALLBACK_MODELS)
+
     def models_for(self, purpose: str) -> list[str]:
         """목적별 허용 모델을 반환하며, 신규 BUY(trading)는 Flash-Lite 계열 순차 폴백 목록을 반환한다."""
         if purpose == "macro":
             if self._macro_models is None:
                 self._macro_models = self._discover_macro_models()
             return list(self._macro_models) if self._macro_models else [self.TRADING_MODEL]
+
+        if purpose == "briefing":
+            if self._briefing_models is None:
+                self._briefing_models = self._discover_briefing_models()
+            return list(self._briefing_models) if self._briefing_models else list(self.BRIEFING_FALLBACK_MODELS)
 
         if self._models is None:
             self._models = self._discover_models()
@@ -895,34 +935,78 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
         return self._record_entry_safety(last_result, context)
 
     def complete_text(self, prompt: str, models: list[str], *, context: str, timeout: float, max_tokens: int) -> ProviderResult:
-        """브리핑은 신규 BUY 게이트와 독립된 텍스트 보조 경로로만 제공한다."""
-        model = models[0] if len(models) == 1 else ""
-        if not self.is_configured or not model:
-            return ProviderResult(None, model, "configuration")
-        started = time.monotonic()
-        status_code: int | None = None
-        error_kind = ""
-        error_code = ""
-        try:
-            response = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}",
-                json={"systemInstruction": {"parts": [{"text": self.SYSTEM_INSTRUCTION}]},
-                      "contents": [{"parts": [{"text": prompt}]}],
-                      "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens}}, timeout=timeout,
-            )
-            status_code = response.status_code
-            if status_code != 200:
-                error_kind = "rate_limited" if status_code == 429 else "http_error"
-                error_code = self._safe_error_code(response)
-                return ProviderResult(None, model, error_kind, status_code, error_code)
-            text = GeminiProvider._extract_text(response.json())
-            return ProviderResult(text, model, status_code=status_code) if text else ProviderResult(None, model, "invalid_response", status_code)
-        except requests.exceptions.Timeout:
-            error_kind = "timeout"
-        except (requests.exceptions.RequestException, ValueError, TypeError, KeyError, IndexError):
-            error_kind = "exception"
-        finally:
-            AIProviderTelemetry.record(self.name, self.exchange, model or "unavailable", context, status_code,
-                                       (time.monotonic() - started) * 1000.0, error_kind)
-        return ProviderResult(None, model, error_kind or "exception", status_code, error_code)
+        """브리핑은 신규 BUY 게이트와 독립된 텍스트 보조 경로로만 제공하며 순차 폴백을 지원한다."""
+        if not self.is_configured or not models:
+            return ProviderResult(None, "", "configuration")
+        last_error = "no_model"
+        last_model = models[0]
+        last_status_code: int | None = None
+        last_error_code = ""
+
+        for model in models:
+            started = time.monotonic()
+            status_code: int | None = None
+            error_kind = ""
+            error_code = ""
+            last_model = model
+            try:
+                generation_config: dict[str, Any] = {
+                    "temperature": 0.2,
+                    "maxOutputTokens": max_tokens,
+                }
+                if any(marker in model.lower() for marker in ("3.7", "thinking", "2.5")):
+                    generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+                payload = {
+                    "systemInstruction": {"parts": [{"text": self.SYSTEM_INSTRUCTION}]},
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": generation_config,
+                }
+                response = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}",
+                    json=payload,
+                    timeout=timeout,
+                )
+                status_code = response.status_code
+                if status_code == 400 and "thinkingConfig" in generation_config:
+                    retry_config = dict(generation_config)
+                    retry_config.pop("thinkingConfig", None)
+                    payload["generationConfig"] = retry_config
+                    response = requests.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}",
+                        json=payload,
+                        timeout=timeout,
+                    )
+                    status_code = response.status_code
+
+                if status_code != 200:
+                    error_kind = "rate_limited" if status_code == 429 else "http_error"
+                    error_code = self._safe_error_code(response)
+                    last_error = error_kind
+                    last_status_code = status_code
+                    last_error_code = error_code
+                    continue
+
+                response_data = response.json()
+                candidates = response_data.get("candidates", [])
+                if candidates and isinstance(candidates[0], dict) and candidates[0].get("finishReason") == "MAX_TOKENS":
+                    last_error = "truncated"
+                    continue
+
+                text = GeminiProvider._extract_text(response_data)
+                if text:
+                    return ProviderResult(text, model, status_code=status_code)
+                last_error = "invalid_response"
+            except requests.exceptions.Timeout:
+                error_kind = "timeout"
+                last_error = "timeout"
+            except (requests.exceptions.RequestException, ValueError, TypeError, KeyError, IndexError):
+                error_kind = "exception"
+                last_error = "exception"
+            finally:
+                AIProviderTelemetry.record(
+                    self.name, self.exchange, model, context, status_code,
+                    (time.monotonic() - started) * 1000.0, error_kind
+                )
+
+        return ProviderResult(None, last_model, last_error, last_status_code, last_error_code)
 

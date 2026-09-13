@@ -483,6 +483,42 @@ class UnifiedDashboardServerTests(unittest.TestCase):
         self.assertEqual(status["market_intelligence_bithumb"]["regime"], "BULL_TREND")
         self.assertEqual(status["market_intelligence_upbit"], {})
 
+    @patch("dashboard_server.MarketIntelligenceService.get_instance")
+    def test_aggregated_status_falls_back_to_market_intelligence_service_when_missing(self, mock_get_mi):
+        """내부 API 응답에 market_intelligence가 누락되어 있을 때 로컬 캐시 폴백이 정상 작동하는지 검증"""
+        fallback_mi = {
+            "regime": "BEAR_REGIME",
+            "risk_score": 70,
+            "recommended_cash_ratio": 0.5,
+            "market_summary": "폴백 거시 시장 요약",
+            "action_guideline": "방어적 운용",
+        }
+        mock_service = MagicMock()
+        mock_service.get_latest_intelligence.return_value = fallback_mi
+        mock_get_mi.return_value = mock_service
+
+        def mock_fetch_without_mi(url, exchange_name):
+            return {
+                "online": True,
+                "exchange": exchange_name,
+                "total_equity": 1_000_000.0,
+                "krw_available": 500_000.0,
+                "daily_start_equity": 1_000_000.0,
+                "positions": [],
+                "candidates": [],
+                "recent_trades": [],
+                "recent_orders": [],
+                # market_intelligence 필드가 의도적으로 누락됨
+            }
+
+        self.server.fetch_exchange_status = MagicMock(side_effect=mock_fetch_without_mi)
+        status = self.server.get_aggregated_status()
+
+        self.assertEqual(status["market_intelligence"]["regime"], "BEAR_REGIME")
+        self.assertEqual(status["market_intelligence"]["risk_score"], 70)
+        self.assertEqual(status["market_intelligence_bithumb"]["regime"], "BEAR_REGIME")
+        self.assertEqual(status["market_intelligence_upbit"]["regime"], "BEAR_REGIME")
+
 
 if __name__ == "__main__":
     unittest.main()

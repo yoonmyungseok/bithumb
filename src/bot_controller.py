@@ -96,6 +96,7 @@ class BotController:
             "btc_regime": "NORMAL",
             "btc_regime_desc": "🟢 정상장",
             "bot_state": "🟢 정상 가동 중",
+            "market_intelligence": {},
             "positions": [],
             "candidates": [],
             "recent_trades": [],
@@ -517,6 +518,19 @@ class BotController:
             exchange_telemetry = bithumb.get_telemetry() if hasattr(bithumb, "get_telemetry") else {}
             ai_telemetry = self._get_ai_telemetry()
 
+            # 8. 거시 시장 인텔리전스 (Groq AI) 실시간 캐시 (15분 주기 유효 데이터)
+            scope = (
+                getattr(self, "exchange_key", None)
+                or getattr(bithumb, "exchange_name", None)
+                or getattr(getattr(self, "exchange", None), "exchange_name", None)
+                or getattr(getattr(self, "order_journal", None), "exchange_scope", None)
+                or ("upbit" if "업비트" in str(getattr(self, "exchange_name", "")) else "bithumb")
+            )
+            scope = str(scope).lower()
+            market_intel = MarketIntelligenceService.get_instance(
+                exchange_scope=scope
+            ).get_latest_intelligence(max_age_sec=3600.0) or {}
+
             self.latest_dashboard_data = {
                 "total_equity": int(total_equity),
                 "krw_available": int(krw_avail),
@@ -545,6 +559,7 @@ class BotController:
                 "btc_regime_reason": btc_reason,
                 "btc_regime_threshold": btc_threshold,
                 "bot_state": state_badge,
+                "market_intelligence": market_intel,
                 "positions": positions_data,
                 "candidates": candidates_data,
                 "recent_trades": recent_trades_data,

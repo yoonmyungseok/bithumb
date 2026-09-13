@@ -105,9 +105,9 @@ class MarketScreenerTests(unittest.TestCase):
 
             def get_tickers(self, markets):
                 return [
-                    {"market": "KRW-BTC", "trade_price": "100000", "signed_change_rate": "0.0", "acc_trade_price_24h": "0"},
-                    {"market": "KRW-EARLY5", "trade_price": "1000", "signed_change_rate": "0.05", "acc_trade_price_24h": "5000000000"},
-                    {"market": "KRW-EXT", "trade_price": "1000", "signed_change_rate": "0.07", "acc_trade_price_24h": "5000000000"},
+                    {"market": "KRW-BTC", "trade_price": "100000", "signed_change_rate": "0.039", "acc_trade_price_24h": "0"},
+                    {"market": "KRW-EARLY5", "trade_price": "1000", "signed_change_rate": "0.055", "acc_trade_price_24h": "5000000000"},
+                    {"market": "KRW-EXT", "trade_price": "1000", "signed_change_rate": "0.065", "acc_trade_price_24h": "5000000000"},
                 ]
 
             def get_orderbook(self, market):

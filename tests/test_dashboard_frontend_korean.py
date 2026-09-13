@@ -302,6 +302,30 @@ class DashboardFrontendKoreanTests(unittest.TestCase):
         self.assertEqual(results["flash_fallback"], 20)
         self.assertEqual(results["list_models"], 0)
 
+    def test_format_market_regime_korean_translations(self):
+        """formatMarketRegime이 Groq 거시 시장 레짐 영문 코드를 올바른 한국어로 변환하는지 검증"""
+        func_code = self._extract_function("formatMarketRegime")
+        js_code = f"""
+        {func_code}
+        const testCases = ['CRASH', 'BEAR_REGIME', 'CAUTION_PULLBACK', 'BULL_TREND', 'NORMAL', ''];
+        const results = Object.fromEntries(testCases.map(tc => [tc, formatMarketRegime(tc)]));
+        console.log(JSON.stringify(results));
+        """
+        proc = subprocess.run(
+            ["node", "-e", js_code],
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding="utf-8",
+        )
+        results = json.loads(proc.stdout)
+        self.assertEqual(results["CRASH"], "🚨 급락 위기")
+        self.assertEqual(results["BEAR_REGIME"], "🔴 하락 추세 (약세장)")
+        self.assertEqual(results["CAUTION_PULLBACK"], "🟡 단기 조정 경계")
+        self.assertEqual(results["BULL_TREND"], "🟢 강세 상승장")
+        self.assertEqual(results["NORMAL"], "🔵 정상 안정세")
+        self.assertEqual(results[""], "대기 중")
+
 
 if __name__ == "__main__":
     unittest.main()

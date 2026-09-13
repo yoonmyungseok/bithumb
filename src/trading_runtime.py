@@ -1649,13 +1649,13 @@ class TradingCycleEngine:
             )
 
         alpha_val = selected_entry.get("alpha_score", 70)
-        if alpha_val >= 85 and btc_regime != "RISK_OFF" and action == "BUY":
+        if alpha_val >= 85 and action == "BUY":
             alloc_pct = min(dyn_max_pos_pct * 1.3, 0.65)
             reason = f"[🔥알파 {alpha_val}점 A+ 특급 셋업 비중 확대(65%)] {reason}"
-        elif alpha_val < 75 and btc_regime != "RISK_OFF" and action == "BUY":
+        elif alpha_val < 75 and action == "BUY":
             alloc_pct = dyn_max_pos_pct * 0.7
 
-        if btc_regime == "RISK_OFF" and action == "BUY":
+        if btc_regime == "RISK_OFF" and StrategyPolicy.RISK_OFF_ALLOC_RATIO < 1.0 and action == "BUY":
             alloc_ratio = StrategyPolicy.RISK_OFF_ALLOC_RATIO
             if alpha_val >= 80 or bool(selected_entry.get("is_rs_leader", False)):
                 alloc_ratio = min(0.8, alloc_ratio * 1.3)

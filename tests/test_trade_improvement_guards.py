@@ -15,8 +15,8 @@ class TestTradeImprovementGuards(unittest.TestCase):
     def test_strategy_policy_values(self):
         """조정된 StrategyPolicy 파라미터 SSOT 검증"""
         self.assertEqual(StrategyPolicy.COOLDOWN_STOP_LOSS_SEC, 1800.0)
-        self.assertEqual(StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF, 70)
-        self.assertEqual(StrategyPolicy.RISK_OFF_ALLOC_RATIO, 0.4)
+        self.assertEqual(StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF, 60)
+        self.assertEqual(StrategyPolicy.RISK_OFF_ALLOC_RATIO, 1.0)
         self.assertEqual(StrategyPolicy.PCT_B_MAX_RISK_OFF, 0.80)
         self.assertEqual(StrategyPolicy.PULLBACK_PCT_B_MAX_RISK_OFF, 0.80)
         self.assertEqual(StrategyPolicy.TIME_STOP_BREAKEVEN_MIN_PNL_PCT, 0.003)
@@ -149,7 +149,7 @@ class TestTradeImprovementGuards(unittest.TestCase):
 
         prompt = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
         self.assertIn("BTC 레짐: RISK_OFF", prompt)
-        self.assertIn("현재 알파 승인 기준: 70점 이상", prompt)
+        self.assertIn("현재 알파 승인 기준: 60점 이상", prompt)
         self.assertIn("AI의 판단은 주문 권한이 아닙니다", prompt)
         self.assertIn('"ALPHA_SCORE": 0', prompt)
 

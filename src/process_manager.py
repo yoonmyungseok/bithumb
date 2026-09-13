@@ -347,6 +347,10 @@ def _kill_pid(pid: int | str) -> bool:
         if psutil.pid_exists(pid_int):
             p = psutil.Process(pid_int)
             p.kill()
+            try:
+                p.wait(timeout=2.0)
+            except Exception:
+                pass
             return True
         return False
     except Exception:
@@ -376,6 +380,7 @@ def _kill_matching_script_processes(patterns: list[str]) -> list[int]:
 
     try:
         import psutil
+        killed_procs: list[psutil.Process] = []
         for proc in psutil.process_iter(['pid', 'cmdline']):
             try:
                 p_id = proc.info['pid']
@@ -392,8 +397,14 @@ def _kill_matching_script_processes(patterns: list[str]) -> list[int]:
                     except Exception:
                         pass
                     proc.kill()
+                    killed_procs.append(proc)
                     killed_pids.append(p_id)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        if killed_procs:
+            try:
+                psutil.wait_procs(killed_procs, timeout=3.0)
+            except Exception:
                 pass
     except Exception:
         pass

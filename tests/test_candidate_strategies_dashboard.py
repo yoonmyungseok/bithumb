@@ -158,6 +158,7 @@ class TestCandidateStrategiesDashboard(unittest.TestCase):
         self.assertIn("candidates", data)
         self.assertIn("btc_regime", data)
         self.assertIn("btc_regime_desc", data)
+        self.assertIn("market_intelligence", data)
         self.assertEqual(len(data["positions"]), 1)
         self.assertEqual(len(data["candidates"]), 1)
         self.assertEqual(data["candidates"][0]["market"], "KRW-ETH")

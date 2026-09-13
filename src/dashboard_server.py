@@ -26,6 +26,8 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 
+from market_intelligence import MarketIntelligenceService
+
 # UTF-8 표준 출력 보장
 if sys.platform == "win32":
     try:
@@ -305,6 +307,12 @@ class UnifiedDashboardServer:
             return fallback_data
 
         # 오프라인은 신규 매수 가능으로 해석될 여지가 없도록 명시적으로 차단한다.
+        fb_mi: dict[str, Any] = {}
+        try:
+            fb_mi = MarketIntelligenceService.get_instance(exchange_scope=exchange_name).get_latest_intelligence(max_age_sec=3600.0) or {}
+        except Exception:
+            fb_mi = {}
+
         return {
             "online": False,
             "status": "OFFLINE",
@@ -338,9 +346,9 @@ class UnifiedDashboardServer:
                 "gemini_upbit": {},
                 "ai_provider_bithumb": {},
             },
-            "market_intelligence": {},
-            "market_intelligence_bithumb": {},
-            "market_intelligence_upbit": {},
+            "market_intelligence": fb_mi,
+            "market_intelligence_bithumb": fb_mi if exchange_name == "bithumb" else {},
+            "market_intelligence_upbit": fb_mi if exchange_name == "upbit" else {},
         }
 
     def get_aggregated_status(self) -> dict[str, Any]:
@@ -579,6 +587,27 @@ class UnifiedDashboardServer:
             bithumb_data.get("new_listing_enforcement") or upbit_data.get("new_listing_enforcement")
         )
 
+        # 거시 시장 인텔리전스 (내부 API 응답 우선, 필드 누락/None 시 crash-safe 로컬 캐시 폴백)
+        bt_mi = bithumb_data.get("market_intelligence")
+        if bt_mi is None:
+            try:
+                bt_mi = MarketIntelligenceService.get_instance(exchange_scope="bithumb").get_latest_intelligence(max_age_sec=3600.0) or {}
+            except Exception:
+                bt_mi = {}
+        if "market_intelligence" not in bithumb_data or bithumb_data.get("market_intelligence") is None:
+            bithumb_data["market_intelligence"] = bt_mi
+
+        up_mi = upbit_data.get("market_intelligence")
+        if up_mi is None:
+            try:
+                up_mi = MarketIntelligenceService.get_instance(exchange_scope="upbit").get_latest_intelligence(max_age_sec=3600.0) or {}
+            except Exception:
+                up_mi = {}
+        if "market_intelligence" not in upbit_data or upbit_data.get("market_intelligence") is None:
+            upbit_data["market_intelligence"] = up_mi
+
+        combined_mi = bt_mi or up_mi or {}
+
         combined = {
             "title": "Bithumb & Upbit AI 퀀트 트레이딩 Pro (통합)",
             "total_equity": total_equity,
@@ -610,9 +639,9 @@ class UnifiedDashboardServer:
             "bithumb_status": bt_status,
             "upbit_status": up_status,
             "active_positions_count": len(combined_positions),
-            "market_intelligence": bithumb_data.get("market_intelligence") or upbit_data.get("market_intelligence") or {},
-            "market_intelligence_bithumb": bithumb_data.get("market_intelligence", {}),
-            "market_intelligence_upbit": upbit_data.get("market_intelligence", {}),
+            "market_intelligence": combined_mi,
+            "market_intelligence_bithumb": bt_mi,
+            "market_intelligence_upbit": up_mi,
             "api_usage": {
                 "bithumb": bithumb_data.get("api_usage", {}).get("exchange", {}),
                 "upbit": upbit_data.get("api_usage", {}).get("exchange", {}),
@@ -1029,7 +1058,7 @@ class UnifiedDashboardServer:
         <div class="card" id="market_intelligence_card" style="margin-bottom: 15px;">
           <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
             <span>🌐 거시 시장 인텔리전스 (Groq AI)</span>
-            <span id="mi_regime_badge" class="badge">NORMAL</span>
+            <span id="mi_regime_badge" class="badge badge-secondary">대기 중</span>
           </div>
           <div class="card-body" style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
             <div><strong>위험도 점수:</strong> <span id="mi_risk_score">-</span> / 100</div>
@@ -1201,7 +1230,14 @@ class UnifiedDashboardServer:
             const summaryEl = document.getElementById('mi_summary');
 
             if (badgeEl && mi.regime) {
-                badgeEl.textContent = mi.regime;
+                const regimeMap = {
+                    'CRASH': '🚨 급락 위기',
+                    'BEAR_REGIME': '🔴 하락 추세 (약세장)',
+                    'CAUTION_PULLBACK': '🟡 단기 조정 경계',
+                    'BULL_TREND': '🟢 강세 상승장',
+                    'NORMAL': '🔵 정상 안정세',
+                };
+                badgeEl.textContent = regimeMap[String(mi.regime).toUpperCase()] || mi.regime;
                 // 레짐별 뱃지 색상 클래스 적용
                 badgeEl.className = 'badge ' + (
                     mi.regime === 'CRASH' ? 'badge-danger' :

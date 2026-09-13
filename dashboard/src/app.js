@@ -1178,6 +1178,18 @@
   }
 
   // Render Macro Market Intelligence (Groq AI)
+  function formatMarketRegime(regime) {
+    const raw = String(regime || '').toUpperCase();
+    const map = {
+      'CRASH': '🚨 급락 위기',
+      'BEAR_REGIME': '🔴 하락 추세 (약세장)',
+      'CAUTION_PULLBACK': '🟡 단기 조정 경계',
+      'BULL_TREND': '🟢 강세 상승장',
+      'NORMAL': '🔵 정상 안정세',
+    };
+    return map[raw] || raw || '대기 중';
+  }
+
   function renderMarketIntelligence(data, d) {
     const mi = (d && d.market_intelligence && Object.keys(d.market_intelligence).length > 0)
       ? d.market_intelligence
@@ -1189,7 +1201,7 @@
     const summaryEl = document.getElementById('mi_summary');
 
     if (badgeEl && mi && mi.regime) {
-      badgeEl.textContent = mi.regime;
+      badgeEl.textContent = formatMarketRegime(mi.regime);
       // 레짐별 뱃지 색상 클래스 적용
       badgeEl.className = 'badge ' + (
         mi.regime === 'CRASH' ? 'badge-danger' :

@@ -202,12 +202,12 @@ class StrategyPolicy:
     # 4. 하드 안전 게이트 (Hard Safety Gates) & 상대 강도(RS) 임계값
     ALPHA_BUY_THRESHOLD: int = 60        # 7대 팩터 복합 알파 승인 점수 (100점 만점)
     ALPHA_BUY_THRESHOLD_NORMAL: int = 60 # 정상장 7대 팩터 복합 알파 승인 점수
-    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 70 # RISK_OFF 약세장 엄선 승인 점수 (75 -> 70점으로 현실화)
+    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 60 # 알트코인 독립 매수: RISK_OFF 약세장에서도 정상장과 동일한 60점 기준 적용
     RS_MIN_RISK_OFF: float = 0.008       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+0.8% 초과 상승)
     MIN_TRADE_VALUE_RISK_OFF: float = 1_000_000_000.0  # 약세장 최소 24시간 거래대금 10억 원 (기존 20억 -> 10억 하향)
     MIN_ASSET_PRICE_KRW: float = float(os.getenv("MIN_ASSET_PRICE_KRW", "0.0001"))  # 초저가 코인 제한 전면 해제 (기본 0.0001원, 0원 이하만 차단)
     RSI_MIN_NORMAL: float = 42.0         # 정상장 저점 반등 확인용 RSI 최소치
-    RSI_MAX_NORMAL: float = 60.0         # 정상장 고점 추격 방지용 RSI 최대치
+    RSI_MAX_NORMAL: float = 70.0         # 알트코인 독자 탄력 수용을 위해 RSI 상한을 70.0으로 현실화
     RSI_MIN_RISK_OFF: float = 42.0       # RISK_OFF 저점 반등 확인용 RSI 최소치
     RSI_MAX_RISK_OFF: float = 70.0       # RISK_OFF 고점 추격 방지용 RSI 최대치 (약세장 독자 수급 수용을 위해 70.0으로 현실화)
     PCT_B_MIN: float = 0.20              # 볼린저 밴드 %B 최소치
@@ -227,7 +227,7 @@ class StrategyPolicy:
     MAX_UPPER_SHADOW_RATIO: float = 0.50 # 캔들 윗꼬리 최대 허용 비율 (50%로 강화하여 피뢰침 차단)
     MA_ALIGNMENT_RATIO: float = 0.995    # MA5 >= MA20 * 0.995
     PULLBACK_MA_ALIGNMENT_RATIO: float = 0.990  # 저점 반등은 MA20 아래 1% 이내 회복까지 허용
-    RISK_OFF_ALLOC_RATIO: float = 0.4    # RISK_OFF 진입 비중 축소 (기존 60% -> 40%로 리스크 축소)
+    RISK_OFF_ALLOC_RATIO: float = 1.0    # 알트코인 독립 매수: BTC 약세 레짐이어도 알트코인 진입 비중 100% 정상 유지
 
     # 4-0. AI 단독 자율 승인 (AI Direct Entry) 기본 비활성화
     # 로컬 퀀트 관망(allow_buy=False) 상태에서 AI 단독 매수 진입 시 승률 20~30%로 저조하므로 기본 차단한다.
@@ -1225,14 +1225,11 @@ def entry_signal(
     # 2. [과제 B] 하드 안전 게이트 (Hard Safety Gates - 알파 점수로 우회 불가)
     hard_gate_btc = regime_upper not in ("CRASH", "BEAR_VOLATILE")
     hard_gate_mtf = mtf_allowed
-    if regime_upper == "RISK_OFF":
-        rsi_hard_min = StrategyPolicy.RSI_MIN_RISK_OFF
-        rsi_hard_max = max(StrategyPolicy.RSI_MAX_RISK_OFF, StrategyPolicy.RSI_MAX_NORMAL) if is_strong_rs_leader else StrategyPolicy.RSI_MAX_RISK_OFF
-    else:
-        rsi_hard_min = StrategyPolicy.RSI_MIN_NORMAL
-        rsi_hard_max = StrategyPolicy.RSI_MAX_NORMAL
+    # 알트코인 독립 매수: RSI 하드 게이트 범위를 42~70으로 통일
+    rsi_hard_min = StrategyPolicy.RSI_MIN_NORMAL
+    rsi_hard_max = StrategyPolicy.RSI_MAX_NORMAL
     hard_gate_rsi = (rsi_hard_min <= rsi <= rsi_hard_max)
-    # 약세장은 레짐 전용 상한만 사용한다. NORMAL/BULL_TREND의 추격 매수 방어 범위는 유지한다.
+    # 볼린저 밴드 %B 상한: 일반장은 0.72 추격 차단, RISK_OFF는 독자 수급 반등 0.80 수용
     pct_b_hard_max = (
         StrategyPolicy.PCT_B_MAX_RISK_OFF
         if regime_upper == "RISK_OFF"
