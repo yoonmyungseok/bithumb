@@ -162,15 +162,17 @@ class TestTradeImprovementGuards(unittest.TestCase):
             coin_balance=0.0,
             avg_buy_price=0.0,
             btc_regime="RISK_OFF",
-            is_night=True,
+            is_night=False,
             candidate_type="MOMENTUM_BREAKOUT",
             entry_policy_mode="STANDARD",
+            momentum_phase="EXTENDED",
         )
         momentum_prompt = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
         self.assertEqual(mock_post.call_count, 2)
         self.assertIn("후보 유형: MOMENTUM_BREAKOUT", momentum_prompt)
-        self.assertIn("현재 알파 승인 기준: 75점 이상", momentum_prompt)
-        self.assertIn("최대 종목 비중의 25%", momentum_prompt)
+        self.assertIn("현재 알파 승인 기준: 70점 이상", momentum_prompt)
+        self.assertIn("모멘텀 단계: EXTENDED", momentum_prompt)
+        self.assertIn("최대 종목 비중의 15% 제한 추격 진입", momentum_prompt)
 
         analyzer.analyze(
             market="KRW-TEST",

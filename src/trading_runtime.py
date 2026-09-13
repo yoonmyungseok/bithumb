@@ -28,6 +28,7 @@ from strategy_engine import (
     entry_signal,
     should_block_for_minimum_candles,
     evaluate_swing_trend_exit,
+    get_momentum_extended_alpha_threshold,
     get_new_listing_alpha_threshold,
     has_confirmed_swing_trend_candles,
     is_new_listing_eligible,
@@ -1618,11 +1619,15 @@ class TradingCycleEngine:
                 stop_loss = strategy.get("stop_loss") or selected_entry["stop_loss"]
 
         if effective_candidate_type == "MOMENTUM_BREAKOUT" and not is_holding:
-            # 확장 구간은 단순 돌파 추격 주문을 차단하되, 1차 퀀트 하드게이트 통과 및 AI 심층 분석에서 고득점 확인형 승인을 받은 특급 주도주는 허용한다.
-            # RS 주도주(RS >= 3.0%)는 알파 75점 이상이면 고확신 확인형 진입을 허용한다.
+            # EXTENDED는 확정봉 하드 게이트를 통과한 뒤에도 AI 확인을 요구하는 제한 추격 경로다.
+            # RISK_OFF에서만 70/75점으로 완화하며, NORMAL/BULL 기준은 기존 고확신 정책을 유지한다.
             is_rs_leader_item = bool(selected_entry.get("is_rs_leader", False))
             if momentum_phase != "EARLY":
-                required_alpha = 75 if is_rs_leader_item else 80
+                required_alpha = get_momentum_extended_alpha_threshold(
+                    btc_regime,
+                    is_night=night_session_active,
+                    relative_strength=float(candidate_metadata.get("relative_strength", 0.0) or 0.0),
+                )
                 is_high_conviction_ai_entry = (
                     action == "BUY"
                     and is_ai_buy_signal
@@ -1631,10 +1636,13 @@ class TradingCycleEngine:
                 )
                 if not is_high_conviction_ai_entry:
                     action = "HOLD"
-                    reason = f"모멘텀 확장 후반 신규 추격 차단(단계={momentum_phase}) | {reason}"
+                    reason = (
+                        f"모멘텀 확장 후반 추격 기준 미충족(필요 알파 {required_alpha}점, "
+                        f"단계={momentum_phase}) | {reason}"
+                    )
                 else:
                     leader_label = "RS 주도주 " if is_rs_leader_item else ""
-                    reason = f"[{leader_label}고확신 확인형 진입(알파 {ai_alpha}점)] {reason}"
+                    reason = f"[{leader_label}확정봉 제한 추격 진입(알파 {ai_alpha}점)] {reason}"
             elif not market_inputs.momentum_entry_slot_available:
                 action = "HOLD"
                 reason = f"동일 5분 사이클 모멘텀 신규 주문 1건 제한 | {reason}"
@@ -1680,8 +1688,14 @@ class TradingCycleEngine:
                 reason = f"동일 5분 사이클 신규상장/모멘텀 신규 주문 1건 제한 | {reason}"
 
         if effective_candidate_type == "MOMENTUM_BREAKOUT" and action == "BUY":
-            alloc_pct = min(alloc_pct, dyn_max_pos_pct * StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO)
-            reason = f"[⚡모멘텀 돌파 최초 소액] {reason}"
+            momentum_alloc_ratio = (
+                StrategyPolicy.MOMENTUM_EXTENDED_ALLOC_RATIO
+                if momentum_phase == "EXTENDED"
+                else StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO
+            )
+            alloc_pct = min(alloc_pct, dyn_max_pos_pct * momentum_alloc_ratio)
+            allocation_label = "확장 후반 제한 추격" if momentum_phase == "EXTENDED" else "모멘텀 돌파 최초 소액"
+            reason = f"[⚡{allocation_label}] {reason}"
 
         if use_new_listing_path and action == "BUY":
             target_price = entry_price * (1.0 + StrategyPolicy.NEW_LISTING_TARGET_PCT)

@@ -333,8 +333,8 @@ def status_action(exchange: str = "bithumb"):
     print()
 
 
-def _kill_pid(pid: int | str) -> bool:
-    """psutil 또는 OS 명령으로 PID 프로세스를 안전하게 종료시킨다."""
+def _kill_pid(pid: int | str, timeout: float = 8.0) -> bool:
+    """psutil 또는 OS 명령으로 PID 프로세스를 안전하게 종료시키고 완전히 종료될 때까지 대기한다."""
     try:
         pid_int = int(pid)
         if pid_int <= 0:
@@ -342,39 +342,60 @@ def _kill_pid(pid: int | str) -> bool:
     except (ValueError, TypeError):
         return False
 
+    if not _is_pid_alive(pid_int):
+        return True
+
+    # 1. psutil을 통한 자식 프로세스 포함 종료
     try:
         import psutil
         if psutil.pid_exists(pid_int):
-            p = psutil.Process(pid_int)
-            p.kill()
             try:
-                p.wait(timeout=2.0)
-            except Exception:
+                proc = psutil.Process(pid_int)
+                children = proc.children(recursive=True)
+                for child in children:
+                    try:
+                        child.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                proc.kill()
+                gone, alive = psutil.wait_procs([proc] + children, timeout=2.0)
+                if not psutil.pid_exists(pid_int):
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
-            return True
-        return False
     except Exception:
         pass
 
+    # 2. Windows taskkill 프로세스 트리 강제 종료
     if sys.platform == "win32":
-        res = subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(pid_int)],
-            check=False,
-            creationflags=0x08000000,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return res.returncode == 0
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid_int)],
+                check=False,
+                creationflags=0x08000000,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
     else:
         try:
             os.kill(pid_int, signal.SIGKILL)
-            return True
         except (OSError, PermissionError):
-            return False
+            pass
+
+    # 3. 프로세스가 실제로 OS 프로세스 테이블에서 소멸할 때까지 폴링 대기
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _is_pid_alive(pid_int):
+            return True
+        time.sleep(0.3)
+
+    return not _is_pid_alive(pid_int)
 
 
-def _kill_matching_script_processes(patterns: list[str]) -> list[int]:
-    """스크립트명을 포함하는 프로세스를 찾아 일괄 강제 종료한다."""
+def _kill_matching_script_processes(patterns: list[str], timeout: float = 8.0) -> list[int]:
+    """스크립트명을 포함하는 프로세스를 찾아 일괄 강제 종료하고 소멸을 확인한다."""
     killed_pids: list[int] = []
     ancestors = _get_my_ancestor_pids()
 
@@ -403,7 +424,7 @@ def _kill_matching_script_processes(patterns: list[str]) -> list[int]:
                 pass
         if killed_procs:
             try:
-                psutil.wait_procs(killed_procs, timeout=3.0)
+                psutil.wait_procs(killed_procs, timeout=min(3.0, timeout))
             except Exception:
                 pass
     except Exception:
@@ -424,11 +445,64 @@ def _kill_matching_script_processes(patterns: list[str]) -> list[int]:
                         if pid_str.isdigit():
                             pid_val = int(pid_str)
                             if pid_val not in ancestors and pid_val not in killed_pids:
-                                if _kill_pid(pid_val):
+                                if _kill_pid(pid_val, timeout=timeout):
                                     killed_pids.append(pid_val)
             except Exception:
                 pass
+
+    # 잔류 프로세스가 완전히 소멸될 때까지 폴링
+    if killed_pids:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            still_alive = [pid for pid in killed_pids if _is_pid_alive(pid)]
+            if not still_alive:
+                break
+            time.sleep(0.3)
+
     return killed_pids
+
+
+def _get_exchange_db_path_for_process(exchange: str) -> str:
+    """거래소별 SQLite DB 절대 경로를 반환한다."""
+    ex = exchange.lower()
+    project_dir = _project_root()
+    if ex == "upbit":
+        return os.path.join(project_dir, "data", "upbit", "trading.db")
+    return os.path.join(project_dir, "data", "trading.db")
+
+
+def _wait_for_db_unlocked(exchange: str, timeout: float = 12.0) -> bool:
+    """이전 프로세스가 잡고 있던 SQLite DB 파일/WAL 잠금이 완전히 해제될 때까지 대기한다."""
+    if exchange.lower() == "dashboard":
+        return True
+
+    db_path = _get_exchange_db_path_for_process(exchange)
+    if not os.path.exists(db_path):
+        return True
+
+    import sqlite3
+    start_time = time.time()
+    deadline = start_time + timeout
+    attempt = 0
+
+    while time.time() < deadline:
+        attempt += 1
+        conn = None
+        try:
+            # check_same_thread=False, 짧은 타임아웃으로 잠금 획득 및 쿼리 실행 테스트
+            conn = sqlite3.connect(db_path, timeout=1.0, check_same_thread=False)
+            conn.execute("PRAGMA schema_version;")
+            return True
+        except (sqlite3.OperationalError, OSError):
+            time.sleep(min(1.0, 0.25 * attempt))
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    return False
 
 
 def stop_action(exchange: str = "bithumb"):
@@ -554,6 +628,15 @@ def stop_action(exchange: str = "bithumb"):
         print(f"\n✅ {ex_name} 워치독 및 봇 프로세스(총 {stopped_count}개)를 완전히 종료했습니다.")
     else:
         print(f"ℹ️ 현재 실행 중인 {ex_name} 봇 프로세스가 없습니다.")
+
+    # 재시작 시 신규 봇이 disk I/O error 없이 바로 연결할 수 있도록 SQLite 파일 잠금 해제 확인
+    if ex != "dashboard":
+        print(f"⏳ [{ex_name}] 이전 프로세스의 SQLite 데이터베이스 잠금 해제 확인 중...")
+        if _wait_for_db_unlocked(ex, timeout=12.0):
+            print(f"🔓 [{ex_name}] SQLite 데이터베이스 잠금 정상 해제 확인 완료")
+        else:
+            print(f"⚠️ [{ex_name}] SQLite 데이터베이스 잠금 해제 지연 감지 (신규 기동 시 db_manager가 추가 대기합니다)")
+
     time.sleep(1)
 
 

@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 from backtest import QuantBacktester
 from order_safety import CooldownManager
-from strategy_engine import OrderbookFlowTracker, StrategyPolicy, entry_signal, get_time_stop_bars_5m, recovery_rebound_signal, select_completed_candles
+from strategy_engine import OrderbookFlowTracker, StrategyPolicy, entry_signal, get_momentum_extended_alpha_threshold, get_time_stop_bars_5m, recovery_rebound_signal, select_completed_candles
 from trade_memory import TradeMemoryManager
 
 
@@ -180,6 +180,19 @@ class StrategyPolicySSOTTests(unittest.TestCase):
         self.assertTrue(signal["allow_buy"])
         self.assertTrue(signal["momentum_breakout_passed"])
 
+    def test_extended_momentum_risk_off_thresholds_are_session_specific(self):
+        """확장 후반 제한 추격은 RISK_OFF에서만 주간 70점·심야 75점 기준을 사용한다."""
+        self.assertEqual(
+            get_momentum_extended_alpha_threshold("RISK_OFF", is_night=False),
+            StrategyPolicy.MOMENTUM_EXTENDED_ALPHA_THRESHOLD_RISK_OFF,
+        )
+        self.assertEqual(
+            get_momentum_extended_alpha_threshold("RISK_OFF", is_night=True),
+            StrategyPolicy.MOMENTUM_EXTENDED_ALPHA_THRESHOLD_NIGHT_RISK_OFF,
+        )
+        # 정상장 확장 구간은 이번 RISK_OFF 완화 범위에 포함하지 않는다.
+        self.assertEqual(get_momentum_extended_alpha_threshold("NORMAL", is_night=False), 80)
+
     def test_orderbook_flow_tracker_rolling_smoothing(self):
         """OrderbookFlowTracker가 단일 스냅샷 왜곡을 완충하고 롤링 평균을 정상 계산하는지 검증 (과제 E)"""
         tracker = OrderbookFlowTracker(max_history=3)
@@ -324,4 +337,3 @@ class StrategyPolicySSOTTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -265,6 +265,10 @@ class StrategyPolicy:
     MOMENTUM_BREAKOUT_RS_MIN: float = 0.008
     MOMENTUM_BREAKOUT_MTF_EMA20_RATIO: float = 0.980
     MOMENTUM_BREAKOUT_ALLOC_RATIO: float = 0.25
+    # 확장 후반 추격은 수익 기회를 열되, 초입보다 작은 금액으로만 첫 주문을 허용한다.
+    MOMENTUM_EXTENDED_ALPHA_THRESHOLD_RISK_OFF: int = 70
+    MOMENTUM_EXTENDED_ALPHA_THRESHOLD_NIGHT_RISK_OFF: int = 75
+    MOMENTUM_EXTENDED_ALLOC_RATIO: float = 0.15
     # 모멘텀은 초입에서만 첫 주문을 허용한다. 확장 구간은 관찰·보유 관리용으로 남긴다.
     MOMENTUM_EARLY_MAX_CHANGE_RATE: float = 0.060
 
@@ -404,6 +408,31 @@ def get_momentum_breakout_alpha_threshold(
     elif regime_upper == "BULL_TREND":
         return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_BULL
     return StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NORMAL
+
+
+def get_momentum_extended_alpha_threshold(
+    btc_regime: str = "NORMAL",
+    is_night: bool | None = None,
+    relative_strength: float = 0.0,
+) -> int:
+    """확장 후반 추격 진입의 AI 알파 기준을 단일 정책값으로 반환한다.
+
+    RISK_OFF에서는 확정봉·거래량·RSI·MTF 하드 게이트를 이미 통과한 후보만
+    일반 모멘텀과 같은 70/75점 기준으로 평가한다. 그 외 레짐은 기존 고확신
+    확인형 기준을 유지해 이번 완화 범위가 약세장 추격 경로로 한정되도록 한다.
+    """
+    regime_upper = str(btc_regime or "NORMAL").upper()
+    night_active = is_night if is_night is not None else is_night_session()
+
+    if regime_upper == "RISK_OFF":
+        return (
+            StrategyPolicy.MOMENTUM_EXTENDED_ALPHA_THRESHOLD_NIGHT_RISK_OFF
+            if night_active
+            else StrategyPolicy.MOMENTUM_EXTENDED_ALPHA_THRESHOLD_RISK_OFF
+        )
+
+    # 기존 NORMAL/BULL 확장 구간은 RS 주도주만 75점, 일반 후보는 80점으로 유지한다.
+    return 75 if is_rs_leader(relative_strength, regime_upper) else 80
 
 
 def get_time_stop_bars_5m(btc_regime: str = "NORMAL", is_night: bool | None = None) -> tuple[int, int]:

@@ -6,6 +6,7 @@ APScheduler, graceful shutdown, and the main heartbeat loop are centralized here
 
 from __future__ import annotations
 
+import atexit
 import os
 import signal
 import sys
@@ -227,7 +228,8 @@ class TradingBotBootstrap:
         signal.signal(signal.SIGINT, self._handle_exit)
         signal.signal(signal.SIGTERM, self._handle_exit)
         if hasattr(signal, "SIGBREAK"):
-            signal.signal(signal.SIGBREAK, signal.SIG_IGN)
+            signal.signal(signal.SIGBREAK, self._handle_exit)
+        atexit.register(self._handle_exit)
 
     def _handle_exit(self, sig=None, frame=None) -> None:
         if self._is_exiting:
@@ -263,8 +265,14 @@ class TradingBotBootstrap:
             MarketIntelligenceService.get_instance(exchange_scope=scope).stop_periodic_updater()
         except Exception as exc:
             self.ctx.logger.debug("%s정기 시장 분석 스레드 종료 예외: %s", prefix, exc)
+        try:
+            from db_manager import dispose_all_db_managers
+            dispose_all_db_managers()
+        except Exception as exc:
+            self.ctx.logger.debug("%s데이터베이스 해제 예외: %s", prefix, exc)
         self.ctx.logger.info(self.profile.shutdown_complete_message)
-        sys.exit(0)
+        if sig is not None or not getattr(sys, "is_finalizing", lambda: False)():
+            sys.exit(0)
 
     def _main_loop(self) -> None:
         last_hb_ts = 0.0

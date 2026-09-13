@@ -102,7 +102,7 @@ class DatabaseManager:
         # 프로세스 재시작 직후 이전 프로세스의 파일 잠금/핸들이 OS에서 완전히 해제되기까지
         # 짧은 지연(경합)이 발생할 수 있으므로, 지수 백오프 기반 재시도로 disk I/O error를 방어한다.
         last_exc: Exception | None = None
-        for attempt in range(8):
+        for attempt in range(14):
             conn: sqlite3.Connection | None = None
             try:
                 conn = sqlite3.connect(self.db_path, timeout=15.0, check_same_thread=False)
@@ -136,10 +136,10 @@ class DatabaseManager:
                         pass
                     conn = None
                 logger.warning(
-                    "SQLite DB 연결 초기화 경합/지연 (시도 %d/8, 경로: %s): %s",
+                    "SQLite DB 연결 초기화 경합/지연 (시도 %d/14, 경로: %s): %s (이전 프로세스 정리 및 OS 파일 잠금 해제 대기 중)",
                     attempt + 1, self.db_path, exc,
                 )
-                time.sleep(min(3.0, 0.5 * (attempt + 1)))
+                time.sleep(min(3.5, 0.4 * (attempt + 1)))
 
         if last_exc:
             raise last_exc
@@ -756,6 +756,23 @@ def reset_db_manager_for_path(db_path: str) -> None:
         manager = _DB_MANAGER_BY_PATH.pop(resolved_path, None)
     if manager is not None:
         manager.dispose()
+
+
+def dispose_all_db_managers() -> None:
+    """캐시된 모든 DatabaseManager의 연결 및 WAL 체크포인트를 정리한다."""
+    with _DB_LOCK:
+        managers = list(_DB_MANAGER_BY_PATH.values())
+        _DB_MANAGER_BY_PATH.clear()
+    for manager in managers:
+        try:
+            manager.dispose()
+        except Exception as exc:
+            logger.debug("DatabaseManager 전역 해제 중 오류 무시: %s", exc)
+
+
+def reset_db_manager_cache() -> None:
+    """테스트 및 프로세스 종료 정리용: 캐시된 모든 DatabaseManager를 해제한다."""
+    dispose_all_db_managers()
 
 
 def get_db_manager(db_path: str | None = None) -> DatabaseManager:

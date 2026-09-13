@@ -183,23 +183,23 @@ class AIAuthorityTests(unittest.TestCase):
             self.assertEqual(res.target_price, 1050.0)
             self.assertEqual(res.stop_loss, 970.0)
 
-    def test_extended_momentum_buy_is_blocked_after_local_and_ai_approval(self):
-        """확장 후반 후보는 고확신(80점 미만) 미달 시 로컬·AI가 BUY여도 신규 추격 주문이 차단된다."""
+    def test_extended_momentum_risk_off_buy_is_blocked_below_threshold(self):
+        """RISK_OFF 확장 후반은 로컬·AI BUY여도 주간 70점 미만이면 추격 주문을 차단한다."""
         self.mock_analyzer.analyze.return_value = {
             "status": "ACTIVE", "action": "BUY", "entry_price": 1000.0,
             "target_price": 1040.0, "stop_loss": 980.0, "alloc_pct": 0.1,
-            "reason": "[gemini-3.5-flash-lite] 모멘텀 확인", "alpha_score": 75,
+            "reason": "[gemini-3.5-flash-lite] 모멘텀 확인", "alpha_score": 69,
         }
         inputs = MarketEntryInputs(
             exchange=self.mock_exchange, market="KRW-TEST", korean_name="테스트",
             candidate_type="MOMENTUM_BREAKOUT",
-            candidate_metadata={"candidate_type": "MOMENTUM_BREAKOUT", "momentum_phase": "EXTENDED", "acc_trade_price_24h": 5_000_000_000.0},
+            candidate_metadata={"candidate_type": "MOMENTUM_BREAKOUT", "momentum_phase": "EXTENDED", "relative_strength": 0.01, "acc_trade_price_24h": 5_000_000_000.0},
             analyzer=self.mock_analyzer, coin_available=0.0, avg_buy_price=0.0,
             current_price=1000.0, coin_value=0.0, krw_available=100000.0,
             candles_5m=[{"trade_price": 1000.0, "opening_price": 995.0} for _ in range(25)],
             candles_1h=[{"trade_price": 1000.0} for _ in range(20)],
             candles_4h=[{"trade_price": 1000.0} for _ in range(25)],
-            orderbook={"orderbook_units": []}, btc_regime="NORMAL", btc_status_msg="정상",
+            orderbook={"orderbook_units": []}, btc_regime="RISK_OFF", btc_status_msg="약세",
             is_btc_crashing=False, is_cooldown=False, is_extreme_fear=False,
             is_bot_paused=False, is_kill_switch=False, is_entry_ready=True,
             dyn_max_pos_pct=0.35, now_str="2026-09-07 14:00:00", audit_decision=MagicMock(),
@@ -208,31 +208,31 @@ class AIAuthorityTests(unittest.TestCase):
         self.mock_ctx.decision_db.has_recovery_entry_since.return_value = False
         with patch("trading_runtime.select_completed_candles", side_effect=lambda c, **kw: c), \
              patch("trading_runtime.entry_signal", return_value={
-                 "allow_buy": True, "reason": "확정봉 돌파 통과", "alpha_score": 75,
+                "allow_buy": True, "reason": "확정봉 돌파 통과", "alpha_score": 69,
                  "entry_price": 1000.0, "target_price": 1040.0, "stop_loss": 980.0,
              }):
             result = self.runtime.process_entry_gating(inputs)
 
         self.assertEqual(result.action, "HOLD")
-        self.assertIn("확장 후반 신규 추격 차단", result.reason)
+        self.assertIn("필요 알파 70점", result.reason)
 
-    def test_extended_momentum_buy_allowed_when_high_conviction_ai_and_local_quant_pass(self):
-        """확장 후반 후보라도 로컬 퀀트 통과 및 AI 고득점(알파 80점 이상) 확인형 승인이면 진입 허용"""
+    def test_extended_momentum_risk_off_buy_uses_limited_chase_allocation(self):
+        """RISK_OFF 확장 후반은 70점 이상과 로컬 게이트 통과 시 최대 포지션의 15%로만 진입한다."""
         self.mock_analyzer.analyze.return_value = {
             "status": "ACTIVE", "action": "BUY", "entry_price": 1000.0,
             "target_price": 1040.0, "stop_loss": 980.0, "alloc_pct": 0.1,
-            "reason": "[gemini-3.5-flash-lite] 특급 주도주 눌림목 확인", "alpha_score": 85,
+            "reason": "[gemini-3.5-flash-lite] 확정봉 추격 조건 확인", "alpha_score": 70,
         }
         inputs = MarketEntryInputs(
             exchange=self.mock_exchange, market="KRW-TEST", korean_name="테스트",
             candidate_type="MOMENTUM_BREAKOUT",
-            candidate_metadata={"candidate_type": "MOMENTUM_BREAKOUT", "momentum_phase": "EXTENDED", "acc_trade_price_24h": 5_000_000_000.0},
+            candidate_metadata={"candidate_type": "MOMENTUM_BREAKOUT", "momentum_phase": "EXTENDED", "relative_strength": 0.01, "acc_trade_price_24h": 5_000_000_000.0},
             analyzer=self.mock_analyzer, coin_available=0.0, avg_buy_price=0.0,
             current_price=1000.0, coin_value=0.0, krw_available=100000.0,
             candles_5m=[{"trade_price": 1000.0, "opening_price": 995.0} for _ in range(25)],
             candles_1h=[{"trade_price": 1000.0} for _ in range(20)],
             candles_4h=[{"trade_price": 1000.0} for _ in range(25)],
-            orderbook={"orderbook_units": []}, btc_regime="NORMAL", btc_status_msg="정상",
+            orderbook={"orderbook_units": []}, btc_regime="RISK_OFF", btc_status_msg="약세",
             is_btc_crashing=False, is_cooldown=False, is_extreme_fear=False,
             is_bot_paused=False, is_kill_switch=False, is_entry_ready=True,
             dyn_max_pos_pct=0.35, now_str="2026-09-07 14:00:00", audit_decision=MagicMock(),
@@ -241,13 +241,14 @@ class AIAuthorityTests(unittest.TestCase):
         self.mock_ctx.decision_db.has_recovery_entry_since.return_value = False
         with patch("trading_runtime.select_completed_candles", side_effect=lambda c, **kw: c), \
              patch("trading_runtime.entry_signal", return_value={
-                 "allow_buy": True, "reason": "확정봉 돌파 통과", "alpha_score": 85,
+                "allow_buy": True, "reason": "확정봉 돌파 통과", "alpha_score": 70,
                  "entry_price": 1000.0, "target_price": 1040.0, "stop_loss": 980.0,
              }):
             result = self.runtime.process_entry_gating(inputs)
 
         self.assertEqual(result.action, "BUY")
-        self.assertIn("고확신 확인형 진입", result.reason)
+        self.assertIn("확정봉 제한 추격 진입", result.reason)
+        self.assertAlmostEqual(result.alloc_pct, 0.35 * StrategyPolicy.MOMENTUM_EXTENDED_ALLOC_RATIO)
 
     def test_bithumb_ai_runtime_failure_blocks_momentum_direct_entry(self):
         """빗썸 AI 분석 장애면 AI를 우회하는 초기 모멘텀 직접 진입도 주문 후보가 되면 안 된다."""
