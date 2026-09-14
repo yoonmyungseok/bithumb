@@ -31,6 +31,7 @@ from strategy_engine import (
     has_confirmed_swing_trend_candles,
     is_new_listing_eligible,
     is_ai_direct_entry_eligible,
+    is_major_market,
     is_night_session,
     recovery_rebound_signal,
     select_completed_candles,
@@ -1079,7 +1080,7 @@ class TradingCycleEngine:
                 try:
                     logger.warning(f"🌊 [{korean_name} / {market} 스윙 추세 이탈 청산] {trend_reason}")
                     ctx.cancel_bot_open_orders(exchange, market)
-                    order_res = ctx.order_executor.submit(
+                    ctx.order_executor.submit(
                         exchange,
                         market=market,
                         side="ask",
@@ -1088,18 +1089,6 @@ class TradingCycleEngine:
                         position_id=market,
                         exit_reason="SWING_TREND_STOP",
                         avg_buy_price=avg_buy_price,
-                    )
-                    ctx.confirm_and_record_exit(
-                        exchange=exchange,
-                        market=market,
-                        korean_name=korean_name,
-                        side_label="SWING_TREND_STOP",
-                        order_res=order_res,
-                        avg_buy_price=avg_buy_price,
-                        fallback_price=current_price,
-                        fallback_vol=coin_available,
-                        exit_reason=trend_reason,
-                        now_str=now_str,
                     )
                     return True
                 finally:

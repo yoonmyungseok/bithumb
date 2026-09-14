@@ -1979,8 +1979,10 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
    • [전략 제언]: 향후 몇 시간 동안의 안전 운용 지침
 3. 반드시 한국어로 정중하고 명확하게 작성.
 """
+            # 브리핑 전용: 동적 라우터 및 캐시된 가용 모델부터 순차 호출 (3.8-flash 최우선)
+            briefing_models = self.get_briefing_candidate_models(limit=5)
             provider_models = self.provider.models_for("briefing")
-            models = provider_models or self.get_briefing_candidate_models(limit=5)
+            models = briefing_models or provider_models
             if not models:
                 return default_comment
             result = self.provider.complete_text(

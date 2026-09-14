@@ -323,21 +323,38 @@ class TradingBotBootstrap:
 def execute_daily_morning_report_shared(
     *,
     exchange_name: str,
-    exchange_client: Any,
+    create_exchange_client: Callable[[], Any],
     risk_manager: Any,
     telegram: Any,
     logger: Any,
-    calculate_total_equity: Callable[[dict[str, Any], Any], float],
-    get_held_markets: Callable[[dict[str, Any], Any], list[str]],
-    get_fear_and_greed_index: Callable[[], dict[str, Any]],
     build_analyzer: Callable[[], Any | None],
     web_port: int,
-    now_str: str,
+    now_str: str | None = None,
+    calculate_total_equity: Callable[[dict[str, Any], Any], float] | None = None,
+    get_held_markets: Callable[[dict[str, Any], Any], list[str]] | None = None,
+    get_fear_and_greed_index: Callable[[], dict[str, Any]] | None = None,
 ) -> None:
     """빗썸/업비트 공통 매일 아침 09:00 KST 일일 결산 모닝 리포트를 생성 및 전송한다."""
+    from risk_manager import (
+        calculate_total_equity as _default_calc_equity,
+        get_fear_and_greed_index as _default_fng,
+        get_held_markets as _default_held_markets,
+        get_kst_now_str as _default_kst_now,
+    )
+
+    if now_str is None:
+        now_str = _default_kst_now()
+    if calculate_total_equity is None:
+        calculate_total_equity = _default_calc_equity
+    if get_held_markets is None:
+        get_held_markets = _default_held_markets
+    if get_fear_and_greed_index is None:
+        get_fear_and_greed_index = _default_fng
+
     logger.info("📊 [%s 아침 9시 일일 결산 브리핑 발송: %s]", exchange_name, now_str)
 
     try:
+        exchange_client = create_exchange_client()
         fng = get_fear_and_greed_index()
         balances = exchange_client.get_balances()
         total_equity = calculate_total_equity(balances, exchange_client)

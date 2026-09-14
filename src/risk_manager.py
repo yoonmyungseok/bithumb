@@ -610,8 +610,10 @@ class TrailingStopTracker:
 
                 trailing_stop_price = current_peak * (1.0 - active_drop_pct)
 
-                # 수수료 및 슬리피지 차감 후 최소 안전 마진 확보 (스윙 +1.5%, 메이저 +0.3%, 알트 +1.5%)
-                if is_swing:
+                # 수수료 및 슬리피지 차감 후 최소 안전 마진 확보 (방어모드 +0.5%, 스윙 +1.5%, 메이저 +0.3%, 알트 +1.5%)
+                if self.macro_defensive_mode:
+                    min_buffer = 1.005
+                elif is_swing:
                     min_buffer = 1.0 + StrategyPolicy.SWING_BREAKEVEN_STOP_PCT
                 elif is_new_listing:
                     min_buffer = 1.0 + StrategyPolicy.BREAKEVEN_STOP_PCT

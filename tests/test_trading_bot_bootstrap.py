@@ -9,6 +9,7 @@ from trading_bot_bootstrap import (
     ExchangeBootstrapProfile,
     TradingBootstrapContext,
     TradingBotBootstrap,
+    execute_daily_morning_report_shared,
 )
 
 
@@ -320,6 +321,65 @@ class TradingBotBootstrapTests(unittest.TestCase):
         mock_mi_get_instance.assert_called_once_with(exchange_scope="bithumb")
         mock_mi_service.stop_periodic_updater.assert_called_once()
         mock_sys_exit.assert_called_once_with(0)
+
+
+class ExecuteDailyMorningReportSharedTests(unittest.TestCase):
+    def test_execute_daily_morning_report_shared_caller_contract(self):
+        """main.py 및 main_upbit.py의 호출 시그니처와 정확히 일치하는지 검증"""
+        exchange_client = MagicMock()
+        exchange_client.get_balances.return_value = {"KRW": {"balance": 1000000.0}}
+        exchange_client.get_korean_name.return_value = "비트코인"
+        exchange_client.get_candles.return_value = [{"close": 100000000}]
+
+        create_client = MagicMock(return_value=exchange_client)
+        risk_mgr = MagicMock()
+        risk_mgr.daily_start_equity = 1000000.0
+        risk_mgr.realized_pnl_krw = 5000.0
+        risk_mgr.total_trades_today = 3
+        telegram = MagicMock()
+        logger = MagicMock()
+        analyzer = MagicMock()
+        analyzer.diagnose_macro_regime.return_value = "BULL"
+        analyzer.generate_market_briefing.return_value = "시황 브리핑 내용"
+
+        build_analyzer = MagicMock(return_value=analyzer)
+
+        with patch("risk_manager.get_fear_and_greed_index", return_value={"desc": "중립 50"}):
+            execute_daily_morning_report_shared(
+                exchange_name="업비트",
+                create_exchange_client=create_client,
+                risk_manager=risk_mgr,
+                telegram=telegram,
+                build_analyzer=build_analyzer,
+                logger=logger,
+                web_port=8080,
+            )
+
+        create_client.assert_called_once()
+        telegram.send_message.assert_called_once()
+        sent_text = telegram.send_message.call_args[0][0]
+        self.assertIn("업비트", sent_text)
+        self.assertIn("09:00 KST", sent_text)
+        self.assertIn("시황 브리핑 내용", sent_text)
+
+    def test_execute_daily_morning_report_shared_exception_handling(self):
+        """클라이언트 호출 중 예외 발생 시 logger.error 기록 및 프로세스 미중단 검증"""
+        create_client = MagicMock(side_effect=RuntimeError("API Network Error"))
+        logger = MagicMock()
+        telegram = MagicMock()
+
+        execute_daily_morning_report_shared(
+            exchange_name="빗썸",
+            create_exchange_client=create_client,
+            risk_manager=MagicMock(),
+            telegram=telegram,
+            build_analyzer=MagicMock(return_value=None),
+            logger=logger,
+            web_port=8080,
+        )
+
+        logger.error.assert_called_once()
+        telegram.send_message.assert_not_called()
 
 
 if __name__ == "__main__":

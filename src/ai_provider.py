@@ -708,7 +708,7 @@ class BaseGeminiProvider:
                 f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}", timeout=10.0,
             )
             if response.status_code != 200:
-                return [self.TRADING_MODEL]
+                return list(self.MACRO_FALLBACK_MODELS)
             payload = response.json()
             available = [
                 str(item.get("name", "")).replace("models/", "").strip()
@@ -719,9 +719,9 @@ class BaseGeminiProvider:
             candidates = [m for m in self.MACRO_FALLBACK_MODELS if m in available]
             if candidates:
                 return candidates
-            return [self.TRADING_MODEL]
+            return list(self.MACRO_FALLBACK_MODELS)
         except Exception:
-            return [self.TRADING_MODEL]
+            return list(self.MACRO_FALLBACK_MODELS)
 
     def _discover_briefing_models(self) -> list[str]:
         """거래소 전용 키로 브리핑용 Flash 모델을 탐색하고, 우선순위대로 반환한다."""

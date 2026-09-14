@@ -1,4 +1,4 @@
-﻿"""
+"""
 Unit tests for macro_regime timeout safety, thinking budget control, and entry gating isolation.
 """
 
@@ -7,18 +7,26 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 
+import shutil
+import tempfile
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 from ai_provider import AIProviderTelemetry, GeminiProvider, BithumbGeminiProvider
 from gemini_analyzer import GeminiAnalyzer, MACRO_JSON_SCHEMA
+from gemini_telemetry import GeminiTelemetry
 
 
 class MacroRegimeTimeoutSafetyTests(unittest.TestCase):
     def setUp(self):
-        AIProviderTelemetry.configure()
-        with AIProviderTelemetry._lock:
-            AIProviderTelemetry._entry_safety.clear()
+        self.test_dir = tempfile.mkdtemp(prefix="test_macro_safety_")
+        AIProviderTelemetry.configure(data_dir=self.test_dir, storage_filename="ai_telemetry_test.json")
+        AIProviderTelemetry.reset(persist=True)
         GeminiAnalyzer.clear_caches()
+        GeminiTelemetry.reset_for_test()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
 
     @patch("ai_provider.requests.post")
     def test_macro_regime_timeout_does_not_block_upbit_entry(self, mock_post):
