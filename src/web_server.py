@@ -503,30 +503,37 @@ class DashboardWebServer:
             <div class="font-bold text-slate-300 mb-2 flex items-center">
                 <span class="mr-1.5">💡</span> AI 퀀트 트레이딩 핵심 전략 정책 (Strategy Policy SSOT)
             </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
                 <div class="bg-slate-800/40 p-3 rounded-lg border border-slate-800">
                     <div class="text-slate-200 font-semibold mb-1">🎯 3단계 분할 익절 & 락인</div>
-                    <div>• 1차 +2.5% 도달 시 30% 익절</div>
-                    <div>• 2차 +5.0% 도달 시 30% 추가익절</div>
+                    <div>• 1차 +3.5% 도달 시 50% 익절</div>
+                    <div>• 2차 +7.0% 도달 시 25% 추가익절</div>
                     <div>• 1차 익절 완료 시 본전스탑(+0.3%) 보장</div>
                 </div>
                 <div class="bg-slate-800/40 p-3 rounded-lg border border-slate-800">
                     <div class="text-slate-200 font-semibold mb-1">🚀 가속 트레일링 러너</div>
-                    <div>• +2.0% 수익 시 트레일링 감시 가동</div>
-                    <div>• 최고점 대비 1.2% 하락 시 잔여분 익절</div>
-                    <div>• 최소 보장 마진 +0.5% 슬리피지 방어</div>
+                    <div>• +3.0% 수익 시 트레일링 감시 가동</div>
+                    <div>• 최고점 대비 2.0% 하락 시 잔여분 청산</div>
+                    <div>• 최소 보장 마진 +1.5% 슬리피지 방어</div>
                 </div>
                 <div class="bg-slate-800/40 p-3 rounded-lg border border-slate-800">
                     <div class="text-slate-200 font-semibold mb-1">🛡️ 7대 팩터 하드 게이트</div>
                     <div>• MTF 1H + VWAP + MACD 가속도</div>
                     <div>• RSI 골든존 + 볼린저 %B + 롤링 호가 잔량비</div>
-                    <div>• 60점(정상장) / 70점(약세장) 미만 진입 차단</div>
+                    <div>• 60점(정상장) / 60점(약세장) 미만 진입 차단</div>
                 </div>
                 <div class="bg-slate-800/40 p-3 rounded-lg border border-slate-800">
                     <div class="text-slate-200 font-semibold mb-1">⏳ 타임스탑 & 쿨다운</div>
-                    <div>• 40~60분간 ±1% 횡보 시 순환매 청산</div>
-                    <div>• 손절 30분 / 익절 5분 / 타임스탑 10분 쿨다운</div>
+                    <div>• 정상장 120분 / 약세장 120분 타임스탑</div>
+                    <div>• 체결 확정 전에는 보유 시간·쿨다운 미기산</div>
                     <div>• 일일 계좌 최대 손실 -5.0% 킬스위치</div>
+                </div>
+                <div class="bg-slate-800/40 p-3 rounded-lg border border-amber-800/60">
+                    <div class="text-amber-200 font-semibold mb-1">🆕 신규상장 단타 (NEW_LISTING)</div>
+                    <div>• 진입 비중 15.0% (단타 슬롯 내 소액)</div>
+                    <div>• 손절 2.5% / 하드스탑 4.0%</div>
+                    <div>• 30분 조기탈출 / 60분 타임스탑</div>
+                    <div>• 알파 75점(주간) / 80점(야간)</div>
                 </div>
             </div>
         </div>
@@ -738,6 +745,8 @@ class DashboardWebServer:
                             const stopStr = p.stop_loss > 0 ? (p.stop_loss.toLocaleString() + '원 (' + (p.stop_pct || 0).toFixed(1) + '%)') : '-';
                             const rrRatioStr = (p.risk_reward_ratio > 0) ? (p.risk_reward_ratio.toFixed(1) + ' : 1') : '-';
                             const avgP = Number(p.avg_buy_price || 0);
+                            const pnlKrw = Number(p.pnl_krw !== undefined ? p.pnl_krw : ((p.current_price - avgP) * Number(p.balance || 0)));
+                            const pnlKrwStr = (pnlKrw > 0 ? '+' : '') + Math.round(pnlKrw).toLocaleString('ko-KR') + ' 원';
 
                             return `
                                 <tr class="hover:bg-slate-800/60 transition">
@@ -747,7 +756,10 @@ class DashboardWebServer:
                                         <div class="text-xs text-slate-400">평단: ${{avgP > 0 ? avgP.toLocaleString() + '원' : '-'}}</div>
                                     </td>
                                     <td class="p-3 whitespace-nowrap">${{p.balance}}개 <div class="text-xs text-slate-400">(${{p.value.toLocaleString()}}원)</div></td>
-                                    <td class="p-3 font-bold whitespace-nowrap ${{p.pnl_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}}">${{p.pnl_pct >= 0 ? '+' : ''}}${{p.pnl_pct.toFixed(2)}}%</td>
+                                    <td class="p-3 font-bold whitespace-nowrap ${{p.pnl_pct >= 0 ? 'text-emerald-400' : 'text-rose-400'}}">
+                                        <div>${{p.pnl_pct >= 0 ? '+' : ''}}${{Number(p.pnl_pct || 0).toFixed(2)}}%</div>
+                                        <div class="text-xs font-normal opacity-80">${{pnlKrwStr}}</div>
+                                    </td>
                                     <td class="p-3 whitespace-nowrap"><span class="badge ${{actBadge}}">${{actKr}}</span></td>
                                     <td class="p-3 text-xs text-slate-300 whitespace-nowrap">
                                         <div class="text-emerald-400">목표: ${{targetStr}}</div>

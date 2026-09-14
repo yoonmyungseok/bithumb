@@ -110,6 +110,8 @@ class TestCandidateStrategiesDashboard(unittest.TestCase):
         self.assertEqual(btc_pos["alpha_score"], 78)
         self.assertEqual(btc_pos["action"], "HOLD")
         self.assertGreater(btc_pos["pnl_pct"], 0)
+        self.assertIn("pnl_krw", btc_pos)
+        self.assertEqual(btc_pos["pnl_krw"], 50000.0)
 
     def test_bot_controller_get_dashboard_data_structure(self):
         mock_executor = MagicMock(spec=SafeOrderExecutor)
@@ -210,6 +212,23 @@ class TestCandidateStrategiesDashboard(unittest.TestCase):
         self.assertIn("cand_regime_indicator", html)
         self.assertIn("switchStrategyTab", html)
         self.assertIn("renderAlphaBadge", html)
+
+    def test_build_policy_data_ssot_fields(self):
+        policy = BotController._build_policy_data()
+        self.assertIn("breakeven_stop_pct", policy)
+        self.assertIn("min_profit_buffer_pct", policy)
+        self.assertEqual(policy["breakeven_stop_pct"], 0.003)
+        self.assertEqual(policy["min_profit_buffer_pct"], 0.015)
+
+    def test_dashboard_index_dynamic_policy_elements(self):
+        index_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dashboard", "index.html")
+        with open(index_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn('id="policy_breakeven_stop"', content)
+        self.assertIn('id="policy_min_profit_buffer"', content)
+        self.assertIn('id="policy_partial_tp_1"', content)
+        self.assertIn('id="policy_trailing_start"', content)
+
 
 
 if __name__ == "__main__":

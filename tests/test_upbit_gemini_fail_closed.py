@@ -8,7 +8,9 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from ai_provider import AIProviderTelemetry, GeminiProvider
+import shutil
+from ai_provider import AIProviderTelemetry, BaseGeminiProvider, GeminiProvider
+from gemini_telemetry import GeminiTelemetry
 from upbit_ai import build_upbit_analyzer, get_upbit_ai_config_block_reason, get_upbit_ai_entry_block_reason
 
 
@@ -18,12 +20,20 @@ class UpbitGeminiFailClosedTests(unittest.TestCase):
     def setUp(self):
         self.env = dict(os.environ)
         self.temp_dir = tempfile.mkdtemp()
+        GeminiTelemetry.configure(data_dir=self.temp_dir)
+        GeminiTelemetry.reset(persist=True)
         AIProviderTelemetry.configure(data_dir=self.temp_dir, storage_filename="upbit_entry_safety_test.json")
         AIProviderTelemetry.reset(persist=True)
+        BaseGeminiProvider.clear_cooldowns()
 
     def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
         os.environ.clear()
         os.environ.update(self.env)
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        GeminiTelemetry.configure(data_dir=os.path.join(project_root, "data"))
+        AIProviderTelemetry.configure(data_dir=os.path.join(project_root, "data"), storage_filename="upbit_entry_safety_test.json")
+        BaseGeminiProvider.clear_cooldowns()
 
     @patch("ai_provider.requests.post")
     def test_http_failure_blocks_upbit_new_buy(self, mock_post):

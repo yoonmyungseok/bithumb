@@ -337,12 +337,161 @@ class DashboardFrontendKoreanTests(unittest.TestCase):
         self.assertIn("window.showChartModal = function (market, exchange)", self.app_js_content)
         self.assertIn("targetEx = (exchange || state.activeExchange || 'bithumb')", self.app_js_content)
 
-    def test_daily_performance_chart_exists(self):
-        """일일 성과 14일 캔버스 차트 렌더러가 구현되어 있는지 검증"""
-        func_code = self._extract_function("renderDailyPerformanceChart")
-        self.assertIn("daily_pnl_canvas", func_code, "차트 렌더러는 daily_pnl_canvas 엘리먼트를 참조해야 합니다.")
+    def test_render_policy_guide_dynamic_ssot(self):
+        """renderPolicyGuide가 breakeven_stop_pct 및 min_profit_buffer_pct를 올바르게 바인딩하는지 검증"""
+        func_code = self._extract_function("renderPolicyGuide")
+        js_code = f"""
+        const dom = {{}};
+        const document = {{
+            getElementById: (id) => {{
+                if (!dom[id]) dom[id] = {{ textContent: '' }};
+                return dom[id];
+            }}
+        }};
+        {func_code}
+        renderPolicyGuide({{
+            partial_tp_1_pct: 0.035,
+            partial_tp_1_ratio: 0.50,
+            partial_tp_2_pct: 0.070,
+            partial_tp_2_ratio: 0.25,
+            breakeven_stop_pct: 0.003,
+            trailing_start_pct: 0.030,
+            trailing_drop_pct: 0.020,
+            min_profit_buffer_pct: 0.015,
+            alpha_buy_threshold_normal: 60,
+            alpha_buy_threshold_risk_off: 60,
+            time_stop_seconds_normal: 7200,
+            time_stop_seconds_risk_off: 7200
+        }});
+        console.log(JSON.stringify(dom));
+        """
+        proc = subprocess.run(
+            ["node", "-e", js_code],
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding="utf-8",
+        )
+        results = json.loads(proc.stdout)
+        self.assertIn("+0.3%", results["policy_breakeven_stop"]["textContent"])
+        self.assertIn("+1.5%", results["policy_min_profit_buffer"]["textContent"])
+        self.assertIn("슬리피지 방어", results["policy_min_profit_buffer"]["textContent"])
+        self.assertIn("본전스탑", results["policy_breakeven_stop"]["textContent"])
+
+    def test_format_signed_krw_and_position_pnl(self):
+        """formatSignedKrw 포맷터가 부호(+/-)와 원화 단위를 정확히 출력하는지 검증"""
+        func_code = self._extract_function("formatSignedKrw")
+        js_code = f"""
+        {func_code}
+        const testCases = {{
+            positive: formatSignedKrw(15000),
+            negative: formatSignedKrw(-5000),
+            zero: formatSignedKrw(0),
+            decimal: formatSignedKrw(1234.56),
+            nan: formatSignedKrw(NaN),
+            undef: formatSignedKrw(undefined)
+        }};
+        console.log(JSON.stringify(testCases));
+        """
+        proc = subprocess.run(
+            ["node", "-e", js_code],
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding="utf-8",
+        )
+        results = json.loads(proc.stdout)
+        self.assertEqual(results["positive"], "+15,000 원")
+        self.assertEqual(results["negative"], "-5,000 원")
+        self.assertEqual(results["zero"], "0 원")
+        self.assertEqual(results["decimal"], "+1,235 원")
+        self.assertEqual(results["nan"], "0 원")
+        self.assertEqual(results["undef"], "0 원")
+
+    def test_positions_table_renders_pnl_krw(self):
+        """renderPositionsTable 실행 시 수익률 컬럼에 %뿐만 아니라 원화(formatSignedKrw)가 렌더링되는지 검증"""
+        func_format_signed_krw = self._extract_function("formatSignedKrw")
+        func_format_pct = self._extract_function("formatPct")
+        func_format_price = self._extract_function("formatPrice")
+        func_format_krw = self._extract_function("formatKrw")
+        func_format_strat = self._extract_function("formatStrategyModeLabel")
+        func_render_action = self._extract_function("renderActionBadge")
+        func_render_alpha = self._extract_function("renderAlphaBadge")
+        func_format_reason = self._extract_function("formatReason")
+        func_render_risk = self._extract_function("renderPositionRiskState")
+        func_render_priority = self._extract_function("renderPositionOperationalPriority")
+        func_get_priority = self._extract_function("getPositionOperationalPriority")
+        func_format_hold_sec = self._extract_function("formatHoldSeconds")
+        func_render_pos = self._extract_function("renderPositionsTable")
+
+        js_code = f"""
+        const state = {{ activeExchange: 'bithumb' }};
+        const dom = {{ positions_tbody: {{ innerHTML: '' }} }};
+        const document = {{
+            getElementById: (id) => dom[id] || null
+        }};
+        {func_format_signed_krw}
+        {func_format_pct}
+        {func_format_price}
+        {func_format_krw}
+        {func_format_strat}
+        {func_render_action}
+        {func_render_alpha}
+        {func_format_reason}
+        {func_format_hold_sec}
+        {func_render_risk}
+        {func_render_priority}
+        {func_get_priority}
+        {func_render_pos}
+
+        const positions = [
+            {{
+                market: 'KRW-BTC',
+                korean_name: '비트코인',
+                current_price: 100000000,
+                avg_buy_price: 95000000,
+                balance: 0.01,
+                value: 1000000,
+                pnl_pct: 5.26,
+                pnl_krw: 50000,
+                action: 'HOLD'
+            }},
+            {{
+                market: 'KRW-ETH',
+                korean_name: '이더리움',
+                current_price: 4000000,
+                avg_buy_price: 4100000,
+                balance: 0.5,
+                value: 2000000,
+                pnl_pct: -2.44,
+                // pnl_krw 누락된 케이스 (fallback 계산 검증)
+                action: 'HOLD'
+            }}
+        ];
+
+        renderPositionsTable(positions);
+        console.log(dom.positions_tbody.innerHTML);
+        """
+        proc = subprocess.run(
+            ["node", "-e", js_code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(proc.returncode, 0, f"Node error: {proc.stderr}")
+        html_output = proc.stdout
+        # BTC 검증: +5.26% 및 +50,000 원
+        self.assertIn("+5.26%", html_output)
+        self.assertIn("+50,000 원", html_output)
+
+        # ETH 검증: -2.44% 및 -50,000 원 (fallback 계산: (4000000 - 4100000) * 0.5 = -50,000)
+        self.assertIn("-2.44%", html_output)
+        self.assertIn("-50,000 원", html_output)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
 

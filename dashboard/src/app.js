@@ -39,6 +39,13 @@
     return `${sign}${Number(num).toFixed(2)}%`;
   }
 
+  function formatSignedKrw(num) {
+    if (num === undefined || num === null || isNaN(num)) return '0 원';
+    const rounded = Math.round(num);
+    const sign = rounded > 0 ? '+' : '';
+    return `${sign}${rounded.toLocaleString('ko-KR')} 원`;
+  }
+
   function formatPrice(price) {
     if (!price || isNaN(price)) return '0';
     const num = Number(price);
@@ -1038,8 +1045,12 @@
     };
     setText('policy_partial_tp_1', `• 1차 +${pct(policy.partial_tp_1_pct)} 도달 시 ${pct(policy.partial_tp_1_ratio)} 익절`);
     setText('policy_partial_tp_2', `• 2차 +${pct(policy.partial_tp_2_pct)} 도달 시 ${pct(policy.partial_tp_2_ratio)} 추가 익절`);
+    const beStopPct = policy.breakeven_stop_pct != null ? policy.breakeven_stop_pct : 0.003;
+    setText('policy_breakeven_stop', `• 1차 익절 완료 시 본전스탑(+${pct(beStopPct)}) 보장`);
     setText('policy_trailing_start', `• +${pct(policy.trailing_start_pct)} 수익 시 트레일링 감시 가동`);
     setText('policy_trailing_drop', `• 최고점 대비 ${pct(policy.trailing_drop_pct)} 하락 시 잔여분 청산`);
+    const minBufferPct = policy.min_profit_buffer_pct != null ? policy.min_profit_buffer_pct : 0.015;
+    setText('policy_min_profit_buffer', `• 최소 보장 마진 +${pct(minBufferPct)} 슬리피지 방어`);
     setText('policy_alpha_threshold', `• ${policy.alpha_buy_threshold_normal ?? '-'}점(정상장) / ${policy.alpha_buy_threshold_risk_off ?? '-'}점(약세장) 미만 차단`);
     const normalMinutes = Math.round(Number(policy.time_stop_seconds_normal || 0) / 60);
     const riskOffMinutes = Math.round(Number(policy.time_stop_seconds_risk_off || 0) / 60);
@@ -1359,7 +1370,17 @@
       .sort((left, right) => left.priority.rank - right.priority.rank);
     tbody.innerHTML = prioritizedPositions.map(({ pos, priority }) => {
       const pnlPct = Number(pos.pnl_pct || 0);
-      const pnlKrw = Number(pos.pnl_krw || 0);
+      let pnlKrw = Number(pos.pnl_krw);
+      if (isNaN(pnlKrw) || pos.pnl_krw === undefined || pos.pnl_krw === null) {
+        const curPrice = Number(pos.current_price || 0);
+        const avgBuy = Number(pos.avg_buy_price || 0);
+        const bal = Number(pos.balance || pos.volume || 0);
+        if (avgBuy > 0 && bal > 0) {
+          pnlKrw = (curPrice - avgBuy) * bal;
+        } else {
+          pnlKrw = 0;
+        }
+      }
       const isProfit = pnlPct >= 0;
       const pnlCls = isProfit ? 'text-emerald-400' : 'text-rose-400';
       const targetStr = pos.target_price > 0 ? `${formatPrice(pos.target_price)} 원 (${pos.target_pct >= 0 ? '+' : ''}${(pos.target_pct || 0).toFixed(1)}%)` : '-';
@@ -1384,7 +1405,7 @@
           </td>
           <td class="p-3 whitespace-nowrap font-bold ${pnlCls}">
             <div>${formatPct(pnlPct)}</div>
-            <div class="text-xs font-normal opacity-80">${pnlKrw !== 0 ? (pnlKrw > 0 ? '+' : '') + formatKrw(pnlKrw) : ''}</div>
+            <div class="text-xs font-normal opacity-90">${formatSignedKrw(pnlKrw)}</div>
           </td>
           <td class="p-3 whitespace-nowrap">
             ${renderPositionOperationalPriority(priority)}

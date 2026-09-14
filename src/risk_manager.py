@@ -197,6 +197,7 @@ def build_positions_data(
                 continue
             avg_price = info.get("avg_buy_price", 0.0)
             pnl_pct = ((price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
+            pnl_krw = ((price - avg_price) * vol) if avg_price > 0 else 0.0
             strat = strategies.get(market, {})
             action = strat.get("action") or strat.get("ACTION") or "HOLD"
             target_price = float(strat.get("target_price") or strat.get("TARGET_PRICE") or 0.0)
@@ -227,6 +228,7 @@ def build_positions_data(
                 "balance": f"{vol:.6f}".rstrip("0").rstrip("."),
                 "value": int(val),
                 "pnl_pct": pnl_pct,
+                "pnl_krw": round(pnl_krw, 2),
                 "action": action,
                 "target_price": target_price,
                 "stop_loss": stop_loss,
