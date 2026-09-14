@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 
 import requests
 
-from ai_provider import AIProvider, AIProviderTelemetry, GeminiProvider
+from ai_provider import AIProvider, AIProviderTelemetry, BaseGeminiProvider, GeminiProvider
 from gemini_telemetry import GeminiTelemetry
 from strategy_engine import (
     StrategyPolicy,
@@ -168,6 +168,7 @@ class GeminiAnalyzer:
             cls._BRIEFING_MODELS_CACHED_AT = 0.0
             cls._MACRO_MODELS_CACHED_AT = 0.0
             cls._MODEL_COOLDOWNS.clear()
+            BaseGeminiProvider.clear_cooldowns()
             cls._MODEL_BLACKLIST.clear()
             cls._MACRO_DIAG_CACHE.clear()
             cls._LAST_MACRO_DIAG_TS = 0.0
@@ -1107,8 +1108,8 @@ class GeminiAnalyzer:
                         "stop_loss": dynamic_sl, "alloc_pct": 0.0, "reason": "Gemini AI 쿼터 도달 신규 BUY 차단", "alpha_score": 0}
 
         # Provider의 모델 목록이 비어도 업비트 동적 모델 탐색은 유지하되 로컬 BUY 폴백은 허용하지 않는다.
-        provider_models = self.provider.models_for("trading")
-        candidate_models = provider_models or self.get_candidate_models(limit=3)
+        provider_models = self.provider.models_for("trading", for_emergency_exit=False)
+        candidate_models = provider_models or self.get_candidate_models(limit=3, for_emergency_exit=False)
 
         if not candidate_models:
             if self.provider.is_entry_fail_closed:
@@ -1401,9 +1402,10 @@ class GeminiAnalyzer:
         ex = getattr(self.provider, "exchange", "bithumb")
         resolved_schema_name = schema_name or f"{ex}_batch_result"
 
-        provider_models = candidate_models or self.provider.models_for("trading")
+        is_emergency = "holding" in context or "emergency" in context
+        provider_models = candidate_models or self.provider.models_for("trading", for_emergency_exit=is_emergency)
         # 동적 모델 탐색은 분석 호출 수단일 뿐 BUY fallback이 아니므로 fail-closed와 병행한다.
-        models = provider_models or self.get_candidate_models(limit=3)
+        models = provider_models or self.get_candidate_models(limit=3, for_emergency_exit=is_emergency)
         if not models:
             return None
         resolved_schema = schema or {"type": "object", "additionalProperties": False, "required": [], "properties": {}}
@@ -1466,7 +1468,7 @@ class GeminiAnalyzer:
             return fallback_res
 
         # 사용 가능한 모델 확인 (일일 쿼터 소진 시 즉시 로컬 룰 유지 및 429 원천 방지)
-        provider_models = self.provider.models_for("trading")
+        provider_models = self.provider.models_for("trading", for_emergency_exit=True)
         holding_models = provider_models or self.get_candidate_models(limit=2, for_emergency_exit=True)
         if not holding_models:
             logger.info(f"[{market}] 🛑 Gemini AI 가용 모델(쿼터 여유) 없음 ➜ 기보유 포지션 로컬 룰 유지")

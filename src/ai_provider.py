@@ -10,8 +10,8 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Protocol
+from datetime import datetime, timedelta
+from typing import Any, Protocol, ClassVar
 from zoneinfo import ZoneInfo
 
 import requests
@@ -45,7 +45,7 @@ class AIProvider(Protocol):
     exchange: str
     is_entry_fail_closed: bool
 
-    def models_for(self, purpose: str) -> list[str]: ...
+    def models_for(self, purpose: str, for_emergency_exit: bool = False) -> list[str]: ...
 
     def complete_json(
         self, prompt: str, models: list[str], schema: dict[str, Any], *, context: str, timeout: float, max_tokens: int,
@@ -445,6 +445,14 @@ class AIProviderTelemetry:
             return f"{exchange_label} Gemini 분석 장애({reason}{f', {context}' if context else ''})로 신규 BUY를 차단합니다."
 
     @classmethod
+    def get_model_stat(cls, provider: str, exchange: str, model: str) -> dict[str, Any]:
+        """특정 프로바이더/거래소/모델의 통계를 반환합니다."""
+        with cls._lock:
+            cls._ensure_configured_locked()
+            stat = cls._stats.get((provider, exchange, model))
+            return dict(stat) if stat else {"calls": 0, "success": 0, "rate_limited": 0, "errors": 0}
+
+    @classmethod
     def snapshot(cls, exchange: str) -> dict[str, Any]:
         """대시보드 확장용 읽기 전용 집계를 반환합니다."""
         with cls._lock:
@@ -608,6 +616,99 @@ class BaseGeminiProvider:
     SYSTEM_INSTRUCTION: str = ""
     BRIEFING_SYSTEM_INSTRUCTION: str = ""
 
+    # 모델별 쿨다운(429/할당량 초과) 만료 시점 캐시 (거래소별 격리)
+    _COOLDOWNS_BY_EXCHANGE: ClassVar[dict[str, dict[str, float]]] = {}
+    _COOLDOWN_LOCK: ClassVar[threading.RLock] = threading.RLock()
+
+    @classmethod
+    def clear_cooldowns(cls, exchange: str | None = None) -> None:
+        """단위 테스트 및 세션 재시작을 위한 모델 쿨다운 초기화"""
+        with cls._COOLDOWN_LOCK:
+            if exchange:
+                cls._COOLDOWNS_BY_EXCHANGE.pop(exchange, None)
+            else:
+                cls._COOLDOWNS_BY_EXCHANGE.clear()
+
+    def is_model_cooling_down(self, model: str) -> bool:
+        """모델의 쿨다운 만료 여부를 확인하고 만료 시 자동 해제합니다."""
+        now = time.time()
+        with self._COOLDOWN_LOCK:
+            exchange_map = self._COOLDOWNS_BY_EXCHANGE.setdefault(self.exchange, {})
+            exp = exchange_map.get(model, 0.0)
+            if exp <= now:
+                if model in exchange_map:
+                    exchange_map.pop(model, None)
+                return False
+            return True
+
+    def set_model_cooldown(
+        self,
+        model: str,
+        duration_sec: float | None = None,
+        until_pt_midnight: bool = False,
+        reason: str = "429 Rate Limit",
+    ) -> None:
+        """모델별 쿨다운을 거래소 격리 캐시에 등록하고 GeminiAnalyzer와 동기화합니다."""
+        now = time.time()
+        if until_pt_midnight:
+            # 미국 태평양 표준시(PT) 기준 다음 자정 계산 (한국 시간 16:00 KST 리셋)
+            now_pt = datetime.now(ZoneInfo("America/Los_Angeles"))
+            next_pt = (now_pt + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            expire_at = next_pt.timestamp()
+        elif duration_sec is not None:
+            expire_at = now + max(0.01, duration_sec)
+        else:
+            expire_at = now + 300.0  # 기본 5분(300초)
+
+        with self._COOLDOWN_LOCK:
+            exchange_map = self._COOLDOWNS_BY_EXCHANGE.setdefault(self.exchange, {})
+            exchange_map[model] = expire_at
+
+        # GeminiAnalyzer 전역 캐시와도 동기화 (분석기 라우터 연동)
+        try:
+            from gemini_analyzer import GeminiAnalyzer
+            with GeminiAnalyzer._CLASS_LOCK:
+                GeminiAnalyzer._MODEL_COOLDOWNS[model] = expire_at
+        except Exception:
+            pass
+
+        remaining = max(0, int(expire_at - now))
+        logger.warning(
+            "[%s] %s 쿨다운 등록 (%s) -> %d초 후 만료 (차순위 모델 우선 호출)",
+            self.exchange, model, reason, remaining,
+        )
+
+    def can_call_model_safety(self, model: str, for_emergency_exit: bool = False) -> bool:
+        """
+        호출 전 쿨다운 상태 및 거래소별 일일 쿼터 잔여 여부를 사전 검증합니다:
+        - 쿨다운 중인 모델은 즉시 False
+        - 업비트: GeminiTelemetry.can_call_model 검증 (소진 시 PT 자정까지 쿨다운 자동 등록)
+        - 빗썸: AIProviderTelemetry 기반 Flash-Lite 쿼터 안전선(85%) 검증
+        """
+        if self.is_model_cooling_down(model):
+            return False
+
+        if self.exchange == "upbit":
+            if hasattr(GeminiTelemetry, "can_call_model"):
+                if not GeminiTelemetry.can_call_model(model, for_emergency_exit=for_emergency_exit):
+                    self.set_model_cooldown(
+                        model, until_pt_midnight=True, reason="업비트 Gemini 일일 쿼터(RPD) 한도 도달",
+                    )
+                    return False
+        elif self.exchange == "bithumb":
+            stat = AIProviderTelemetry.get_model_stat(self.name, self.exchange, model)
+            calls = stat.get("calls", 0)
+            limit = 500 if "flash-lite" in model else (20 if "-flash" in model else 0)
+            if limit > 0:
+                threshold = int(limit * 0.95) if for_emergency_exit else int(limit * 0.85)
+                if calls >= threshold:
+                    self.set_model_cooldown(
+                        model, until_pt_midnight=True, reason="빗썸 Gemini 일일 쿼터(RPD) 한도 도달",
+                    )
+                    return False
+
+        return True
+
     def __init__(self, api_key: str):
         self.api_key = (api_key or "").strip()
         self._models: list[str] | None = None
@@ -747,22 +848,32 @@ class BaseGeminiProvider:
         except Exception:
             return list(self.BRIEFING_FALLBACK_MODELS)
 
-    def models_for(self, purpose: str) -> list[str]:
-        """목적별 허용 모델을 반환하며, 신규 BUY(trading)는 Flash-Lite 계열 순차 폴백 목록을 반환한다."""
+    def models_for(self, purpose: str, for_emergency_exit: bool = False) -> list[str]:
+        """
+        목적별 허용 모델을 반환하며, 쿨다운 또는 쿼터 소진 모델은 사전에 제외하고
+        가용한 차순위 모델(예: 3.5 소진 시 3.1)을 1순위로 즉시 승격하여 반환한다.
+        """
         if purpose == "macro":
             if self._macro_models is None:
                 self._macro_models = self._discover_macro_models()
-            return list(self._macro_models) if self._macro_models else [self.TRADING_MODEL]
+            base_list = list(self._macro_models) if self._macro_models else [self.TRADING_MODEL]
+            available = [m for m in base_list if self.can_call_model_safety(m, for_emergency_exit=for_emergency_exit)]
+            return available if available else [m for m in base_list if not self.is_model_cooling_down(m)]
 
         if purpose == "briefing":
             if self._briefing_models is None:
                 self._briefing_models = self._discover_briefing_models()
-            return list(self._briefing_models) if self._briefing_models else list(self.BRIEFING_FALLBACK_MODELS)
+            base_list = list(self._briefing_models) if self._briefing_models else list(self.BRIEFING_FALLBACK_MODELS)
+            available = [m for m in base_list if self.can_call_model_safety(m, for_emergency_exit=for_emergency_exit)]
+            return available if available else [m for m in base_list if not self.is_model_cooling_down(m)]
 
         if purpose == "trading":
             if self._models is None:
                 self._models = self._discover_models()
-            return list(self._models)
+            base_list = list(self._models) if self._models is not None else []
+            # 쿨다운 및 쿼터 안전선을 통과한 가용 모델만 선별
+            available = [m for m in base_list if self.can_call_model_safety(m, for_emergency_exit=for_emergency_exit)]
+            return available
         return []
 
     def complete_json(
@@ -773,7 +884,13 @@ class BaseGeminiProvider:
         if not self.is_configured or not models:
             return self._record_entry_safety(ProviderResult(None, "", "configuration"), context)
         last_result = ProviderResult(None, models[0], "configuration")
+        is_emergency = "holding" in context or "emergency" in context
         for model in models:
+            # 호출 직전 쿨다운/쿼터 안전 검증 (이미 소진된 모델에 대한 불필요한 HTTP 호출 원천 차단)
+            if not self.can_call_model_safety(model, for_emergency_exit=is_emergency):
+                logger.info("[%s] %s 쿨다운 또는 쿼터 소진으로 호출 건너뜀 (차순위 시도)", self.exchange, model)
+                continue
+
             started = time.monotonic()
             status_code: int | None = None
             error_kind = ""
@@ -807,6 +924,25 @@ class BaseGeminiProvider:
                 if status_code != 200:
                     error_kind = "rate_limited" if status_code == 429 else "http_error"
                     error_code = self._safe_error_code(response)
+                    if status_code == 429:
+                        # 429 Rate Limit 감지 시 즉시 쿨다운 등록
+                        retry_after_str = response.headers.get("Retry-After", "").strip() if response is not None else ""
+                        retry_sec = float(retry_after_str) if retry_after_str.isdigit() else None
+                        res_text = response.text.lower() if response is not None and response.text else ""
+                        is_daily = (
+                            "resource_exhausted" in error_code.lower()
+                            or "quota" in res_text
+                            or not self.can_call_model_safety(model, for_emergency_exit=is_emergency)
+                        )
+                        if is_daily:
+                            self.set_model_cooldown(
+                                model, until_pt_midnight=True, reason="429 Resource Exhausted (일일 쿼터 소진)",
+                            )
+                        else:
+                            self.set_model_cooldown(
+                                model, duration_sec=retry_sec or 300.0,
+                                reason=f"429 Rate Limit (일시 초과, Retry-After={retry_after_str or 'None'})",
+                            )
                     last_result = ProviderResult(None, model, error_kind, status_code, error_code)
                     continue
                 value = _parse_json_text(self._extract_text(response.json()) or "")
@@ -845,6 +981,11 @@ class BaseGeminiProvider:
         system_instruction = self.BRIEFING_SYSTEM_INSTRUCTION if "briefing" in context else self.SYSTEM_INSTRUCTION
 
         for model in models:
+            # 브리핑 등 텍스트 생성도 쿨다운 또는 쿼터 소진 모델은 건너뜀
+            if not self.can_call_model_safety(model, for_emergency_exit=True):
+                logger.info("[%s] %s 쿨다운 또는 쿼터 소진으로 브리핑 호출 건너뜀 (차순위 시도)", self.exchange, model)
+                continue
+
             started = time.monotonic()
             status_code: int | None = None
             error_kind = ""
@@ -883,6 +1024,24 @@ class BaseGeminiProvider:
                 if status_code != 200:
                     error_kind = "rate_limited" if status_code == 429 else "http_error"
                     error_code = self._safe_error_code(response)
+                    if status_code == 429:
+                        retry_after_str = response.headers.get("Retry-After", "").strip() if response is not None else ""
+                        retry_sec = float(retry_after_str) if retry_after_str.isdigit() else None
+                        res_text = response.text.lower() if response is not None and response.text else ""
+                        is_daily = (
+                            "resource_exhausted" in error_code.lower()
+                            or "quota" in res_text
+                            or not self.can_call_model_safety(model, for_emergency_exit=True)
+                        )
+                        if is_daily:
+                            self.set_model_cooldown(
+                                model, until_pt_midnight=True, reason="429 Resource Exhausted (일일 쿼터 소진)",
+                            )
+                        else:
+                            self.set_model_cooldown(
+                                model, duration_sec=retry_sec or 300.0,
+                                reason=f"429 Rate Limit (일시 초과, Retry-After={retry_after_str or 'None'})",
+                            )
                     last_error = error_kind
                     last_status_code = status_code
                     last_error_code = error_code
@@ -991,23 +1150,29 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
             )
         return result
 
-    def models_for(self, purpose: str) -> list[str]:
+    def models_for(self, purpose: str, for_emergency_exit: bool = False) -> list[str]:
         """목적별 허용 모델을 반환하며, 캐시 히트는 빗썸 전용 텔레메트리에만 기록한다."""
         if purpose == "macro":
             if self._macro_models is None:
                 self._macro_models = self._discover_macro_models()
-            return list(self._macro_models) if self._macro_models else [self.TRADING_MODEL]
+            base_list = list(self._macro_models) if self._macro_models else [self.TRADING_MODEL]
+            available = [m for m in base_list if self.can_call_model_safety(m, for_emergency_exit=for_emergency_exit)]
+            return available if available else [m for m in base_list if not self.is_model_cooling_down(m)]
 
         if purpose == "briefing":
             if self._briefing_models is None:
                 self._briefing_models = self._discover_briefing_models()
-            return list(self._briefing_models) if self._briefing_models else list(self.BRIEFING_FALLBACK_MODELS)
+            base_list = list(self._briefing_models) if self._briefing_models else list(self.BRIEFING_FALLBACK_MODELS)
+            available = [m for m in base_list if self.can_call_model_safety(m, for_emergency_exit=for_emergency_exit)]
+            return available if available else [m for m in base_list if not self.is_model_cooling_down(m)]
 
         if self._models is None:
             self._models = self._discover_models()
         elif self._models:
             # 프로세스 내 모델 목록 재사용도 빗썸 전용 텔레메트리에만 기록한다.
             AIProviderTelemetry.record_cache_hit(self.name, self.exchange, self._models[0], "list_models")
-        return list(self._models) if self._models else []
+        base_list = list(self._models) if self._models is not None else []
+        available = [m for m in base_list if self.can_call_model_safety(m, for_emergency_exit=for_emergency_exit)]
+        return available
 
 
