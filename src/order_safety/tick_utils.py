@@ -23,7 +23,8 @@ def adjust_price_to_tick(
     if tick >= 1.0:
         precision = 0
     else:
-        tick_str = str(tick)
+        # 지수 표기법(예: 1e-05, 1e-06 등) 방지를 위해 고정 소수점 포맷팅
+        tick_str = f"{tick:.10f}".rstrip("0")
         precision = len(tick_str.split(".")[1]) if "." in tick_str else 0
 
     if mode:

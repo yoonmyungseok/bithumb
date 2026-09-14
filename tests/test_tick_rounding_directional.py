@@ -56,16 +56,23 @@ class TickRoundingDirectionalTests(unittest.TestCase):
         self.assertEqual(UpbitAPI.get_tick_size(2_500_000), 1000.0)
         self.assertEqual(UpbitAPI.get_tick_size(1_500_000), 500.0)
         self.assertEqual(UpbitAPI.get_tick_size(600_000), 100.0)
-        self.assertEqual(UpbitAPI.get_tick_size(200_000), 50.0)
+        self.assertEqual(UpbitAPI.get_tick_size(200_000), 100.0)  # SOL, AAVE, BCH 등 100원 단위
         self.assertEqual(UpbitAPI.get_tick_size(50_000), 10.0)
         self.assertEqual(UpbitAPI.get_tick_size(500), 1.0)  # 100원 이상은 1원 단위
         self.assertEqual(UpbitAPI.get_tick_size(50), 0.1)
         self.assertEqual(UpbitAPI.get_tick_size(5), 0.01)
         self.assertEqual(UpbitAPI.get_tick_size(0.5), 0.001)
         self.assertEqual(UpbitAPI.get_tick_size(0.05), 0.0001)
+        self.assertEqual(UpbitAPI.get_tick_size(0.0071), 0.00001)  # SHIB 등
+        self.assertEqual(UpbitAPI.get_tick_size(0.00045), 0.000001)  # BTT 등
 
     def test_upbit_directional_rounding(self):
         """업비트 매수(내림), 매도(올림), 반올림 동작 검증"""
+        # 100,000~500,000원 구간 (100원 단위) - SOL, AAVE 등
+        # 137,250원: 내림=137,200원, 올림=137,300원
+        self.assertEqual(UpbitAPI.adjust_price_to_tick(137250.0, side="bid"), 137200.0)
+        self.assertEqual(UpbitAPI.adjust_price_to_tick(137250.0, side="ask"), 137300.0)
+
         # 100원 이상 구간 (1원 단위)
         # 543.6원: 내림=543.0원, 올림=544.0원
         self.assertEqual(UpbitAPI.adjust_price_to_tick(543.6, side="bid"), 543.0)
@@ -79,19 +86,25 @@ class TickRoundingDirectionalTests(unittest.TestCase):
         self.assertEqual(UpbitAPI.adjust_price_to_tick(45.67, side="ask"), 45.7)
 
     def test_create_order_directional_price_submission(self):
-        """create_order 및 send_order 호출 시 주문 방향에 맞게 가격이 보정되는지 검증"""
+        """create_order 및 send_order 호출 시 주문 방향에 맞게 가격 및 수량이 보정되는지 검증"""
         bithumb = BithumbAPI()
         bithumb._request = MagicMock(return_value={"order_id": "test-ord"})
 
-        # 빗썸 매수 지정가 ➜ 1원 틱 내림 보정 확인 (543.26 -> 543)
-        bithumb.create_order(market="KRW-TRX", side="bid", volume=10.0, price=543.26, ord_type="limit")
+        # 빗썸 매수 지정가 ➜ 1원 틱 내림 보정 확인 (543.26 -> 543) 및 수량 4자리 보정
+        bithumb.create_order(market="KRW-TRX", side="bid", volume=10.12345678, price=543.26, ord_type="limit")
         sent_data = bithumb._request.call_args[1]["data"]
         self.assertEqual(sent_data["price"], "543")
+        self.assertEqual(sent_data["volume"], "10.1235")  # 4자리 반올림 자동 보정
 
         # 빗썸 매도 지정가 ➜ 1원 틱 올림 보정 확인 (543.21 -> 544)
         bithumb.create_order(market="KRW-TRX", side="ask", volume=10.0, price=543.21, ord_type="limit")
         sent_data = bithumb._request.call_args[1]["data"]
         self.assertEqual(sent_data["price"], "544")
+
+        # 빗썸 시장가 매도 ➜ 수량 4자리 자동 보정 확인
+        bithumb.create_order(market="KRW-TRX", side="ask", volume=79.66758, ord_type="market")
+        sent_data = bithumb._request.call_args[1]["data"]
+        self.assertEqual(sent_data["volume"], "79.6676")
 
         # 빗썸 매수 지정가 (10~100원 구간 0.01원 틱) ➜ 내림 보정 확인 (45.678 -> 45.67)
         bithumb.create_order(market="KRW-ICX", side="bid", volume=10.0, price=45.678, ord_type="limit")

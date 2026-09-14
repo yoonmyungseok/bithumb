@@ -646,24 +646,23 @@ class UpbitAPI:
         업비트 공식 KRW 마켓 호가 단위(Tick Size) 반환
         - 2,000,000원 이상: 1,000원 단위
         - 1,000,000 ~ 2,000,000원: 500원 단위
-        - 500,000 ~ 1,000,000원: 100원 단위
-        - 100,000 ~ 500,000원: 50원 단위
+        - 100,000 ~ 1,000,000원: 100원 단위 (SOL, AAVE, BCH 등 100원)
         - 10,000 ~ 100,000원: 10원 단위
-        - 1,000 ~ 10,000원: 1원 단위
-        - 100 ~ 1,000원: 1원 단위 (업비트 최신 기준)
+        - 100 ~ 10,000원: 1원 단위
         - 10 ~ 100원: 0.1원 단위
         - 1 ~ 10원: 0.01원 단위
         - 0.1 ~ 1원: 0.001원 단위
-        - 0.1원 미만: 0.0001원 단위
+        - 0.01 ~ 0.1원: 0.0001원 단위 (XEC 등)
+        - 0.001 ~ 0.01원: 0.00001원 단위 (SHIB, PEPE 등)
+        - 0.0001 ~ 0.001원: 0.000001원 단위 (BTT 등)
+        - 0.0001원 미만: 0.0000001원 단위
         """
         if price >= 2_000_000:
             return 1000.0
         elif price >= 1_000_000:
             return 500.0
-        elif price >= 500_000:
-            return 100.0
         elif price >= 100_000:
-            return 50.0
+            return 100.0
         elif price >= 10_000:
             return 10.0
         elif price >= 100:
@@ -674,8 +673,14 @@ class UpbitAPI:
             return 0.01
         elif price >= 0.1:
             return 0.001
-        else:
+        elif price >= 0.01:
             return 0.0001
+        elif price >= 0.001:
+            return 0.00001
+        elif price >= 0.0001:
+            return 0.000001
+        else:
+            return 0.0000001
 
     @staticmethod
     def adjust_price_to_tick(price: float, side: str = "bid", mode: str | None = None) -> float:

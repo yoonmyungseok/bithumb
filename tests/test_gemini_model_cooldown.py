@@ -27,12 +27,16 @@ class TestGeminiModelCooldown(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp()
         GeminiTelemetry.configure(data_dir=self.temp_dir)
         GeminiTelemetry.reset(persist=True)
+        AIProviderTelemetry.configure(data_dir=self.temp_dir, storage_filename="ai_telemetry_test.json")
         AIProviderTelemetry.reset(persist=True)
         GeminiAnalyzer.clear_caches()
         BaseGeminiProvider.clear_cooldowns()
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        GeminiTelemetry.configure(data_dir=os.path.join(project_root, "data"))
+        AIProviderTelemetry.configure(data_dir=os.path.join(project_root, "data"), storage_filename="gemini_bithumb_telemetry.json")
         GeminiAnalyzer.clear_caches()
         BaseGeminiProvider.clear_cooldowns()
 

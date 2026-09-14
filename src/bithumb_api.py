@@ -493,9 +493,10 @@ class BithumbAPI:
             if volume is None or price is None or float(volume) <= 0:
                 raise ValueError("지정가(limit) 주문은 0보다 큰 volume과 price가 모두 필요합니다.")
             
-            # 호가 단위 방향별 자동 보정 (매수: 내림, 매도: 올림)
+            # 호가 단위 방향별 자동 보정 (매수: 내림, 매도: 올림) 및 수량 정밀도 보정
             adjusted_price = self.adjust_price_to_tick(price, side=side)
-            formatted_vol = f"{float(volume):.8f}".rstrip("0").rstrip(".") or "0"
+            adjusted_vol = self.round_volume(market, float(volume))
+            formatted_vol = f"{adjusted_vol:.8f}".rstrip("0").rstrip(".") or "0"
             data["volume"] = formatted_vol
             data["price"] = str(int(adjusted_price) if adjusted_price.is_integer() else adjusted_price)
 
@@ -507,7 +508,8 @@ class BithumbAPI:
         elif ord_type == "market":  # 시장가 매도 (volume = 코인 수량)
             if volume is None or float(volume) <= 0:
                 raise ValueError("시장가 매도(market)는 0보다 큰 매도수량(volume)이 필요합니다.")
-            formatted_vol = f"{float(volume):.8f}".rstrip("0").rstrip(".") or "0"
+            adjusted_vol = self.round_volume(market, float(volume))
+            formatted_vol = f"{adjusted_vol:.8f}".rstrip("0").rstrip(".") or "0"
             data["volume"] = formatted_vol
 
         logger.info(f"주문 요청 데이터: {data}")

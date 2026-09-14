@@ -60,9 +60,9 @@ class UpbitAPITests(unittest.TestCase):
         self.assertEqual(UpbitAPI.round_price_to_tick(750_140), 750_100.0)
         self.assertEqual(UpbitAPI.round_price_to_tick(750_160), 750_200.0)
 
-        # 100,000 ~ 500,000 -> 50원 단위
+        # 100,000 ~ 500,000 -> 100원 단위 (SOL, AAVE, BCH 등)
         self.assertEqual(UpbitAPI.round_price_to_tick(234_120), 234_100.0)
-        self.assertEqual(UpbitAPI.round_price_to_tick(234_130), 234_150.0)
+        self.assertEqual(UpbitAPI.round_price_to_tick(234_160), 234_200.0)
 
         # 10,000 ~ 100,000 -> 10원 단위
         self.assertEqual(UpbitAPI.round_price_to_tick(55_432), 55_430.0)
@@ -82,8 +82,14 @@ class UpbitAPITests(unittest.TestCase):
         # 0.1 ~ 1 -> 0.001원 단위
         self.assertEqual(UpbitAPI.round_price_to_tick(0.4567), 0.457)
 
-        # < 0.1 -> 0.0001원 단위
+        # 0.01 ~ 0.1 -> 0.0001원 단위
         self.assertEqual(UpbitAPI.round_price_to_tick(0.04567), 0.0457)
+
+        # 0.001 ~ 0.01 -> 0.00001원 단위
+        self.assertEqual(UpbitAPI.round_price_to_tick(0.004567), 0.00457)
+
+        # 0.0001 ~ 0.001 -> 0.000001원 단위
+        self.assertEqual(UpbitAPI.round_price_to_tick(0.0004567), 0.000457)
 
     def test_round_volume(self):
         self.assertEqual(UpbitAPI.round_volume("KRW-BTC", 0.123456789), 0.12345679)
