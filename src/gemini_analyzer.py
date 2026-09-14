@@ -1290,14 +1290,14 @@ class GeminiAnalyzer:
 2. [VWAP 기관 수급] 현재가가 VWAP 상단에 안착 지지 또는 돌파할 것.
 3. [MACD 가속도] 히스토그램 기울기가 양의 방향으로 가속 확장 중이거나, 음의 모멘텀이 둔화되어 반등 전환 조짐일 것.
 4. [RSI 골든존] 5분봉 RSI가 35 ~ 72 사이일 것 (RSI 40~65 최적).
-5. [볼린저 밴드 & 이격] MA20 이격도 97.5%~103.5% 및 %B <= 0.88.
+5. [볼린저 밴드 & 이격] MA20 이격도 97.5%~102.5% 및 %B <= 0.72 (약세장 RISK_OFF 시 %B <= 0.65).
 6. [수급 & 호가창] 호가 갭 <= 0.50%, 체결강도 75% 이상 또는 고래 유입.
 7. [기대 손익비] (목표가 - 진입가) >= 1.3 * (진입가 - 손절가) 수학적 보장.
 
-※ [엄격한 상투 추격 매수 금지] 이미 최근 캔들이 급등하여 볼린저 밴드 상단(%B >= 0.88)에 도달했거나 거래량이 터진 뒤 윗꼬리가 달린 종목의 추격 매수(Chasing the Top)는 절대 금지(HOLD)합니다. 5분봉 MA20 또는 VWAP 지지선에서 안정적인 눌림목 안착이 확인되고 손익비가 1:1.3 이상 확보된 경우에만 BUY를 승인하세요.
+※ [엄격한 상투 추격 매수 금지] 이미 최근 캔들이 급등하여 볼린저 밴드 상단(%B >= 0.72)에 도달했거나 거래량이 터진 뒤 윗꼬리가 달린 종목의 추격 매수(Chasing the Top)는 절대 금지(HOLD)합니다. 5분봉 MA20 또는 VWAP 지지선에서 안정적인 저점 눌림목 안착이 확인되고 손익비가 1:1.3 이상 확보된 경우에만 BUY를 승인하세요.
 
 ### [5. 목표가/손절가 수학적 유효성 규칙]
-- BUY 시: 반드시 '손절가 < 현재가 < 목표가' 관계를 만족해야 하며, 손익비 1:1.5 이상을 유지하세요.
+- BUY 시: 반드시 '손절가 < 진입가 <= 현재가 < 목표가' 관계를 만족해야 하며, 진입가(ENTRY_PRICE)는 시장가 추격을 지양하고 현재가 이하의 5분봉 VWAP, MA20, 또는 전저점 지지선 부근의 **저점 눌림목 지정가**로 산출하여 안전마진과 손익비 1:1.5 이상을 유지하세요.
 - HOLD 시: 0을 적지 말고, **"5분봉 MA20 부근 눌림목 지지선(ENTRY_PRICE)"**, **"직전 지지선 손절가(STOP_LOSS)"**, **"목표가(TARGET_PRICE)"**를 기재하여 향후 진입 기준선을 제시하세요.
 {memory_section}
 ### [JSON 출력 필수 스키마]
@@ -1342,16 +1342,21 @@ class GeminiAnalyzer:
                     rsi_overheat_limit = 65.0
                 if rsi_val > rsi_overheat_limit:
                     overheat_reasons.append(f"RSI과열({rsi_val:.1f}>{rsi_overheat_limit:.1f})")
-                if float(bb.get("pct_b", 0.5)) > 0.88:
-                    overheat_reasons.append(f"볼린저상단이탈(%B {float(bb.get('pct_b', 0.5)):.2f}>0.88)")
-                if disparity_ma20 > 103.5:
-                    overheat_reasons.append(f"MA20이격과열({disparity_ma20:.1f}%>103.5%)")
+                pct_b_overheat_limit = 0.72 if btc_regime == "RISK_OFF" else 0.78
+                if float(bb.get("pct_b", 0.5)) > pct_b_overheat_limit:
+                    overheat_reasons.append(f"볼린저상단이탈(%B {float(bb.get('pct_b', 0.5)):.2f}>{pct_b_overheat_limit:.2f})")
+                disp_overheat_limit = 101.5 if btc_regime == "RISK_OFF" else 102.5
+                if disparity_ma20 > disp_overheat_limit:
+                    overheat_reasons.append(f"MA20이격과열({disparity_ma20:.1f}%>{disp_overheat_limit:.1f}%)")
                 if float(trade_strength.get("trade_power_pct", 100.0)) > 350.0:
                     overheat_reasons.append("체결강도비정상과열(>350%)")
                 if overheat_reasons:
                     action, alloc_p = "HOLD", 0.0
                     reason_t = f"[과열 가드레일 작동: HOLD 강제 전환 ({', '.join(overheat_reasons)})] {reason_t}"
                 else:
+                    # 고점 추격 방지: 진입가가 현재가보다 높으면 현재가 이하로 클램핑
+                    if entry_p > current_price:
+                        entry_p = current_price
                     target_p = target_p if target_p > current_price else dynamic_tp
                     stop_l = stop_l if 0 < stop_l < current_price else dynamic_sl
                     if current_price - stop_l > 0 and (target_p - current_price) / (current_price - stop_l) < 1.3:

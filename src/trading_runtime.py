@@ -1618,11 +1618,18 @@ class TradingCycleEngine:
             can_enter_daily = True
             if isinstance(daily_losses, (int, float)) and isinstance(max_daily_losses, (int, float)):
                 can_enter_daily = daily_losses < max_daily_losses
-            if allow_ai_direct and is_ai_buy_signal and base_safety_passed and can_enter_daily and is_ai_direct_entry_eligible(
+
+            # AI 단독 자율 승인 시, 상투/고점 추격을 방지하기 위해 저점/눌림목 지지 여부 검증
+            # 로컬 룰이 관망인 종목이므로 볼린저 밴드 %B가 0.70 이하(약세장 RISK_OFF 시 0.65 이하)여야 함
+            sel_pct_b = float(selected_entry.get("pct_b", 0.5))
+            pct_b_cap = 0.65 if btc_regime == "RISK_OFF" else 0.70
+            is_dip_support = sel_pct_b <= pct_b_cap
+
+            if allow_ai_direct and is_ai_buy_signal and base_safety_passed and can_enter_daily and is_dip_support and is_ai_direct_entry_eligible(
                 ai_alpha, btc_regime, is_night_session(),
             ):
                 logger.info(
-                    f"✨ [{market}] AI 단독 자율 승인 진입 (로컬 룰 관망 ➜ AI 적극 승인, 알파스코어: {ai_alpha}점, 레짐: {btc_regime})"
+                    f"✨ [{market}] AI 단독 자율 승인 진입 (로컬 룰 관망 ➜ AI 적극 승인, 알파스코어: {ai_alpha}점, 레짐: {btc_regime}, %B: {sel_pct_b:.2f})"
                 )
                 action = "BUY"
                 reason = f"[AI 단독 자율 승인] {reason}"
@@ -1635,6 +1642,8 @@ class TradingCycleEngine:
                 action = "HOLD"
                 if not allow_ai_direct and is_ai_buy_signal:
                     reason = f"로컬 퀀트 관망 종목 AI 단독 매수 차단(안전 정책): {selected_entry.get('reason', '')} | {reason}"
+                elif not is_dip_support and is_ai_buy_signal:
+                    reason = f"AI 단독 매수 상투/과열 차단(%B {sel_pct_b:.2f} > 한도 {pct_b_cap:.2f}): 눌림목 지지 대기 | {reason}"
                 else:
                     reason = f"정량 공통 진입 게이트 차단: {selected_entry.get('reason', '')} | {reason}"
         elif action == "BUY" and selected_entry.get("allow_buy", False):

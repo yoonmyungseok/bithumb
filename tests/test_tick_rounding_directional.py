@@ -19,28 +19,32 @@ class TickRoundingDirectionalTests(unittest.TestCase):
         """빗썸 가격대별 공식 호가 단위 검증"""
         self.assertEqual(BithumbAPI.get_tick_size(2_500_000), 1000.0)
         self.assertEqual(BithumbAPI.get_tick_size(1_500_000), 500.0)
-        self.assertEqual(BithumbAPI.get_tick_size(600_000), 100.0)
-        self.assertEqual(BithumbAPI.get_tick_size(200_000), 50.0)
-        self.assertEqual(BithumbAPI.get_tick_size(50_000), 10.0)
-        self.assertEqual(BithumbAPI.get_tick_size(5_000), 1.0)
-        self.assertEqual(BithumbAPI.get_tick_size(500), 0.1)
+        self.assertEqual(BithumbAPI.get_tick_size(600_000), 500.0)
+        self.assertEqual(BithumbAPI.get_tick_size(200_000), 100.0)
+        self.assertEqual(BithumbAPI.get_tick_size(50_000), 50.0)
+        self.assertEqual(BithumbAPI.get_tick_size(20_000), 10.0)
+        self.assertEqual(BithumbAPI.get_tick_size(7_000), 5.0)
+        self.assertEqual(BithumbAPI.get_tick_size(5_000), 5.0)
+        self.assertEqual(BithumbAPI.get_tick_size(3_000), 1.0)
+        self.assertEqual(BithumbAPI.get_tick_size(500), 1.0)  # 100~1,000원은 1원 단위
+        self.assertEqual(BithumbAPI.get_tick_size(460.8), 1.0)  # TRX 실제 오류 재발 방지
         self.assertEqual(BithumbAPI.get_tick_size(50), 0.01)
         self.assertEqual(BithumbAPI.get_tick_size(5), 0.001)
         self.assertEqual(BithumbAPI.get_tick_size(0.5), 0.0001)
 
     def test_bithumb_directional_rounding(self):
         """빗썸 매수(내림), 매도(올림), 반올림 동작 검증"""
-        # 50원 틱 구간 (100,000 ~ 500,000)
-        # 105,430원: 내림=105,400원, 올림=105,450원, 반올림=105,450원
+        # 100원 틱 구간 (100,000 ~ 500,000)
+        # 105,430원: 내림=105,400원, 올림=105,500원, 반올림=105,400원
         self.assertEqual(BithumbAPI.adjust_price_to_tick(105430.0, side="bid"), 105400.0)
-        self.assertEqual(BithumbAPI.adjust_price_to_tick(105430.0, side="ask"), 105450.0)
-        self.assertEqual(BithumbAPI.adjust_price_to_tick(105430.0, mode="round"), 105450.0)
-        self.assertEqual(BithumbAPI.round_price_to_tick(105430.0), 105450.0)
+        self.assertEqual(BithumbAPI.adjust_price_to_tick(105430.0, side="ask"), 105500.0)
+        self.assertEqual(BithumbAPI.adjust_price_to_tick(105430.0, mode="round"), 105400.0)
+        self.assertEqual(BithumbAPI.round_price_to_tick(105430.0), 105400.0)
 
-        # 0.1원 틱 구간 (100 ~ 1,000)
-        # 543.26원: 내림=543.2원, 올림=543.3원
-        self.assertEqual(BithumbAPI.adjust_price_to_tick(543.26, side="bid"), 543.2)
-        self.assertEqual(BithumbAPI.adjust_price_to_tick(543.26, side="ask"), 543.3)
+        # 1원 틱 구간 (100 ~ 1,000) - TRX 460.8원 매수 케이스
+        self.assertEqual(BithumbAPI.adjust_price_to_tick(460.8, side="bid"), 460.0)
+        self.assertEqual(BithumbAPI.adjust_price_to_tick(460.8, side="ask"), 461.0)
+        self.assertEqual(BithumbAPI.round_price_to_tick(460.8), 461.0)
 
         # 0.0001원 틱 구간 (< 1)
         # 0.12346원: 내림=0.1234원, 올림=0.1235원
@@ -79,15 +83,20 @@ class TickRoundingDirectionalTests(unittest.TestCase):
         bithumb = BithumbAPI()
         bithumb._request = MagicMock(return_value={"order_id": "test-ord"})
 
-        # 빗썸 매수 지정가 ➜ 내림 보정 확인 (543.26 -> 543.2)
-        bithumb.create_order(market="KRW-XRP", side="bid", volume=10.0, price=543.26, ord_type="limit")
+        # 빗썸 매수 지정가 ➜ 1원 틱 내림 보정 확인 (543.26 -> 543)
+        bithumb.create_order(market="KRW-TRX", side="bid", volume=10.0, price=543.26, ord_type="limit")
         sent_data = bithumb._request.call_args[1]["data"]
-        self.assertEqual(sent_data["price"], "543.2")
+        self.assertEqual(sent_data["price"], "543")
 
-        # 빗썸 매도 지정가 ➜ 올림 보정 확인 (543.21 -> 543.3)
-        bithumb.create_order(market="KRW-XRP", side="ask", volume=10.0, price=543.21, ord_type="limit")
+        # 빗썸 매도 지정가 ➜ 1원 틱 올림 보정 확인 (543.21 -> 544)
+        bithumb.create_order(market="KRW-TRX", side="ask", volume=10.0, price=543.21, ord_type="limit")
         sent_data = bithumb._request.call_args[1]["data"]
-        self.assertEqual(sent_data["price"], "543.3")
+        self.assertEqual(sent_data["price"], "544")
+
+        # 빗썸 매수 지정가 (10~100원 구간 0.01원 틱) ➜ 내림 보정 확인 (45.678 -> 45.67)
+        bithumb.create_order(market="KRW-ICX", side="bid", volume=10.0, price=45.678, ord_type="limit")
+        sent_data = bithumb._request.call_args[1]["data"]
+        self.assertEqual(sent_data["price"], "45.67")
 
         # 업비트 매수 지정가 ➜ 내림 보정 확인 (105,430 -> 105,400)
         upbit = UpbitAPI()

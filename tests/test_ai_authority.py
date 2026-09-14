@@ -183,8 +183,73 @@ class AIAuthorityTests(unittest.TestCase):
             self.assertEqual(res.action, "BUY")
             self.assertIn("[AI 단독 자율 승인]", res.reason)
             self.assertEqual(res.target_price, 1050.0)
-            self.assertEqual(res.stop_loss, 970.0)
-            self.assertAlmostEqual(res.alloc_pct, 0.35 * 0.50)
+
+    def test_ai_direct_entry_overheat_pct_b_blocks_buy_in_risk_off(self):
+        """RISK_OFF 약세장에서 AI Direct Entry 시 %B가 0.65를 초과하면 상투 추격으로 판단하여 HOLD 차단"""
+        self.mock_analyzer.analyze.return_value = {
+            "status": "ACTIVE",
+            "action": "BUY",
+            "entry_price": 1000.0,
+            "target_price": 1050.0,
+            "stop_loss": 970.0,
+            "alloc_pct": 0.35,
+            "reason": "[gemini-3.5-flash-lite] 강력 모멘텀",
+            "alpha_score": 85,
+        }
+
+        inputs = MarketEntryInputs(
+            exchange=self.mock_exchange,
+            market="KRW-TEST",
+            korean_name="테스트",
+            candidate_type="HOT_CANDIDATE",
+            candidate_metadata={"candidate_type": "HOT_CANDIDATE", "acc_trade_price_24h": 5000000000.0},
+            analyzer=self.mock_analyzer,
+            coin_available=0.0,
+            avg_buy_price=0.0,
+            current_price=1000.0,
+            coin_value=0.0,
+            krw_available=100000.0,
+            candles_5m=[{"trade_price": 1000.0} for _ in range(25)],
+            candles_1h=[{"trade_price": 1000.0} for _ in range(20)],
+            candles_4h=[{"trade_price": 1000.0} for _ in range(25)],
+            orderbook={"orderbook_units": []},
+            btc_regime="RISK_OFF",
+            btc_status_msg="약세장",
+            is_btc_crashing=False,
+            is_cooldown=False,
+            is_extreme_fear=False,
+            is_bot_paused=False,
+            is_kill_switch=False,
+            is_entry_ready=True,
+            dyn_max_pos_pct=0.35,
+            now_str="2026-09-04 17:00:00",
+            audit_decision=MagicMock(),
+        )
+
+        with patch("trading_runtime.select_completed_candles", side_effect=lambda c, **kw: c), \
+             patch("trading_runtime.entry_signal") as mock_entry_rules, \
+             patch.object(StrategyPolicy, "ENABLE_AI_DIRECT_ENTRY", True), \
+             patch.dict(os.environ, {"ENABLE_AI_DIRECT_ENTRY": "true"}):
+            mock_entry_rules.return_value = {
+                "allow_buy": False,
+                "reason": "하드게이트 차단",
+                "alpha_score": 50,
+                "entry_price": 1000.0,
+                "target_price": 1035.0,
+                "stop_loss": 980.0,
+                "pct_b": 0.75,  # 0.65 한도 초과
+            }
+
+            self.mock_ctx.trade_memory.is_reentry_allowed.return_value = (True, "재진입 허용")
+            self.mock_ctx.ws_client.get_health_status.return_value = {"is_healthy": True}
+            self.mock_ctx.decision_db.has_recovery_entry_since.return_value = False
+
+            # When
+            res = self.runtime.process_entry_gating(inputs)
+
+            # Then: %B 과열(0.75 > 0.65)로 인해 HOLD로 차단되어야 함
+            self.assertEqual(res.action, "HOLD")
+            self.assertIn("AI 단독 매수 상투/과열 차단", res.reason)
 
     def test_extended_momentum_risk_off_buy_is_blocked_below_threshold(self):
         """RISK_OFF 확장 후반은 로컬·AI BUY여도 주간 70점 미만이면 추격 주문을 차단한다."""

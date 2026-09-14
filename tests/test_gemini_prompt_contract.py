@@ -247,6 +247,54 @@ class TestGeminiEntryPromptContract(unittest.TestCase):
         self.assertIn("음의 모멘텀이 둔화되어 반등 전환 조짐일 것", sent_prompt)
         self.assertIn("1.3 * (진입가 - 손절가)", sent_prompt)
 
+    @patch("requests.post")
+    def test_entry_prompt_low_point_dip_entry_contract(self, mock_post):
+        """저점 눌림목 지정가 산출 및 상투 추격 금지 계약 검증"""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": (
+                '{"STATUS":"ACTIVE","ACTION":"BUY","ENTRY_PRICE":1050,'
+                '"TARGET_PRICE":1100,"STOP_LOSS":950,"ALLOC_PCT":0.5,'
+                '"ALPHA_SCORE":80,"REASON":"눌림목 반등"}'
+            )}]}}]
+        }
+        mock_post.return_value = mock_response
+
+        analyzer = GeminiAnalyzer(api_key="test-key")
+        candles = [
+            {
+                "trade_price": 1000.0,
+                "opening_price": 995.0,
+                "high_price": 1005.0,
+                "low_price": 990.0,
+                "candle_acc_trade_volume": 100.0,
+                "candle_date_time_utc": "2026-09-06T00:00:00",
+            }
+            for _ in range(30)
+        ]
+
+        res = analyzer.analyze(
+            market="KRW-TEST",
+            current_price=1000.0,
+            candles=candles,
+            krw_balance=1_000_000.0,
+            coin_balance=0.0,
+            avg_buy_price=0.0,
+            candidate_type="SCALP",
+            entry_policy_mode="STANDARD",
+            btc_regime="RISK_OFF",
+        )
+
+        sent_prompt = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
+        self.assertIn("저점 눌림목 지정가", sent_prompt)
+        self.assertIn("엄격한 상투 추격 매수 금지", sent_prompt)
+        self.assertIn("%B <= 0.72 (약세장 RISK_OFF 시 %B <= 0.65)", sent_prompt)
+
+        # 현재가보다 높은 1050원으로 제시된 entry_price는 현재가(1000.0) 이하로 안전 클램핑되어야 함
+        self.assertEqual(res["action"], "BUY")
+        self.assertLessEqual(res["entry_price"], 1000.0)
+
 
 if __name__ == "__main__":
     unittest.main()
