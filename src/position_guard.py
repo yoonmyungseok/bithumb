@@ -27,8 +27,16 @@ def is_bot_managed_position(
             side = str(order.get("side", "")).lower()
             status = str(order.get("status", "")).upper()
             if side in ("bid", "buy"):
-                if status in ("FILLED", "PARTIALLY_FILLED", "OPEN", "ACKNOWLEDGED"):
+                executed = float(
+                    order.get("executed_volume")
+                    or order.get("filled_volume")
+                    or order.get("processed_executed_volume")
+                    or 0.0
+                )
+                if status in ("FILLED", "PARTIALLY_FILLED", "OPEN", "ACKNOWLEDGED") or executed > 0:
                     return True
+                if executed <= 0 and status in ("CANCELED", "CANCELLED", "REJECTED", "EXPIRED"):
+                    continue
                 return False
             if side in ("ask", "sell"):
                 exit_reason = str(order.get("exit_reason", "")).upper()
