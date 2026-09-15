@@ -67,6 +67,7 @@
     - `OrderJournal._save()`는 원자 저장 직후 저장된 JSON 파일을 재읽기하여 `exchange_scope` 일치, 스키마 버전, `updated_at`, `reconciliation_metrics.last_completed_at`의 디스크 반영 여부를 정밀 검증하고 불일치 시 `False`를 반환한다.
     - REST 대사 자체가 성공했더라도 저널 저장/재읽기 검증이 실패하면 `reconciliation_state`를 메모리에서 `PENDING`으로 유지하고 `is_entry_ready() == False`를 반환하여 신규 BUY 진입을 fail-closed로 차단한다. (기존 포지션의 손절, 익절, 매도, 체결 반영, WebSocket 복구는 정상 유지)
     - 프로세스 재시작 시 저널의 마지막 대사 완료 시각이 10분(`MAX_RECONCILIATION_STALENESS_SEC = 600.0`)을 초과했거나 미완료인 경우, 저장된 상태가 `READY`여도 신뢰하지 않고 `PENDING`으로 시작하여 최초 REST 대사 및 디스크 영속화 재검증이 성공한 뒤에만 `READY`로 전환한다.
+    - `is_entry_ready()`는 `reconciliation_state=READY`만으로 신규 BUY를 허용하지 않는다. `RECONCILIATION_PENDING`·`UNKNOWN`·`PENDING_SUBMISSION` 주문이 남아 있거나 직전 REST 대사 `last_failed_count>0`이면 fail-closed로 차단한다. Private WebSocket(`require_rest_confirmation=True`)·REST 수량 검증 실패 시 `suspend_entry_for_reconciliation()`으로 `PENDING`을 함께 기록한다. 미체결 `OPEN`·부분체결은 정상 운영으로 허용한다.
     - 빗썸 봇 진입점(`main.py`)에서 `OrderJournal(data_dir=DATA_DIR, exchange_scope="bithumb")`로 데이터 경로를 명시하고 시작 시 거래소 범위, JSON 절대 경로, SQLite 절대 경로를 안전하게 기록한다.
   - **Dual-Track(단타 + 스윙) 병행 전략 (v8.34)**:
     - **단타 트랙(SCALP)**: 5분봉 기반 스캘핑, 1차 +3.5% 익절, 손절 -2.2%, 120분/180분 타임스탑을 통한 높은 회전율 및 리스크 방어 유지

@@ -21,6 +21,13 @@ logger = logging.getLogger(__name__)
 # 영속화 검증이 완료될 때까지 신규 BUY 주문을 fail-closed로 차단한다.
 MAX_RECONCILIATION_STALENESS_SEC = 600.0
 
+# 신규 BUY만 차단하는 미해결 주문 상태(미체결 OPEN·부분체결은 정상 운영으로 허용).
+_ENTRY_BLOCKING_ORDER_STATUSES = frozenset({
+    OrderStatus.PENDING_SUBMISSION,
+    OrderStatus.UNKNOWN,
+    OrderStatus.RECONCILIATION_PENDING,
+})
+
 class OrderJournal:
     """Small append-only JSON journal, written atomically for crash recovery (Schema v2)."""
 
@@ -256,9 +263,15 @@ class OrderJournal:
 
     def mark_by_uuid(self, exchange_uuid: str, status: str, **fields: Any) -> None:
         """Update order status using exchange UUID."""
+        terminal_states = {OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.FAILED, OrderStatus.REJECTED}
         with self._lock:
             for order in reversed(self.orders):
                 if order.get("exchange_uuid") == exchange_uuid or order.get("exchange_order_id") == exchange_uuid:
+                    curr_status = order.get("status")
+                    # mark()와 동일: 확정 종료 상태에서 ACK/OPEN 등으로 역행하지 않는다.
+                    if curr_status in terminal_states and status not in terminal_states:
+                        logger.debug("UUID 상태 역행 방지: %s -> %s (무시됨)", curr_status, status)
+                        return
                     order["status"] = status
                     order["updated_at"] = time.time()
                     order.update(fields)
@@ -470,6 +483,9 @@ class OrderJournal:
             self._last_reconcile_failed_count += 1
             self.reconciliation_state = "PENDING"
             logger.error("🛑 주문 저널 영속화 검증 실패로 대사 결과가 디스크에 확정되지 않아 신규 매수를 차단(PENDING)합니다.")
+        if self._last_reconcile_failed_count > 0:
+            # REST 검증 실패·모순 응답은 신규 BUY만 차단하고 기존 포지션 보호는 유지한다.
+            self.suspend_entry_for_reconciliation("rest_reconcile_validation_failed")
         logger.info(
             "REST 주문 대사 완료: 갱신=%d 실패=%d", updated, self._last_reconcile_failed_count,
         )
@@ -496,9 +512,23 @@ class OrderJournal:
                     break
         return matched
 
+    def _has_entry_blocking_orders(self) -> bool:
+        """체결 대사·UNKNOWN 등으로 신규 BUY를 막아야 하는 주문이 있는지 확인한다."""
+        with self._lock:
+            return any(
+                order.get("status") in _ENTRY_BLOCKING_ORDER_STATUSES
+                for order in self.orders
+            )
+
     def is_entry_ready(self) -> bool:
-        """초기 REST 대사 전에는 신규 매수만 차단하고 기존 포지션 보호는 계속 허용한다."""
-        return self.reconciliation_state == "READY"
+        """초기 REST 대사 전·체결 미확정 주문·대사 실패 시 신규 매수만 차단한다."""
+        if self.reconciliation_state != "READY":
+            return False
+        if self._has_entry_blocking_orders():
+            return False
+        if int(self.reconciliation_metrics.get("last_failed_count", 0) or 0) > 0:
+            return False
+        return True
 
     def suspend_entry_for_reconciliation(self, reason: str) -> None:
         """신규 BUY만 차단하고 기존 포지션 보호·청산 경로는 유지한다."""
@@ -583,6 +613,7 @@ class OrderJournal:
                 reconciliation_reason="Private WebSocket 수신 후 REST 체결 대기",
                 last_event_at=time.time(),
             )
+            self.suspend_entry_for_reconciliation("private_ws_rest_pending")
             return True
 
         if fill_processor:

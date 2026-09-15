@@ -193,6 +193,7 @@ class TradingOrchestrator:
             order_journal.complete_reconciliation_if_safe()
             return reconciled
         except Exception as exc:
+            order_journal.suspend_entry_for_reconciliation("rest_reconcile_exception")
             self.logger.debug("%s주기적 REST 주문 상태 재조정 예외: %s", label, exc)
             return 0
 

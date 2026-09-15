@@ -85,6 +85,23 @@ class OrderFillProcessor:
             fill_delta = max(0.0, float(executed_volume) - prev_processed_vol)
             fee_delta = max(0.0, float(fee) - prev_processed_fee)
 
+            # ACK·OPEN·대사 대기는 체결 증빙이 아니다. 체결량 증가 없이 FILLED로 승격하지 않는다.
+            non_fill_statuses = {
+                OrderStatus.ACKNOWLEDGED,
+                OrderStatus.OPEN,
+                OrderStatus.RECONCILIATION_PENDING,
+                OrderStatus.UNKNOWN,
+                OrderStatus.PENDING_SUBMISSION,
+            }
+            if fill_delta <= 0.0 and status == OrderStatus.FILLED:
+                logger.warning(
+                    "[%s] 체결 증가분 없이 FILLED 상태를 거부했습니다 (client_order_id=%s)",
+                    market, client_order_id,
+                )
+                status = str(order.get("status") or OrderStatus.RECONCILIATION_PENDING)
+            elif fill_delta <= 0.0 and status in non_fill_statuses:
+                status = str(status)
+
             pnl_krw = 0.0
             pnl_pct = 0.0
             effective_price = avg_price if avg_price > 0 else float(order.get("price", 0.0) or 0.0)
