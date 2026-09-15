@@ -345,6 +345,15 @@ class OrderJournal:
                 for order in self.orders
             )
 
+    def has_entry_blocking_market(self, market: str) -> bool:
+        """종목별 대사 대기·UNKNOWN·제출 전 상태만 검사한다(OPEN·부분체결은 has_unresolved_market)."""
+        with self._lock:
+            return any(
+                order.get("market") == market
+                and order.get("status") in _ENTRY_BLOCKING_ORDER_STATUSES
+                for order in self.orders
+            )
+
     def has_active_exit_order(self, market: str) -> bool:
         """해당 종목에 이미 진행 중인 매도/청산 주문이 있는지 확인 (중복 청산 방지)"""
         with self._lock:
@@ -490,6 +499,111 @@ class OrderJournal:
             "REST 주문 대사 완료: 갱신=%d 실패=%d", updated, self._last_reconcile_failed_count,
         )
         return updated
+
+    def reconcile_client_order(
+        self,
+        client_order_id: str,
+        get_order: Any,
+        get_order_by_client_id: Any | None = None,
+        fill_processor: Any | None = None,
+    ) -> bool:
+        """ACK 직후 등 단건 REST 대사. 실패 시 신규 BUY만 차단 상태를 유지한다."""
+        local = self.get_order_by_client_id(client_order_id)
+        if not local:
+            return False
+        state_map = {
+            "wait": OrderStatus.OPEN,
+            "watch": OrderStatus.OPEN,
+            "trade": OrderStatus.PARTIALLY_FILLED,
+            "done": OrderStatus.FILLED,
+            "cancel": OrderStatus.CANCELED,
+        }
+        if local.get("status") not in {
+            OrderStatus.PENDING_SUBMISSION,
+            OrderStatus.UNKNOWN,
+            OrderStatus.ACKNOWLEDGED,
+            OrderStatus.OPEN,
+            OrderStatus.PARTIALLY_FILLED,
+            OrderStatus.RECONCILIATION_PENDING,
+        }:
+            return False
+        exchange_uuid = local.get("exchange_uuid") or local.get("exchange_order_id")
+        try:
+            if exchange_uuid:
+                remote = get_order(exchange_uuid)
+            elif get_order_by_client_id:
+                remote = get_order_by_client_id(client_order_id)
+            else:
+                return False
+        except Exception as exc:
+            self.suspend_entry_for_reconciliation("ack_single_reconcile_failed")
+            logger.warning("ACK 직후 단건 REST 대사 실패(%s): %s", client_order_id, exc)
+            return False
+
+        if not isinstance(remote, dict):
+            return False
+
+        raw_state = str(remote.get("state") or remote.get("status") or "").lower()
+        state = state_map.get(raw_state, local.get("status"))
+        exec_vol = float(remote.get("executed_volume", 0.0) or 0.0)
+        rem_vol = float(remote.get("remaining_volume", 0.0) or 0.0)
+        paid_fee = float(remote.get("paid_fee", 0.0) or 0.0)
+        trades = remote.get("trades", [])
+        avg_p = 0.0
+        if trades:
+            total_funds = sum(float(t.get("price", 0.0)) * float(t.get("volume", 0.0)) for t in trades)
+            total_v = sum(float(t.get("volume", 0.0)) for t in trades)
+            avg_p = (total_funds / total_v) if total_v > 0 else 0.0
+        elif exec_vol > 0 and float(remote.get("price", 0.0) or 0.0) > 0:
+            avg_p = float(remote.get("price", 0.0))
+        elif float(local.get("price", 0.0) or 0.0) > 0:
+            avg_p = float(local.get("price", 0.0))
+
+        requested = float(local.get("requested_volume", 0.0) or 0.0)
+        tolerance = max(1e-8, requested * 1e-6)
+        invalid_fill = (
+            exec_vol < 0 or rem_vol < 0
+            or (requested > 0 and exec_vol > requested + tolerance)
+            or (requested > 0 and exec_vol + rem_vol > requested + tolerance)
+            or (exec_vol > 0 and avg_p <= 0)
+            or (raw_state == "done" and rem_vol > tolerance)
+        )
+        if invalid_fill:
+            self.mark(
+                client_order_id,
+                OrderStatus.RECONCILIATION_PENDING,
+                reconciliation_reason="ACK 직후 REST 체결 검증 실패",
+                exchange_state=raw_state,
+                last_event_at=time.time(),
+            )
+            self.suspend_entry_for_reconciliation("ack_single_reconcile_invalid")
+            return False
+
+        if fill_processor:
+            fill_processor.process_order_fill(
+                order_identifier=client_order_id,
+                status=state,
+                executed_volume=exec_vol,
+                avg_price=avg_p,
+                fee=paid_fee,
+                remaining_volume=rem_vol,
+                exchange_uuid=remote.get("uuid") or remote.get("order_id", exchange_uuid),
+                exchange_state=raw_state,
+            )
+        else:
+            self.mark(
+                client_order_id,
+                state,
+                exchange_state=raw_state,
+                exchange_uuid=remote.get("uuid") or remote.get("order_id", exchange_uuid),
+                executed_volume=exec_vol,
+                remaining_volume=rem_vol,
+                avg_price=avg_p,
+                fee=paid_fee,
+                trades=trades,
+            )
+        self._save()
+        return True
 
     def reconcile_open_orders(self, open_orders: list[dict[str, Any]]) -> int:
         """Attach exchange UUIDs where an intent can be unambiguously matched."""

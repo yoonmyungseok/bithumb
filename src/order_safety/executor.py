@@ -10,13 +10,19 @@ import requests
 
 from order_safety.journal import OrderJournal
 from order_safety.markets import get_excluded_markets_set
+from order_safety.pre_buy_gate import AckReconcileScheduler, evaluate_pre_buy_submit_gate
 from order_safety.types import AmbiguousOrderError, OrderStatus
 
 logger = logging.getLogger(__name__)
 
 class SafeOrderExecutor:
-    def __init__(self, journal: OrderJournal):
+    def __init__(
+        self,
+        journal: OrderJournal,
+        ack_reconcile_scheduler: AckReconcileScheduler | None = None,
+    ):
         self.journal = journal
+        self.ack_reconcile_scheduler = ack_reconcile_scheduler
 
     def submit(
         self,
@@ -49,16 +55,30 @@ class SafeOrderExecutor:
             # 대사 대기 청산을 중복 제출하면 기존 보유분을 초과 매도할 수 있어 반드시 차단한다.
             raise RuntimeError(f"{market}에 체결 대기 중인 청산 주문이 있어 중복 매도를 차단합니다.")
 
-        if side.lower() in ("bid", "buy") and expected_price is not None:
-            # 신규 매수 직전에는 캐시 가격을 신뢰하지 않고 거래소 최신가를 다시 확인한다.
-            # 최신가를 확인할 수 없으면 기존 포지션은 건드리지 않되 신규 매수만 fail-closed 한다.
-            try:
-                latest_price = float(exchange.get_current_price(market, force_refresh=True) or 0.0)
-            except Exception as exc:
-                raise RuntimeError(f"{market} 주문 직전 최신가 조회 실패로 신규 매수를 차단합니다.") from exc
-            if latest_price <= 0:
-                raise RuntimeError(f"{market} 주문 직전 최신가가 유효하지 않아 신규 매수를 차단합니다.")
-            expected_price = latest_price
+        if side.lower() in ("bid", "buy"):
+            ref_price = float(expected_price or price or 0.0)
+            # 런타임 게이트와 동일한 저널·대사 fail-closed를 주문 API 경계에서 한 번 더 적용한다(WebSocket은 런타임에서 검사).
+            allowed, block_code, block_reason, _ = evaluate_pre_buy_submit_gate(
+                market=market,
+                exchange_name=exchange_name,
+                order_journal=self.journal,
+                current_price=ref_price,
+                ws_client=None,
+                cooldown_manager=None,
+                check_cooldown=False,
+            )
+            if not allowed:
+                raise RuntimeError(f"{market} 신규 BUY 차단({block_code}): {block_reason}")
+            if expected_price is not None:
+                # 신규 매수 직전에는 캐시 가격을 신뢰하지 않고 거래소 최신가를 다시 확인한다.
+                # 최신가를 확인할 수 없으면 기존 포지션은 건드리지 않되 신규 매수만 fail-closed 한다.
+                try:
+                    latest_price = float(exchange.get_current_price(market, force_refresh=True) or 0.0)
+                except Exception as exc:
+                    raise RuntimeError(f"{market} 주문 직전 최신가 조회 실패로 신규 매수를 차단합니다.") from exc
+                if latest_price <= 0:
+                    raise RuntimeError(f"{market} 주문 직전 최신가가 유효하지 않아 신규 매수를 차단합니다.")
+                expected_price = latest_price
 
         client_order_id = self.journal.record_intent(
             market,
@@ -97,6 +117,9 @@ class SafeOrderExecutor:
             exchange_order_id=exchange_order_id,
         )
         logger.info("주문 접수 확인 (ACKNOWLEDGED): client_order_id=%s exchange_id=%s", client_order_id, exchange_uuid or exchange_order_id)
+        if side.lower() in ("bid", "buy") and self.ack_reconcile_scheduler is not None:
+            # ACK는 체결 증빙이 아니므로 단건 REST 대사만 예약한다(재주문·중복 제출 없음).
+            self.ack_reconcile_scheduler.schedule(client_order_id)
         if isinstance(response, dict):
             response["client_order_id"] = client_order_id
             if "status" not in response:

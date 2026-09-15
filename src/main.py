@@ -16,6 +16,7 @@ from db_manager import get_db_manager, get_exchange_db_path
 from exchange_adapter import BithumbAdapter, ExchangeAdapter
 from market_screener import MarketScreener
 from order_safety import (
+    AckReconcileScheduler,
     CooldownManager,
     OrderFillProcessor,
     OrderJournal,
@@ -191,7 +192,8 @@ logger.info(
     os.path.abspath(order_journal.path),
     os.path.abspath(getattr(order_journal.db, "db_path", get_exchange_db_path(DATA_DIR))),
 )
-order_executor = SafeOrderExecutor(order_journal)
+ack_reconcile_scheduler = AckReconcileScheduler()
+order_executor = SafeOrderExecutor(order_journal, ack_reconcile_scheduler=ack_reconcile_scheduler)
 cooldown_manager = CooldownManager(
     default_sl_cooldown=StrategyPolicy.COOLDOWN_STOP_LOSS_SEC,
     default_tp_cooldown=StrategyPolicy.COOLDOWN_TP_SEC,
@@ -455,6 +457,7 @@ cycle_engine = TradingCycleEngine(
         trade_memory=trade_memory,
         latest_strategies=LATEST_STRATEGIES,
         strategy_cache_manager=strategy_cache_mgr,
+        ack_reconcile_scheduler=ack_reconcile_scheduler,
     ),
 )
 

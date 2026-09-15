@@ -180,6 +180,7 @@ class TradingOrchestrator:
         fill_processor: Any,
         *,
         label: str = "",
+        ack_reconcile_scheduler: Any | None = None,
     ) -> int:
         """Reconcile pending orders and only reopen entries after a safe result."""
         try:
@@ -190,6 +191,13 @@ class TradingOrchestrator:
             )
             if reconciled:
                 self.logger.info("🔄 [%sREST 체결 재조정] 미완료 주문 %d건 체결 상태 최신화 완료", label, reconciled)
+            if ack_reconcile_scheduler is not None:
+                try:
+                    ack_reconcile_scheduler.reconcile_next(
+                        order_journal, exchange, fill_processor,
+                    )
+                except Exception as ack_exc:
+                    self.logger.debug("%sACK 직후 단건 REST 대사 예외: %s", label, ack_exc)
             order_journal.complete_reconciliation_if_safe()
             return reconciled
         except Exception as exc:

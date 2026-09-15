@@ -30,6 +30,7 @@ from gemini_analyzer import GeminiAnalyzer
 from gemini_telemetry import GeminiTelemetry
 from market_screener import MarketScreener
 from order_safety import (
+    AckReconcileScheduler,
     CooldownManager,
     OrderFillProcessor,
     OrderJournal,
@@ -213,7 +214,8 @@ def set_is_bot_paused(val: bool) -> None:
 chart_renderer = ChartRenderer()
 trade_memory = TradeMemoryManager(data_dir=DATA_DIR, exchange_scope="upbit")
 order_journal = OrderJournal(data_dir=DATA_DIR, exchange_scope="upbit")
-order_executor = SafeOrderExecutor(order_journal)
+ack_reconcile_scheduler = AckReconcileScheduler()
+order_executor = SafeOrderExecutor(order_journal, ack_reconcile_scheduler=ack_reconcile_scheduler)
 cooldown_manager = CooldownManager(
     default_sl_cooldown=StrategyPolicy.COOLDOWN_STOP_LOSS_SEC,
     default_tp_cooldown=StrategyPolicy.COOLDOWN_TP_SEC,
@@ -523,6 +525,7 @@ cycle_engine = TradingCycleEngine(
         latest_strategies=LATEST_STRATEGIES,
         strategy_cache_manager=strategy_cache_mgr,
         risk_off_loss_reentry_guard=risk_off_loss_reentry_guard,
+        ack_reconcile_scheduler=ack_reconcile_scheduler,
     ),
 )
 

@@ -175,6 +175,7 @@ class TradingRuntimeContext:
     strategy_cache_manager: Any
     # 업비트 RISK_OFF 모멘텀 돌파 당일 손실 재진입 차단 (빗썸은 None).
     risk_off_loss_reentry_guard: Any = None
+    ack_reconcile_scheduler: Any = None
 
 
 @dataclass
@@ -518,7 +519,11 @@ class TradingCycleEngine:
 
         reconcile_started_at = time.monotonic()
         ctx.orchestrator.reconcile_orders(
-            exchange, ctx.order_journal, ctx.fill_processor, label=profile.reconcile_label,
+            exchange,
+            ctx.order_journal,
+            ctx.fill_processor,
+            label=profile.reconcile_label,
+            ack_reconcile_scheduler=getattr(ctx, "ack_reconcile_scheduler", None),
         )
         timings["주문대사"] = time.monotonic() - reconcile_started_at
         ctx.orchestrator.record_latency("cycle_reconcile", timings["주문대사"])
@@ -2207,6 +2212,34 @@ class TradingCycleEngine:
             )
 
         ctx.cancel_bot_open_orders(exchange, market)
+
+        if buy_profile.enforce_pre_buy_safety_gates:
+            from order_safety.pre_buy_gate import evaluate_pre_buy_submit_gate
+
+            gate_ok, gate_code, gate_reason, gate_details = evaluate_pre_buy_submit_gate(
+                market=market,
+                exchange_name=buy_profile.exchange_name,
+                order_journal=ctx.order_journal,
+                current_price=current_price,
+                ws_client=ctx.ws_client,
+                cooldown_manager=ctx.cooldown_manager,
+                check_cooldown=True,
+            )
+            if not gate_ok:
+                logger.warning(
+                    "[%s] 주문 제출 직전 신규 BUY fail-closed(%s): %s",
+                    market,
+                    gate_code,
+                    gate_reason,
+                )
+                audit_decision(
+                    market,
+                    "BLOCKED",
+                    gate_code,
+                    [gate_reason],
+                    gate_details,
+                )
+                return True
 
         selected_entry = market_inputs.selected_entry
         entry_snapshot = dict(selected_entry.get("strategy_snapshot", {}))

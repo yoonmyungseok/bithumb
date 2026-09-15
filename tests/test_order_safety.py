@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+import time
 import types
 import unittest
 
@@ -56,6 +57,9 @@ class OrderSafetyTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.journal = OrderJournal(os.path.join(self.temp_dir.name, "orders.json"))
+        # 실거래는 REST 대사 완료 후에만 BUY를 제출하므로 테스트 저널도 READY로 맞춘다.
+        self.journal.reconciliation_state = "READY"
+        self.journal.reconciliation_metrics["last_completed_at"] = time.time()
 
     def tearDown(self):
         self.temp_dir.cleanup()
