@@ -24,6 +24,11 @@ def get_pt_today_str() -> str:
     return datetime.now(PT_TZ).strftime("%Y-%m-%d")
 
 
+def get_kst_today_str() -> str:
+    """한국 표준시(KST) 기준 운영 일자(YYYY-MM-DD). 이벤트 시각 표기와 대시보드 date를 맞춘다."""
+    return datetime.now(KST_TZ).strftime("%Y-%m-%d")
+
+
 def get_pt_reset_info() -> dict[str, Any]:
     """
     PT 자정(00:00:00) 일괄 쿼터 리셋 정보 반환:
@@ -144,6 +149,8 @@ class GeminiTelemetrySnapshot:
     """Point-in-time Gemini usage counters with per-model breakdown."""
 
     date: str
+    date_kst: str
+    quota_date_pt: str
     api_calls: int
     api_success: int
     rate_limited: int
@@ -214,7 +221,9 @@ class GeminiTelemetrySnapshot:
             pass
 
         return {
-            "date": self.date,
+            "date": self.date_kst or get_kst_today_str(),
+            "date_kst": self.date_kst or get_kst_today_str(),
+            "quota_date_pt": self.quota_date_pt or self.date,
             "provider": "gemini",
             "exchange": "upbit",
             "api_calls": self.api_calls,
@@ -366,7 +375,8 @@ class GeminiTelemetry:
         try:
             with open(cls._storage_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if data.get("date") == cls._current_date:
+            quota_date = str(data.get("quota_date_pt") or data.get("date") or "")
+            if quota_date == cls._current_date:
                 cls._api_calls = int(data.get("api_calls", 0))
                 cls._api_success = int(data.get("api_success", 0))
                 cls._rate_limited = int(data.get("rate_limited", 0))
@@ -387,7 +397,9 @@ class GeminiTelemetry:
         try:
             os.makedirs(os.path.dirname(cls._storage_path), exist_ok=True)
             payload = {
-                "date": cls._current_date,
+                "date": get_kst_today_str(),
+                "date_kst": get_kst_today_str(),
+                "quota_date_pt": cls._current_date,
                 "api_calls": cls._api_calls,
                 "api_success": cls._api_success,
                 "rate_limited": cls._rate_limited,
@@ -502,6 +514,8 @@ class GeminiTelemetry:
             cls._load_state_locked()
             return GeminiTelemetrySnapshot(
                 date=cls._current_date,
+                date_kst=get_kst_today_str(),
+                quota_date_pt=cls._current_date,
                 api_calls=cls._api_calls,
                 api_success=cls._api_success,
                 rate_limited=cls._rate_limited,

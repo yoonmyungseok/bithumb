@@ -73,11 +73,55 @@ class AIProviderTelemetry:
     _force_new_window = False
     # 빗썸 FAST 분석 실패는 모든 신규 진입 경로를 닫아야 하므로 호출량과 별도로 영속한다.
     _entry_safety: dict[str, dict[str, Any]] = {}
+    # 원인 API 실패와 종목별 파생 BUY 차단·모델 폴백을 분리 집계한다.
+    _observability: dict[str, dict[str, Any]] = {}
+    _last_root_incident_signature: dict[str, str] = {}
 
     @classmethod
     def _today_kst(cls) -> str:
         """대시보드 기록 날짜 표기는 운영 기준인 한국 시간을 사용한다."""
         return datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+
+    @staticmethod
+    def _empty_observability() -> dict[str, Any]:
+        return {
+            "root_api_failures": 0,
+            "derived_buy_blocks": 0,
+            "model_fallbacks": 0,
+            "cache_hits": 0,
+            "last_root_failure": {},
+            "last_event_kst": "",
+        }
+
+    @classmethod
+    def _obs_locked(cls, exchange: str) -> dict[str, Any]:
+        ex = str(exchange or "").strip().lower() or "bithumb"
+        state = cls._observability.get(ex)
+        if not isinstance(state, dict):
+            state = cls._empty_observability()
+            cls._observability[ex] = state
+        return state
+
+    @classmethod
+    def _check_kst_daily_rollover_locked(cls) -> None:
+        """KST 거래일이 바뀌면 저장 date와 이벤트 집계가 어긋나지 않도록 운영 일자를 맞춘다."""
+        today = cls._today_kst()
+        if not cls._current_date:
+            cls._current_date = today
+            return
+        if today == cls._current_date:
+            return
+        # Provider 쿼터 창이 살아 있으면 Google PT 기준 누적은 유지하고 표시용 KST 일자만 갱신한다.
+        if cls._reset_at > time.time():
+            cls._current_date = today
+            return
+        cls._current_date = today
+        cls._stats = {}
+        cls._persisted_stats = {}
+        cls._observability = {}
+        cls._last_root_incident_signature = {}
+        cls._force_new_window = True
+        cls._save_state_locked()
 
     @classmethod
     def configure(cls, data_dir: str | None = None, storage_filename: str = "gemini_bithumb_telemetry.json") -> None:
@@ -95,6 +139,8 @@ class AIProviderTelemetry:
             cls._reset_header_at = 0.0
             cls._force_new_window = False
             cls._entry_safety = {}
+            cls._observability = {}
+            cls._last_root_incident_signature = {}
             # 재시작 복원과 테스트 격리에서 이전 메모리 값을 섞지 않는다.
             cls._stats = {}
             cls._persisted_stats = {}
@@ -173,7 +219,23 @@ class AIProviderTelemetry:
             cls._reset_at = max(0.0, float(payload.get("reset_at", 0.0)))
             cls._reset_remaining_raw = str(payload.get("reset_remaining_raw", ""))[:64]
             cls._reset_header_at = max(0.0, float(payload.get("reset_header_at", 0.0)))
+            stored_date = str(payload.get("date", "") or "")
+            today_kst = cls._today_kst()
+            if stored_date and stored_date != today_kst and cls._reset_at <= time.time():
+                cls._current_date = today_kst
+                cls._stats = {}
+                cls._persisted_stats = {}
+            else:
+                cls._current_date = stored_date or today_kst
+            obs = payload.get("observability", {})
+            if isinstance(obs, dict):
+                cls._observability = {
+                    str(ex): cls._empty_observability() | dict(val)
+                    for ex, val in obs.items()
+                    if isinstance(val, dict) and str(ex).strip()
+                }
             cls._check_header_reset_locked()
+            cls._check_kst_daily_rollover_locked()
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             # 계측 파일 손상은 주문 흐름에 영향을 주지 않고 빈 관측값으로 안전하게 시작한다.
             cls._stats = {}
@@ -219,11 +281,14 @@ class AIProviderTelemetry:
                 temporary_path = f"{cls._storage_path}.tmp"
                 with open(temporary_path, "w", encoding="utf-8") as file:
                     json.dump({
-                        "date": cls._current_date,
+                        "date": cls._today_kst(),
                         "reset_at": reset_at,
                         "reset_remaining_raw": reset_raw,
                         "reset_header_at": reset_header_at,
                         "entry_safety": merged_entry_safety,
+                        "observability": {
+                            ex: dict(val) for ex, val in cls._observability.items()
+                        },
                         "stats": stats,
                     }, file, ensure_ascii=False, indent=2)
                 os.replace(temporary_path, cls._storage_path)
@@ -355,6 +420,7 @@ class AIProviderTelemetry:
         key = (provider, exchange, model)
         with cls._lock:
             cls._ensure_configured_locked()
+            cls._check_kst_daily_rollover_locked()
             cls._check_header_reset_locked()
             stat = cls._stats.setdefault(key, {
                 "calls": 0, "success": 0, "rate_limited": 0, "errors": 0,
@@ -396,11 +462,89 @@ class AIProviderTelemetry:
         key = (provider, exchange, model)
         with cls._lock:
             cls._ensure_configured_locked()
+            cls._check_kst_daily_rollover_locked()
             stat = cls._stats.setdefault(key, {"calls": 0, "success": 0, "rate_limited": 0, "errors": 0,
                                                "cache_hits": 0, "latency_total_ms": 0.0, "last_event": "", "last_event_at": 0.0})
             stat["cache_hits"] += 1
+            obs = cls._obs_locked(exchange)
+            obs["cache_hits"] = int(obs.get("cache_hits", 0)) + 1
             stat["last_event"] = f"{context} {model} CACHE"
             stat["last_event_at"] = time.time()
+            cls._save_state_locked()
+
+    @classmethod
+    def record_root_api_failure(
+        cls,
+        exchange: str,
+        *,
+        reason: str,
+        context: str = "",
+        model: str = "",
+        status_code: int | None = None,
+        error_code: str = "",
+    ) -> None:
+        """Gemini HTTP/스키마 등 원인 API 실패 1건을 집계·단일 WARNING 로그로 남긴다."""
+        with cls._lock:
+            cls._ensure_configured_locked()
+            cls._check_kst_daily_rollover_locked()
+            ex = str(exchange or "").strip().lower() or "bithumb"
+            obs = cls._obs_locked(ex)
+            obs["root_api_failures"] = int(obs.get("root_api_failures", 0)) + 1
+            now_ts = time.time()
+            obs["last_root_failure"] = {
+                "reason": str(reason)[:120],
+                "context": str(context)[:80],
+                "model": str(model)[:120],
+                "http_status": status_code,
+                "error_code": str(error_code)[:80],
+                "at": now_ts,
+                "at_kst": datetime.fromtimestamp(now_ts, ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            obs["last_event_kst"] = obs["last_root_failure"]["at_kst"]
+            signature = f"{reason}|{context}|{model}|{status_code}|{error_code}"
+            if cls._last_root_incident_signature.get(ex) != signature:
+                cls._last_root_incident_signature[ex] = signature
+                label = "업비트" if ex == "upbit" else "빗썸"
+                logger.warning(
+                    "[Gemini 원인 API 장애] 거래소=%s reason=%s context=%s model=%s http=%s code=%s",
+                    label,
+                    reason or "unknown",
+                    context or "-",
+                    model or "-",
+                    status_code if status_code is not None else "-",
+                    error_code or "-",
+                )
+            cls._save_state_locked()
+
+    @classmethod
+    def record_derived_buy_block(cls, exchange: str) -> None:
+        """종목별 파생 BUY 차단 1건(로그 없이 카운터만 증가)."""
+        with cls._lock:
+            cls._ensure_configured_locked()
+            cls._check_kst_daily_rollover_locked()
+            ex = str(exchange or "").strip().lower() or "bithumb"
+            obs = cls._obs_locked(ex)
+            obs["derived_buy_blocks"] = int(obs.get("derived_buy_blocks", 0)) + 1
+            cls._save_state_locked()
+
+    @classmethod
+    def record_model_fallback(
+        cls, exchange: str, from_model: str, to_model: str, context: str = "",
+    ) -> None:
+        """차순위 모델로 성공한 폴백 결과를 거래소별로 기록한다."""
+        with cls._lock:
+            cls._ensure_configured_locked()
+            cls._check_kst_daily_rollover_locked()
+            ex = str(exchange or "").strip().lower() or "bithumb"
+            obs = cls._obs_locked(ex)
+            obs["model_fallbacks"] = int(obs.get("model_fallbacks", 0)) + 1
+            now_ts = time.time()
+            obs["last_fallback"] = {
+                "from_model": str(from_model)[:120],
+                "to_model": str(to_model)[:120],
+                "context": str(context)[:80],
+                "at_kst": datetime.fromtimestamp(now_ts, ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S"),
+            }
             cls._save_state_locked()
 
     @classmethod
@@ -411,6 +555,8 @@ class AIProviderTelemetry:
         """FAST 분석 결과를 신규 BUY 공통 차단 상태로 원자 저장한다."""
         with cls._lock:
             cls._ensure_configured_locked()
+            cls._check_kst_daily_rollover_locked()
+            previous = cls._entry_safety.get(exchange, {})
             cls._entry_safety[exchange] = cls._normalize_entry_safety({
                 "entry_blocked": blocked,
                 "status": "BLOCKED" if blocked else "NORMAL",
@@ -421,6 +567,18 @@ class AIProviderTelemetry:
                 "error_code": error_code,
                 "updated_at": time.time(),
             })
+            if blocked and (
+                not previous.get("entry_blocked")
+                or str(previous.get("reason")) != str(reason)
+            ):
+                cls.record_root_api_failure(
+                    exchange,
+                    reason=reason or "provider_failure",
+                    context=context,
+                    model=model,
+                    status_code=status_code,
+                    error_code=error_code,
+                )
             cls._save_state_locked()
 
     @classmethod
@@ -526,6 +684,7 @@ class AIProviderTelemetry:
                     "remaining_str": remaining_str,
                 },
                 "entry_safety": cls._normalize_entry_safety(cls._entry_safety.get(exchange, {})),
+                "observability": dict(cls._obs_locked(exchange)),
             }
 
     @classmethod
@@ -885,6 +1044,7 @@ class BaseGeminiProvider:
             return self._record_entry_safety(ProviderResult(None, "", "configuration"), context)
         last_result = ProviderResult(None, models[0], "configuration")
         is_emergency = "holding" in context or "emergency" in context
+        failed_models: list[str] = []
         for model in models:
             # 호출 직전 쿨다운/쿼터 안전 검증 (이미 소진된 모델에 대한 불필요한 HTTP 호출 원천 차단)
             if not self.can_call_model_safety(model, for_emergency_exit=is_emergency):
@@ -944,23 +1104,35 @@ class BaseGeminiProvider:
                                 reason=f"429 Rate Limit (일시 초과, Retry-After={retry_after_str or 'None'})",
                             )
                     last_result = ProviderResult(None, model, error_kind, status_code, error_code)
+                    failed_models.append(model)
                     continue
                 value = _parse_json_text(self._extract_text(response.json()) or "")
                 if value is None:
                     last_result = ProviderResult(None, model, "invalid_json", status_code)
+                    failed_models.append(model)
                     continue
                 if not _validate_schema(value, schema):
                     last_result = ProviderResult(None, model, "schema", status_code)
+                    failed_models.append(model)
                     continue
+                if failed_models:
+                    AIProviderTelemetry.record_model_fallback(
+                        self.exchange,
+                        failed_models[-1],
+                        model,
+                        context,
+                    )
                 res = ProviderResult(value, model, status_code=status_code)
                 return self._record_entry_safety(res, context)
             except requests.exceptions.Timeout:
                 error_kind = "timeout"
                 last_result = ProviderResult(None, model, error_kind, status_code, error_code)
+                failed_models.append(model)
                 continue
             except (requests.exceptions.RequestException, ValueError, TypeError, KeyError, IndexError):
                 error_kind = "exception"
                 last_result = ProviderResult(None, model, error_kind, status_code, error_code)
+                failed_models.append(model)
                 continue
             finally:
                 self._record_http_attempt(model, context, "generate_content", status_code,

@@ -38,6 +38,7 @@ from strategy_engine import (
     should_force_swing_data_unavailable_exit,
 )
 from market_intelligence import MarketIntelligenceService
+from cycle_observability import CycleGeminiDerivedBlockAggregator, CyclePerformanceSlice
 from trading_orchestrator import TradingOrchestrator
 
 
@@ -708,6 +709,7 @@ class TradingCycleEngine:
             prefetch_4h=True,
         )
         timings["캔들사전조회"] = time.monotonic() - candle_prefetch_started_at
+        ctx.orchestrator.record_latency("cycle_candle_fetch", timings["캔들사전조회"])
         btc_candles_5m = ctx.orchestrator.resolve_cycle_btc_candles_5m(
             exchange, candle_prefetch_cache, self.config.interval_minutes,
         )
@@ -1390,7 +1392,13 @@ class TradingCycleEngine:
             candidate_reason = provider_block_hook()
             provider_block_reason = candidate_reason.strip() if isinstance(candidate_reason, str) else ""
         if provider_block_reason and not is_holding:
-            logger.warning("[%s] %s", market, provider_block_reason)
+            derived_agg = getattr(self, "_cycle_derived_agg", None)
+            if derived_agg is not None:
+                derived_agg.record_derived_buy_block(market, provider_block_reason)
+                from ai_provider import AIProviderTelemetry
+                AIProviderTelemetry.record_derived_buy_block(entry_profile.exchange_name)
+            else:
+                logger.warning("[%s] %s", market, provider_block_reason)
             audit_decision(market, "BLOCKED", "AI_PROVIDER", [provider_block_reason], {"btc_regime": btc_regime})
             return EntryGatingResult(should_continue=True)
         ws_health = (
@@ -1518,6 +1526,7 @@ class TradingCycleEngine:
                     unit=self.config.interval_minutes, count=30, market="KRW-BTC",
                 )
             rs_info = calculate_relative_strength(completed_candles_5m, btc_candles_5m)
+            ai_started_at = time.monotonic()
             strategy = analyzer.analyze(
                 market=market,
                 current_price=current_price,
@@ -1540,6 +1549,9 @@ class TradingCycleEngine:
                 ),
                 momentum_phase=momentum_phase,
             )
+            perf_slice = getattr(self, "_cycle_perf", None)
+            if perf_slice is not None:
+                perf_slice.add_ai(time.monotonic() - ai_started_at)
         elif use_momentum_breakout:
             strategy = {
                 "status": "ACTIVE", "action": "BUY",
@@ -2476,6 +2488,7 @@ class TradingCycleEngine:
                 candles_4h = market_snapshot.candles_4h
                 orderbook = market_snapshot.orderbook
 
+                order_phase_started_at = time.monotonic()
                 if self.process_priority_exits(MarketExitInputs(
                     exchange=exchange,
                     market=market,
@@ -2493,6 +2506,9 @@ class TradingCycleEngine:
                     analyzer=analyzer,
                     is_btc_crashing=is_btc_crashing,
                 )):
+                    perf_slice = getattr(self, "_cycle_perf", None)
+                    if perf_slice is not None:
+                        perf_slice.add_order(time.monotonic() - order_phase_started_at)
                     continue
 
                 allow_ai_for_market = (ai_budget_remaining > 0)
@@ -2534,6 +2550,7 @@ class TradingCycleEngine:
                 if entry.should_continue:
                     continue
 
+                order_phase_started_at = time.monotonic()
                 if self.process_cycle_stop_loss(MarketStopLossInputs(
                     exchange=exchange,
                     market=market,
@@ -2547,6 +2564,9 @@ class TradingCycleEngine:
                     reason=entry.reason,
                     candles_5m=candles_5m,
                 )):
+                    perf_slice = getattr(self, "_cycle_perf", None)
+                    if perf_slice is not None:
+                        perf_slice.add_order(time.monotonic() - order_phase_started_at)
                     continue
 
                 if entry.action == "BUY" and (
@@ -2566,6 +2586,7 @@ class TradingCycleEngine:
                     if buy_candidate_type == "NEW_LISTING"
                     else "SCALP"
                 )
+                order_phase_started_at = time.monotonic()
                 if entry.action == "BUY" and self.process_buy_execution(MarketBuyInputs(
                     exchange=exchange,
                     market=market,
@@ -2599,6 +2620,9 @@ class TradingCycleEngine:
                     strategy_mode=strategy_mode,
                     btc_regime=btc_regime,
                 )):
+                    perf_slice = getattr(self, "_cycle_perf", None)
+                    if perf_slice is not None:
+                        perf_slice.add_order(time.monotonic() - order_phase_started_at)
                     continue
             except Exception as exc:
                 logger.error(f"[{market}] 매매 사이클 오류 발생: {exc}", exc_info=True)
@@ -2693,9 +2717,18 @@ class TradingCycleEngine:
         timings: dict[str, float] = {}
         slow_markets: list[tuple[str, float]] = []
         cycle_id = "unknown"
+        derived_agg: CycleGeminiDerivedBlockAggregator | None = None
+        self._cycle_perf = CyclePerformanceSlice()
+        self._cycle_derived_agg = None
         try:
             prefix = self.run_cycle_prefix(timings)
             cycle_id = prefix.now_str
+            derived_agg = CycleGeminiDerivedBlockAggregator(
+                exchange=self.profile.exchange_key,
+                cycle_id=cycle_id,
+                logger=logger,
+            )
+            self._cycle_derived_agg = derived_agg
             market_loop_started_at = time.monotonic()
             self.run_market_loop(prefix, slow_markets=slow_markets)
             timings["마켓루프"] = time.monotonic() - market_loop_started_at
@@ -2710,6 +2743,16 @@ class TradingCycleEngine:
                 exc_info=True,
             )
         finally:
+            perf_slice = getattr(self, "_cycle_perf", None)
+            if perf_slice is not None:
+                timings["AI분석"] = perf_slice.ai_analysis_sec
+                timings["주문처리"] = perf_slice.order_processing_sec
+                self.context.orchestrator.record_latency("cycle_ai_analysis", perf_slice.ai_analysis_sec)
+                self.context.orchestrator.record_latency("cycle_order_processing", perf_slice.order_processing_sec)
+            if derived_agg is not None:
+                derived_agg.flush_cycle_summary()
+            self._cycle_derived_agg = None
+            self._cycle_perf = CyclePerformanceSlice()
             total_seconds = time.monotonic() - cycle_started_at
             self.context.orchestrator.record_latency("full_cycle", total_seconds)
             self.context.orchestrator.log_slow_cycle_detail(

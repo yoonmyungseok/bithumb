@@ -79,11 +79,44 @@ class TradingOrchestrator:
             "[성능 계측] %s 최근 %d회: p50=%.3fs p95=%.3fs max=%.3fs",
             name, len(ordered), p50, p95, ordered[-1],
         )
+        if name == "full_cycle":
+            self._log_full_cycle_phase_summary()
         if name == "full_cycle" and p95 > 45.0:
             self.logger.warning(
                 "[성능 경고] full_cycle p95=%.3fs > 45s 임계 초과 (실제 주기 위험은 사이클 상세 로그 확인)",
                 p95,
             )
+
+    def _log_full_cycle_phase_summary(self) -> None:
+        """full_cycle 20회 주기마다 단계별 병목 p50을 한 줄로 요약한다."""
+        phase_keys = (
+            "cycle_reconcile",
+            "cycle_portfolio",
+            "market_candidate_scan",
+            "candle_prefetch",
+            "cycle_ai_analysis",
+            "cycle_order_processing",
+            "cycle_suffix",
+        )
+        labels = {
+            "cycle_reconcile": "대사",
+            "cycle_portfolio": "포트폴리오",
+            "market_candidate_scan": "후보스캔",
+            "candle_prefetch": "캔들",
+            "cycle_ai_analysis": "AI분석",
+            "cycle_order_processing": "주문처리",
+            "cycle_suffix": "캐시저장",
+        }
+        parts: list[str] = []
+        for key in phase_keys:
+            samples = self._latencies.get(key)
+            if not samples:
+                continue
+            ordered = sorted(samples)
+            p50 = ordered[len(ordered) // 2]
+            parts.append(f"{labels.get(key, key)}={p50:.3f}s")
+        if parts:
+            self.logger.info("[성능 계측] 단계별 p50: %s", " ".join(parts))
 
     def log_slow_cycle_detail(
         self,
@@ -101,7 +134,7 @@ class TradingOrchestrator:
         # 주문·응답 원문 대신 안전한 단계명과 경과 시간만 노출해 운영 원인을 연결한다.
         phase_order = (
             "주문대사", "포트폴리오", "레짐", "마켓선정", "구독갱신",
-            "전략사전조회", "캔들사전조회", "마켓루프", "캐시저장",
+            "전략사전조회", "캔들사전조회", "AI분석", "주문처리", "마켓루프", "캐시저장",
         )
         has_screener_breakdown = any(k in timings for k in ("후보스캔", "AI후보랭킹", "스윙스캔"))
 
