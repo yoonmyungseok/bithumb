@@ -1,4 +1,4 @@
-# Bithumb & Upbit AI Pro Quant Trading Bot (v8.83)
+# Bithumb & Upbit AI Pro Quant Trading Bot (v8.84)
 
 본 문서는 `c:\AI\bithumb` 디렉토리에 위치한 빗썸(Bithumb) 및 업비트(Upbit) 듀얼 거래소 지원 AI 퀀트 트레이딩 봇의 프로젝트 설명 및 아키텍처 설계서입니다. 이 문서는 다른 AI 에이전트 또는 개발자가 프로젝트의 전반적인 구조와 핵심 로직을 빠르고 명확하게 파악할 수 있도록 작성되었습니다.
 
@@ -19,6 +19,10 @@
   - 빗썸·업비트 분리 Google Gemini API (신규 BUY: Flash-Lite 계열 순차 폴백, 거시 진단 및 브리핑: 일반 Flash 최우선 라우팅 및 Flash-Lite 폴백, 빗썸 브리핑 전용 시스템 지침 분리 및 유연한 3줄 시황 품질 검증, 추론 모델 ThinkingBudget=0 제어, 거시 레짐 타임아웃 15초 상향 및 신규 BUY 진입 게이트 격리 안전망 완비), Telegram API
   - 거래소 전용 Groq API 거시 인텔리전스 (15분 주기 거시 레짐 진단 및 권장 현금 비중 도출: 빗썸 `BITHUMB_GROQ_API_KEY`, 업비트 `UPBIT_GROQ_API_KEY` 전용 키 격리, 공용 키 배제)
 - **주요 전략 및 아키텍처**: 
+  - **Gemini 호출 예산 절감 및 포지션 보호 분리 (v8.84)**:
+    1. **분석기 수명 유지**: 거래소별 런타임은 매 5분 사이클에 구성 유효성만 재확인하고, Provider 종류와 전용 키가 동일하면 기존 Gemini 분석기 인스턴스를 재사용한다. 이에 따라 `ListModels`와 Provider 내부 모델 캐시는 프로세스 수명 동안 유지되며, 키 누락·교체·Provider 변경은 즉시 새 인스턴스로 반영해 신규 BUY fail-closed를 보존한다.
+    2. **거시·후보·진입 캐시 예산화**: 거시 레짐의 클래스 공용 마지막 진단 시각은 분석기 재생성에도 유지된다. 후보 배치 랭킹은 거래소 범위가 포함된 정렬 마켓 키와 기본 30분 TTL을 사용하며, 진입 판단은 동일 레짐·세션·후보 경로에서 15분 및 가격 변화 1.5% 이내일 때 `HOLD` 결과만 재사용한다. `BUY`는 다음 확정봉에서 항상 재검증하며, 레짐·후보 유형·세션 변화와 급격한 가격 변동도 즉시 재판단한다.
+    3. **AI 후보 상한 및 보유 포지션 안전성**: 정상 상태의 신규 BUY Gemini 심층 분석은 로컬 우선순위 상위 2개로 제한하며, 쿼터 긴장/위기 상태의 기존 1개/0개 축소 정책은 유지한다. 보유 포지션 AI 보조 진단은 거래소·손익 구간별 15분 캐시를 사용하고 ±2% 임계값 통과 때만 별도 재평가한다. 로컬 손절·트레일링·시간청산·REST 체결 대사와 기존 포지션 보호는 AI 호출량 정책과 독립적으로 항상 실행한다.
   - **듀얼 거래소 공통 모듈화 및 아키텍처 일원화 (v8.83)**:
     1. **호가단위 산출 수학 함수 단일화 (`src/order_safety/tick_utils.py`)**: `bithumb_api.py`와 `upbit_api.py`에 중복 존재하던 순수 수학/비즈니스 로직인 `adjust_price_to_tick()` 및 `round_price_to_tick()`을 `src/order_safety/tick_utils.py`로 분리 추출하고 단일 소스로 통합 위임.
     2. **Gemini AI Provider 베이스 클래스 분리 (`BaseGeminiProvider`)**: `src/ai_provider.py`에 통신 및 모델 폴백 공통 베이스 클래스를 추출하여 `complete_json()`, `complete_text()`, 모델 검색 및 파싱 로직을 공유하고, 거래소별 텔레메트리(`GeminiTelemetry` vs `AIProviderTelemetry`) 및 시스템 프롬프트 격리는 완벽히 보존.

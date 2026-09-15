@@ -133,6 +133,26 @@ class TestGeminiCallOptimization(unittest.TestCase):
         snap = GeminiTelemetry.snapshot()
         self.assertGreaterEqual(snap.cache_hits, 1)
 
+    @patch("requests.post")
+    def test_analyze_stable_15m_cache_reuses_new_confirmed_candle(self, mock_post):
+        """레짐과 후보 경로가 같고 가격 변동이 작으면 다음 확정봉도 AI 재호출 없이 재사용한다."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": '{"STATUS":"ACTIVE","ACTION":"HOLD","ENTRY_PRICE":1000,"TARGET_PRICE":1050,"STOP_LOSS":980,"ALLOC_PCT":0.0,"ALPHA_SCORE":60,"REASON":"안정 구간"}'}]}}]
+        }
+        mock_post.return_value = mock_response
+        analyzer = GeminiAnalyzer(api_key="test-key")
+        candles = [
+            {"trade_price": 1000.0, "opening_price": 995.0, "high_price": 1010.0, "low_price": 990.0, "candle_acc_trade_volume": 100.0, "candle_date_time_utc": "2026-09-05T14:00:00"}
+            for _ in range(30)
+        ]
+        analyzer.analyze("KRW-BTC", 1000.0, candles, 1_000_000, 0.0, 0.0)
+        # 다음 확정봉으로 갱신되었지만 가격 변화가 1.5% 이내이면 15분 안정 캐시를 사용한다.
+        next_candles = [dict(candles[0], candle_date_time_utc="2026-09-05T14:05:00"), *candles[1:]]
+        analyzer.analyze("KRW-BTC", 1005.0, next_candles, 1_000_000, 0.0, 0.0)
+        self.assertEqual(mock_post.call_count, 1)
+
     def test_1h_trend_filter_logic(self):
         """1시간봉 역배열 하락세 종목의 1H 추세 사전 필터 차단 검증"""
         from gemini_analyzer import GeminiAnalyzer as GA

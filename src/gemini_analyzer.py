@@ -1040,10 +1040,32 @@ class GeminiAnalyzer:
             f"{market}:{candle_ts or time_slot}:{regime_upper}:"
             f"{int(night_active)}:{normalized_candidate_type}:{normalized_policy_mode}:{normalized_momentum_phase}"
         )
+        # 확정봉이 바뀌어도 레짐·후보 경로가 같고 가격 변동이 작으면 최근 판단을 재사용한다.
+        # 급격한 가격 변화, 레짐·세션·후보 유형 변화는 이 키와 가격 검증을 통과하지 못해 즉시 재분석한다.
+        exchange_scope = str(getattr(self.provider, "exchange", "default")).lower()
+        stable_cache_key = (
+            f"ENTRY:{exchange_scope}:{market}:{regime_upper}:{int(night_active)}:"
+            f"{normalized_candidate_type}:{normalized_policy_mode}:{normalized_momentum_phase}"
+        )
         if hasattr(self, "_analysis_cache") and cache_key in self._analysis_cache:
             cached_entry = self._analysis_cache[cache_key]
             if (time.time() - float(cached_entry.get("cached_at", 0))) < 540.0:
                 logger.info(f"⚡ [{market}] 동일 5분봉 AI 분석 캐시 재사용 ({self.provider_label} 중복 호출 생략, 쿼터 보존)")
+                self._record_cache_hit(market)
+                return dict(cached_entry["result"])
+        if hasattr(self, "_analysis_cache") and stable_cache_key in self._analysis_cache:
+            cached_entry = self._analysis_cache[stable_cache_key]
+            cached_price = float(cached_entry.get("price", 0.0) or 0.0)
+            price_change = abs(current_price - cached_price) / cached_price if cached_price > 0 else float("inf")
+            entry_cache_ttl = max(540.0, float(os.getenv("GEMINI_ENTRY_CACHE_SEC", "900")))
+            cached_action = str(cached_entry.get("result", {}).get("action", "HOLD")).upper()
+            # 이전 BUY 판단은 다음 확정봉에서 항상 다시 검증한다. 안정적인 HOLD만 장기 재사용한다.
+            if (
+                cached_action == "HOLD"
+                and (time.time() - float(cached_entry.get("cached_at", 0))) < entry_cache_ttl
+                and price_change < 0.015
+            ):
+                logger.info(f"⚡ [{market}] 안정 구간 AI 분석 캐시 재사용 (15분/1.5%% 가격변화 이내, 쿼터 보존)")
                 self._record_cache_hit(market)
                 return dict(cached_entry["result"])
 
@@ -1368,6 +1390,9 @@ class GeminiAnalyzer:
                    "alpha_score": int(parsed.get("ALPHA_SCORE") or parsed.get("alpha_score", 0) or 0)}
             if hasattr(self, "_analysis_cache") and cache_key:
                 self._analysis_cache[cache_key] = {"cached_at": time.time(), "result": res}
+                self._analysis_cache[stable_cache_key] = {
+                    "cached_at": time.time(), "price": current_price, "result": res,
+                }
             return res
 
         last_error = provider_result.error_kind or "api_failure"
@@ -1386,6 +1411,9 @@ class GeminiAnalyzer:
         )
         if hasattr(self, "_analysis_cache") and cache_key:
             self._analysis_cache[cache_key] = {"cached_at": time.time(), "result": local_res}
+            self._analysis_cache[stable_cache_key] = {
+                "cached_at": time.time(), "price": current_price, "result": local_res,
+            }
         return local_res
 
     def _call_gemini_json(
@@ -1455,12 +1483,15 @@ class GeminiAnalyzer:
         if not self.api_key or not candles or avg_buy_price <= 0:
             return fallback_res
 
-        # 손익률 상태에 따른 적응형 스마트 캐시 (횡보 시 900초, 급락/급등 시 60초)
+        # 로컬 손절·트레일링은 AI와 독립적으로 즉시 실행된다. AI는 보조 판단이므로
+        # 보유 포지션도 15분 캐시를 사용하고, 손익 구간 전환 때만 별도 재평가한다.
         pnl_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100.0 if avg_buy_price > 0 else 0.0
-        # -2.0% 이하 급락 위기 또는 +2.0% 이상 급등 랠리 시에만 60초 단기 재진단, 평시 횡보 구간(-2.0% ~ +2.0%)은 900초(15분) 캐시 적용
-        adaptive_ttl = 60.0 if (pnl_pct <= -2.0 or pnl_pct >= 2.0) else 900.0
+        adaptive_ttl = max(300.0, float(os.getenv("GEMINI_HOLDING_CACHE_SEC", "900")))
+        pnl_band = "LOSS_ALERT" if pnl_pct <= -2.0 else ("PROFIT_PROTECT" if pnl_pct >= 2.0 else "NORMAL")
 
-        cache_key = f"HOLDING:{market}"
+        # 거래소와 손익 구간을 키에 포함해 거래소 혼합을 막고 임계값 통과 시에만 즉시 재평가한다.
+        exchange_scope = str(getattr(self.provider, "exchange", "default")).lower()
+        cache_key = f"HOLDING:{exchange_scope}:{market}:{pnl_band}"
         if hasattr(self, "_holding_eval_cache") and cache_key in self._holding_eval_cache:
             cached = self._holding_eval_cache[cache_key]
             if (time.time() - float(cached.get("cached_at", 0))) < adaptive_ttl:
@@ -1573,13 +1604,16 @@ class GeminiAnalyzer:
         if not self.api_key or not candidates or len(candidates) <= 1:
             return candidates
 
-        # 900초(15분) 캐시 (정렬된 상위 종목 리스트 기준)
-        cand_keys = ",".join(sorted(c.get("market", "") for c in candidates[:8]))
-        cache_key = f"RANK:{cand_keys}"
+        # 후보 순서·경미한 가격 변동은 재랭킹 사유가 아니므로 거래소별 정렬된 마켓 집합을 사용한다.
+        # 기본 30분 캐시는 로컬 알파 필터를 통과한 신규 후보에만 AI 예산을 쓰게 한다.
+        exchange_scope = str(getattr(self.provider, "exchange", "default")).lower()
+        cand_keys = ",".join(sorted(str(c.get("market", "")).upper() for c in candidates[:8]))
+        cache_key = f"RANK:{exchange_scope}:{cand_keys}"
+        rank_cache_ttl = max(900.0, float(os.getenv("GEMINI_RANK_CACHE_SEC", "1800")))
         now_ts = time.time()
         if hasattr(self, "_screener_rank_cache") and cache_key in self._screener_rank_cache:
             cached = self._screener_rank_cache[cache_key]
-            if (now_ts - float(cached.get("cached_at", 0))) < 900.0:
+            if (now_ts - float(cached.get("cached_at", 0))) < rank_cache_ttl:
                 self._record_cache_hit("RANK")
                 return list(cached["result"])
 
@@ -1587,7 +1621,7 @@ class GeminiAnalyzer:
         if hasattr(self, "_MARKET_AI_SCORE_CACHE"):
             valid_cached = {
                 m: meta for m, meta in self._MARKET_AI_SCORE_CACHE.items()
-                if (now_ts - float(meta.get("cached_at", 0))) < 900.0
+                if (now_ts - float(meta.get("cached_at", 0))) < rank_cache_ttl
             }
             top_candidates = candidates[:8]
             cached_count = sum(1 for c in top_candidates if c.get("market", "").upper() in valid_cached)

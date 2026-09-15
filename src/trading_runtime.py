@@ -493,9 +493,19 @@ class TradingCycleEngine:
         logger.info("============================================================")
 
         exchange = ctx.create_exchange_client()
-        # 빗썸 Provider Factory는 매 사이클 구성 유효성을 다시 읽어 키/모델 누락을 즉시 fail-closed한다.
+        # Provider Factory는 매 사이클 구성 유효성을 다시 읽되, 동일 자격증명에서는
+        # 기존 분석기를 유지한다. 그래야 모델 목록 및 AI 응답 캐시가 프로세스 동안 보존된다.
         if self.config.analyzer_factory:
-            self.analyzer = self.config.analyzer_factory()
+            refreshed_analyzer = self.config.analyzer_factory()
+            previous_provider = getattr(self.analyzer, "provider", None)
+            refreshed_provider = getattr(refreshed_analyzer, "provider", None)
+            previous_key = str(getattr(previous_provider, "api_key", ""))
+            refreshed_key = str(getattr(refreshed_provider, "api_key", ""))
+            provider_changed = type(previous_provider) is not type(refreshed_provider)
+            key_changed = previous_key != refreshed_key
+            if refreshed_analyzer is None or self.analyzer is None or provider_changed or key_changed:
+                # 키 누락·교체 또는 Provider 종류 변경은 새 인스턴스를 반영해 신규 BUY를 fail-closed로 보호한다.
+                self.analyzer = refreshed_analyzer
         elif self.config.gemini_api_key:
             if self.analyzer is None or getattr(self.analyzer, "api_key", "") != self.config.gemini_api_key:
                 self.analyzer = GeminiAnalyzer(api_key=self.config.gemini_api_key)
@@ -2239,8 +2249,9 @@ class TradingCycleEngine:
             max_ai_candidates = 1
             logger.info("⚠️ [AI 쿼터 가드] 일일 호출 350회(70%) 도달 ➜ 사이클당 AI 심층 분석 상위 1개 종목으로 압축")
         else:
-            default_max_ai = int(os.getenv("MAX_AI_CANDIDATES_PER_CYCLE", "4"))
-            max_ai_candidates = max(1, default_max_ai)  # 정상 상태: 사이클당 상위 최대 N개 종목만 AI 심층 분석 (기본 4)
+            default_max_ai = int(os.getenv("MAX_AI_CANDIDATES_PER_CYCLE", "2"))
+            # 로컬 게이트 상위 2개만 AI 심층 분석해 5분 주기 다종목 반복 호출을 제한한다.
+            max_ai_candidates = min(2, max(1, default_max_ai))
 
         # 확실한 진입 차단 상태에서는 개별 신규 진입 AI 분석도 수행하지 않는다.
         if is_bot_paused or is_kill_switch or is_btc_crashing or not is_entry_ready:
