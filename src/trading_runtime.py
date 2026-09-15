@@ -1396,7 +1396,7 @@ class TradingCycleEngine:
             if derived_agg is not None:
                 derived_agg.record_derived_buy_block(market, provider_block_reason)
                 from ai_provider import AIProviderTelemetry
-                AIProviderTelemetry.record_derived_buy_block(entry_profile.exchange_name)
+                AIProviderTelemetry.record_derived_buy_block(buy_profile.exchange_name)
             else:
                 logger.warning("[%s] %s", market, provider_block_reason)
             audit_decision(market, "BLOCKED", "AI_PROVIDER", [provider_block_reason], {"btc_regime": btc_regime})
