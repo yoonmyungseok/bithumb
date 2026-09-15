@@ -507,6 +507,43 @@
       </div>
     </div>
 
+    <!-- Section: Confirmed Fill Performance (체결 기준 운영 리포트) -->
+    <div id="section_confirmed_fill_report" class="card-glass p-5 sm:p-6 mt-6">
+      <div class="flex flex-wrap justify-between items-center mb-4 gap-2">
+        <div>
+          <h2 class="text-base sm:text-lg font-bold text-white flex items-center">
+            <span class="mr-2">📊</span> 확정 체결 기준 성과 (Confirmed Fill Performance)
+          </h2>
+          <p class="text-xs text-slate-400 mt-0.5">
+            주문 저널의 <code class="text-slate-300">processed_executed_volume</code>만 사용 · ACK/미체결 제외 · KST 거래일 ·
+            <span class="text-amber-300/90">daily_stats와 차이 가능</span>
+          </p>
+        </div>
+        <div id="confirmed_fill_generated_at" class="text-[11px] text-slate-500 font-mono"></div>
+      </div>
+      <div id="confirmed_fill_summary_cards" class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4"></div>
+      <div id="confirmed_fill_comparison" class="mb-4 text-xs text-slate-400 bg-slate-950/40 rounded-lg p-3 border border-slate-800/80 hidden"></div>
+      <div class="overflow-x-auto rounded-xl border border-slate-800/80">
+        <table class="w-full text-left text-xs text-slate-300">
+          <thead class="bg-slate-800/80 text-slate-400 uppercase">
+            <tr>
+              <th class="p-2.5 whitespace-nowrap">KST 청산일</th>
+              <th class="p-2.5 whitespace-nowrap">종목</th>
+              <th class="p-2.5 whitespace-nowrap">레짐 / 유형</th>
+              <th class="p-2.5 whitespace-nowrap">진입→청산</th>
+              <th class="p-2.5 whitespace-nowrap">순손익</th>
+              <th class="p-2.5 whitespace-nowrap">수수료</th>
+              <th class="p-2.5 whitespace-nowrap">보유(분)</th>
+              <th class="p-2.5">청산 사유</th>
+            </tr>
+          </thead>
+          <tbody id="confirmed_fill_legs_tbody" class="divide-y divide-slate-800 bg-slate-900/30">
+            <tr><td colspan="8" class="p-4 text-center text-slate-500">확정 체결 리포트 로딩 중...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Dual Column: Recent Completed Trades & Order Journal -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <!-- Recent Completed Trades -->

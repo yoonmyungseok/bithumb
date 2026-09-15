@@ -7,6 +7,7 @@ from typing import Any, Callable
 from ai_provider import AIProviderTelemetry
 from gemini_telemetry import GeminiTelemetry
 from market_intelligence import MarketIntelligenceService
+from confirmed_fill_performance import build_confirmed_fill_report
 from operational_quality import build_slippage_enforcement_readiness
 from order_safety import OrderJournal, SafeOrderExecutor
 from risk_controls import RiskGuard
@@ -534,6 +535,18 @@ class BotController:
                 exchange_scope=scope
             ).get_latest_intelligence(max_age_sec=3600.0) or {}
 
+            confirmed_fill_report: dict[str, Any] = {}
+            try:
+                report_exchange = scope if scope in {"bithumb", "upbit"} else (
+                    "upbit" if "업비트" in self.exchange_name else "bithumb"
+                )
+                confirmed_fill_report = build_confirmed_fill_report(
+                    data_dir=os.path.dirname(self.order_journal.path),
+                    exchange=report_exchange,
+                )
+            except Exception as report_exc:
+                logger.debug("확정 체결 성과 리포트 생성 예외: %s", report_exc)
+
             self.latest_dashboard_data = {
                 "total_equity": int(total_equity),
                 "krw_available": int(krw_avail),
@@ -568,6 +581,7 @@ class BotController:
                 "recent_trades": recent_trades_data,
                 "recent_orders": recent_orders_data,
                 "daily_stats_history": daily_history_data,
+                "confirmed_fill_performance": confirmed_fill_report,
                 "api_usage": {
                     "exchange": exchange_telemetry,
                     # 기존 API 키와 응답 구조를 유지하면서 거래소별 Gemini 계측을 각자 노출한다.

@@ -1344,6 +1344,7 @@
     renderPositionsTable(positions);
     renderCandidatesTable(candidates, d.safety);
     renderDailyHistoryTable(d.daily_stats_history || []);
+    renderConfirmedFillReport(d, state.activeExchange);
     renderRecentTradesTable(d.recent_trades || []);
     renderOrderJournalTable(d.recent_orders || []);
   }
@@ -1694,6 +1695,131 @@
           <td class="p-3 whitespace-nowrap text-xs">
             ${riskStatusBadge}
           </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  function resolveConfirmedFillReport(d, activeExchange) {
+    const root = d.confirmed_fill_performance || {};
+    if (root.exchanges) {
+      if (activeExchange === 'combined') {
+        const bt = root.exchanges.bithumb || {};
+        const up = root.exchanges.upbit || {};
+        const btSum = bt.summary || {};
+        const upSum = up.summary || {};
+        const mergedLegs = []
+          .concat((bt.recent_trade_legs || []).map(l => Object.assign({}, l, { exchange: 'bithumb' })))
+          .concat((up.recent_trade_legs || []).map(l => Object.assign({}, l, { exchange: 'upbit' })))
+          .slice(0, 20);
+        return {
+          generated_at_kst: root.generated_at_kst,
+          timezone: root.timezone || 'Asia/Seoul',
+          summary: {
+            confirmed_fill_count: Number(btSum.confirmed_fill_count || 0) + Number(upSum.confirmed_fill_count || 0),
+            win_rate_pct: mergedLegs.length
+              ? (mergedLegs.filter(l => Number(l.net_pnl_krw) > 0).length / mergedLegs.length * 100)
+              : 0,
+            profit_factor: null,
+            total_net_pnl_krw: Number(btSum.total_net_pnl_krw || 0) + Number(upSum.total_net_pnl_krw || 0),
+            order_status_excluded_counts: {},
+          },
+          recent_trade_legs: mergedLegs,
+          daily_stats_comparison: null,
+          combined_note: '통합 탭은 두 거래소 레그를 합산 표시합니다. daily_stats 대비는 거래소별 탭에서 확인하세요.',
+        };
+      }
+      return root.exchanges[activeExchange] || {};
+    }
+    return root;
+  }
+
+  function renderConfirmedFillReport(d, activeExchange) {
+    const report = resolveConfirmedFillReport(d, activeExchange);
+    const genEl = document.getElementById('confirmed_fill_generated_at');
+    if (genEl) {
+      genEl.textContent = report.generated_at_kst
+        ? `생성: ${report.generated_at_kst} (${report.timezone || 'KST'})`
+        : '';
+    }
+
+    const cardsEl = document.getElementById('confirmed_fill_summary_cards');
+    const summary = report.summary || {};
+    const statusExcluded = summary.order_status_excluded_counts || {};
+    if (cardsEl) {
+      const pf = summary.profit_factor;
+      const pfText = pf === null || pf === undefined ? '-' : Number(pf).toFixed(2);
+      cardsEl.innerHTML = `
+        <div class="bg-slate-900/50 rounded-lg p-3 border border-slate-800">
+          <div class="text-[10px] text-slate-500 uppercase">확정 체결 수</div>
+          <div class="text-lg font-bold text-white">${summary.confirmed_fill_count || 0}</div>
+        </div>
+        <div class="bg-slate-900/50 rounded-lg p-3 border border-slate-800">
+          <div class="text-[10px] text-slate-500 uppercase">승률</div>
+          <div class="text-lg font-bold text-emerald-400">${Number(summary.win_rate_pct || 0).toFixed(1)}%</div>
+        </div>
+        <div class="bg-slate-900/50 rounded-lg p-3 border border-slate-800">
+          <div class="text-[10px] text-slate-500 uppercase">Profit Factor</div>
+          <div class="text-lg font-bold text-blue-400">${pfText}</div>
+        </div>
+        <div class="bg-slate-900/50 rounded-lg p-3 border border-slate-800">
+          <div class="text-[10px] text-slate-500 uppercase">순손익 합계</div>
+          <div class="text-lg font-bold ${Number(summary.total_net_pnl_krw || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}">
+            ${Number(summary.total_net_pnl_krw || 0) >= 0 ? '+' : ''}${formatKrw(summary.total_net_pnl_krw || 0)}
+          </div>
+        </div>
+        <div class="col-span-2 sm:col-span-4 text-[11px] text-slate-500 font-mono">
+          미성과 주문: RECONCILIATION_PENDING ${statusExcluded.RECONCILIATION_PENDING || 0} ·
+          OPEN ${statusExcluded.OPEN || 0} · CANCELED ${statusExcluded.CANCELED || 0} · UNKNOWN ${statusExcluded.UNKNOWN || 0}
+        </div>
+      `;
+    }
+
+    const cmpEl = document.getElementById('confirmed_fill_comparison');
+    const cmp = report.daily_stats_comparison;
+    if (cmpEl) {
+      if (report.combined_note) {
+        cmpEl.classList.remove('hidden');
+        cmpEl.innerHTML = `<p class="text-amber-200/90">${report.combined_note}</p>`;
+      } else if (cmp && cmp.kst_date) {
+        cmpEl.classList.remove('hidden');
+        const expl = (cmp.explanations || []).map(e => `<li>${e}</li>`).join('');
+        cmpEl.innerHTML = `
+          <p class="font-semibold text-slate-300 mb-1">daily_stats 대비 (${cmp.kst_date} KST)</p>
+          <p>daily_stats 실현: <b>${formatKrw(cmp.daily_stats_realized_pnl_krw)}</b> ·
+             확정 체결 순손익: <b>${formatKrw(cmp.confirmed_fill_net_pnl_krw)}</b> ·
+             Δ <b class="${Number(cmp.delta_pnl_krw) >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${formatKrw(cmp.delta_pnl_krw)}</b></p>
+          <ul class="list-disc list-inside mt-2 text-slate-500">${expl}</ul>
+        `;
+      } else {
+        cmpEl.classList.add('hidden');
+        cmpEl.innerHTML = '';
+      }
+    }
+
+    const tbody = document.getElementById('confirmed_fill_legs_tbody');
+    if (!tbody) return;
+    const legs = report.recent_trade_legs || [];
+    if (!legs.length) {
+      tbody.innerHTML = `
+        <tr><td colspan="8" class="p-6 text-center text-slate-500">확정 체결 실현 레그가 없습니다.</td></tr>
+      `;
+      return;
+    }
+    tbody.innerHTML = legs.map(leg => {
+      const net = Number(leg.net_pnl_krw || 0);
+      const netCls = net >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold';
+      const exTag = leg.exchange ? `<span class="text-[10px] text-slate-500">${leg.exchange}</span> ` : '';
+      return `
+        <tr class="hover:bg-slate-800/40 border-b border-slate-800/80">
+          <td class="p-2.5 font-mono whitespace-nowrap">${leg.kst_trading_date || '-'}</td>
+          <td class="p-2.5 whitespace-nowrap">${exTag}${leg.market || '-'}</td>
+          <td class="p-2.5 whitespace-nowrap text-slate-400">${leg.regime || '-'} / ${leg.entry_type || '-'}</td>
+          <td class="p-2.5 whitespace-nowrap font-mono text-[11px]">${Number(leg.entry_price || 0).toLocaleString()} → ${Number(leg.exit_price || 0).toLocaleString()}</td>
+          <td class="p-2.5 whitespace-nowrap ${netCls}">${net >= 0 ? '+' : ''}${formatKrw(net)}</td>
+          <td class="p-2.5 whitespace-nowrap text-slate-400">${formatKrw(leg.total_fee_krw || 0)}</td>
+          <td class="p-2.5 whitespace-nowrap">${Number(leg.hold_duration_min || 0).toFixed(1)}</td>
+          <td class="p-2.5">${leg.exit_reason || '-'}${leg.is_same_market_reentry ? ' <span class="text-amber-400/80">재진입</span>' : ''}</td>
         </tr>
       `;
     }).join('');

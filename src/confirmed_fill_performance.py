@@ -1,0 +1,405 @@
+"""확정 체결(processed_executed_volume) 기준 성과 집계 및 운영 리포트.
+
+주문 저널과 daily_stats.json을 읽기 전용으로 조회하며, 저널 원본은 수정하지 않는다.
+ACK·미체결·취소(체결량 0) 주문은 실현 성과에 포함하지 않는다.
+"""
+
+from __future__ import annotations
+
+import datetime
+import os
+from typing import Any
+
+from order_safety.types import OrderStatus
+from risk_manager import get_kst_now_str
+from state_store import load_json_with_backup_recovery
+
+KST = datetime.timezone(datetime.timedelta(hours=9))
+REPORT_SCHEMA_VERSION = 1
+
+_MONITOR_ORDER_STATUSES = (
+    OrderStatus.RECONCILIATION_PENDING,
+    OrderStatus.OPEN,
+    OrderStatus.CANCELED,
+    OrderStatus.UNKNOWN,
+)
+
+
+def _is_buy_side(side: str) -> bool:
+    return str(side or "").lower() in {"bid", "buy"}
+
+
+def _is_sell_side(side: str) -> bool:
+    return str(side or "").lower() in {"ask", "sell"}
+
+
+def kst_date_from_ts(ts: float) -> str:
+    """Unix epoch 초를 KST 거래일(YYYY-MM-DD)로 변환한다."""
+    if ts <= 0:
+        return ""
+    return datetime.datetime.fromtimestamp(ts, tz=KST).strftime("%Y-%m-%d")
+
+
+def kst_datetime_from_ts(ts: float) -> str:
+    if ts <= 0:
+        return ""
+    return datetime.datetime.fromtimestamp(ts, tz=KST).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def load_order_journal_orders(journal_path: str) -> tuple[list[dict[str, Any]], str]:
+    """order_journal.json을 읽기 전용으로 로드한다. 파일이 없으면 빈 목록."""
+    data = load_json_with_backup_recovery(journal_path, default=[])
+    exchange_scope = ""
+    if isinstance(data, dict):
+        exchange_scope = str(data.get("exchange_scope", "")).lower()
+        orders = data.get("orders", [])
+    elif isinstance(data, list):
+        orders = data
+    else:
+        orders = []
+    if not isinstance(orders, list):
+        return [], exchange_scope
+    return [dict(o) for o in orders if isinstance(o, dict)], exchange_scope
+
+
+def load_daily_stats_snapshot(stats_path: str) -> dict[str, Any]:
+    """daily_stats.json을 읽기 전용으로 로드한다."""
+    data = load_json_with_backup_recovery(stats_path, default={})
+    return dict(data) if isinstance(data, dict) else {}
+
+
+def _order_event_ts(order: dict[str, Any]) -> float:
+    for key in ("last_event_at", "updated_at", "created_at"):
+        val = order.get(key)
+        if val is None:
+            continue
+        try:
+            ts = float(val)
+        except (TypeError, ValueError):
+            continue
+        if ts > 0:
+            return ts
+    return 0.0
+
+
+def _confirmed_volume(order: dict[str, Any]) -> float:
+    """REST/체결 처리기가 반영한 확정 체결 누적량만 사용한다(ACK executed_volume 제외)."""
+    return max(0.0, float(order.get("processed_executed_volume", 0.0) or 0.0))
+
+
+def _confirmed_fee(order: dict[str, Any]) -> float:
+    return max(0.0, float(order.get("processed_fee", 0.0) or 0.0))
+
+
+def _find_entry_order(orders: list[dict[str, Any]], exit_order: dict[str, Any]) -> dict[str, Any] | None:
+    position_id = exit_order.get("position_id")
+    market = exit_order.get("market")
+    for candidate in reversed(orders):
+        if not _is_buy_side(str(candidate.get("side", ""))):
+            continue
+        if position_id and candidate.get("position_id") == position_id:
+            if _confirmed_volume(candidate) > 0:
+                return candidate
+        elif candidate.get("market") == market and _confirmed_volume(candidate) > 0:
+            return candidate
+    return None
+
+
+def _strategy_path_from_snapshot(snapshot: dict[str, Any]) -> str:
+    if not snapshot:
+        return "UNKNOWN"
+    reason = str(snapshot.get("entry_reason", "") or "").strip()
+    if reason:
+        return reason
+    phase = str(snapshot.get("momentum_phase", "") or "").strip()
+    if phase:
+        return f"MOMENTUM:{phase}"
+    mode = str(snapshot.get("strategy_mode", "") or "").strip()
+    return mode or "STANDARD"
+
+
+def _entry_type_from_snapshot(snapshot: dict[str, Any]) -> str:
+    if not snapshot:
+        return "UNKNOWN"
+    mode = str(snapshot.get("strategy_mode", "") or "").strip()
+    if mode:
+        return mode.upper()
+    return str(snapshot.get("ord_type", "limit")).upper()
+
+
+def count_non_performance_orders(orders: list[dict[str, Any]]) -> dict[str, int]:
+    """리포트 필수: 미확정·비체결 주문 상태별 건수."""
+    counts = {status: 0 for status in _MONITOR_ORDER_STATUSES}
+    for order in orders:
+        status = str(order.get("status", OrderStatus.UNKNOWN) or OrderStatus.UNKNOWN).upper()
+        if status in counts:
+            counts[status] += 1
+    return counts
+
+
+def build_trade_legs_from_journal(
+    orders: list[dict[str, Any]],
+    *,
+    exchange: str,
+) -> list[dict[str, Any]]:
+    """확정 매도 체결(processed_executed_volume>0)마다 1개의 실현 손익 레그를 생성한다."""
+    legs: list[dict[str, Any]] = []
+    # KST 거래일·종목별 이전 청산 횟수 → 재진입 여부
+    closed_count_by_day_market: dict[tuple[str, str], int] = {}
+
+    sell_orders = [
+        o for o in orders
+        if _is_sell_side(str(o.get("side", ""))) and _confirmed_volume(o) > 0
+    ]
+    sell_orders.sort(key=_order_event_ts)
+
+    for exit_order in sell_orders:
+        exit_vol = _confirmed_volume(exit_order)
+        exit_price = float(exit_order.get("avg_price", 0.0) or 0.0)
+        if exit_price <= 0:
+            continue
+
+        entry_order = _find_entry_order(orders, exit_order)
+        entry_price = float(exit_order.get("avg_buy_price", 0.0) or 0.0)
+        entry_vol = 0.0
+        entry_fee_total = 0.0
+        entry_slippage_bps = 0.0
+        snapshot: dict[str, Any] = {}
+        entry_ts = 0.0
+
+        if entry_order:
+            entry_price = float(entry_order.get("avg_price", 0.0) or 0.0) or entry_price
+            entry_vol = _confirmed_volume(entry_order)
+            entry_fee_total = _confirmed_fee(entry_order)
+            entry_slippage_bps = float(entry_order.get("slippage_bps", 0.0) or 0.0)
+            snapshot = dict(entry_order.get("entry_strategy_snapshot") or {})
+            entry_ts = _order_event_ts(entry_order)
+
+        if entry_price <= 0:
+            continue
+
+        exit_ts = _order_event_ts(exit_order)
+        kst_date = kst_date_from_ts(exit_ts)
+        market = str(exit_order.get("market", "") or "")
+
+        exit_fee = _confirmed_fee(exit_order)
+        entry_fee_alloc = (entry_fee_total * (exit_vol / entry_vol)) if entry_vol > 0 else 0.0
+
+        # fill_processor와 동일: 매도 수수료만 proceeds에서 차감한 총손익
+        proceeds = (exit_price * exit_vol) - exit_fee
+        cost_basis = entry_price * exit_vol
+        gross_pnl_krw = proceeds - cost_basis
+        net_pnl_krw = gross_pnl_krw - entry_fee_alloc
+
+        pnl_pct = ((exit_price - entry_price) / entry_price * 100.0) if entry_price > 0 else 0.0
+        exit_slippage_bps = float(exit_order.get("slippage_bps", 0.0) or 0.0)
+        hold_sec = max(0.0, exit_ts - entry_ts) if entry_ts > 0 and exit_ts > 0 else 0.0
+
+        day_market_key = (kst_date, market)
+        is_reentry = closed_count_by_day_market.get(day_market_key, 0) > 0
+        closed_count_by_day_market[day_market_key] = closed_count_by_day_market.get(day_market_key, 0) + 1
+
+        legs.append({
+            "kst_trading_date": kst_date,
+            "exchange": exchange,
+            "market": market,
+            "strategy_path": _strategy_path_from_snapshot(snapshot),
+            "regime": str(snapshot.get("entry_btc_regime") or snapshot.get("btc_regime") or "UNKNOWN"),
+            "entry_type": _entry_type_from_snapshot(snapshot),
+            "entry_price": round(entry_price, 8),
+            "entry_volume": round(exit_vol, 8),
+            "exit_price": round(exit_price, 8),
+            "exit_volume": round(exit_vol, 8),
+            "entry_fee_krw": round(entry_fee_alloc, 4),
+            "exit_fee_krw": round(exit_fee, 4),
+            "total_fee_krw": round(entry_fee_alloc + exit_fee, 4),
+            "entry_slippage_bps": round(entry_slippage_bps, 2),
+            "exit_slippage_bps": round(exit_slippage_bps, 2),
+            "hold_duration_sec": int(hold_sec),
+            "hold_duration_min": round(hold_sec / 60.0, 2),
+            "exit_reason": str(exit_order.get("exit_reason") or "MANUAL_EXIT"),
+            "gross_pnl_krw": round(gross_pnl_krw, 2),
+            "net_pnl_krw": round(net_pnl_krw, 2),
+            "pnl_pct": round(pnl_pct, 4),
+            "is_win": net_pnl_krw > 0,
+            "is_same_market_reentry": is_reentry,
+            "exit_client_order_id": exit_order.get("client_order_id", ""),
+            "position_id": exit_order.get("position_id", ""),
+            "exit_at_kst": kst_datetime_from_ts(exit_ts),
+        })
+
+    return legs
+
+
+def summarize_trade_legs(legs: list[dict[str, Any]]) -> dict[str, Any]:
+    """확정 체결 레그 기준 승률·Profit Factor·순손익."""
+    if not legs:
+        return {
+            "confirmed_fill_count": 0,
+            "win_count": 0,
+            "loss_count": 0,
+            "win_rate_pct": 0.0,
+            "profit_factor": None,
+            "total_gross_pnl_krw": 0.0,
+            "total_net_pnl_krw": 0.0,
+            "total_fee_krw": 0.0,
+        }
+
+    wins = [leg for leg in legs if float(leg.get("net_pnl_krw", 0.0)) > 0]
+    losses = [leg for leg in legs if float(leg.get("net_pnl_krw", 0.0)) <= 0]
+    gross_win = sum(float(leg.get("net_pnl_krw", 0.0)) for leg in wins)
+    gross_loss = abs(sum(float(leg.get("net_pnl_krw", 0.0)) for leg in losses))
+    profit_factor = (gross_win / gross_loss) if gross_loss > 0 else None
+
+    return {
+        "confirmed_fill_count": len(legs),
+        "win_count": len(wins),
+        "loss_count": len(losses),
+        "win_rate_pct": round(len(wins) / len(legs) * 100.0, 2),
+        "profit_factor": round(profit_factor, 4) if profit_factor is not None else None,
+        "total_gross_pnl_krw": round(sum(float(leg.get("gross_pnl_krw", 0.0)) for leg in legs), 2),
+        "total_net_pnl_krw": round(sum(float(leg.get("net_pnl_krw", 0.0)) for leg in legs), 2),
+        "total_fee_krw": round(sum(float(leg.get("total_fee_krw", 0.0)) for leg in legs), 2),
+    }
+
+
+def aggregate_daily_kst(legs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """KST 거래일별 확정 체결 성과 롤업."""
+    by_date: dict[str, list[dict[str, Any]]] = {}
+    for leg in legs:
+        d = str(leg.get("kst_trading_date", "") or "")
+        if not d:
+            continue
+        by_date.setdefault(d, []).append(leg)
+
+    rows: list[dict[str, Any]] = []
+    for date_str in sorted(by_date.keys(), reverse=True):
+        day_legs = by_date[date_str]
+        summary = summarize_trade_legs(day_legs)
+        rows.append({
+            "kst_trading_date": date_str,
+            "confirmed_fill_count": summary["confirmed_fill_count"],
+            "win_rate_pct": summary["win_rate_pct"],
+            "profit_factor": summary["profit_factor"],
+            "net_pnl_krw": summary["total_net_pnl_krw"],
+            "gross_pnl_krw": summary["total_gross_pnl_krw"],
+            "total_fee_krw": summary["total_fee_krw"],
+        })
+    return rows
+
+
+def compare_with_daily_stats(
+    *,
+    kst_date: str,
+    legs: list[dict[str, Any]],
+    daily_stats: dict[str, Any],
+) -> dict[str, Any]:
+    """daily_stats.json(자정 경계·누적)과 확정 체결 리포트 차이를 설명 가능하게 반환."""
+    day_legs = [leg for leg in legs if leg.get("kst_trading_date") == kst_date]
+    day_summary = summarize_trade_legs(day_legs)
+
+    stats_date = str(daily_stats.get("date", "") or "")
+    stats_pnl = float(daily_stats.get("realized_pnl_krw", 0.0) or 0.0)
+    stats_trades = int(daily_stats.get("total_trades", 0) or 0)
+    stats_wins = int(daily_stats.get("win_trades", 0) or 0)
+
+    confirmed_net = float(day_summary["total_net_pnl_krw"])
+    delta_pnl = round(confirmed_net - stats_pnl, 2)
+
+    explanations: list[str] = [
+        "daily_stats.json은 DailyRiskManager가 확정 매도 체결 시점에 메모리·자정(KST) 경계로 누적한다.",
+        "확정 체결 리포트는 주문 저널의 processed_executed_volume·processed_fee만 재집계하며 미체결·ACK 주문은 제외한다.",
+    ]
+    if stats_date and stats_date != kst_date:
+        explanations.append(
+            f"daily_stats 현재 date({stats_date})와 비교 대상 KST일({kst_date})이 다르면 당일 수치가 어긋날 수 있다.",
+        )
+    if delta_pnl != 0:
+        explanations.append(
+            "순손익 차이는 매수 수수료 배분·분할익절 레그 수·자정 전후 청산일 분류 또는 daily_stats 미동기화 때문일 수 있다.",
+        )
+    if stats_trades != day_summary["confirmed_fill_count"]:
+        explanations.append(
+            "체결 횟수 차이는 daily_stats가 청산 이벤트 건수를 세고, 리포트는 저널 매도 확정 레그 건수를 센다.",
+        )
+
+    return {
+        "kst_date": kst_date,
+        "daily_stats_date": stats_date,
+        "daily_stats_realized_pnl_krw": round(stats_pnl, 2),
+        "daily_stats_total_trades": stats_trades,
+        "daily_stats_win_trades": stats_wins,
+        "confirmed_fill_net_pnl_krw": confirmed_net,
+        "confirmed_fill_count": day_summary["confirmed_fill_count"],
+        "delta_pnl_krw": delta_pnl,
+        "delta_trade_count": day_summary["confirmed_fill_count"] - stats_trades,
+        "explanations": explanations,
+    }
+
+
+def build_confirmed_fill_report(
+    *,
+    data_dir: str,
+    exchange: str,
+    journal_path: str | None = None,
+    daily_stats_path: str | None = None,
+    recent_leg_limit: int = 30,
+    daily_rollup_limit: int = 14,
+) -> dict[str, Any]:
+    """거래소 data_dir 기준 확정 체결 운영 리포트(읽기 전용)."""
+    ex = exchange.strip().lower()
+    j_path = journal_path or os.path.join(data_dir, "order_journal.json")
+    s_path = daily_stats_path or os.path.join(data_dir, "daily_stats.json")
+
+    orders, stored_scope = load_order_journal_orders(j_path)
+    if stored_scope and stored_scope != ex:
+        # 다른 거래소 저널이 섞이면 성과를 계산하지 않는다.
+        orders = []
+
+    daily_stats = load_daily_stats_snapshot(s_path)
+    status_counts = count_non_performance_orders(orders)
+    legs = build_trade_legs_from_journal(orders, exchange=ex)
+    summary = summarize_trade_legs(legs)
+    summary["order_status_excluded_counts"] = status_counts
+
+    today_kst = get_kst_now_str()[:10]
+    comparison = compare_with_daily_stats(
+        kst_date=today_kst,
+        legs=legs,
+        daily_stats=daily_stats,
+    )
+
+    daily_rows = aggregate_daily_kst(legs)[:daily_rollup_limit]
+    recent_legs = list(reversed(legs))[:recent_leg_limit]
+
+    return {
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "exchange": ex,
+        "generated_at_kst": get_kst_now_str(),
+        "timezone": "Asia/Seoul",
+        "data_sources": {
+            "order_journal": os.path.abspath(j_path),
+            "daily_stats": os.path.abspath(s_path),
+            "read_only": True,
+        },
+        "summary": summary,
+        "daily_kst_rollup": daily_rows,
+        "recent_trade_legs": recent_legs,
+        "daily_stats_comparison": comparison,
+    }
+
+
+def merge_exchange_reports(
+    bithumb_report: dict[str, Any],
+    upbit_report: dict[str, Any],
+) -> dict[str, Any]:
+    """통합 대시보드용 — 두 거래소 리포트를 합산하지 않고 목록으로 묶는다."""
+    return {
+        "schema_version": REPORT_SCHEMA_VERSION,
+        "generated_at_kst": get_kst_now_str(),
+        "timezone": "Asia/Seoul",
+        "exchanges": {
+            "bithumb": bithumb_report,
+            "upbit": upbit_report,
+        },
+    }

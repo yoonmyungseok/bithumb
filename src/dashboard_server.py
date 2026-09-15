@@ -25,6 +25,7 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 
+from confirmed_fill_performance import merge_exchange_reports
 from market_intelligence import MarketIntelligenceService
 from runtime_config import CommonConfigManager
 
@@ -332,6 +333,7 @@ class UnifiedDashboardServer:
             "recent_trades": [],
             "recent_orders": [],
             "daily_stats_history": [],
+            "confirmed_fill_performance": {},
             "message": "봇 프로세스 미구동 또는 응답 없음",
             "safety": {
                 "entry_ready": False,
@@ -608,6 +610,12 @@ class UnifiedDashboardServer:
 
         combined_mi = bt_mi or up_mi or {}
 
+        bt_fill_report = bithumb_data.get("confirmed_fill_performance") or {}
+        up_fill_report = upbit_data.get("confirmed_fill_performance") or {}
+        combined_fill_report = merge_exchange_reports(bt_fill_report, up_fill_report) if (
+            bt_fill_report or up_fill_report
+        ) else {}
+
         combined = {
             "title": "Bithumb & Upbit AI 퀀트 트레이딩 Pro (통합)",
             "total_equity": total_equity,
@@ -633,6 +641,7 @@ class UnifiedDashboardServer:
             "recent_trades": combined_recent_trades,
             "recent_orders": combined_orders,
             "daily_stats_history": combined_daily_history,
+            "confirmed_fill_performance": combined_fill_report,
             "fear_and_greed": fng,
             "bithumb_online": bithumb_data.get("online", False),
             "upbit_online": upbit_data.get("online", False),
