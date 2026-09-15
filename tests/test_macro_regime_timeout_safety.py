@@ -4,6 +4,7 @@ Unit tests for macro_regime timeout safety, thinking budget control, and entry g
 
 import os
 import sys
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -51,7 +52,7 @@ class MacroRegimeTimeoutSafetyTests(unittest.TestCase):
 
     @patch("ai_provider.requests.post")
     def test_trading_timeout_strictly_blocks_upbit_entry(self, mock_post):
-        """반면 신규 BUY 직접 판정(trading, screener_rank) 타임아웃은 엄격하게 신규 BUY를 fail-closed 차단한다."""
+        """신규 BUY 직접 판정(trading) 타임아웃은 엄격하게 신규 BUY를 fail-closed 차단한다."""
         import requests
         mock_post.side_effect = requests.exceptions.Timeout("Gemini API timeout")
 
@@ -69,6 +70,43 @@ class MacroRegimeTimeoutSafetyTests(unittest.TestCase):
         self.assertEqual(result.error_kind, "timeout")
         block_reason = AIProviderTelemetry.get_entry_block_reason("upbit")
         self.assertIn("업비트 Gemini 분석 장애(timeout, trading)로 신규 BUY를 차단합니다.", block_reason)
+
+    @patch("ai_provider.requests.post")
+    def test_screener_rank_timeout_does_not_block_entry(self, mock_post):
+        """스크리너 배치 랭킹(screener_rank) 실패는 로컬 순위 폴백이 있어 전역 BUY 게이트를 닫지 않는다."""
+        import requests
+        mock_post.side_effect = requests.exceptions.Timeout("Gemini API timeout")
+
+        provider = BithumbGeminiProvider("bithumb-test-key")
+        result = provider.complete_json(
+            "후보 랭킹",
+            ["gemini-3.1-flash-lite"],
+            {"type": "object"},
+            context="screener_rank",
+            timeout=15.0,
+            max_tokens=500,
+        )
+
+        self.assertIsNone(result.value)
+        self.assertEqual(result.error_kind, "timeout")
+        self.assertEqual(AIProviderTelemetry.get_entry_block_reason("bithumb"), "")
+        self.assertFalse(AIProviderTelemetry.snapshot("bithumb")["entry_safety"]["entry_blocked"])
+
+    def test_legacy_screener_rank_block_cleared_on_read(self):
+        """과거 screener_rank 실패로 고착된 entry_safety는 조회 시 자동 해제·영속 정리한다."""
+        with AIProviderTelemetry._lock:
+            AIProviderTelemetry._ensure_configured_locked()
+            AIProviderTelemetry._entry_safety["bithumb"] = AIProviderTelemetry._normalize_entry_safety({
+                "entry_blocked": True,
+                "status": "BLOCKED",
+                "reason": "timeout",
+                "context": "screener_rank",
+                "model": "gemini-3.1-flash-lite",
+                "updated_at": time.time(),
+            })
+            AIProviderTelemetry._save_state_locked()
+        self.assertEqual(AIProviderTelemetry.get_entry_block_reason("bithumb"), "")
+        self.assertFalse(AIProviderTelemetry.snapshot("bithumb")["entry_safety"]["entry_blocked"])
 
     @patch("ai_provider.requests.post")
     def test_thinking_budget_zero_injected_for_reasoning_models(self, mock_post):

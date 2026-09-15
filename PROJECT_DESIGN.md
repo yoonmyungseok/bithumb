@@ -114,9 +114,10 @@
 
 ### 빗썸 Gemini 런타임 장애 신규 진입 차단 (v8.50)
 
-- Gemini `ListModels` 또는 Flash-Lite `generateContent`의 HTTP 4xx/429/5xx, 타임아웃, 네트워크 예외, 빈 응답, 잘못된 JSON 또는 스키마 오류는 `data/gemini_bithumb_telemetry.json`의 `entry_safety`에 원자 저장한다. 프로세스 재시작 뒤에도 마지막 실패 상태를 복원한다.
+- Gemini `ListModels` 또는 종목별 Flash-Lite `generateContent`(컨텍스트 `trading`·`KRW-*` 등 신규 진입 판정)의 HTTP 4xx/429/5xx, 타임아웃, 네트워크 예외, 빈 응답, 잘못된 JSON 또는 스키마 오류는 `data/gemini_bithumb_telemetry.json`의 `entry_safety`에 원자 저장한다. 프로세스 재시작 뒤에도 마지막 실패 상태를 복원한다.
+- 보조 컨텍스트(`macro_regime`, `market_briefing`, `screener_rank`) 실패는 `observability`에만 원인을 남기고 `entry_safety` 전역 BUY 게이트를 닫지 않는다. `screener_rank`는 로컬 퀀트 순위·캐시 폴백이 있으며, 과거 버전에서 `screener_rank`만으로 고착된 `entry_safety`는 조회·스냅샷 시 자동 정리한다.
 - 이 상태는 표준 AI 진입뿐 아니라 `MOMENTUM_BREAKOUT` 직접 진입과 `RECOVERY_REBOUND`에도 공통으로 적용된다. 기존 보유 포지션의 REST 주문 대사, 체결 확인, 손절·트레일링·긴급 청산은 차단하지 않는다.
-- 신규 BUY 차단은 정상적인 Gemini JSON Schema 응답이 확인된 경우에만 해제한다. 브리핑 성공·실패는 이 상태를 바꾸지 않으며, 실패 시 고위 모델 승격 또는 로컬 BUY 폴백은 허용하지 않는다.
+- 신규 BUY 차단은 정상적인 종목별 Gemini JSON Schema 응답이 확인된 경우에만 해제한다. 브리핑·거시·스크리너 랭킹 성공·실패만으로는 이 상태를 바꾸지 않으며, 실패 시 고위 모델 승격 또는 로컬 BUY 폴백은 허용하지 않는다.
 - `build_bithumb_analyzer()`는 Gemini **설정 오류**가 있을 때만 `None`을 반환한다. 런타임 장애(`entry_safety`)는 `get_bithumb_ai_entry_block_reason()`과 주문 게이트에서만 신규 BUY를 차단하고, 분석기는 유지해 다음 정상 분석으로 자동 복구할 수 있게 한다.
 - 운영 계측에는 마지막 오류의 목적, 모델, HTTP 상태 및 제한된 오류 코드/타입만 저장한다. API 키, 프롬프트, 오류 메시지 원문, 계좌·주문 식별자는 로그·대시보드·영속 파일에 저장하지 않는다. Gemini 거시 진단이 실패하면 `CAUTION_PULLBACK` 방어 상태와 `AI_UNAVAILABLE` 표기를 사용해 정상 레짐으로 오인하지 않는다.
 

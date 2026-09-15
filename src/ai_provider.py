@@ -24,6 +24,17 @@ from gemini_telemetry import (
 
 logger = logging.getLogger(__name__)
 
+# 신규 BUY 전역 게이트(entry_safety)와 분리하는 Gemini 컨텍스트 — 로컬 퀀트·캐시 폴백이 있는 보조 분석
+ENTRY_SAFETY_AUXILIARY_CONTEXTS = frozenset({"macro_regime", "market_briefing", "screener_rank"})
+
+
+def _is_auxiliary_entry_safety_context(context: str) -> bool:
+    """거시·브리핑·스크리너 랭킹 실패는 종목별 trading 분석 fail-closed와 분리한다."""
+    ctx = str(context or "").strip().lower()
+    if ctx in ENTRY_SAFETY_AUXILIARY_CONTEXTS:
+        return True
+    return "briefing" in ctx
+
 
 @dataclass(frozen=True)
 class ProviderResult:
@@ -548,11 +559,32 @@ class AIProviderTelemetry:
             cls._save_state_locked()
 
     @classmethod
+    def _effective_entry_safety_state(cls, state: dict[str, Any]) -> dict[str, Any]:
+        """디스크에 남은 레거시 screener_rank 차단은 로컬 폴백 정책에 맞게 해제 상태로 노출한다."""
+        normalized = cls._normalize_entry_safety(state)
+        if normalized.get("entry_blocked") and str(normalized.get("context", "")).strip().lower() == "screener_rank":
+            cleared = dict(normalized)
+            cleared.update({"entry_blocked": False, "status": "NORMAL", "reason": ""})
+            return cleared
+        return normalized
+
+    @classmethod
+    def _reconcile_legacy_screener_entry_block_locked(cls, exchange: str) -> None:
+        """screener_rank만으로 닫힌 entry_safety를 영속 저장소에서 정리한다."""
+        state = cls._entry_safety.get(exchange, {})
+        effective = cls._effective_entry_safety_state(state)
+        if state.get("entry_blocked") and not effective.get("entry_blocked"):
+            cls._entry_safety[exchange] = effective
+            cls._save_state_locked()
+
+    @classmethod
     def record_entry_safety(
         cls, exchange: str, *, blocked: bool, reason: str = "", context: str = "",
         model: str = "", status_code: int | None = None, error_code: str = "",
     ) -> None:
         """FAST 분석 결과를 신규 BUY 공통 차단 상태로 원자 저장한다."""
+        if blocked and _is_auxiliary_entry_safety_context(context):
+            return
         with cls._lock:
             cls._ensure_configured_locked()
             cls._check_kst_daily_rollover_locked()
@@ -586,7 +618,8 @@ class AIProviderTelemetry:
         """기존 포지션에는 영향 없이 모든 신규 BUY 경로가 공통으로 읽는 차단 사유다."""
         with cls._lock:
             cls._ensure_configured_locked()
-            state = cls._entry_safety.get(exchange, {})
+            cls._reconcile_legacy_screener_entry_block_locked(exchange)
+            state = cls._effective_entry_safety_state(cls._entry_safety.get(exchange, {}))
             if not state.get("entry_blocked"):
                 return ""
             if max_age_sec is not None and max_age_sec > 0:
@@ -616,6 +649,7 @@ class AIProviderTelemetry:
         with cls._lock:
             cls._ensure_configured_locked()
             cls._check_header_reset_locked()
+            cls._reconcile_legacy_screener_entry_block_locked(exchange)
             models: dict[str, dict[str, Any]] = {}
             total = {"api_calls": 0, "api_success": 0, "rate_limited": 0, "http_errors": 0, "cache_hits": 0, "latency_total_ms": 0.0}
             providers: set[str] = set()
@@ -683,7 +717,7 @@ class AIProviderTelemetry:
                     "remaining_seconds": remaining_seconds,
                     "remaining_str": remaining_str,
                 },
-                "entry_safety": cls._normalize_entry_safety(cls._entry_safety.get(exchange, {})),
+                "entry_safety": cls._effective_entry_safety_state(cls._entry_safety.get(exchange, {})),
                 "observability": dict(cls._obs_locked(exchange)),
             }
 
@@ -1268,7 +1302,7 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
 
     def _record_entry_safety(self, result: ProviderResult, context: str) -> ProviderResult:
         """업비트 fail-closed 안전 상태를 갱신한다."""
-        is_entry_context = context not in ("macro_regime", "market_briefing") and "briefing" not in context
+        is_entry_context = not _is_auxiliary_entry_safety_context(context)
         if is_entry_context:
             is_success = isinstance(result.value, (dict, list))
             AIProviderTelemetry.record_entry_safety(
@@ -1315,7 +1349,7 @@ API 키, 시크릿, 토큰, 계좌 또는 주문 식별자를 요구·출력·�
 
     def _record_entry_safety(self, result: ProviderResult, context: str) -> ProviderResult:
         """정상 JSON 스키마 검증을 마친 호출만 신규 BUY 차단을 해제한다. 보조 분석은 신규 BUY를 차단하지 않는다."""
-        is_entry_context = context not in ("macro_regime", "market_briefing") and "briefing" not in context
+        is_entry_context = not _is_auxiliary_entry_safety_context(context)
         if is_entry_context:
             is_success = isinstance(result.value, (dict, list))
             AIProviderTelemetry.record_entry_safety(
