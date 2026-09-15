@@ -38,6 +38,7 @@ from order_safety import (
     get_dynamic_portfolio_tiers,
     write_json_atomically,
 )
+from order_safety.risk_off_loss_reentry import RiskOffLossReentryGuard
 from paper_broker import PaperBroker
 from realtime_engine import RealtimeRiskEngine
 from runtime_config import (
@@ -219,6 +220,8 @@ cooldown_manager = CooldownManager(
     default_time_stop_cooldown=StrategyPolicy.COOLDOWN_TIME_STOP_SEC,
     data_dir=DATA_DIR,
 )
+# RISK_OFF 모멘텀 돌파 당일 손실 재진입 차단 (업비트 전용 상태 파일).
+risk_off_loss_reentry_guard = RiskOffLossReentryGuard(data_dir=DATA_DIR)
 risk_guard = RiskGuard(
     min_order_krw=MIN_ORDER_KRW,
     max_open_positions=MAX_OPEN_POSITIONS,
@@ -244,6 +247,7 @@ fill_processor = OrderFillProcessor(
     trade_memory=trade_memory,
     trailing_tracker=trailing_tracker,
     cooldown_manager=cooldown_manager,
+    risk_off_loss_reentry_guard=risk_off_loss_reentry_guard,
     telegram=telegram,
 )
 
@@ -518,6 +522,7 @@ cycle_engine = TradingCycleEngine(
         trade_memory=trade_memory,
         latest_strategies=LATEST_STRATEGIES,
         strategy_cache_manager=strategy_cache_mgr,
+        risk_off_loss_reentry_guard=risk_off_loss_reentry_guard,
     ),
 )
 

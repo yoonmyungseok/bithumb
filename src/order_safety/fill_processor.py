@@ -27,6 +27,7 @@ class OrderFillProcessor:
         telegram: Any = None,
         send_fill_alerts: bool = False,
         cooldown_manager: Any = None,
+        risk_off_loss_reentry_guard: Any = None,
     ):
         self.order_journal = order_journal
         self.risk_manager = risk_manager
@@ -34,6 +35,8 @@ class OrderFillProcessor:
         self.trailing_tracker = trailing_tracker
         # 청산 쿨다운은 주문 접수 시점이 아닌 확인 체결 증가분에만 기록한다.
         self.cooldown_manager = cooldown_manager
+        # 업비트 RISK_OFF 모멘텀 돌파 당일 재진입 차단 (확정 매도 손실만 기록).
+        self.risk_off_loss_reentry_guard = risk_off_loss_reentry_guard
         self.telegram = telegram
         self.send_fill_alerts = send_fill_alerts
 
@@ -252,6 +255,19 @@ class OrderFillProcessor:
                         # 쿨다운은 원본 청산 사유 코드를 사용해 신규상장·타임스탑 분기를 보존한다.
                         self.cooldown_manager.record_exit(
                             market, stored_exit_reason, exit_price=effective_price,
+                        )
+
+                    if self.risk_off_loss_reentry_guard:
+                        loss_exchange = (
+                            str(order.get("exchange") or getattr(self.order_journal, "exchange_scope", "") or "")
+                            .strip()
+                            .lower()
+                        )
+                        self.risk_off_loss_reentry_guard.record_confirmed_loss_exit(
+                            exchange=loss_exchange,
+                            market=market,
+                            exit_reason=stored_exit_reason,
+                            net_pnl_krw=pnl_krw,
                         )
 
                     entry_order = self.order_journal.get_entry_order_for_exit(order)

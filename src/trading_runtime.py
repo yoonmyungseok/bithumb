@@ -173,6 +173,8 @@ class TradingRuntimeContext:
     trade_memory: Any
     latest_strategies: dict[str, dict[str, Any]]
     strategy_cache_manager: Any
+    # 업비트 RISK_OFF 모멘텀 돌파 당일 손실 재진입 차단 (빗썸은 None).
+    risk_off_loss_reentry_guard: Any = None
 
 
 @dataclass
@@ -304,6 +306,7 @@ class MarketBuyInputs:
     audit_decision: Callable[[str, str, str, list[str], dict[str, Any]], None]
     # 주문 실행 경계는 후보 메타데이터를 다시 해석하지 않고 상위 게이트가 확정한 전략 모드만 사용한다.
     strategy_mode: str = "SCALP"
+    btc_regime: str = "NORMAL"
 
 
 @dataclass
@@ -1747,6 +1750,23 @@ class TradingCycleEngine:
             allocation_label = "확장 후반 제한 추격" if momentum_phase == "EXTENDED" else "모멘텀 돌파 최초 소액"
             reason = f"[⚡{allocation_label}] {reason}"
 
+        risk_off_loss_reentry_blocked = False
+        risk_off_loss_reentry_payload: dict[str, Any] = {}
+        loss_reentry_guard = ctx.risk_off_loss_reentry_guard
+        if (
+            loss_reentry_guard is not None
+            and not is_holding
+            and action == "BUY"
+            and loss_reentry_guard.applies_to_entry_path(btc_regime, effective_candidate_type)
+        ):
+            blocked, block_info = loss_reentry_guard.check_reentry_blocked(market)
+            if blocked:
+                risk_off_loss_reentry_blocked = True
+                risk_off_loss_reentry_payload = block_info
+                action = "HOLD"
+                reason = f"[RISK_OFF 손실 재진입 차단] {block_info.get('summary', '')} | {reason}"
+                logger.info("[%s] RISK_OFF 모멘텀 돌파 당일 손실 재진입 차단", market)
+
         if use_new_listing_path and action == "BUY":
             target_price = entry_price * (1.0 + StrategyPolicy.NEW_LISTING_TARGET_PCT)
             stop_loss = entry_price * (1.0 - StrategyPolicy.NEW_LISTING_STOP_LOSS_PCT)
@@ -1824,23 +1844,33 @@ class TradingCycleEngine:
 
         ctx.latest_strategies[market] = latest_strategy_record
 
-        audit_decision(
-            market, "BUY_APPROVED" if action == "BUY" else "HOLD",
-            (
-                "NEW_LISTING" if use_new_listing_path
+        entry_policy_mode = (
+            "RISK_OFF_LOSS_REENTRY_BLOCK"
+            if risk_off_loss_reentry_blocked
+            else (
+                "NEW_LISTING"
+                if use_new_listing_path
                 else ("RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD")
-            ),
-            [] if action == "BUY" else [reason],
-            {
-                "current_price": current_price,
-                "btc_regime": btc_regime,
-                "is_loss_recovery_mode": is_cooldown,
-                "candidate": candidate_metadata,
-                "momentum_phase": momentum_phase,
-                "listing_maturity": listing_maturity,
-                "local_checklist": selected_entry.get("checklist_details", {}),
-                "recovery_checklist": recovery_entry.get("recovery_checklist", {}),
-            },
+            )
+        )
+        entry_audit_payload: dict[str, Any] = {
+            "current_price": current_price,
+            "btc_regime": btc_regime,
+            "is_loss_recovery_mode": is_cooldown,
+            "candidate": candidate_metadata,
+            "momentum_phase": momentum_phase,
+            "listing_maturity": listing_maturity,
+            "local_checklist": selected_entry.get("checklist_details", {}),
+            "recovery_checklist": recovery_entry.get("recovery_checklist", {}),
+        }
+        if risk_off_loss_reentry_blocked:
+            entry_audit_payload.update(risk_off_loss_reentry_payload)
+        audit_decision(
+            market,
+            "BLOCKED" if risk_off_loss_reentry_blocked else ("BUY_APPROVED" if action == "BUY" else "HOLD"),
+            entry_policy_mode,
+            [reason] if risk_off_loss_reentry_blocked or action != "BUY" else [],
+            entry_audit_payload,
         )
 
         if entry_profile.continue_on_inactive_status and status != "ACTIVE":
@@ -1965,6 +1995,37 @@ class TradingCycleEngine:
                 f"[{korean_name} / {market}] 이미 보유 중인 포지션({market_inputs.coin_value:,.0f}원)이므로 중복 매수를 건너뜁니다 (보유 유지)."
             )
             return True
+
+        loss_reentry_guard = ctx.risk_off_loss_reentry_guard
+        if (
+            loss_reentry_guard is not None
+            and loss_reentry_guard.applies_to_entry_path(
+                market_inputs.btc_regime,
+                market_inputs.candidate_type,
+            )
+        ):
+            blocked, block_info = loss_reentry_guard.check_reentry_blocked(market)
+            if blocked:
+                block_reason = block_info.get("summary", "당일 손실 재진입 차단")
+                logger.warning("[%s] 주문 직전 RISK_OFF 모멘텀 재진입 차단: %s", market, block_reason)
+                audit_decision(
+                    market,
+                    "BLOCKED",
+                    "RISK_OFF_LOSS_REENTRY_BLOCK",
+                    [block_reason],
+                    {
+                        "exchange": block_info.get("exchange", "upbit"),
+                        "market": market,
+                        "previous_exit_at": block_info.get("previous_exit_at"),
+                        "exit_reason": block_info.get("exit_reason"),
+                        "confirmed_net_pnl_krw": block_info.get("confirmed_net_pnl_krw"),
+                        "next_allowed_at": block_info.get("next_allowed_at"),
+                        "btc_regime": market_inputs.btc_regime,
+                        "candidate_type": market_inputs.candidate_type,
+                        "gate": "pre_submit_final",
+                    },
+                )
+                return True
 
         if (
             buy_profile.block_alt_on_btc_crash
@@ -2503,6 +2564,7 @@ class TradingCycleEngine:
                     now_str=now_str,
                     audit_decision=audit_decision,
                     strategy_mode=strategy_mode,
+                    btc_regime=btc_regime,
                 )):
                     continue
             except Exception as exc:
