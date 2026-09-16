@@ -1,60 +1,33 @@
 # Codex 프로젝트 규칙: Bithumb & Upbit AI Quant Trading Bot
 
-## 적용 범위
+## 적용 범위와 우선순위
 
-- 이 파일은 저장소 전체에 적용되는 Codex 작업 지침이다.
-- 더 하위 디렉터리에 `AGENTS.md`가 있으면 해당 디렉터리에서는 하위 지침을 함께 따른다.
-- 사용자 요청, 보안 규칙, 실행 환경 제약이 이 파일과 충돌하면 더 높은 우선순위 지침을 따른다.
+- 이 파일은 저장소 전체에 적용되는 공통 작업 규칙이자 규칙 문서의 진입점이다.
+- 사용자 요청, 보안 규칙, 실행 환경 제약이 이 문서와 충돌하면 더 높은 우선순위를 따른다.
+- 더 하위 디렉터리에 `AGENTS.md`가 있으면 해당 경로에서는 루트 규칙과 하위 규칙을 함께 적용한다.
+- 세부 규칙은 `docs/agent-rules/`가 단일 원본이다. 이 파일에는 어떤 작업에서도 누락되면 안 되는 최소 안전 규칙만 유지한다.
 
-## 프로젝트 개요
+## 모든 작업의 필수 규칙
 
-- 목적: 빗썸과 업비트를 지원하는 실시간 AI 퀀트 트레이딩 시스템이다.
-- 기술: Python 3.11, WebSocket, REST API, Google Gemini API(빗썸 및 업비트 독립 분리), Telegram API를 사용한다.
-- 설계 기준: 코드 변경 시 [PROJECT_DESIGN.md](PROJECT_DESIGN.md)와의 정합성을 확인하고, 설계가 달라지면 함께 갱신한다.
+- 모든 설명, 질문, 코드 주석, 문서는 한국어로 작성한다.
+- 기존 사용자 변경을 보존하고, 요청 범위를 벗어난 리팩터링이나 외부 API·URL·환경 변수·데이터 경로·주문 형식·대시보드 응답 계약 변경을 하지 않는다.
+- 빗썸과 업비트의 키, API 클라이언트, 포트, 주문 상태, 데이터, 로그, 거래 메모리를 절대로 혼합하지 않는다.
+- 주문 ACK·OPEN·Private WebSocket 이벤트만으로 체결·포지션·손익·쿨다운·거래 메모리를 갱신하지 않는다. REST 대사로 확정하기 전까지 신규 BUY는 fail-closed로 차단한다.
+- API 키, 시크릿, 토큰, 계좌·주문 식별자를 코드, 문서, 테스트, 로그, 응답에 노출하지 않는다.
+- 전략, 안전 정책, 데이터 흐름 또는 운영 절차를 변경하면 `PROJECT_DESIGN.md` 인덱스와 관련 `docs/project-design/` 문서, `changelog.md`를 같은 변경에서 갱신한다.
 
-## 주요 경로
+## 작업별 필독 규칙
 
-- `src/main.py`, `src/main_upbit.py`: 거래소별 엔진 진입점 및 내부 API이다.
-- `src/dashboard_server.py`: 통합 운영 대시보드 게이트웨이이다.
-- `src/strategy_engine.py`, `src/realtime_engine.py`: 전략 판단과 실시간 틱 및 리스크 처리 책임을 가진다.
-- `src/bithumb_api.py`, `src/upbit_api.py`: 거래소별 REST 인증 및 통신 경계이다.
-- `src/order_safety.py`, `src/risk_manager.py`: 주문 검증, 손익 관리, fail-closed 안전망을 담당한다.
-- `data/bithumb/`, `data/upbit/`: 거래소별 영구 상태를 분리해 보관한다.
-- `logs/`: 거래소별 트레이딩 로그를 보관한다.
+| 작업 유형 | 반드시 확인할 문서 |
+| --- | --- |
+| 주문, 체결, 잔고, WebSocket, 재조정, 리스크 변경 | [trading-safety.md](docs/agent-rules/trading-safety.md) |
+| 거래소별 키, Provider, 환경 변수, 포트, 데이터·로그 경로 변경 | [exchange-isolation.md](docs/agent-rules/exchange-isolation.md) |
+| 진입·청산·필터·임계값·비중·레짐·AI 판단 변경 | [strategy-change.md](docs/agent-rules/strategy-change.md), [전략 및 리스크](docs/project-design/strategy-and-risk.md) |
+| 대시보드, UI 표시, 운영 로그·상태 분석 변경 | [dashboard-operations.md](docs/agent-rules/dashboard-operations.md) |
+| 기능 구현 후 테스트, 문서화, 최종 보고 | [testing-reporting.md](docs/agent-rules/testing-reporting.md) |
 
-## 거래 안전 규칙
+## 문서 책임
 
-- 빗썸과 업비트의 환경 변수, 데이터, 로그, 포트, 주문 상태를 절대로 혼합하지 않는다.
-- 주문 접수 성공(ACK)만으로 체결 또는 포지션 변경으로 간주하지 않는다. REST 또는 Private WebSocket 체결 확인 뒤에만 포지션, 손익, 쿨다운, 거래 메모리를 갱신한다.
-- 주문·체결·잔고·시세·재조정 상태가 불확실하면 신규 매수는 차단하고, 기존 포지션 보호 로직은 유지한다.
-- 호가 스프레드나 잔량 검증 실패, 데이터 불가, 재조정 대기 상태에서는 fail-closed로 주문을 차단한다.
-- `identifier`와 주문 저널을 우회하거나 멱등성을 약화하는 변경을 하지 않는다.
-- 수동 관리 종목과 사용자가 명시한 제외 종목은 자동 매매, 긴급 매도, 자동 평가에서 제외한다.
-- API 키, 시크릿, 토큰, 계좌 식별 정보, 주문 식별자를 코드·문서·로그·응답에 노출하지 않는다.
-- 빗썸 AI는 `BITHUMB_AI_PROVIDER=gemini`와 전용 Gemini 키(`BITHUMB_GEMINI_API_KEY`)를 사용하며, 업비트 AI는 전용 Gemini 키(`UPBIT_GEMINI_API_KEY`)만 사용하고 공용 `GEMINI_API_KEY` 및 상호 키 fallback을 절대 금지한다. 두 거래소 모두 신규 BUY 주문 진입은 Flash-Lite 계열(`gemini-3.5-flash-lite` 최우선 시도 후 `gemini-3.1-flash-lite` 순차 폴백)만 사용하고, 거시 레짐 진단 및 브리핑은 일반 Flash(`gemini-3.8-flash`) 우선 시도 후 Flash-Lite 순차 폴백을 허용한다.
-- Gemini에 전달하는 모든 모델 지침은 분석 보조·거래소 데이터 격리·제공 데이터만 사용·ACK 비체결·불확실 신규 BUY 금지·비밀정보 비출력 원칙을 포함해야 한다. 키 누락 또는 Gemini 호출 실패는 신규 BUY를 fail-closed로 차단한다.
-- Groq 거시 시장 인텔리전스는 거래소별 전용 키(`BITHUMB_GROQ_API_KEY`, `UPBIT_GROQ_API_KEY`)만 사용하며, 공용 `GROQ_API_KEY`는 fallback으로도 읽거나 사용하지 않는다.
-- `BithumbAPI`와 `UpbitAPI`의 `exchange_name` 식별자를 훼손하거나 오케스트레이터의 거래소 스코프 판별을 우회하여 거래소 간 데이터 파일(`market_intelligence.json`)이 혼합되지 않도록 한다.
-
-## 변경 작업 방식
-
-- 변경 전에는 관련 코드, 테스트, 설정, 실제 호출 경계를 먼저 확인한다. 외부 API, URL, 환경 변수, 데이터 경로, 주문 형식, 대시보드 응답 계약은 명시적 요청 없이는 변경하지 않는다.
-- 대규모 리팩터링이나 전략 변경은 먼저 영향 범위와 구현 계획을 제시하고 승인 후 진행한다.
-- 코드에는 한국어 주석을 작성한다. 의도, 안전 조건, 예외 처리처럼 유지보수에 필요한 이유를 설명하되 자명한 동작을 반복하지 않는다.
-- 기능 변경에는 같은 수준의 단위 또는 회귀 테스트를 추가·갱신하고, 실행한 검증 명령과 결과를 최종 응답에 보고한다.
-- 전략, 안전 정책, 데이터 흐름, 운영 절차가 바뀌면 `PROJECT_DESIGN.md`도 같은 변경에서 갱신한다.
-- 전략의 추가·수정·삭제(진입·청산·필터·임계값·비중·레짐 경로 포함) 시에는 `src/gemini_analyzer.py`의 AI 분석 프롬프트와 `BithumbGeminiProvider.SYSTEM_INSTRUCTION`을 함께 최신화한다. 빗썸과 업비트 각각의 프롬프트·모델 지침이 레짐·세션·후보 경로·승인 기준·안전 차단 조건·JSON 응답 스키마 및 Provider 격리와 일치하는지 검증하고, 프롬프트 회귀 테스트와 `PROJECT_DESIGN.md` 설명도 같은 변경에서 갱신한다.
-- 기존 사용자 변경과 무관한 파일을 되돌리거나 삭제하지 않는다.
-
-## 운영 및 대시보드 규칙
-
-- 운영 상태 보고는 소스, 로그, 저장 상태, 체결 기록을 구분해 근거와 함께 제시한다. 추정은 확인된 사실처럼 표현하지 않는다.
-- 대시보드의 표시 전용 변경은 UI 경계에서 처리한다. 내부 상태 코드와 API 계약은 유지한다.
-- 이상 로그는 기본적으로 `WARNING` 이상만 노출한다. 거래소별 탭은 해당 거래소 데이터만 표시하고, 통합 화면만 두 거래소를 집계할 수 있다.
-- WebSocket 콜백 지연은 연결 끊김이나 이벤트 유실의 증거로 단정하지 않는다. 연결 종료 시에는 재구독과 REST 재조정 상태를 확인한다.
-
-## 응답 형식
-
-- 모든 설명, 질문, 코드 주석은 한국어로 작성한다.
-- 불필요한 인사말과 장황한 서론은 생략하고, 확인된 결과·영향·검증 결과를 우선 전달한다.
-- 코드 제안은 전체 파일을 반복하지 않고 필요한 변경 블록 또는 파일 링크를 제시한다.
+- `PROJECT_DESIGN.md`: 기존 참조를 보존하는 설계 문서 인덱스다. 실제 구현 구조, 정책, 데이터 흐름, 운영 절차와 변경 이력의 기준 문서는 `docs/project-design/`에 있다.
+- `.cursor/rules/bithumb-upbit-trading-safety.mdc`: Cursor 자동 적용용 최소 안전 규칙과 이 문서의 진입점이다.
+- `.agents/rules/00-core-safety.md`: Antigravity 워크스페이스 전용 규칙의 진입점이다. Antigravity Rules 화면에서 `Always On`으로 설정한다.
