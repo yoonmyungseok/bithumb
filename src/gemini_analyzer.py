@@ -2042,7 +2042,13 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
                 logger.info("✨ [%s] 09:00 종합 시황 브리핑 생성 성공 (Provider: %s, 모델: %s)", exchange_name, self.provider.name, result.model)
                 return clean_text
             if clean_text:
-                logger.warning("[%s] AI 브리핑 품질 검증 실패로 기본 브리핑을 사용합니다.", exchange_name)
+                logger.warning(
+                    "[%s] AI 브리핑 품질 검증 실패로 기본 브리핑을 사용합니다. (모델: %s, 길이: %d, 응답: %s)",
+                    exchange_name,
+                    result.model or "unknown",
+                    len(clean_text),
+                    repr(clean_text[:120]),
+                )
         except Exception as e:
             logger.debug(f"generate_market_briefing 예외: {e}")
 
