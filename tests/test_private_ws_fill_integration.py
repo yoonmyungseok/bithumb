@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock
 
@@ -21,6 +22,8 @@ class PrivateWSFillIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.test_dir = tempfile.mkdtemp(prefix="test_pws_fill_")
         self.journal = OrderJournal(data_dir=self.test_dir)
+        self.journal.reconciliation_state = "READY"
+        self.journal.reconciliation_metrics["last_completed_at"] = time.time()
         self.risk_manager = DailyRiskManager(data_dir=self.test_dir)
         self.trailing_tracker = TrailingStopTracker(data_dir=self.test_dir)
         self.trade_memory = TradeMemoryManager(data_dir=self.test_dir)

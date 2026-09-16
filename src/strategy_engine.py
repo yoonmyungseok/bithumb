@@ -201,12 +201,27 @@ class StrategyPolicy:
     TIME_STOP_BARS_5M: int = 24          # 5분봉 24개 = 120분 (백테스트 캔들 단위)
     TIME_STOP_BARS_5M_RISK_OFF: int = 24 # 알트코인 독립 매수: RISK_OFF 백테스트 캔들 단위 정상장(24봉) 일원화
     TIME_STOP_MAX_HOLD_BARS_5M: int = 36 # 최대 유예 36봉 (180분)
-    TIME_STOP_BREAKEVEN_MIN_PNL_PCT: float = 0.003 # 타임스탑 실질 본전 기준 (+0.30% 완충 마진 확보)
+    TIME_STOP_BREAKEVEN_MIN_PNL_PCT: float = 0.003  # 타임스탑 실질 본전 기본 기준 (+0.30% 완충 마진 확보)
+    PENNY_STOCK_PRICE_THRESHOLD: float = 10.0      # 단가 10원 미만 초저가 코인 기준
+    PENNY_STOCK_BEP_MIN_PNL_PCT: float = 0.0055   # 초저가주 수수료/슬리피지 방어 실질 본전 (+0.55%)
+    DEFAULT_BEP_MIN_PNL_PCT: float = 0.0035       # 일반 코인 실질 본전 (+0.35%)
     COOLDOWN_STOP_LOSS_SEC: float = 1800.0  # 손절 후 쿨다운 30분 (연속 손절 방어)
     COOLDOWN_TIME_STOP_SEC: float = 600.0   # 타임스탑 횡보 청산 후 쿨다운 10분
     COOLDOWN_TP_SEC: float = 300.0          # 트레일링 익절 후 쿨다운 5분 (2차 랠리 조기 참여)
     REENTRY_BUFFER_PCT: float = 0.012       # 직전 청산가 대비 최소 돌파/눌림목 갭 버퍼 (+1.2%)
     REENTRY_FILTER_EXPIRY_SEC: float = 2700.0  # 직전 청산가 갭 필터 유지 시간 (45분)
+
+    @classmethod
+    def get_effective_breakeven_min_pct(cls, current_price: float, fee_rate: float = 0.0005) -> float:
+        """
+        종목 단가 및 왕복 거래 수수료를 감안한 실질 본전 최소 수익률(단위: 비율, 예: 0.0035 = +0.35%)을 반환한다.
+        초저가주(10원 미만)는 호가 틱 갭 및 슬리피지를 방어하기 위해 더 높은 완충 마진(+0.55%)을 요구한다.
+        """
+        round_trip_fee = max(0.0, float(fee_rate or 0.0)) * 2.0
+        if current_price > 0 and current_price < cls.PENNY_STOCK_PRICE_THRESHOLD:
+            return max(cls.PENNY_STOCK_BEP_MIN_PNL_PCT, round_trip_fee + 0.0030)
+        return max(cls.DEFAULT_BEP_MIN_PNL_PCT, round_trip_fee + 0.0015)
+
 
     # 4. 하드 안전 게이트 (Hard Safety Gates) & 상대 강도(RS) 임계값
     ALPHA_BUY_THRESHOLD: int = 60        # 7대 팩터 복합 알파 승인 점수 (100점 만점)
@@ -237,7 +252,18 @@ class StrategyPolicy:
     MA_ALIGNMENT_RATIO: float = 0.995    # MA5 >= MA20 * 0.995
     PULLBACK_MA_ALIGNMENT_RATIO: float = 0.990  # 저점 반등은 MA20 아래 1% 이내 회복까지 허용
     RISK_OFF_ALLOC_RATIO: float = 1.0    # 알트코인 독립 매수: BTC 약세 레짐이어도 알트코인 진입 비중 100% 정상 유지
-    MTF_EMA20_RATIO: float = 0.970       # 1시간봉 EMA20 지지선 기준 (기존 0.980 -> 0.970 완화로 V자 반등 수용)
+    MTF_EMA20_RATIO_NORMAL: float = 0.980        # 정상장 1시간봉 EMA20 지지선 기준 (-2.0% 이내 지지선)
+    MTF_EMA20_RATIO_RISK_OFF: float = 0.980      # 약세장(RISK_OFF) 1시간봉 EMA20 지지선 기준 (-2.0% 이내 엄격 지지, 역추세 방어)
+    MTF_EMA20_RATIO: float = 0.980               # 기본 호환 별칭
+
+    @classmethod
+    def get_mtf_ema20_ratio(cls, btc_regime: str = "NORMAL") -> float:
+        """BTC 레짐별 1시간봉 EMA20 지지선 허용 비율을 반환한다."""
+        regime_upper = str(btc_regime or "NORMAL").upper()
+        if regime_upper == "RISK_OFF":
+            return cls.MTF_EMA20_RATIO_RISK_OFF
+        return cls.MTF_EMA20_RATIO_NORMAL
+
 
     # 4-0. AI 단독 자율 승인 (AI Direct Entry) 활성화
     # 로컬 퀀트 관망(allow_buy=False) 상태여도 품질 게이트(알파 50점 이상, 음봉 폭락 아님)를 통과한
@@ -876,14 +902,16 @@ def calculate_composite_alpha_score(
     if candles_1h and len(candles_1h) >= 20:
         prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
         ema20_1h = calculate_ema(prices_1h, 20)
+        mtf_threshold_ratio = StrategyPolicy.get_mtf_ema20_ratio(btc_regime)
         if prices_1h[0] >= ema20_1h:
             score_mtf = 15
             mtf_reason = "1H 정배열 강세"
-        elif prices_1h[0] >= (ema20_1h * 0.980):
+        elif prices_1h[0] >= (ema20_1h * mtf_threshold_ratio):
             score_mtf = 10
             mtf_reason = "1H 지지/초기 반등권"
         else:
-            score_mtf = 3
+            # 1H 역배열 추락 종목은 0점으로 감점 강화 (역추세 휩소 손절 방어)
+            score_mtf = 0
             mtf_reason = "1H 역배열 약세"
     else:
         score_mtf = 10
@@ -1228,8 +1256,8 @@ def entry_signal(
         else:
             prices_1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
             ema20_1h = calculate_ema(prices_1h, 20)
-        # 알트코인 독립 매수: 비트코인 급락(CRASH) 외에는 1H EMA20 지지선 기준을 StrategyPolicy SSOT(0.970)로 일관 적용
-        mtf_ratio = StrategyPolicy.MTF_EMA20_RATIO
+        # 알트코인 독립 매수: 레짐별 1H EMA20 지지선 기준을 StrategyPolicy SSOT(정상장 0.980, 약세장 0.990)로 적용
+        mtf_ratio = StrategyPolicy.get_mtf_ema20_ratio(btc_regime)
         mtf_allowed = current_1h >= (ema20_1h * mtf_ratio)
         mtf_reason = f"1H {current_1h:.1f} {'>=' if mtf_allowed else '<'} EMA20 {ema20_1h:.1f} (기준 {mtf_ratio:.3f})"
 

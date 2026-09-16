@@ -15,6 +15,12 @@ from gemini_analyzer import GeminiAnalyzer
 class TestGeminiEntryPromptContract(unittest.TestCase):
     """신규 진입 AI 요청이 증거 우선·경로 분리 안전 계약을 포함하는지 검증한다."""
 
+    def setUp(self):
+        super().setUp()
+        analyzer = GeminiAnalyzer(api_key="test-key")
+        if hasattr(analyzer, "_analysis_cache"):
+            analyzer._analysis_cache.clear()
+
     @patch("requests.post")
     def test_entry_prompt_requires_evidence_and_invalidation(self, mock_post):
         """실제 API 전송 본문에 판정불가 HOLD와 반증 절차가 포함되어야 한다."""

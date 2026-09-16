@@ -4,6 +4,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock
 
@@ -18,6 +19,8 @@ class OrderReconciliationStabilityTests(unittest.TestCase):
     def setUp(self):
         self.test_dir = tempfile.mkdtemp(prefix="test_order_reconcile_stability_")
         self.journal = OrderJournal(data_dir=self.test_dir, exchange_scope="bithumb")
+        self.journal.reconciliation_state = "READY"
+        self.journal.reconciliation_metrics["last_completed_at"] = time.time()
         self.risk = DailyRiskManager(data_dir=self.test_dir)
         self.memory = TradeMemoryManager(data_dir=self.test_dir, exchange_scope="bithumb")
         self.processor = OrderFillProcessor(

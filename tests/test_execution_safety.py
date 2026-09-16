@@ -37,6 +37,8 @@ class TestExecutionSafetyComprehensive(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.data_dir = self.temp_dir.name
         self.journal = OrderJournal(data_dir=self.data_dir)
+        self.journal.reconciliation_state = "READY"
+        self.journal.reconciliation_metrics["last_completed_at"] = time.time()
         self.executor = SafeOrderExecutor(self.journal)
         self.risk_manager = DailyRiskManager(data_dir=self.data_dir)
         self.trade_memory = TradeMemoryManager(data_dir=self.data_dir)

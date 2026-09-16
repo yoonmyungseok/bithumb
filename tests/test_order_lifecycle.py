@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock
 
@@ -19,6 +20,8 @@ class TestOrderLifecycle(unittest.TestCase):
         self.journal_path = os.path.join(self.temp_dir.name, "order_journal.json")
         self.memory_path = os.path.join(self.temp_dir.name, "trade_memory.json")
         self.journal = OrderJournal(path=self.journal_path)
+        self.journal.reconciliation_state = "READY"
+        self.journal.reconciliation_metrics["last_completed_at"] = time.time()
         self.executor = SafeOrderExecutor(journal=self.journal)
         self.trade_memory = TradeMemoryManager(memory_file=self.memory_path)
 

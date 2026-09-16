@@ -303,9 +303,15 @@ class DatabaseManager:
         btc_trend = str(trade.get("btc_trend", "") or trade.get("btc_regime", ""))
         factor_scores = json.dumps(trade.get("factor_scores", trade.get("indicators", {})), ensure_ascii=False)
         raw_data = json.dumps(trade, ensure_ascii=False)
+        tid = str(trade.get("trade_id", "")).strip()
 
         with _DB_LOCK, self._get_connection() as conn:
             cursor = conn.cursor()
+            if tid:
+                cursor.execute("SELECT id FROM trade_memory WHERE raw_data LIKE ? LIMIT 1", (f'%"{tid}"%',))
+                if cursor.fetchone():
+                    logger.debug("SQLite trade_memory에 이미 존재하는 trade_id(%s) 건너뜀", tid)
+                    return 0
             cursor.execute("""
                 INSERT INTO trade_memory (
                     exchange, market, entry_time, exit_time, entry_price, exit_price,

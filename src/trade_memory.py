@@ -189,7 +189,13 @@ class TradeMemoryManager:
             "hold_duration_min": hold_min,
         }
         trade_item.update(extra_fields)
+        target_tid = str(trade_item.get("trade_id", "")).strip()
         with self._lock:
+            if target_tid:
+                for existing in self.trades:
+                    if str(existing.get("trade_id", "")).strip() == target_tid:
+                        logger.info("동일 trade_id(%s) 중복 기록 차단", target_tid)
+                        return
             self.trades.append(trade_item)
             self._save_memory()
             try:

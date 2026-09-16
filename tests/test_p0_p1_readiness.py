@@ -4,6 +4,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -73,6 +74,8 @@ class ReadinessP0P1Tests(unittest.TestCase):
     def test_exit_fill_copies_entry_snapshot_but_ack_creates_no_memory(self):
         """ACK는 성과 기록을 만들지 않고, 실제 매도 체결만 진입 스냅샷을 복사해야 한다."""
         journal = OrderJournal(data_dir=self.test_dir)
+        journal.reconciliation_state = "READY"
+        journal.reconciliation_metrics["last_completed_at"] = time.time()
         memory = TradeMemoryManager(data_dir=self.test_dir)
         processor = OrderFillProcessor(order_journal=journal, trade_memory=memory)
         executor = SafeOrderExecutor(journal)

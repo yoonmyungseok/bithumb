@@ -13,6 +13,7 @@ from order_safety.markets import get_excluded_markets_set
 from order_safety.orderbook import evaluate_buy_orderbook_impact
 from order_safety.position_sizing import calculate_partial_take_profit_volume
 from order_safety.pre_buy_gate import AckReconcileScheduler, evaluate_pre_buy_submit_gate
+from order_safety.risk_off_loss_reentry import RiskOffLossReentryGuard
 from order_safety.tick_utils import adjust_price_to_tick, round_price_to_tick
 from order_safety.types import AmbiguousOrderError, OrderStatus
 from risk_controls import RiskGuard, calculate_risk_position_size, get_dynamic_portfolio_tiers
@@ -26,6 +27,7 @@ __all__ = [
     "OrderJournal",
     "OrderStatus",
     "RiskGuard",
+    "RiskOffLossReentryGuard",
     "SafeOrderExecutor",
     "adjust_price_to_tick",
     "round_price_to_tick",

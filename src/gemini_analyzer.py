@@ -1308,13 +1308,13 @@ class GeminiAnalyzer:
 
 ### [4. 7대 복합 팩터 앙상블 매수 승인 규칙]
 신규 매수(BUY) 승인을 내리기 위해서는 아래 7대 팩터 종합 점수가 **이번 요청의 현재 알파 승인 기준({current_alpha_threshold}점) 이상**이어야 합니다:
-1. [MTF 1H 추세] 1시간봉 대세 하락장이 아니거나, 1시간봉이 약세/조정이더라도 5분봉 지지선 안착 및 기술적 반등 시그널이 확보될 것.
+1. [MTF 1H 추세] 1시간봉 대세 하락장이 아니거나, 1시간봉이 약세/조정이더라도 5분봉 지지선 안착 및 기술적 반등 시그널이 확보될 것 (단, 약세장 RISK_OFF 시 1H EMA20 대비 -2.0% 초과 이탈한 극심한 역추세는 배제).
 2. [VWAP 기관 수급] 현재가가 VWAP 상단에 안착 지지 또는 돌파할 것.
 3. [MACD 가속도] 히스토그램 기울기가 양의 방향으로 가속 확장 중이거나, 음의 모멘텀이 둔화되어 반등 전환 조짐일 것.
 4. [RSI 골든존] 5분봉 RSI가 35 ~ 72 사이일 것 (RSI 40~65 최적).
 5. [볼린저 밴드 & 이격] MA20 이격도 97.5%~102.5% 및 %B <= 0.72 (약세장 RISK_OFF 시 %B <= 0.65).
 6. [수급 & 호가창] 호가 갭 <= 0.50%, 체결강도 75% 이상 또는 고래 유입.
-7. [기대 손익비] (목표가 - 진입가) >= 1.3 * (진입가 - 손절가) 수학적 보장.
+7. [기대 손익비 & 수수료 완충] (목표가 - 진입가) >= 1.3 * (진입가 - 손절가) 수학적 보장. 특히 단가 10원 미만 초저가 코인은 수수료·슬리피지 방어를 위해 최소 +0.55% 이상의 완충 마진을 확보할 것.
 
 ※ [엄격한 상투 추격 매수 금지] 이미 최근 캔들이 급등하여 볼린저 밴드 상단(%B >= 0.72)에 도달했거나 거래량이 터진 뒤 윗꼬리가 달린 종목의 추격 매수(Chasing the Top)는 절대 금지(HOLD)합니다. 5분봉 MA20 또는 VWAP 지지선에서 안정적인 저점 눌림목 안착이 확인되고 손익비가 1:1.3 이상 확보된 경우에만 BUY를 승인하세요.
 
@@ -1486,14 +1486,16 @@ class GeminiAnalyzer:
         # 로컬 손절·트레일링은 AI와 독립적으로 즉시 실행된다. AI는 보조 판단이므로
         # 보유 포지션도 15분 캐시를 사용하고, 손익 구간 전환 때만 별도 재평가한다.
         pnl_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100.0 if avg_buy_price > 0 else 0.0
-        adaptive_ttl = max(300.0, float(os.getenv("GEMINI_HOLDING_CACHE_SEC", "900")))
         pnl_band = "LOSS_ALERT" if pnl_pct <= -2.0 else ("PROFIT_PROTECT" if pnl_pct >= 2.0 else "NORMAL")
+        adaptive_ttl = 60.0 if pnl_band == "LOSS_ALERT" else max(300.0, float(os.getenv("GEMINI_HOLDING_CACHE_SEC", "900")))
 
         # 거래소와 손익 구간을 키에 포함해 거래소 혼합을 막고 임계값 통과 시에만 즉시 재평가한다.
         exchange_scope = str(getattr(self.provider, "exchange", "default")).lower()
         cache_key = f"HOLDING:{exchange_scope}:{market}:{pnl_band}"
-        if hasattr(self, "_holding_eval_cache") and cache_key in self._holding_eval_cache:
-            cached = self._holding_eval_cache[cache_key]
+        legacy_key = f"HOLDING:{market}"
+        lookup_key = cache_key if (hasattr(self, "_holding_eval_cache") and cache_key in self._holding_eval_cache) else legacy_key
+        if hasattr(self, "_holding_eval_cache") and lookup_key in self._holding_eval_cache:
+            cached = self._holding_eval_cache[lookup_key]
             if (time.time() - float(cached.get("cached_at", 0))) < adaptive_ttl:
                 self._record_cache_hit(market)
                 return dict(cached["result"])

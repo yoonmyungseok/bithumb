@@ -1173,7 +1173,12 @@ class TradingCycleEngine:
                 is_holding_support = (current_price >= ma20_5m) or is_above_vwap
                 is_trend_broken = (ma5_5m < ma20_5m * 0.995) and (not is_above_vwap)
 
-        be_threshold_pct = StrategyPolicy.TIME_STOP_BREAKEVEN_MIN_PNL_PCT * 100.0
+        effective_be_pct = (
+            StrategyPolicy.get_effective_breakeven_min_pct(current_price) * 100.0
+            if hasattr(StrategyPolicy, "get_effective_breakeven_min_pct")
+            else StrategyPolicy.TIME_STOP_BREAKEVEN_MIN_PNL_PCT * 100.0
+        )
+        be_threshold_pct = effective_be_pct
         is_breakeven_or_profit = pnl_pct_current >= be_threshold_pct
         is_time_stop_profit_trigger = (
             hold_duration_sec >= effective_time_stop
@@ -1185,10 +1190,11 @@ class TradingCycleEngine:
             and (pnl_pct_current < be_threshold_pct)
         )
         # 상승장(BULL_TREND)에서는 단기 횡보 숨고르기가 정상적이므로 조기 모멘텀 탈출을 비활성화하여 털림 방지
+        # 초저가주/일반주의 실질 수수료 BEP 마진 미달 구간(-0.50% ~ BEP 미만)에서 추세 이탈 시 모멘텀 조기 탈출
         is_early_momentum_exit = (
             (btc_regime != "BULL_TREND")
             and hold_duration_sec >= StrategyPolicy.MOMENTUM_EARLY_EXIT_SECONDS
-            and (-0.50 <= pnl_pct_current <= 0.30)
+            and (-0.50 <= pnl_pct_current < effective_be_pct)
             and (not is_above_vwap)
             and is_trend_broken
         )
@@ -1763,20 +1769,31 @@ class TradingCycleEngine:
 
         risk_off_loss_reentry_blocked = False
         risk_off_loss_reentry_payload: dict[str, Any] = {}
-        loss_reentry_guard = ctx.risk_off_loss_reentry_guard
+        loss_reentry_guard = getattr(ctx, "risk_off_loss_reentry_guard", None)
         if (
             loss_reentry_guard is not None
             and not is_holding
             and action == "BUY"
-            and loss_reentry_guard.applies_to_entry_path(btc_regime, effective_candidate_type)
+            and hasattr(loss_reentry_guard, "applies_to_entry_path")
         ):
-            blocked, block_info = loss_reentry_guard.check_reentry_blocked(market)
-            if blocked:
-                risk_off_loss_reentry_blocked = True
-                risk_off_loss_reentry_payload = block_info
-                action = "HOLD"
-                reason = f"[RISK_OFF 손실 재진입 차단] {block_info.get('summary', '')} | {reason}"
-                logger.info("[%s] RISK_OFF 모멘텀 돌파 당일 손실 재진입 차단", market)
+            try:
+                if loss_reentry_guard.applies_to_entry_path(btc_regime, effective_candidate_type, market=market):
+                    guard_res = loss_reentry_guard.check_reentry_blocked(
+                        market, btc_regime=btc_regime, candidate_type=effective_candidate_type,
+                    )
+                    if isinstance(guard_res, tuple) and len(guard_res) >= 2:
+                        blocked, block_info = guard_res[0], guard_res[1]
+                        if blocked:
+                            risk_off_loss_reentry_blocked = True
+                            risk_off_loss_reentry_payload = block_info if isinstance(block_info, dict) else {}
+                            action = "HOLD"
+                            reason = (
+                                f"당일 손실 재진입 차단({risk_off_loss_reentry_payload.get('summary', '')}) "
+                                f"| {reason}"
+                            )
+                            logger.info("[%s] 당일 손실 재진입 차단 (손실횟수=%d회)", market, risk_off_loss_reentry_payload.get("loss_count", 1))
+            except Exception as exc:
+                logger.warning("[%s] 손실 재진입 가드 판정 예외: %s", market, exc)
 
         if use_new_listing_path and action == "BUY":
             target_price = entry_price * (1.0 + StrategyPolicy.NEW_LISTING_TARGET_PCT)
@@ -2030,36 +2047,43 @@ class TradingCycleEngine:
             )
             return True
 
-        loss_reentry_guard = ctx.risk_off_loss_reentry_guard
+        loss_reentry_guard = getattr(ctx, "risk_off_loss_reentry_guard", None)
         if (
             loss_reentry_guard is not None
-            and loss_reentry_guard.applies_to_entry_path(
-                market_inputs.btc_regime,
-                market_inputs.candidate_type,
-            )
+            and hasattr(loss_reentry_guard, "applies_to_entry_path")
         ):
-            blocked, block_info = loss_reentry_guard.check_reentry_blocked(market)
-            if blocked:
-                block_reason = block_info.get("summary", "당일 손실 재진입 차단")
-                logger.warning("[%s] 주문 직전 RISK_OFF 모멘텀 재진입 차단: %s", market, block_reason)
-                audit_decision(
-                    market,
-                    "BLOCKED",
-                    "RISK_OFF_LOSS_REENTRY_BLOCK",
-                    [block_reason],
-                    {
-                        "exchange": block_info.get("exchange", "upbit"),
-                        "market": market,
-                        "previous_exit_at": block_info.get("previous_exit_at"),
-                        "exit_reason": block_info.get("exit_reason"),
-                        "confirmed_net_pnl_krw": block_info.get("confirmed_net_pnl_krw"),
-                        "next_allowed_at": block_info.get("next_allowed_at"),
-                        "btc_regime": market_inputs.btc_regime,
-                        "candidate_type": market_inputs.candidate_type,
-                        "gate": "pre_submit_final",
-                    },
-                )
-                return True
+            try:
+                if loss_reentry_guard.applies_to_entry_path(
+                    market_inputs.btc_regime,
+                    market_inputs.candidate_type,
+                    market=market,
+                ):
+                    guard_res = loss_reentry_guard.check_reentry_blocked(
+                        market,
+                        btc_regime=market_inputs.btc_regime,
+                        candidate_type=market_inputs.candidate_type,
+                    )
+                    if isinstance(guard_res, tuple) and len(guard_res) >= 2 and guard_res[0]:
+                        block_info = guard_res[1] if isinstance(guard_res[1], dict) else {}
+                        block_reason = block_info.get("summary", "당일 손실 재진입 차단")
+                        logger.warning("[%s] 주문 직전 당일 손실 재진입 차단: %s", market, block_reason)
+                        audit_decision(
+                            market,
+                            "BLOCKED",
+                            "RISK_OFF_LOSS_REENTRY_BLOCK",
+                            [block_reason],
+                            {
+                                "exchange": block_info.get("exchange", "upbit"),
+                                "market": market,
+                                "previous_exit_at": block_info.get("previous_exit_at"),
+                                "exit_reason": block_info.get("exit_reason"),
+                                "loss_count": block_info.get("loss_count", 1),
+                                "next_allowed_at": block_info.get("next_allowed_at"),
+                            },
+                        )
+                        return True
+            except Exception as exc:
+                logger.warning("[%s] 주문 직전 손실 재진입 가드 판정 예외: %s", market, exc)
 
         if (
             buy_profile.block_alt_on_btc_crash
@@ -2082,6 +2106,22 @@ class TradingCycleEngine:
         stop_loss = market_inputs.stop_loss
         current_price = market_inputs.current_price
 
+        # 스마트 오더 체결 (Smart Order Placement):
+        # 고알파(>=80점) A+ 셋업 또는 모멘텀 돌파 경로의 경우,
+        # 호가 스프레드가 0.20% 이하로 매우 촘촘하면 최우선 매도호가(Ask 1)로 제출하여 즉시 체결 유도 (미체결 취소 방지)
+        alpha_score = int(market_inputs.selected_entry.get("alpha_score", 0) or 0)
+        is_high_conviction = (alpha_score >= 80) or (str(market_inputs.candidate_type).upper() == "MOMENTUM_BREAKOUT")
+        smart_taker_price = None
+        if is_high_conviction and market_inputs.orderbook:
+            ob_units = market_inputs.orderbook.get("orderbook_units") or []
+            if ob_units:
+                best_ask = float(ob_units[0].get("ask_price", 0.0) or 0.0)
+                best_bid = float(ob_units[0].get("bid_price", 0.0) or 0.0)
+                if best_ask > 0 and best_bid > 0:
+                    spread_ratio = (best_ask - best_bid) / best_bid
+                    if spread_ratio <= 0.0020 and best_ask <= current_price * 1.003:
+                        smart_taker_price = best_ask
+
         if buy_profile.use_slot_based_budget:
             effective_capital = (
                 current_total_equity
@@ -2093,7 +2133,9 @@ class TradingCycleEngine:
                 krw_available,
                 max_slot_budget * (alloc_pct / dyn_max_pos_pct if alloc_pct < dyn_max_pos_pct else 1.0),
             )
-            if buy_profile.use_entry_price_guard:
+            if smart_taker_price is not None:
+                order_price = smart_taker_price
+            elif buy_profile.use_entry_price_guard:
                 order_price = entry_price if (0 < entry_price <= current_price * 1.002) else current_price
             else:
                 order_price = entry_price or current_price
@@ -2115,7 +2157,8 @@ class TradingCycleEngine:
             effective_risk_budget = risk_based_budget if risk_based_budget > 0 else slot_budget
             trade_budget = min(krw_available, slot_budget, effective_risk_budget)
         else:
-            order_price = exchange.adjust_price_to_tick(entry_price or current_price, side="bid")
+            base_order_price = smart_taker_price or entry_price or current_price
+            order_price = exchange.adjust_price_to_tick(base_order_price, side="bid")
             alloc_pct = alloc_pct or dyn_max_pos_pct
             max_slot_budget = current_total_equity * alloc_pct
             risk_scale = ctx.risk_manager.get_risk_scale_factor()

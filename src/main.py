@@ -21,6 +21,7 @@ from order_safety import (
     OrderFillProcessor,
     OrderJournal,
     RiskGuard,
+    RiskOffLossReentryGuard,
     SafeOrderExecutor,
     get_dynamic_portfolio_tiers,
     write_json_atomically,
@@ -215,6 +216,8 @@ trailing_tracker = TrailingStopTracker(
 risk_manager = DailyRiskManager(max_loss_pct=MAX_DAILY_LOSS_PCT)
 # 빗썸 판단 이력은 data/trading.db에만 기록해 업비트 DB와 분리한다.
 decision_db = get_db_manager(get_exchange_db_path(DATA_DIR))
+# 당일 손실 재진입 차단 및 2연패 소프트 블랙리스트 (빗썸 전용 상태 파일).
+risk_off_loss_reentry_guard = RiskOffLossReentryGuard(data_dir=DATA_DIR, exchange="bithumb")
 telegram = TelegramAlert(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
 fill_processor = OrderFillProcessor(
     order_journal=order_journal,
@@ -222,6 +225,7 @@ fill_processor = OrderFillProcessor(
     trade_memory=trade_memory,
     trailing_tracker=trailing_tracker,
     cooldown_manager=cooldown_manager,
+    risk_off_loss_reentry_guard=risk_off_loss_reentry_guard,
     telegram=telegram,
 )
 
@@ -457,6 +461,7 @@ cycle_engine = TradingCycleEngine(
         trade_memory=trade_memory,
         latest_strategies=LATEST_STRATEGIES,
         strategy_cache_manager=strategy_cache_mgr,
+        risk_off_loss_reentry_guard=risk_off_loss_reentry_guard,
         ack_reconcile_scheduler=ack_reconcile_scheduler,
     ),
 )
