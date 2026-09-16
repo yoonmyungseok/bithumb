@@ -15,8 +15,8 @@ def test_strategy_policy_constants():
     assert StrategyPolicy.TRAILING_ATR_MULTIPLIER == 1.5
     assert StrategyPolicy.MIN_TRAILING_GAP_PCT == 0.015
     assert StrategyPolicy.MIN_PROFIT_BUFFER_PCT >= 0.015
-    assert StrategyPolicy.DEFAULT_ALT_ALLOC_PCT == 0.08
-    assert StrategyPolicy.MAX_ALT_ALLOC_PCT == 0.10
+    assert StrategyPolicy.DEFAULT_ALT_ALLOC_PCT == 0.10
+    assert StrategyPolicy.MAX_ALT_ALLOC_PCT == 0.15
     assert StrategyPolicy.MIN_ALT_ALLOC_PCT == 0.05
     assert StrategyPolicy.NIGHT_SESSION_MAX_ALLOC_PCT == 0.05
 
@@ -89,7 +89,7 @@ def test_tighten_stop_buffer_guard_over_2_percent():
 
 
 def test_altcoin_balanced_sizing_clamping():
-    """알트코인 포지션 사이징이 5%~10%로 균등 클램핑되고 심야에 5%로 캡이 씌워지는지 검증"""
+    """알트코인 포지션 사이징이 5%~15%로 균등 클램핑되고 심야에 5%로 캡이 씌워지는지 검증"""
     total_equity = 1_200_000.0
     krw_available = 1_000_000.0
     market = "KRW-NEWT"
@@ -99,13 +99,13 @@ def test_altcoin_balanced_sizing_clamping():
     assert strategy_mode != "SWING"
 
     min_alt_budget = total_equity * StrategyPolicy.MIN_ALT_ALLOC_PCT  # 60,000원
-    max_alt_budget_day = total_equity * StrategyPolicy.MAX_ALT_ALLOC_PCT  # 120,000원
+    max_alt_budget_day = total_equity * StrategyPolicy.MAX_ALT_ALLOC_PCT  # 180,000원
     max_alt_budget_night = total_equity * StrategyPolicy.NIGHT_SESSION_MAX_ALLOC_PCT  # 60,000원
 
-    # 케이스 1: 주간에 240,000원(20%) 몰빵 시도 ➜ 120,000원(10%)으로 클램핑
+    # 케이스 1: 주간에 240,000원(20%) 몰빵 시도 ➜ 180,000원(15%)으로 클램핑
     trade_budget = 240_000.0
     clamped_day = min(krw_available, max(min_alt_budget, min(trade_budget, max_alt_budget_day)))
-    assert clamped_day == 120_000.0
+    assert clamped_day == 180_000.0
 
     # 케이스 2: 심야에 240,000원 몰빵 시도 ➜ 60,000원(5%)으로 하드 캡
     clamped_night = min(krw_available, max(min_alt_budget, min(trade_budget, max_alt_budget_night)))

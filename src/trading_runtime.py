@@ -621,7 +621,7 @@ class TradingCycleEngine:
 
         # 아래 상태에서는 신규 매수가 불가능하므로 후보 순위용 외부 AI 호출만 생략한다.
         # 보유 포지션의 청산·방어 및 REST 체결 재조정은 이 조건과 무관하게 계속 실행한다.
-        is_entry_ready = ctx.order_journal.is_entry_ready()
+        is_entry_ready = bool(ctx.order_journal.is_entry_ready()) if hasattr(ctx.order_journal, "is_entry_ready") else True
         allow_ai_candidate_ranking = not (
             is_paused or is_kill_switch or is_btc_crashing or not is_entry_ready
         )
@@ -2174,8 +2174,8 @@ class TradingCycleEngine:
             )
             trade_budget = min(krw_available, max_slot_budget, calculated_size)
 
-        # 알트코인 포지션 사이징 균등화 (5% ~ 10% 균등 분할 & 심야 5% 캡)
-        # 특정 종목 20~25% 몰빵 및 1만원 미만 푼돈 진입 쏠림을 원천 차단
+        # 알트코인 포지션 사이징 균등화 (5% ~ 15% 균등 분할 & 심야 5% 캡)
+        # 특정 종목 몰빵 및 1만원 미만 푼돈 진입 쏠림을 원천 차단
         is_major = is_major_market(market)
         is_swing = (strategy_mode == "SWING")
         if not is_major and not is_swing and current_total_equity > 0:
@@ -2183,7 +2183,7 @@ class TradingCycleEngine:
             max_alt_alloc = (
                 getattr(StrategyPolicy, "NIGHT_SESSION_MAX_ALLOC_PCT", 0.05)
                 if is_night_session()
-                else getattr(StrategyPolicy, "MAX_ALT_ALLOC_PCT", 0.10)
+                else getattr(StrategyPolicy, "MAX_ALT_ALLOC_PCT", 0.15)
             )
             max_alt_budget = current_total_equity * max_alt_alloc
 
@@ -2398,7 +2398,7 @@ class TradingCycleEngine:
         current_total_equity = prefix.current_total_equity
         now_str = prefix.now_str
         is_bot_paused = self.config.is_bot_paused()
-        is_entry_ready = ctx.order_journal.is_entry_ready()
+        is_entry_ready = bool(ctx.order_journal.is_entry_ready()) if hasattr(ctx.order_journal, "is_entry_ready") else True
         slow_markets = slow_markets if slow_markets is not None else []
 
         # 거래소별 격리된 텔레메트리로부터 일일 쿼터 가드 상태를 도출한다.
@@ -2419,7 +2419,7 @@ class TradingCycleEngine:
             # 로컬 게이트 상위 2개만 AI 심층 분석해 5분 주기 다종목 반복 호출을 제한한다.
             max_ai_candidates = min(2, max(1, default_max_ai))
 
-        # 확실한 진입 차단 상태에서는 개별 신규 진입 AI 분석도 수행하지 않는다.
+        # 확실한 전역 진입 차단 상태에서는 개별 신규 진입 AI 분석도 수행하지 않는다.
         if is_bot_paused or is_kill_switch or is_btc_crashing or not is_entry_ready:
             ai_budget_remaining = 0
         else:
@@ -2596,7 +2596,7 @@ class TradingCycleEngine:
                     is_extreme_fear=is_extreme_fear,
                     is_bot_paused=is_bot_paused,
                     is_kill_switch=is_kill_switch,
-                    is_entry_ready=is_entry_ready,
+                    is_entry_ready=(ctx.order_journal.is_entry_ready(market) if hasattr(ctx.order_journal, "is_entry_ready") else True),
                     dyn_max_pos_pct=dyn_max_pos_pct,
                     now_str=now_str,
                     audit_decision=audit_decision,
@@ -2668,7 +2668,7 @@ class TradingCycleEngine:
                     candles_5m=candles_5m,
                     is_bot_paused=is_bot_paused,
                     is_kill_switch=is_kill_switch,
-                    is_entry_ready=is_entry_ready,
+                    is_entry_ready=(ctx.order_journal.is_entry_ready(market) if hasattr(ctx.order_journal, "is_entry_ready") else True),
                     is_btc_crashing=is_btc_crashing,
                     btc_status_msg=btc_status_msg,
                     current_total_equity=current_total_equity,

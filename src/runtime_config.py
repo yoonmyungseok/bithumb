@@ -330,6 +330,17 @@ COMMON_CONFIG_SCHEMA: dict[str, ConfigFieldDef] = {
         description="상장 72시간 이내 단타 전략에 배정할 최대 보유 종목 수입니다. (0이면 비활성화)",
         unit="개",
     ),
+    "MAX_ALT_ALLOC_PCT": ConfigFieldDef(
+        key="MAX_ALT_ALLOC_PCT",
+        type_name="percent",
+        default=0.15,
+        min_val=0.05,
+        max_val=0.50,
+        category="portfolio",
+        label="알트코인 단일 최대 비중 (상한 캡)",
+        description="알트코인 단타 진입 시 종목당 투입할 수 있는 최대 비중 상한선입니다.",
+        unit="%",
+    ),
 }
 
 

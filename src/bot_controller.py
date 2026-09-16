@@ -707,6 +707,9 @@ class BotController:
                 os.environ[key] = str(val)
 
         # 3. 인메모리 컴포넌트 실시간 주입
+        if "MAX_ALT_ALLOC_PCT" in normalized_updates:
+            StrategyPolicy.MAX_ALT_ALLOC_PCT = normalized_updates["MAX_ALT_ALLOC_PCT"]
+
         if self.trailing_tracker:
             if "TRAILING_START_PCT" in normalized_updates:
                 self.trailing_tracker.start_profit_pct = normalized_updates["TRAILING_START_PCT"]

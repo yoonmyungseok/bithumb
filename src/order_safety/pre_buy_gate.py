@@ -49,8 +49,8 @@ def evaluate_pre_buy_submit_gate(
         details["blocking_status"] = "RECONCILIATION_PENDING"
         return False, "PRE_BUY_RECONCILIATION_PENDING", reason, details
 
-    # 전역 REST 대사·저널 영속화가 READY가 아니면 불확실 상태로 신규 BUY만 차단한다.
-    if not order_journal.is_entry_ready():
+    # 전역 REST 대사·저널 영속화가 READY가 아니거나 해당 종목이 차단 상태면 신규 BUY를 차단한다.
+    if not order_journal.is_entry_ready(market):
         state = str(getattr(order_journal, "reconciliation_state", "PENDING"))
         suspend_reason = str(
             (getattr(order_journal, "reconciliation_metrics", {}) or {}).get("last_suspend_reason", "")

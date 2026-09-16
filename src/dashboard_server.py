@@ -1961,6 +1961,10 @@ class UnifiedDashboardServer:
                             <input type="number" id="cfg_MAX_POSITION_PCT" readonly class="w-full bg-slate-900/80 border border-indigo-500/30 rounded px-2.5 py-1 text-xs font-bold text-indigo-200 cursor-not-allowed">
                         </div>
                         <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-xs font-semibold block mb-1">🪙 알트코인 단일 최대 비중 (%)</label>
+                            <input type="number" id="cfg_MAX_ALT_ALLOC_PCT" step="1" min="5" max="50" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                        </div>
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
                             <label class="text-xs font-semibold block mb-1">총 익스포저 최대 비중 (%)</label>
                             <input type="number" id="cfg_MAX_TOTAL_EXPOSURE_PCT" step="5" min="10" max="100" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
                         </div>

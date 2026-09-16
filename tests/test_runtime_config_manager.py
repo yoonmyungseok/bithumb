@@ -34,7 +34,8 @@ class TestCommonConfigManager(unittest.TestCase):
             "ORDERBOOK_SLIPPAGE_ENFORCEMENT", "TOP_COUNT", "MIN_TRADE_VALUE", "MIN_CHANGE_RATE",
             "MAX_CHANGE_RATE", "MOMENTUM_BREAKOUT_ENABLED", "NEW_LISTING_ENABLED", "NEW_LISTING_ENFORCEMENT",
             "MAX_OPEN_POSITIONS", "MAX_POSITION_PCT", "MAX_TOTAL_EXPOSURE_PCT", "MAX_ORDER_KRW",
-            "MAX_SWING_POSITIONS", "MAX_NEW_LISTING_POSITIONS", "MAX_SCALP_POSITIONS"
+            "MAX_SWING_POSITIONS", "MAX_NEW_LISTING_POSITIONS", "MAX_SCALP_POSITIONS",
+            "MAX_ALT_ALLOC_PCT"
         ]
         settings = self.manager.get_all_settings()
         for k in expected_keys:
@@ -170,6 +171,10 @@ class TestBotControllerRuntimeConfig(unittest.TestCase):
             risk_guard=self.risk_guard,
         )
 
+    def tearDown(self):
+        from strategy_engine import StrategyPolicy
+        StrategyPolicy.MAX_ALT_ALLOC_PCT = 0.15
+
     def test_get_runtime_config_reflects_live_objects(self):
         res = self.controller.get_runtime_config()
         self.assertTrue(res["success"])
@@ -191,6 +196,7 @@ class TestBotControllerRuntimeConfig(unittest.TestCase):
             "MAX_NEW_LISTING_POSITIONS": 1,
             "MAX_POSITION_PCT": 40.0,
             "MAX_ORDER_KRW": 30_000_000,
+            "MAX_ALT_ALLOC_PCT": 20.0,
         }
         res = self.controller.update_runtime_config(updates)
         self.assertTrue(res["success"])
@@ -198,6 +204,9 @@ class TestBotControllerRuntimeConfig(unittest.TestCase):
         self.assertAlmostEqual(self.trailing_tracker.start_profit_pct, 0.025)
         self.assertAlmostEqual(self.trailing_tracker.trailing_drop_pct, 0.015)
         self.assertAlmostEqual(self.risk_manager.max_loss_pct, 0.06)
+        # StrategyPolicy.MAX_ALT_ALLOC_PCT 핫리로드 검증
+        from strategy_engine import StrategyPolicy
+        self.assertAlmostEqual(StrategyPolicy.MAX_ALT_ALLOC_PCT, 0.20)
         # 단타 3 + 스윙 1 + 신규 1 = 총 포지션 5 자동 갱신 검증
         self.assertEqual(self.risk_guard.max_open_positions, 5)
         self.assertEqual(self.risk_guard.max_scalp_positions, 3)

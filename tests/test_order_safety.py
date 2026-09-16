@@ -32,10 +32,12 @@ from order_safety import (
     AmbiguousOrderError,
     CooldownManager,
     OrderJournal,
+    OrderStatus,
     RiskGuard,
     SafeOrderExecutor,
     calculate_risk_position_size,
     evaluate_buy_orderbook_impact,
+    evaluate_pre_buy_submit_gate,
     get_dynamic_portfolio_tiers,
 )
 
@@ -285,6 +287,68 @@ class OrderSafetyTests(unittest.TestCase):
         self.assertEqual(c_slots, 4)
         self.assertEqual(c_pct, 0.30)
         self.assertEqual(c_top, 12)
+
+    def test_private_ws_wait_marks_open_without_global_suspend(self):
+        """wait 이벤트는 체결이 아니므로 RECONCILIATION_PENDING이나 전역 suspend 없이 정상 OPEN으로 마킹된다."""
+        self.journal.reconciliation_state = "READY"
+        client_id = self.journal.record_intent("KRW-TRX", "bid", 100.0, 455.0, "limit")
+        applied = self.journal.apply_private_order_event(
+            {
+                "client_order_id": client_id,
+                "state": "wait",
+                "order_id": "trx-order-1",
+                "executed_volume": 0.0,
+                "remaining_volume": 100.0,
+            },
+            require_rest_confirmation=True,
+        )
+        self.assertTrue(applied)
+        order = self.journal.get_order_by_client_id(client_id)
+        self.assertEqual(order["status"], OrderStatus.OPEN)
+        self.assertEqual(self.journal.reconciliation_state, "READY")
+        # 다른 무관한 종목은 정상 진입 가능
+        self.assertTrue(self.journal.is_entry_ready("KRW-SUI"))
+
+    def test_per_market_isolation_allows_unrelated_symbols(self):
+        """한 종목이 체결 대기(RECONCILIATION_PENDING) 상태여도 무관한 다른 종목의 진입은 차단되지 않는다."""
+        self.journal.reconciliation_state = "READY"
+        client_id = self.journal.record_intent("KRW-TRX", "bid", 100.0, 455.0, "limit")
+        self.journal.mark(client_id, OrderStatus.RECONCILIATION_PENDING, exchange_uuid="trx-pending-1")
+
+        # TRX는 차단
+        self.assertFalse(self.journal.is_entry_ready("KRW-TRX"))
+        allowed_trx, code_trx, _, _ = evaluate_pre_buy_submit_gate(
+            exchange_name="bithumb",
+            market="KRW-TRX",
+            current_price=455.0,
+            order_journal=self.journal,
+            ws_client=None,
+            cooldown_manager=None,
+        )
+        self.assertFalse(allowed_trx)
+        self.assertEqual(code_trx, "PRE_BUY_RECONCILIATION_PENDING")
+
+        # SUI는 정상 허용
+        self.assertTrue(self.journal.is_entry_ready("KRW-SUI"))
+        allowed_sui, code_sui, _, _ = evaluate_pre_buy_submit_gate(
+            exchange_name="bithumb",
+            market="KRW-SUI",
+            current_price=950.0,
+            order_journal=self.journal,
+            ws_client=None,
+            cooldown_manager=None,
+        )
+        self.assertTrue(allowed_sui)
+        self.assertEqual(code_sui, "OK")
+
+    def test_open_order_allows_unrelated_symbols_when_ready(self):
+        """특정 종목에 OPEN 주문이 있어도 저널이 READY이면 무관한 다른 종목의 진입은 정상 허용된다."""
+        self.journal.reconciliation_state = "READY"
+        client_id = self.journal.record_intent("KRW-TRX", "bid", 100.0, 455.0, "limit")
+        self.journal.mark(client_id, OrderStatus.OPEN, exchange_uuid="trx-open-1")
+
+        # 무관한 SUI 진입 허용 검증
+        self.assertTrue(self.journal.is_entry_ready("KRW-SUI"))
 
 
 if __name__ == "__main__":

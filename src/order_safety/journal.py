@@ -634,15 +634,20 @@ class OrderJournal:
                 for order in self.orders
             )
 
-    def is_entry_ready(self) -> bool:
-        """초기 REST 대사 전·체결 미확정 주문·대사 실패 시 신규 매수만 차단한다."""
+    def is_entry_ready(self, market: str | None = None) -> bool:
+        """초기 REST 대사 전·체결 미확정 주문·대사 실패 시 신규 매수만 차단한다.
+
+        market이 지정된 경우 해당 종목의 대사 대기/UNKNOWN 여부만 검사하여(Per-Market Isolation),
+        무관한 다른 종목의 신규 매수 기회가 차단되지 않도록 한다.
+        market이 None인 경우 기존과 같이 전역 주문 목록에 블로킹 주문이 있는지 검사한다.
+        """
         if self.reconciliation_state != "READY":
-            return False
-        if self._has_entry_blocking_orders():
             return False
         if int(self.reconciliation_metrics.get("last_failed_count", 0) or 0) > 0:
             return False
-        return True
+        if market is not None:
+            return not self.has_entry_blocking_market(market)
+        return not self._has_entry_blocking_orders()
 
     def suspend_entry_for_reconciliation(self, reason: str) -> None:
         """신규 BUY만 차단하고 기존 포지션 보호·청산 경로는 유지한다."""
@@ -718,8 +723,35 @@ class OrderJournal:
             or (requested > 0 and exec_vol > requested + tolerance)
             or (requested > 0 and exec_vol + rem_vol > requested + tolerance)
         )
+        # 1) 단순 접수 대기(wait)는 체결이 발생하지 않은 정상 미체결 상태이므로 손익 왜곡 위험이 없다.
+        #    전역 차단(suspend)이나 RECONCILIATION_PENDING 대신 정상 OPEN으로 기록한다.
+        if state == "wait" and not invalid:
+            update_kwargs: dict[str, Any] = {
+                "exchange_order_id": oid,
+                "exchange_state": state,
+                "remaining_volume": rem_vol if rem_vol > 0 else requested,
+                "last_event_at": time.time(),
+            }
+            self.mark(str(client_id), OrderStatus.OPEN, **update_kwargs)
+            return True
+
+        # 2) 단순 취소(cancel)는 체결 증가분이 없는 정상 종료 상태이므로 즉시 CANCELED로 반영한다.
+        if state == "cancel" and not invalid:
+            update_kwargs = {
+                "exchange_order_id": oid,
+                "exchange_state": state,
+                "remaining_volume": 0.0,
+                "last_event_at": time.time(),
+            }
+            if exec_vol > 0:
+                update_kwargs["executed_volume"] = exec_vol
+            self.mark(str(client_id), OrderStatus.CANCELED, **update_kwargs)
+            return True
+
         if require_rest_confirmation or invalid:
             # WebSocket은 빠른 알림용이며, 평균 체결가·수수료는 REST가 기준이다.
+            # 단일 주문의 체결 대기(trade/done)는 해당 주문을 RECONCILIATION_PENDING으로 격리하고,
+            # 전역 계좌 락 대신 종목별 게이트(has_entry_blocking_market)로 매수를 안전하게 차단한다.
             self.mark(
                 str(client_id), OrderStatus.RECONCILIATION_PENDING,
                 exchange_order_id=oid,
@@ -727,7 +759,6 @@ class OrderJournal:
                 reconciliation_reason="Private WebSocket 수신 후 REST 체결 대기",
                 last_event_at=time.time(),
             )
-            self.suspend_entry_for_reconciliation("private_ws_rest_pending")
             return True
 
         if fill_processor:

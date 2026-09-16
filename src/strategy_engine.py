@@ -186,8 +186,8 @@ class StrategyPolicy:
     MIN_PROFIT_BUFFER_PCT: float = 0.015 # 최소 보장 마진 (+1.5%로 상향하여 조기 털림 방지)
 
     # 2-1. 알트코인 포지션 사이징 균등화 정책 (몰빵 및 극소액 정찰병 방지)
-    DEFAULT_ALT_ALLOC_PCT: float = 0.08  # 알트코인 기본 목표 배분 비중 8% (120만원 기준 약 9.6만원)
-    MAX_ALT_ALLOC_PCT: float = 0.10      # 알트코인 단일 종목 최대 비중 상한 10% (120만원 기준 12만원 한도)
+    DEFAULT_ALT_ALLOC_PCT: float = 0.10  # 알트코인 기본 목표 배분 비중 10% (120만원 기준 약 12만원)
+    MAX_ALT_ALLOC_PCT: float = 0.15      # 알트코인 단일 종목 최대 비중 상한 15% (120만원 기준 18만원 한도)
     MIN_ALT_ALLOC_PCT: float = 0.05      # 알트코인 단일 종목 최소 비중 하한 5% (120만원 기준 6만원 미만 극소액 방지)
     NIGHT_SESSION_MAX_ALLOC_PCT: float = 0.05 # 심야 세션(00:00~06:00) 최대 비중 5% 하드 캡 (약 6만원)
 
