@@ -20,10 +20,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GROQ_MODELS = [
     "openai/gpt-oss-120b",
-    "openai/gpt-oss-20b",
     "qwen/qwen3.8-27b",
-    "qwen/qwen3.6-27b",
+    "openai/gpt-oss-20b",
+    "groq/compound",
     "groq/compound-mini",
+    "allam-2-7b",
 ]
 
 
@@ -175,10 +176,12 @@ class GroqProvider:
                     )
                 elif resp.status_code == 404:
                     last_error_kind = "MODEL_NOT_FOUND"
-                    logger.warning(f"Groq API 404 Model Not Found (모델 '{model}' 미지원/종료) -> 다음 모델 폴백")
+                    # 미지원 모델 감지 시 차순위 모델로 자동 폴백되므로 INFO 기록 (WARNING 도배 방지)
+                    logger.info(f"Groq API 404 Model Not Found (모델 '{model}' 미지원/종료) -> 다음 모델 폴백")
                 elif resp.status_code == 429:
                     last_error_kind = "RATE_LIMIT_EXCEEDED"
-                    logger.warning(f"Groq API 429 Rate Limit (모델: {model}) -> 다음 모델 폴백")
+                    # 429 발생 시 다음 순위 모델로 자동 폴백되므로 정상 failover로 간주하여 INFO 기록 (WARNING 도배 방지)
+                    logger.info(f"Groq API 429 Rate Limit (모델: {model}) -> 다음 모델 폴백")
                 else:
                     last_error_kind = f"HTTP_{resp.status_code}"
                     err_detail = ""

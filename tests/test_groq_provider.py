@@ -131,9 +131,14 @@ class TestGroqProvider(unittest.TestCase):
         self.assertEqual(call_kwargs["json"]["max_tokens"], 2048)
 
     def test_default_models_resilience(self):
-        """기본 Groq 모델 목록에 70k TPM의 compound-mini가 포함되어 있는지 검증"""
-        self.assertIn("groq/compound-mini", DEFAULT_GROQ_MODELS)
+        """기본 Groq 모델 목록에 성능순 모델들이 포함되어 있는지 검증"""
+        self.assertIn("openai/gpt-oss-120b", DEFAULT_GROQ_MODELS)
+        self.assertIn("qwen/qwen3.8-27b", DEFAULT_GROQ_MODELS)
         self.assertIn("openai/gpt-oss-20b", DEFAULT_GROQ_MODELS)
+        self.assertIn("groq/compound", DEFAULT_GROQ_MODELS)
+        self.assertIn("groq/compound-mini", DEFAULT_GROQ_MODELS)
+        self.assertEqual(DEFAULT_GROQ_MODELS[0], "openai/gpt-oss-120b")
+        self.assertEqual(DEFAULT_GROQ_MODELS[1], "qwen/qwen3.8-27b")
         self.assertGreaterEqual(len(DEFAULT_GROQ_MODELS), 5)
 
 
