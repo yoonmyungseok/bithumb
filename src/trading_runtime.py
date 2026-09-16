@@ -1391,16 +1391,9 @@ class TradingCycleEngine:
             # 테스트/레거시 설정 객체의 동적 Mock 값은 차단 사유로 해석하지 않는다.
             candidate_reason = provider_block_hook()
             provider_block_reason = candidate_reason.strip() if isinstance(candidate_reason, str) else ""
-        if provider_block_reason and not is_holding:
-            derived_agg = getattr(self, "_cycle_derived_agg", None)
-            if derived_agg is not None:
-                derived_agg.record_derived_buy_block(market, provider_block_reason)
-                from ai_provider import AIProviderTelemetry
-                AIProviderTelemetry.record_derived_buy_block(buy_profile.exchange_name)
-            else:
-                logger.warning("[%s] %s", market, provider_block_reason)
-            audit_decision(market, "BLOCKED", "AI_PROVIDER", [provider_block_reason], {"btc_regime": btc_regime})
-            return EntryGatingResult(should_continue=True)
+        # entry_safety 래치가 켜져도 여기서 return 하지 않는다. 업비트와 동일하게 종목별 진입
+        # Gemini가 정상 JSON을 반환할 때만 entry_safety를 해제하고, 그 전까지는 아래에서 BUY만 막는다.
+        entry_safety_recovery = bool(provider_block_reason) and not is_holding
         ws_health = (
             ctx.ws_client.get_health_status(market=market)
             if hasattr(ctx.ws_client, "get_health_status")
@@ -1498,6 +1491,7 @@ class TradingCycleEngine:
                     and candidate_trade_value >= StrategyPolicy.MIN_TRADE_VALUE_RISK_OFF * 0.5
                     and is_quality_promising
                 )
+                or entry_safety_recovery
             )
         )
         called_ai_flag = False
@@ -1882,6 +1876,29 @@ class TradingCycleEngine:
         }
         if risk_off_loss_reentry_blocked:
             entry_audit_payload.update(risk_off_loss_reentry_payload)
+
+        refreshed_provider_block = ""
+        if not is_holding and callable(provider_block_hook):
+            candidate_reason = provider_block_hook()
+            refreshed_provider_block = candidate_reason.strip() if isinstance(candidate_reason, str) else ""
+        if refreshed_provider_block:
+            if action == "BUY":
+                action = "HOLD"
+                alloc_pct = 0.0
+                reason = f"{refreshed_provider_block} | {reason}"
+            derived_agg = getattr(self, "_cycle_derived_agg", None)
+            if derived_agg is not None:
+                derived_agg.record_derived_buy_block(market, refreshed_provider_block)
+                from ai_provider import AIProviderTelemetry
+                AIProviderTelemetry.record_derived_buy_block(buy_profile.exchange_name)
+            else:
+                logger.warning("[%s] %s", market, refreshed_provider_block)
+            audit_decision(
+                market, "BLOCKED", "AI_PROVIDER", [refreshed_provider_block],
+                {"btc_regime": btc_regime},
+            )
+            return EntryGatingResult(should_continue=True)
+
         audit_decision(
             market,
             "BLOCKED" if risk_off_loss_reentry_blocked else ("BUY_APPROVED" if action == "BUY" else "HOLD"),

@@ -12,6 +12,7 @@ from confirmed_fill_performance import (
     build_trade_legs_from_journal,
     compare_with_daily_stats,
     kst_date_from_ts,
+    merge_exchange_reports,
     summarize_trade_legs,
 )
 from order_safety.types import OrderStatus
@@ -158,6 +159,37 @@ class ConfirmedFillPerformanceTests(unittest.TestCase):
             report_up = build_confirmed_fill_report(data_dir=tmp, exchange="upbit")
             self.assertEqual(report_up["summary"]["confirmed_fill_count"], 1)
 
+    def test_merge_exchange_reports_includes_both_exchanges_in_recent_legs(self):
+        bt_legs = build_trade_legs_from_journal([_buy_order(), _sell_order()], exchange="bithumb")
+        up_legs = build_trade_legs_from_journal(
+            [
+                _buy_order(market="KRW-ETH", client_order_id="ub", position_id="p2"),
+                _sell_order(
+                    market="KRW-ETH",
+                    client_order_id="us",
+                    position_id="p2",
+                    last_event_at=1_700_010_000.0,
+                    updated_at=1_700_010_000.0,
+                    exchange="upbit",
+                ),
+            ],
+            exchange="upbit",
+        )
+        bt_report = {
+            "summary": summarize_trade_legs(bt_legs),
+            "recent_trade_legs": list(reversed(bt_legs)),
+        }
+        up_report = {
+            "summary": summarize_trade_legs(up_legs),
+            "recent_trade_legs": list(reversed(up_legs)),
+        }
+        merged = merge_exchange_reports(bt_report, up_report, recent_leg_limit=10)
+        exchanges = {leg["exchange"] for leg in merged["recent_trade_legs"]}
+        self.assertEqual(exchanges, {"bithumb", "upbit"})
+        self.assertEqual(merged["summary"]["confirmed_fill_count"], 2)
+        # 업비트 청산이 더 최근이므로 첫 행은 업비트
+        self.assertEqual(merged["recent_trade_legs"][0]["exchange"], "upbit")
+
     def test_daily_stats_comparison_explanation(self):
         legs = build_trade_legs_from_journal([_buy_order(), _sell_order()], exchange="bithumb")
         kst_date = legs[0]["kst_trading_date"]
@@ -173,7 +205,7 @@ class ConfirmedFillPerformanceTests(unittest.TestCase):
         )
         self.assertNotEqual(comparison["delta_pnl_krw"], 0.0)
         self.assertTrue(comparison["explanations"])
-        self.assertIn("daily_stats", comparison["explanations"][0])
+        self.assertIn("일일 통계", comparison["explanations"][0])
 
 
 def datetime_ts(year: int, month: int, day: int, hour: int, minute: int) -> float:

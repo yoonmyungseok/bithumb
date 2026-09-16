@@ -319,8 +319,18 @@ class AIAuthorityTests(unittest.TestCase):
         self.assertAlmostEqual(result.alloc_pct, 0.35 * StrategyPolicy.MOMENTUM_EXTENDED_ALLOC_RATIO)
 
     def test_bithumb_ai_runtime_failure_blocks_momentum_direct_entry(self):
-        """빗썸 AI 분석 장애면 AI를 우회하는 초기 모멘텀 직접 진입도 주문 후보가 되면 안 된다."""
+        """entry_safety 래치 중에도 진입 Gemini 복구 분석을 시도하고, 해제 전에는 모멘텀 직접 BUY를 막는다."""
         self.runtime.config.new_buy_block_reason = lambda: "빗썸 Gemini 분석 장애(http_error)로 신규 BUY를 차단합니다."
+        self.mock_analyzer.analyze.return_value = {
+            "status": "PAUSE",
+            "action": "HOLD",
+            "entry_price": 1000.0,
+            "target_price": 1040.0,
+            "stop_loss": 980.0,
+            "alloc_pct": 0.0,
+            "reason": "Gemini 실패(http_error) 신규 BUY 차단",
+            "alpha_score": 0,
+        }
         inputs = MarketEntryInputs(
             exchange=self.mock_exchange, market="KRW-TEST", korean_name="테스트",
             candidate_type="MOMENTUM_BREAKOUT",
@@ -344,9 +354,60 @@ class AIAuthorityTests(unittest.TestCase):
             result = self.runtime.process_entry_gating(inputs)
 
         self.assertTrue(result.should_continue)
-        self.mock_analyzer.analyze.assert_not_called()
+        self.mock_analyzer.analyze.assert_called_once()
         inputs.audit_decision.assert_called_once()
         self.assertEqual(inputs.audit_decision.call_args.args[2], "AI_PROVIDER")
+
+    def test_entry_safety_recovery_allows_buy_after_latch_cleared(self):
+        """정상 분석으로 entry_safety가 해제되면 동일 사이클 후반 BUY 검증을 통과할 수 있다."""
+        latch = {"active": True}
+
+        def block_hook():
+            return "빗썸 Gemini 분석 장애(http_error)로 신규 BUY를 차단합니다." if latch["active"] else ""
+
+        self.runtime.config.new_buy_block_reason = block_hook
+        def _analyze_and_clear_latch(**_kwargs):
+            latch["active"] = False
+            return {
+                "status": "ACTIVE",
+                "action": "BUY",
+                "entry_price": 1000.0,
+                "target_price": 1040.0,
+                "stop_loss": 980.0,
+                "alloc_pct": 0.35,
+                "reason": "[gemini-3.5-flash-lite] 복구 확인",
+                "alpha_score": 80,
+            }
+
+        self.mock_analyzer.analyze.side_effect = _analyze_and_clear_latch
+        inputs = MarketEntryInputs(
+            exchange=self.mock_exchange, market="KRW-TEST", korean_name="테스트",
+            candidate_type="MOMENTUM_BREAKOUT",
+            candidate_metadata={"candidate_type": "MOMENTUM_BREAKOUT", "momentum_phase": "EARLY", "acc_trade_price_24h": 5_000_000_000.0},
+            analyzer=self.mock_analyzer, coin_available=0.0, avg_buy_price=0.0,
+            current_price=1000.0, coin_value=0.0, krw_available=100000.0,
+            candles_5m=[{"trade_price": 1000.0, "opening_price": 995.0} for _ in range(25)],
+            candles_1h=[{"trade_price": 1000.0} for _ in range(20)],
+            candles_4h=[{"trade_price": 1000.0} for _ in range(25)],
+            orderbook={"orderbook_units": []}, btc_regime="NORMAL", btc_status_msg="정상",
+            is_btc_crashing=False, is_cooldown=False, is_extreme_fear=False,
+            is_bot_paused=False, is_kill_switch=False, is_entry_ready=True,
+            dyn_max_pos_pct=0.35, now_str="2026-09-07 14:00:00", audit_decision=MagicMock(),
+            allow_ai_analysis=True,
+        )
+        self.mock_ctx.ws_client.get_health_status.return_value = {"is_healthy": True}
+        self.mock_ctx.decision_db.has_recovery_entry_since.return_value = False
+        self.mock_ctx.risk_off_loss_reentry_guard = None
+        with patch("trading_runtime.select_completed_candles", side_effect=lambda c, **kw: c), \
+             patch("trading_runtime.entry_signal", return_value={
+                 "allow_buy": True, "reason": "확정봉 돌파 통과", "alpha_score": 90,
+                 "entry_price": 1000.0, "target_price": 1040.0, "stop_loss": 980.0,
+             }):
+            result = self.runtime.process_entry_gating(inputs)
+
+        self.mock_analyzer.analyze.assert_called_once()
+        self.assertFalse(result.should_continue)
+        self.assertEqual(result.action, "BUY")
 
 
     def test_time_stop_bypassed_when_ai_holds_position(self):

@@ -222,7 +222,8 @@ class BithumbGeminiProviderTests(unittest.TestCase):
     def test_existing_position_protection_remains_outside_entry_block(self):
         """AI 장애 차단은 미보유 신규 BUY에만 적용돼 청산·대사 경로를 막지 않아야 한다."""
         runtime = (self.root / "src" / "trading_runtime.py").read_text(encoding="utf-8")
-        self.assertIn("if provider_block_reason and not is_holding:", runtime)
+        self.assertIn("entry_safety_recovery", runtime)
+        self.assertIn("refreshed_provider_block", runtime)
         self.assertIn("AI Provider 불확실성은 기존 포지션 보호를 건드리지 않고 신규 BUY 경로만 닫는다", runtime)
 
     @patch("ai_provider.requests.get")

@@ -5,7 +5,7 @@
   // State Management
   const state = {
     currentTab: 'all',
-    activeExchange: window.location.port === '7980' ? 'upbit' : 'bithumb',
+    activeExchange: 'combined',
     customPort: window.location.port || '7979',
     autoRefreshInterval: 5000,
     timerId: null,
@@ -218,6 +218,58 @@
     if (normalized === 'SWING') return '🌊 스윙 추세';
     if (normalized === 'SCALP') return '⚡ 단타';
     return mode || '';
+  }
+
+  /** 확정 체결 성과 테이블: 진입 시점 BTC 레짐·거시 레짐 표시 전용 */
+  function formatConfirmedFillRegime(regime) {
+    const raw = String(regime || '').toUpperCase();
+    const btcMap = {
+      RISK_OFF: 'BTC 약세',
+      NORMAL: 'BTC 정상',
+      CRASH: 'BTC 급락',
+      UNKNOWN: '미상',
+    };
+    if (btcMap[raw]) return btcMap[raw];
+    const macro = formatMarketRegime(raw);
+    if (macro && macro !== raw) return macro;
+    return raw || '미상';
+  }
+
+  function formatConfirmedFillEntryType(entryType) {
+    const normalized = String(entryType || '').toUpperCase();
+    if (normalized === 'UNKNOWN') return '미상';
+    if (normalized === 'STANDARD') return '표준';
+    if (normalized === 'LIMIT') return '지정가';
+    if (normalized === 'MARKET') return '시장가';
+    const strategy = formatStrategyModeLabel(normalized);
+    return strategy || entryType || '미상';
+  }
+
+  function formatExchangeScopeLabel(exchange) {
+    const key = String(exchange || '').toLowerCase();
+    if (key === 'bithumb') return '빗썸';
+    if (key === 'upbit') return '업비트';
+    return exchange || '';
+  }
+
+  const ORDER_STATUS_DISPLAY_LABELS = {
+    PENDING_SUBMISSION: '주문 제출 대기',
+    ACKNOWLEDGED: '주문 접수',
+    OPEN: '미체결 대기',
+    PARTIALLY_FILLED: '부분 체결',
+    FILLED: '체결 완료',
+    CANCELED: '주문 취소',
+    CANCELLED: '주문 취소',
+    REJECTED: '주문 거절',
+    FAILED: '주문 실패',
+    UNKNOWN: '확인 필요',
+    RECONCILIATION_PENDING: '체결 대사 진행 중',
+    RECONCILED: '체결 대사 완료',
+  };
+
+  function formatOrderStatusDisplayLabel(status) {
+    const key = String(status || '').toUpperCase();
+    return ORDER_STATUS_DISPLAY_LABELS[key] || key || '-';
   }
 
   // AI 행동 뱃지
@@ -661,22 +713,8 @@
     if (countsEl) {
       const counts = (data.order_status_counts && typeof data.order_status_counts === 'object') ? data.order_status_counts : {};
       // 저장 상태 코드는 그대로 두고, 사용자 화면에서만 한글 상태명으로 변환한다.
-      const orderStatusLabels = {
-        PENDING_SUBMISSION: '주문 제출 대기',
-        ACKNOWLEDGED: '주문 접수',
-        OPEN: '미체결 대기',
-        PARTIALLY_FILLED: '부분 체결',
-        FILLED: '체결 완료',
-        CANCELED: '주문 취소',
-        CANCELLED: '주문 취소',
-        REJECTED: '주문 거절',
-        FAILED: '주문 실패',
-        UNKNOWN: '확인 필요',
-        RECONCILIATION_PENDING: '체결 대사 진행 중',
-        RECONCILED: '체결 대사 완료',
-      };
       const text = Object.entries(counts)
-        .map(([status, count]) => `${orderStatusLabels[String(status).toUpperCase()] || String(status)} ${count}건`)
+        .map(([status, count]) => `${formatOrderStatusDisplayLabel(status)} ${count}건`)
         .join(' · ');
       countsEl.textContent = text || '최근 주문 없음';
     }
@@ -1700,30 +1738,68 @@
     }).join('');
   }
 
+  function mergeConfirmedFillLegsClient(btLegs, upLegs, limit) {
+    const merged = []
+      .concat((btLegs || []).map(l => Object.assign({}, l, { exchange: l.exchange || 'bithumb' })))
+      .concat((upLegs || []).map(l => Object.assign({}, l, { exchange: l.exchange || 'upbit' })));
+    merged.sort((a, b) => {
+      const aKey = `${a.exit_at_kst || ''}|${a.kst_trading_date || ''}`;
+      const bKey = `${b.exit_at_kst || ''}|${b.kst_trading_date || ''}`;
+      return bKey.localeCompare(aKey);
+    });
+    return merged.slice(0, limit);
+  }
+
   function resolveConfirmedFillReport(d, activeExchange) {
-    const root = d.confirmed_fill_performance || {};
+    let root = d.confirmed_fill_performance || {};
+    const gateway = state.lastData || {};
+
+    // 통합 탭인데 단일 봇 응답(평탄 리포트)이면 게이트웨이의 거래소별 리포트로 재조립한다.
+    if (activeExchange === 'combined' && !root.exchanges && (gateway.bithumb || gateway.upbit)) {
+      root = {
+        generated_at_kst: root.generated_at_kst || gateway.combined?.confirmed_fill_performance?.generated_at_kst,
+        timezone: root.timezone || 'Asia/Seoul',
+        exchanges: {
+          bithumb: gateway.bithumb?.confirmed_fill_performance || {},
+          upbit: gateway.upbit?.confirmed_fill_performance || {},
+        },
+        summary: gateway.combined?.confirmed_fill_performance?.summary,
+        recent_trade_legs: gateway.combined?.confirmed_fill_performance?.recent_trade_legs,
+      };
+    }
+
     if (root.exchanges) {
       if (activeExchange === 'combined') {
         const bt = root.exchanges.bithumb || {};
         const up = root.exchanges.upbit || {};
         const btSum = bt.summary || {};
         const upSum = up.summary || {};
-        const mergedLegs = []
-          .concat((bt.recent_trade_legs || []).map(l => Object.assign({}, l, { exchange: 'bithumb' })))
-          .concat((up.recent_trade_legs || []).map(l => Object.assign({}, l, { exchange: 'upbit' })))
-          .slice(0, 20);
-        return {
-          generated_at_kst: root.generated_at_kst,
-          timezone: root.timezone || 'Asia/Seoul',
-          summary: {
+        const serverSummary = root.summary;
+        const serverLegs = root.recent_trade_legs;
+        const mergedLegs = Array.isArray(serverLegs) && serverLegs.length
+          ? serverLegs
+          : mergeConfirmedFillLegsClient(bt.recent_trade_legs, up.recent_trade_legs, 30);
+        const mergedSummary = serverSummary && typeof serverSummary === 'object'
+          ? serverSummary
+          : {
             confirmed_fill_count: Number(btSum.confirmed_fill_count || 0) + Number(upSum.confirmed_fill_count || 0),
-            win_rate_pct: mergedLegs.length
-              ? (mergedLegs.filter(l => Number(l.net_pnl_krw) > 0).length / mergedLegs.length * 100)
+            win_count: Number(btSum.win_count || 0) + Number(upSum.win_count || 0),
+            win_rate_pct: (Number(btSum.confirmed_fill_count || 0) + Number(upSum.confirmed_fill_count || 0)) > 0
+              ? ((Number(btSum.win_count || 0) + Number(upSum.win_count || 0))
+                / (Number(btSum.confirmed_fill_count || 0) + Number(upSum.confirmed_fill_count || 0)) * 100)
               : 0,
             profit_factor: null,
             total_net_pnl_krw: Number(btSum.total_net_pnl_krw || 0) + Number(upSum.total_net_pnl_krw || 0),
-            order_status_excluded_counts: {},
-          },
+            order_status_excluded_counts: Object.assign(
+              {},
+              btSum.order_status_excluded_counts || {},
+              upSum.order_status_excluded_counts || {}
+            ),
+          };
+        return {
+          generated_at_kst: root.generated_at_kst,
+          timezone: root.timezone || 'Asia/Seoul',
+          summary: mergedSummary,
           recent_trade_legs: mergedLegs,
           daily_stats_comparison: null,
           combined_note: '통합 탭은 두 거래소 레그를 합산 표시합니다. daily_stats 대비는 거래소별 탭에서 확인하세요.',
@@ -1738,8 +1814,9 @@
     const report = resolveConfirmedFillReport(d, activeExchange);
     const genEl = document.getElementById('confirmed_fill_generated_at');
     if (genEl) {
+      const tzLabel = (report.timezone === 'Asia/Seoul' || !report.timezone) ? 'KST' : report.timezone;
       genEl.textContent = report.generated_at_kst
-        ? `생성: ${report.generated_at_kst} (${report.timezone || 'KST'})`
+        ? `생성: ${report.generated_at_kst} (${tzLabel})`
         : '';
     }
 
@@ -1759,7 +1836,7 @@
           <div class="text-lg font-bold text-emerald-400">${Number(summary.win_rate_pct || 0).toFixed(1)}%</div>
         </div>
         <div class="bg-slate-900/50 rounded-lg p-3 border border-slate-800">
-          <div class="text-[10px] text-slate-500 uppercase">Profit Factor</div>
+          <div class="text-[10px] text-slate-500 uppercase">수익 팩터</div>
           <div class="text-lg font-bold text-blue-400">${pfText}</div>
         </div>
         <div class="bg-slate-900/50 rounded-lg p-3 border border-slate-800">
@@ -1768,9 +1845,11 @@
             ${Number(summary.total_net_pnl_krw || 0) >= 0 ? '+' : ''}${formatKrw(summary.total_net_pnl_krw || 0)}
           </div>
         </div>
-        <div class="col-span-2 sm:col-span-4 text-[11px] text-slate-500 font-mono">
-          미성과 주문: RECONCILIATION_PENDING ${statusExcluded.RECONCILIATION_PENDING || 0} ·
-          OPEN ${statusExcluded.OPEN || 0} · CANCELED ${statusExcluded.CANCELED || 0} · UNKNOWN ${statusExcluded.UNKNOWN || 0}
+        <div class="col-span-2 sm:col-span-4 text-[11px] text-slate-500">
+          성과 제외 주문: ${formatOrderStatusDisplayLabel('RECONCILIATION_PENDING')} ${statusExcluded.RECONCILIATION_PENDING || 0}건 ·
+          ${formatOrderStatusDisplayLabel('OPEN')} ${statusExcluded.OPEN || 0}건 ·
+          ${formatOrderStatusDisplayLabel('CANCELED')} ${statusExcluded.CANCELED || 0}건 ·
+          ${formatOrderStatusDisplayLabel('UNKNOWN')} ${statusExcluded.UNKNOWN || 0}건
         </div>
       `;
     }
@@ -1785,10 +1864,10 @@
         cmpEl.classList.remove('hidden');
         const expl = (cmp.explanations || []).map(e => `<li>${e}</li>`).join('');
         cmpEl.innerHTML = `
-          <p class="font-semibold text-slate-300 mb-1">daily_stats 대비 (${cmp.kst_date} KST)</p>
-          <p>daily_stats 실현: <b>${formatKrw(cmp.daily_stats_realized_pnl_krw)}</b> ·
+          <p class="font-semibold text-slate-300 mb-1">일일 통계 대비 (${cmp.kst_date} KST)</p>
+          <p>일일 통계 실현: <b>${formatKrw(cmp.daily_stats_realized_pnl_krw)}</b> ·
              확정 체결 순손익: <b>${formatKrw(cmp.confirmed_fill_net_pnl_krw)}</b> ·
-             Δ <b class="${Number(cmp.delta_pnl_krw) >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${formatKrw(cmp.delta_pnl_krw)}</b></p>
+             차이 <b class="${Number(cmp.delta_pnl_krw) >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${formatKrw(cmp.delta_pnl_krw)}</b></p>
           <ul class="list-disc list-inside mt-2 text-slate-500">${expl}</ul>
         `;
       } else {
@@ -1809,17 +1888,21 @@
     tbody.innerHTML = legs.map(leg => {
       const net = Number(leg.net_pnl_krw || 0);
       const netCls = net >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold';
-      const exTag = leg.exchange ? `<span class="text-[10px] text-slate-500">${leg.exchange}</span> ` : '';
+      const exLabel = leg.exchange ? formatExchangeScopeLabel(leg.exchange) : '';
+      const exTag = exLabel ? `<span class="text-[10px] text-slate-500">${exLabel}</span> ` : '';
+      const regimeType = `${formatConfirmedFillRegime(leg.regime)} / ${formatConfirmedFillEntryType(leg.entry_type)}`;
+      const priceRange = `${formatPrice(leg.entry_price)} → ${formatPrice(leg.exit_price)} 원`;
+      const exitReasonDisplay = formatReason(leg.exit_reason || '');
       return `
         <tr class="hover:bg-slate-800/40 border-b border-slate-800/80">
           <td class="p-2.5 font-mono whitespace-nowrap">${leg.kst_trading_date || '-'}</td>
           <td class="p-2.5 whitespace-nowrap">${exTag}${leg.market || '-'}</td>
-          <td class="p-2.5 whitespace-nowrap text-slate-400">${leg.regime || '-'} / ${leg.entry_type || '-'}</td>
-          <td class="p-2.5 whitespace-nowrap font-mono text-[11px]">${Number(leg.entry_price || 0).toLocaleString()} → ${Number(leg.exit_price || 0).toLocaleString()}</td>
+          <td class="p-2.5 whitespace-nowrap text-slate-400">${regimeType}</td>
+          <td class="p-2.5 whitespace-nowrap font-mono text-[11px]">${priceRange}</td>
           <td class="p-2.5 whitespace-nowrap ${netCls}">${net >= 0 ? '+' : ''}${formatKrw(net)}</td>
           <td class="p-2.5 whitespace-nowrap text-slate-400">${formatKrw(leg.total_fee_krw || 0)}</td>
           <td class="p-2.5 whitespace-nowrap">${Number(leg.hold_duration_min || 0).toFixed(1)}</td>
-          <td class="p-2.5">${leg.exit_reason || '-'}${leg.is_same_market_reentry ? ' <span class="text-amber-400/80">재진입</span>' : ''}</td>
+          <td class="p-2.5">${exitReasonDisplay || '-'}${leg.is_same_market_reentry ? ' <span class="text-amber-400/80">재진입</span>' : ''}</td>
         </tr>
       `;
     }).join('');

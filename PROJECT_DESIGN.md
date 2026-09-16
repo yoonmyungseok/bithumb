@@ -118,7 +118,7 @@
 - 보조 컨텍스트(`macro_regime`, `market_briefing`, `screener_rank`) 실패는 `observability`에만 원인을 남기고 `entry_safety` 전역 BUY 게이트를 닫지 않는다. `screener_rank`는 로컬 퀀트 순위·캐시 폴백이 있으며, 과거 버전에서 `screener_rank`만으로 고착된 `entry_safety`는 조회·스냅샷 시 자동 정리한다.
 - 이 상태는 표준 AI 진입뿐 아니라 `MOMENTUM_BREAKOUT` 직접 진입과 `RECOVERY_REBOUND`에도 공통으로 적용된다. 기존 보유 포지션의 REST 주문 대사, 체결 확인, 손절·트레일링·긴급 청산은 차단하지 않는다.
 - 신규 BUY 차단은 정상적인 종목별 Gemini JSON Schema 응답이 확인된 경우에만 해제한다. 브리핑·거시·스크리너 랭킹 성공·실패만으로는 이 상태를 바꾸지 않으며, 실패 시 고위 모델 승격 또는 로컬 BUY 폴백은 허용하지 않는다.
-- `build_bithumb_analyzer()`는 Gemini **설정 오류**가 있을 때만 `None`을 반환한다. 런타임 장애(`entry_safety`)는 `get_bithumb_ai_entry_block_reason()`과 주문 게이트에서만 신규 BUY를 차단하고, 분석기는 유지해 다음 정상 분석으로 자동 복구할 수 있게 한다.
+- `build_bithumb_analyzer()`는 Gemini **설정 오류**가 있을 때만 `None`을 반환한다. 런타임 장애(`entry_safety`)는 `get_bithumb_ai_entry_block_reason()`과 주문 게이트에서 신규 BUY를 차단하지만, `TradingCycleEngine.process_entry_gating`은 래치가 켜져도 `entry_safety_recovery`로 종목별 진입 Gemini 분석을 계속 시도해 업비트와 동일하게 정상 JSON 응답 시 `entry_safety`를 자동 해제한다. 해제 전에는 모멘텀 직접 진입·AI BUY 승인 모두 최종 단계에서 차단한다.
 - 운영 계측에는 마지막 오류의 목적, 모델, HTTP 상태 및 제한된 오류 코드/타입만 저장한다. API 키, 프롬프트, 오류 메시지 원문, 계좌·주문 식별자는 로그·대시보드·영속 파일에 저장하지 않는다. Gemini 거시 진단이 실패하면 `CAUTION_PULLBACK` 방어 상태와 `AI_UNAVAILABLE` 표기를 사용해 정상 레짐으로 오인하지 않는다.
 
 ### 업비트 Gemini 런타임 장애 신규 진입 차단 (v8.50)
@@ -273,7 +273,7 @@ c:\AI\bithumb\
 - **미확정 주문 제외**: `processed_executed_volume == 0`인 ACK·OPEN·CANCELED·RECONCILIATION_PENDING·UNKNOWN 주문은 손익 레그에 포함하지 않는다. 리포트 요약에는 `RECONCILIATION_PENDING`·`OPEN`·`CANCELED`·`UNKNOWN` 건수를 별도 집계한다.
 - **레그 구성**: 확정 매도 체결 1건(또는 분할익절 주문 1건)당 1개 레그. 진입 메타는 동일 `position_id`의 확정 매수 주문·`entry_strategy_snapshot`에서 복원한다. 순손익은 `OrderFillProcessor`와 동일한 proceeds/cost_basis에 **매수 수수료 비례 배분**을 더해 양방향 수수료를 반영한다.
 - **KST 거래일**: 청산 시각(`last_event_at` → `updated_at` → `created_at`)을 KST로 변환해 `kst_trading_date`를 부여한다. `daily_stats.json`과의 차이는 `daily_stats_comparison.explanations`로 설명 가능하게 노출한다.
-- **거래소 격리**: `exchange_scope` 불일치 저널은 해당 거래소 리포트에서 레그 0건으로 처리한다. 통합 대시보드는 `merge_exchange_reports()`로 빗썸·업비트 리포트를 중첩만 하고 데이터 파일을 혼합하지 않는다.
+- **거래소 격리**: `exchange_scope` 불일치 저널은 해당 거래소 리포트에서 레그 0건으로 처리한다. 통합 대시보드는 `merge_exchange_reports()`로 빗썸·업비트 리포트를 중첩하고, **청산 시각 기준 최근 레그·요약 카드**를 합산해 노출한다(저널 파일은 혼합하지 않음).
 - **대시보드**: 봇 `/api/status` 응답에 `confirmed_fill_performance` 필드를 **추가**한다(기존 필드·계약 유지). SPA `section_confirmed_fill_report`에서 표시 전용 렌더링한다.
 
 ### 3.8. 백테스팅 및 데이터 엄밀성 검증 체계 (Backtesting & Data Rigor Engine)

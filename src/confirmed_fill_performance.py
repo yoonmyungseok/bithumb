@@ -240,6 +240,8 @@ def summarize_trade_legs(legs: list[dict[str, Any]]) -> dict[str, Any]:
             "loss_count": 0,
             "win_rate_pct": 0.0,
             "profit_factor": None,
+            "gross_win_krw": 0.0,
+            "gross_loss_krw": 0.0,
             "total_gross_pnl_krw": 0.0,
             "total_net_pnl_krw": 0.0,
             "total_fee_krw": 0.0,
@@ -257,6 +259,8 @@ def summarize_trade_legs(legs: list[dict[str, Any]]) -> dict[str, Any]:
         "loss_count": len(losses),
         "win_rate_pct": round(len(wins) / len(legs) * 100.0, 2),
         "profit_factor": round(profit_factor, 4) if profit_factor is not None else None,
+        "gross_win_krw": round(gross_win, 2),
+        "gross_loss_krw": round(gross_loss, 2),
         "total_gross_pnl_krw": round(sum(float(leg.get("gross_pnl_krw", 0.0)) for leg in legs), 2),
         "total_net_pnl_krw": round(sum(float(leg.get("net_pnl_krw", 0.0)) for leg in legs), 2),
         "total_fee_krw": round(sum(float(leg.get("total_fee_krw", 0.0)) for leg in legs), 2),
@@ -307,20 +311,20 @@ def compare_with_daily_stats(
     delta_pnl = round(confirmed_net - stats_pnl, 2)
 
     explanations: list[str] = [
-        "daily_stats.json은 DailyRiskManager가 확정 매도 체결 시점에 메모리·자정(KST) 경계로 누적한다.",
-        "확정 체결 리포트는 주문 저널의 processed_executed_volume·processed_fee만 재집계하며 미체결·ACK 주문은 제외한다.",
+        "일일 통계 파일은 확정 매도 체결 시점에 메모리·자정(KST) 경계로 누적된다.",
+        "확정 체결 리포트는 주문 저널의 확정 체결량·수수료만 재집계하며 주문 접수·미체결 주문은 제외한다.",
     ]
     if stats_date and stats_date != kst_date:
         explanations.append(
-            f"daily_stats 현재 date({stats_date})와 비교 대상 KST일({kst_date})이 다르면 당일 수치가 어긋날 수 있다.",
+            f"일일 통계 기록일({stats_date})과 비교 KST일({kst_date})이 다르면 당일 수치가 어긋날 수 있다.",
         )
     if delta_pnl != 0:
         explanations.append(
-            "순손익 차이는 매수 수수료 배분·분할익절 레그 수·자정 전후 청산일 분류 또는 daily_stats 미동기화 때문일 수 있다.",
+            "순손익 차이는 매수 수수료 배분·분할익절 레그 수·자정 전후 청산일 분류 또는 일일 통계 미동기화 때문일 수 있다.",
         )
     if stats_trades != day_summary["confirmed_fill_count"]:
         explanations.append(
-            "체결 횟수 차이는 daily_stats가 청산 이벤트 건수를 세고, 리포트는 저널 매도 확정 레그 건수를 센다.",
+            "체결 횟수 차이는 일일 통계가 청산 이벤트 건수를 세고, 리포트는 저널 매도 확정 레그 건수를 센다.",
         )
 
     return {
@@ -389,15 +393,101 @@ def build_confirmed_fill_report(
     }
 
 
+def _merge_performance_summaries(
+    left: dict[str, Any],
+    right: dict[str, Any],
+) -> dict[str, Any]:
+    """두 거래소 요약을 통합 탭 카드용으로 합산한다."""
+    win_count = int(left.get("win_count", 0) or 0) + int(right.get("win_count", 0) or 0)
+    loss_count = int(left.get("loss_count", 0) or 0) + int(right.get("loss_count", 0) or 0)
+    fill_count = int(left.get("confirmed_fill_count", 0) or 0) + int(
+        right.get("confirmed_fill_count", 0) or 0
+    )
+    gross_win = float(left.get("gross_win_krw", 0.0) or 0.0) + float(
+        right.get("gross_win_krw", 0.0) or 0.0
+    )
+    gross_loss = float(left.get("gross_loss_krw", 0.0) or 0.0) + float(
+        right.get("gross_loss_krw", 0.0) or 0.0
+    )
+    profit_factor = (gross_win / gross_loss) if gross_loss > 0 else None
+
+    excluded: dict[str, int] = {}
+    for summary in (left, right):
+        for status, count in (summary.get("order_status_excluded_counts") or {}).items():
+            excluded[status] = excluded.get(status, 0) + int(count or 0)
+
+    return {
+        "confirmed_fill_count": fill_count,
+        "win_count": win_count,
+        "loss_count": loss_count,
+        "win_rate_pct": round(win_count / fill_count * 100.0, 2) if fill_count > 0 else 0.0,
+        "profit_factor": round(profit_factor, 4) if profit_factor is not None else None,
+        "gross_win_krw": round(gross_win, 2),
+        "gross_loss_krw": round(gross_loss, 2),
+        "total_gross_pnl_krw": round(
+            float(left.get("total_gross_pnl_krw", 0.0) or 0.0)
+            + float(right.get("total_gross_pnl_krw", 0.0) or 0.0),
+            2,
+        ),
+        "total_net_pnl_krw": round(
+            float(left.get("total_net_pnl_krw", 0.0) or 0.0)
+            + float(right.get("total_net_pnl_krw", 0.0) or 0.0),
+            2,
+        ),
+        "total_fee_krw": round(
+            float(left.get("total_fee_krw", 0.0) or 0.0) + float(right.get("total_fee_krw", 0.0) or 0.0),
+            2,
+        ),
+        "order_status_excluded_counts": excluded,
+    }
+
+
+def _merge_recent_trade_legs(
+    bithumb_report: dict[str, Any],
+    upbit_report: dict[str, Any],
+    *,
+    limit: int = 30,
+) -> list[dict[str, Any]]:
+    """최근 레그를 청산 시각 기준으로 합친 뒤 상한만 반환한다(거래소 라벨 보존)."""
+    merged: list[dict[str, Any]] = []
+    for exchange_key, report in (("bithumb", bithumb_report), ("upbit", upbit_report)):
+        for leg in report.get("recent_trade_legs") or []:
+            if not isinstance(leg, dict):
+                continue
+            row = dict(leg)
+            row["exchange"] = str(row.get("exchange") or exchange_key).lower()
+            merged.append(row)
+
+    merged.sort(
+        key=lambda leg: (
+            str(leg.get("exit_at_kst") or ""),
+            str(leg.get("kst_trading_date") or ""),
+            str(leg.get("exit_client_order_id") or ""),
+        ),
+        reverse=True,
+    )
+    return merged[:limit]
+
+
 def merge_exchange_reports(
     bithumb_report: dict[str, Any],
     upbit_report: dict[str, Any],
+    *,
+    recent_leg_limit: int = 30,
 ) -> dict[str, Any]:
-    """통합 대시보드용 — 두 거래소 리포트를 합산하지 않고 목록으로 묶는다."""
+    """통합 대시보드용 — 거래소별 리포트를 보존하고 통합 요약·최근 레그를 함께 제공한다."""
+    bt_summary = dict(bithumb_report.get("summary") or {})
+    up_summary = dict(upbit_report.get("summary") or {})
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "generated_at_kst": get_kst_now_str(),
         "timezone": "Asia/Seoul",
+        "summary": _merge_performance_summaries(bt_summary, up_summary),
+        "recent_trade_legs": _merge_recent_trade_legs(
+            bithumb_report,
+            upbit_report,
+            limit=recent_leg_limit,
+        ),
         "exchanges": {
             "bithumb": bithumb_report,
             "upbit": upbit_report,
