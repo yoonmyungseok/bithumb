@@ -308,6 +308,8 @@ class StrategyPolicySSOTTests(unittest.TestCase):
         self.assertEqual(cd.default_sl_cooldown, StrategyPolicy.COOLDOWN_STOP_LOSS_SEC)
         self.assertEqual(cd.default_tp_cooldown, StrategyPolicy.COOLDOWN_TP_SEC)
         self.assertEqual(cd.default_time_stop_cooldown, StrategyPolicy.COOLDOWN_TIME_STOP_SEC)
+        self.assertEqual(cd.daily_loss_cooldown, StrategyPolicy.COOLDOWN_DAILY_LOSS_LIMIT_SEC)
+        self.assertEqual(cd.max_daily_losses_per_market, StrategyPolicy.MAX_DAILY_LOSSES_PER_MARKET)
 
     def test_get_time_stop_bars_5m_regime_split(self):
         """백테스트 타임스탑 봉 수가 레짐별로 분기되어야 한다."""

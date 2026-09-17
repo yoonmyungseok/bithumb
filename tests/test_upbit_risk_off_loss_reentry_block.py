@@ -4,6 +4,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
@@ -133,14 +134,30 @@ class UpbitRiskOffLossReentryBlockTests(unittest.TestCase):
         next_str = datetime.fromtimestamp(ts, tz=KST).strftime("%Y-%m-%d %H:%M:%S")
         self.assertTrue(next_str.endswith("00:00:00"))
 
-    def test_normal_regime_path_not_subject_to_guard(self):
+    def test_soft_blacklist_cooldown_unblocks_after_cooldown(self):
+        # 1회 손실
         self.guard.record_confirmed_loss_exit(
             exchange="upbit",
             market="KRW-ALT",
-            exit_reason="TIME_STOP",
-            net_pnl_krw=-900.0,
+            exit_reason="STOP_LOSS",
+            net_pnl_krw=-500.0,
         )
-        self.assertFalse(self.guard.applies_to_entry_path("NORMAL", "MOMENTUM_BREAKOUT"))
+        # 2회 손실 (Soft Blacklist)
+        self.guard.record_confirmed_loss_exit(
+            exchange="upbit",
+            market="KRW-ALT",
+            exit_reason="STOP_LOSS",
+            net_pnl_krw=-500.0,
+        )
+        blocked, info = self.guard.check_reentry_blocked("KRW-ALT")
+        self.assertTrue(blocked)
+        self.assertIn("Soft Blacklist", info["summary"])
+
+        # 쿨다운(기본 3시간) 만료 시뮬레이션
+        with self.guard._lock:
+            self.guard._records["KRW-ALT"]["exit_ts"] = time.time() - 20000.0
+        blocked_after, _ = self.guard.check_reentry_blocked("KRW-ALT")
+        self.assertFalse(blocked_after)
 
 
 if __name__ == "__main__":

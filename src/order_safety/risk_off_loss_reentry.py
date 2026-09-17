@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from state_store import load_json_with_backup_recovery, write_json_atomically
+from strategy_engine import StrategyPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -181,16 +182,23 @@ class RiskOffLossReentryGuard:
 
             kst_date = str(rec["kst_date"])
             exit_ts = float(rec.get("exit_ts", 0.0))
-            next_allowed_ts = kst_midnight_after_date(kst_date)
             exit_at_str = datetime.fromtimestamp(exit_ts, tz=KST).strftime("%Y-%m-%d %H:%M:%S")
-            next_allowed_str = datetime.fromtimestamp(next_allowed_ts, tz=KST).strftime("%Y-%m-%d %H:%M:%S")
+            now = time.time()
+            midnight_ts = kst_midnight_after_date(kst_date)
 
             if loss_count >= 2:
+                cooldown_sec = getattr(StrategyPolicy, "COOLDOWN_DAILY_LOSS_LIMIT_SEC", 10800.0)
+                next_allowed_ts = min(exit_ts + cooldown_sec, midnight_ts)
+                if now >= next_allowed_ts:
+                    return False, {}
+                next_allowed_str = datetime.fromtimestamp(next_allowed_ts, tz=KST).strftime("%Y-%m-%d %H:%M:%S")
                 summary_msg = (
                     f"당일 {loss_count}회 연속 손실(Soft Blacklist, 최근사유: {rec.get('exit_reason', '')})로 "
-                    f"당일 전면 재진입 차단 (다음 허용: {next_allowed_str} KST)"
+                    f"재진입 쿨다운 대기 중 (다음 허용: {next_allowed_str} KST)"
                 )
             else:
+                next_allowed_ts = midnight_ts
+                next_allowed_str = datetime.fromtimestamp(next_allowed_ts, tz=KST).strftime("%Y-%m-%d %H:%M:%S")
                 summary_msg = (
                     f"당일 손실 청산({rec.get('exit_reason', '')}, "
                     f"{rec.get('confirmed_net_pnl_krw', 0.0):+,.0f}원) 후 RISK_OFF 모멘텀 재진입 차단 "

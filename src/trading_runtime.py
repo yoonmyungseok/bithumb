@@ -1644,15 +1644,12 @@ class TradingCycleEngine:
                 if hasattr(StrategyPolicy, "is_ai_direct_entry_enabled")
                 else False
             )
-            daily_losses = (
-                ctx.cooldown_manager.get_daily_loss_count(market)
-                if hasattr(ctx.cooldown_manager, "get_daily_loss_count")
-                else 0
+            in_cd, _ = (
+                ctx.cooldown_manager.is_in_cooldown(market)
+                if hasattr(ctx.cooldown_manager, "is_in_cooldown")
+                else (False, 0.0)
             )
-            max_daily_losses = getattr(ctx.cooldown_manager, "max_daily_losses_per_market", 2)
-            can_enter_daily = True
-            if isinstance(daily_losses, (int, float)) and isinstance(max_daily_losses, (int, float)):
-                can_enter_daily = daily_losses < max_daily_losses
+            can_enter_daily = not in_cd
 
             # AI 단독 자율 승인 시, 상투/고점 추격을 방지하기 위해 저점/눌림목 지지 여부 검증
             # 로컬 룰이 관망인 종목이므로 볼린저 밴드 %B가 0.70 이하(약세장 RISK_OFF 시 0.65 이하)여야 함

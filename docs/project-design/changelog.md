@@ -2,6 +2,14 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v8.96 (2026-09-17)
+
+- 당일 손절 2회 누적 차단 정책 완화 (자정 고정 차단 ➔ 3시간 쿨다운 완화 및 상태 파일 mtime 자동 동기화):
+  - `strategy_engine.py`: `StrategyPolicy.COOLDOWN_DAILY_LOSS_LIMIT_SEC` (기본 10,800.0초 / 3시간, 환경변수 연동) 및 `MAX_DAILY_LOSSES_PER_MARKET` SSOT 정의.
+  - `cooldown.py`: 당일 2회 이상 손절 발생 시 자정까지 무조건 전면 차단하던 경직성을 3시간 쿨다운 만료 후 재진입 허용으로 완화. 직전 청산가 대비 떨어지는 칼날 잡기 방지(-1.5% 급락 차단) 및 갭 필터는 계속 엄격하게 유지. 상태 파일 mtime 감지 로직 추가로 외부 상태 편집 시 프로세스 재시작 없는 핫 리로드 지원.
+  - `risk_off_loss_reentry.py`: 당일 2회 이상 손실(Soft Blacklist) 차단 기간을 동일하게 3시간 쿨다운 기준으로 일원화하여 모듈 간 정합성 유지.
+  - `main.py`, `main_upbit.py`, `trading_runtime.py`: `daily_loss_cooldown` SSOT 파라미터 주입 및 쿨다운 만료 기반 재진입 검증 연동.
+
 ## v8.95 (2026-09-17)
 
 - 빗썸(00:00 KST)과 업비트(09:00 KST) 일봉 리셋 시차 및 스크리너 완충(Reset Grace Period) 정책 도입:

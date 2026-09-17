@@ -37,7 +37,7 @@ def is_stop_loss_exit(exit_type: str) -> bool:
     raw_upper = raw.upper()
     if "TIME" in raw_upper or "TRAILING" in raw_upper or "TP" in raw_upper or "익절" in raw:
         return False
-    return "STOP" in raw_upper or "손절" in raw or "탈출" in raw or "EMERGENCY" in raw_upper
+    return "STOP" in raw_upper or "손절" in raw or "탈출" in raw or "EMERGENCY" in raw_upper or "DAILY_LOSS" in raw_upper
 
 
 class CooldownManager:
@@ -48,7 +48,8 @@ class CooldownManager:
         default_sl_cooldown: float = StrategyPolicy.COOLDOWN_STOP_LOSS_SEC,
         default_tp_cooldown: float = StrategyPolicy.COOLDOWN_TP_SEC,
         default_time_stop_cooldown: float = StrategyPolicy.COOLDOWN_TIME_STOP_SEC,
-        max_daily_losses_per_market: int = 2,  # 당일 종목당 최대 허용 손절 횟수 (2회 이상 시 당일 차단)
+        daily_loss_cooldown: float = StrategyPolicy.COOLDOWN_DAILY_LOSS_LIMIT_SEC,
+        max_daily_losses_per_market: int = StrategyPolicy.MAX_DAILY_LOSSES_PER_MARKET,
         state_file: str | None = None,
         data_dir: str | None = None,
     ):
@@ -56,16 +57,39 @@ class CooldownManager:
         self.default_sl_cooldown = default_sl_cooldown
         self.default_tp_cooldown = default_tp_cooldown
         self.default_time_stop_cooldown = default_time_stop_cooldown
+        self.daily_loss_cooldown = daily_loss_cooldown
         self.max_daily_losses_per_market = max_daily_losses_per_market
         d_dir = data_dir or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
         os.makedirs(d_dir, exist_ok=True)
         self.state_file = state_file or os.path.join(d_dir, "cooldown_state.json")
+        self._last_mtime: float = 0.0
         self._daily_loss_date: str = get_kst_date_str()
         self._daily_loss_counts: dict[str, int] = {}
         self._records: dict[str, dict[str, Any]] = self._load()
+        self._update_mtime()
+
+    def _update_mtime(self) -> None:
+        try:
+            if os.path.exists(self.state_file):
+                self._last_mtime = os.path.getmtime(self.state_file)
+        except OSError:
+            pass
+
+    def _sync_external_changes_locked(self) -> None:
+        """외부에서 상태 파일이 변경되었으면(수동 편집 또는 외부 초기화) 메모리로 다시 로드한다."""
+        try:
+            if not os.path.exists(self.state_file):
+                return
+            mtime = os.path.getmtime(self.state_file)
+            if self._last_mtime > 0 and mtime > self._last_mtime:
+                self._records = self._load()
+                self._last_mtime = mtime
+        except OSError:
+            pass
 
     def _check_day_rollover_locked(self) -> None:
         """KST 자정이 지나 날짜가 변경되었으면 당일 손절 카운트를 초기화한다."""
+        self._sync_external_changes_locked()
         today = get_kst_date_str()
         if today != self._daily_loss_date:
             logger.info("📅 [자정 날짜 변경 감지] 일일 종목별 손절 카운트 초기화 (%s -> %s)", self._daily_loss_date, today)
@@ -129,6 +153,7 @@ class CooldownManager:
             for k, v in self._records.items():
                 payload[k] = v
             write_json_atomically(self.state_file, payload)
+            self._update_mtime()
         except OSError as exc:
             logger.warning("쿨다운 상태 파일 저장 실패: %s", exc)
 
@@ -146,7 +171,8 @@ class CooldownManager:
 
                 if loss_cnt >= self.max_daily_losses_per_market:
                     rem_midnight = get_seconds_until_kst_midnight()
-                    expire_at = now + rem_midnight
+                    duration = min(self.daily_loss_cooldown, rem_midnight)
+                    expire_at = now + duration
                     self._records[m_key] = {
                         "expire_at": expire_at,
                         "exit_type": f"DAILY_LOSS_LIMIT({loss_cnt}회)",
@@ -155,7 +181,7 @@ class CooldownManager:
                     }
                     self._save()
                     logger.warning(
-                        f"🛑 [{market}] 당일 손절 {loss_cnt}회 누적! 금일 자정까지 해당 종목 매수 완전 차단{price_str} (잔여 {rem_midnight/3600:.1f}시간)"
+                        f"🛑 [{market}] 당일 손절 {loss_cnt}회 누적! {duration/3600:.1f}시간({duration/60:.0f}분) 동안 해당 종목 매수 쿨다운 적용{price_str} (자정까지 {rem_midnight/3600:.1f}시간 남음)"
                     )
                     return
 
@@ -240,15 +266,19 @@ class CooldownManager:
         with self._lock:
             self._check_day_rollover_locked()
 
-            loss_cnt = self._daily_loss_counts.get(m_key, 0)
-            if loss_cnt >= self.max_daily_losses_per_market:
-                rem_h = get_seconds_until_kst_midnight() / 3600.0
-                return (
-                    False,
-                    f"🛑 당일 손절 {loss_cnt}회 누적으로 금일({m_key}) 거래 완전 차단 (자정까지 {rem_h:.1f}시간 남음)",
-                )
-
             rec = self._records.get(m_key)
+            loss_cnt = self._daily_loss_counts.get(m_key, 0)
+
+            # 1차: 당일 손절 한도 도달 시 활성 쿨다운 확인
+            if loss_cnt >= self.max_daily_losses_per_market and rec:
+                expire_at = float(rec.get("expire_at", 0.0))
+                if expire_at > now:
+                    cd_rem = expire_at - now
+                    return (
+                        False,
+                        f"🛑 당일 손절 {loss_cnt}회 누적으로 재진입 쿨다운 대기 중 ({cd_rem/60:.1f}분 남음)",
+                    )
+
             if not rec:
                 return True, "OK"
 
@@ -258,14 +288,21 @@ class CooldownManager:
 
             if expire_at > now:
                 cd_rem = expire_at - now
+                if "DAILY_LOSS" in exit_type_upper or loss_cnt >= self.max_daily_losses_per_market:
+                    return False, f"🛑 당일 손절 {loss_cnt}회 누적으로 재진입 쿨다운 대기 중 ({cd_rem/60:.1f}분 남음)"
                 if "NEW_LISTING" in exit_type_upper:
                     return False, f"🆕 신규상장 재진입 쿨다운 대기 중 ({cd_rem/60:.1f}분 남음)"
                 return False, f"⏳ {exit_type} 쿨다운 대기 중 ({cd_rem/60:.1f}분 남음)"
 
             ts = float(rec.get("timestamp", 0.0))
             exit_price = float(rec.get("exit_price", 0.0))
+            effective_gap_expiry = (
+                max(expiry_sec, (expire_at - ts) + 3600.0)
+                if "DAILY_LOSS" in exit_type_upper
+                else expiry_sec
+            )
 
-            if (now - ts) < expiry_sec and exit_price > 0 and current_price > 0:
+            if (now - ts) < effective_gap_expiry and exit_price > 0 and current_price > 0:
                 gap_pct = (current_price - exit_price) / exit_price
 
                 if is_stop_loss_exit(exit_type_upper):
@@ -287,7 +324,7 @@ class CooldownManager:
                             f"직전 트레일링 청산가({exit_price:,.2f}원) 대비 유의미한 회복(+{min_gap_pct*100:.1f}%) 미도달(현재 {current_price:,.2f}원, 갭 {gap_pct*100:+.2f}%)으로 재진입 방지",
                         )
 
-            if now - ts >= expiry_sec:
+            if expire_at <= now and (now - ts >= effective_gap_expiry):
                 del self._records[m_key]
                 self._save()
 

@@ -208,6 +208,8 @@ class StrategyPolicy:
     COOLDOWN_STOP_LOSS_SEC: float = 1800.0  # 손절 후 쿨다운 30분 (연속 손절 방어)
     COOLDOWN_TIME_STOP_SEC: float = 600.0   # 타임스탑 횡보 청산 후 쿨다운 10분
     COOLDOWN_TP_SEC: float = 300.0          # 트레일링 익절 후 쿨다운 5분 (2차 랠리 조기 참여)
+    COOLDOWN_DAILY_LOSS_LIMIT_SEC: float = float(os.getenv("COOLDOWN_DAILY_LOSS_LIMIT_SEC", "10800.0"))  # 당일 손절 한도 도달 시 쿨다운 3시간 (180분)
+    MAX_DAILY_LOSSES_PER_MARKET: int = int(os.getenv("MAX_DAILY_LOSSES_PER_MARKET", "2"))  # 당일 종목당 최대 허용 손절 횟수
     REENTRY_BUFFER_PCT: float = 0.012       # 직전 청산가 대비 최소 돌파/눌림목 갭 버퍼 (+1.2%)
     REENTRY_FILTER_EXPIRY_SEC: float = 2700.0  # 직전 청산가 갭 필터 유지 시간 (45분)
 

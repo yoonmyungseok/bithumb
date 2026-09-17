@@ -220,6 +220,8 @@ cooldown_manager = CooldownManager(
     default_sl_cooldown=StrategyPolicy.COOLDOWN_STOP_LOSS_SEC,
     default_tp_cooldown=StrategyPolicy.COOLDOWN_TP_SEC,
     default_time_stop_cooldown=StrategyPolicy.COOLDOWN_TIME_STOP_SEC,
+    daily_loss_cooldown=StrategyPolicy.COOLDOWN_DAILY_LOSS_LIMIT_SEC,
+    max_daily_losses_per_market=StrategyPolicy.MAX_DAILY_LOSSES_PER_MARKET,
     data_dir=DATA_DIR,
 )
 # RISK_OFF 모멘텀 돌파 당일 손실 재진입 차단 (업비트 전용 상태 파일).

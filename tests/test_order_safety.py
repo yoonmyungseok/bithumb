@@ -161,11 +161,17 @@ class OrderSafetyTests(unittest.TestCase):
         cd.record_exit("KRW-SOL", "손절 방어", exit_price=95.0)
         self.assertEqual(cd.get_daily_loss_count("KRW-SOL"), 2)
 
-        # 5. 당일 2회 손절 누적으로 당일 자정까지 해당 종목 완전 차단 확인
+        # 5. 당일 2회 손절 누적으로 재진입 쿨다운 적용 확인
         allowed_blocked, reason_blocked = cd.check_reentry_allowed("KRW-SOL", 98.0)
         self.assertFalse(allowed_blocked)
         self.assertIn("당일 손절 2회 누적", reason_blocked)
-        self.assertIn("거래 완전 차단", reason_blocked)
+        self.assertIn("재진입 쿨다운 대기 중", reason_blocked)
+
+        # 6. 3시간 쿨다운 만료 후 반등 회복 시 재진입 허용 검증
+        with cd._lock:
+            cd._records["KRW-SOL"]["expire_at"] = time.time() - 1.0
+        allowed_after_cd, _ = cd.check_reentry_allowed("KRW-SOL", 96.0)
+        self.assertTrue(allowed_after_cd)
 
     def test_whipsaw_reentry_prevention_scenario(self):
         """316원 타임스탑 매도 후 317원 재매수 시도와 같은 휩쏘 횡보 재진입 차단 검증 (타임스탑 유지)"""
