@@ -11,6 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # PR 기준 커밋과 공통 조상을 계산하려면 전체 이력이 필요하다.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -24,6 +27,12 @@ jobs:
       - name: Ruff lint (quality modules)
         run: |
           ruff check src/operational_quality.py src/gemini_telemetry.py src/order_safety src/trading_bot_bootstrap.py src/trading_watchdog.py
+
+      - name: 설계 문서 동반 갱신 검사
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          python tools/check_design_docs.py --base "$BASE_SHA"
 
       - name: Run unit tests
         env:
