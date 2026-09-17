@@ -166,3 +166,89 @@ body {
 .badge-secondary { background-color: rgba(100, 116, 139, 0.2); color: #94a3b8; border: 1px solid rgba(100, 116, 139, 0.4); }
 .badge-success { background-color: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4); }
 .badge-info { background-color: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); }
+
+/* 스크롤바 숨김 유틸리티 (모바일 가로 탭 바 등에 사용) */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* 모바일 전용 반응형 카드 뷰 및 스크롤 트랩 방지 최적화 */
+@media (max-width: 640px) {
+  /* 모바일 화면에서 테이블 내부 스크롤에 갇히는 현상 방지 (max-height 축소) */
+  .table-scroll-watchlist {
+    max-height: 22rem;
+  }
+  .table-scroll-order-journal,
+  .table-scroll-recent-trades {
+    max-height: 18rem;
+  }
+
+  /* 모바일 카드 스타일 */
+  .mobile-card {
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-card);
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 10px;
+    transition: all 0.15s ease-in-out;
+  }
+  .mobile-card:active {
+    background-color: var(--bg-card-hover);
+  }
+  .mobile-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding-bottom: 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    margin-bottom: 10px;
+  }
+  .mobile-card-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px 12px;
+    font-size: 0.75rem;
+  }
+  .mobile-card-field-label {
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+    margin-bottom: 2px;
+  }
+  .mobile-card-field-val {
+    color: var(--text-main);
+    font-weight: 600;
+  }
+  .mobile-card-footer {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    font-size: 0.75rem;
+  }
+  .mobile-accordion-toggle {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 0.7rem;
+    color: #94a3b8;
+    cursor: pointer;
+  }
+  .mobile-accordion-toggle:active {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  /* 모바일 탭 터치 타겟 최소 높이 보장 */
+  .tab-button {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+}

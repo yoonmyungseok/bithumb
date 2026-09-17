@@ -1388,90 +1388,191 @@
   }
 
   // Render Positions Table
+  // Render Positions Table & Mobile Cards
   function renderPositionsTable(positions) {
     const tbody = document.getElementById('positions_tbody');
-    if (!tbody) return;
+    const cardsContainer = document.getElementById('positions_cards');
 
     if (!positions || positions.length === 0) {
-      tbody.innerHTML = `
-        <tr>
-          <td colspan="9" class="p-8 text-center text-slate-500">
-            <div class="text-3xl mb-2">💼</div>
-            <div class="text-sm font-medium">현재 보유 중인 포지션이 없습니다. (100% 현금 대기 중)</div>
-          </td>
-        </tr>
-      `;
+      if (tbody) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="9" class="p-8 text-center text-slate-500">
+              <div class="text-3xl mb-2">💼</div>
+              <div class="text-sm font-medium">현재 보유 중인 포지션이 없습니다. (100% 현금 대기 중)</div>
+            </td>
+          </tr>
+        `;
+      }
+      if (cardsContainer) {
+        cardsContainer.innerHTML = `
+          <div class="mobile-card text-center p-6 text-slate-500">
+            <div class="text-2xl mb-1.5">💼</div>
+            <div class="text-xs font-medium">현재 보유 중인 포지션이 없습니다. (100% 현금 대기 중)</div>
+          </div>
+        `;
+      }
       return;
     }
 
     const prioritizedPositions = positions
       .map(pos => ({ pos, priority: getPositionOperationalPriority(pos) }))
       .sort((left, right) => left.priority.rank - right.priority.rank);
-    tbody.innerHTML = prioritizedPositions.map(({ pos, priority }) => {
-      const pnlPct = Number(pos.pnl_pct || 0);
-      let pnlKrw = Number(pos.pnl_krw);
-      if (isNaN(pnlKrw) || pos.pnl_krw === undefined || pos.pnl_krw === null) {
-        const curPrice = Number(pos.current_price || 0);
-        const avgBuy = Number(pos.avg_buy_price || 0);
-        const bal = Number(pos.balance || pos.volume || 0);
-        if (avgBuy > 0 && bal > 0) {
-          pnlKrw = (curPrice - avgBuy) * bal;
-        } else {
-          pnlKrw = 0;
-        }
-      }
-      const isProfit = pnlPct >= 0;
-      const pnlCls = isProfit ? 'text-emerald-400' : 'text-rose-400';
-      const targetStr = pos.target_price > 0 ? `${formatPrice(pos.target_price)} 원 (${pos.target_pct >= 0 ? '+' : ''}${(pos.target_pct || 0).toFixed(1)}%)` : '-';
-      const stopStr = pos.stop_loss > 0 ? `${formatPrice(pos.stop_loss)} 원 (${pos.stop_pct || 0}%)` : '-';
 
-      return `
-        <tr class="hover:bg-slate-800/40 transition-colors border-b border-slate-800/80">
-          <td class="p-3 whitespace-nowrap">
-            <div class="font-bold text-slate-100 flex items-center gap-1.5 cursor-pointer hover:text-blue-400" onclick="window.showChartModal('${pos.market}', '${pos.exchange || state.activeExchange}')">
-              <span>${pos.korean_name || pos.market}</span>
-              <span class="text-xs text-slate-400 font-normal">(${pos.market})</span>
-              ${pos.strategy_mode ? `<span class="text-xs text-amber-300">${formatStrategyModeLabel(pos.strategy_mode)}</span>` : '<span class="text-xs text-blue-400">📈</span>'}
+    // 1. 데스크톱 테이블 렌더링
+    if (tbody) {
+      tbody.innerHTML = prioritizedPositions.map(({ pos, priority }) => {
+        const pnlPct = Number(pos.pnl_pct || 0);
+        let pnlKrw = Number(pos.pnl_krw);
+        if (isNaN(pnlKrw) || pos.pnl_krw === undefined || pos.pnl_krw === null) {
+          const curPrice = Number(pos.current_price || 0);
+          const avgBuy = Number(pos.avg_buy_price || 0);
+          const bal = Number(pos.balance || pos.volume || 0);
+          if (avgBuy > 0 && bal > 0) {
+            pnlKrw = (curPrice - avgBuy) * bal;
+          } else {
+            pnlKrw = 0;
+          }
+        }
+        const isProfit = pnlPct >= 0;
+        const pnlCls = isProfit ? 'text-emerald-400' : 'text-rose-400';
+        const targetStr = pos.target_price > 0 ? `${formatPrice(pos.target_price)} 원 (${pos.target_pct >= 0 ? '+' : ''}${(pos.target_pct || 0).toFixed(1)}%)` : '-';
+        const stopStr = pos.stop_loss > 0 ? `${formatPrice(pos.stop_loss)} 원 (${pos.stop_pct || 0}%)` : '-';
+
+        return `
+          <tr class="hover:bg-slate-800/40 transition-colors border-b border-slate-800/80">
+            <td class="p-3 whitespace-nowrap">
+              <div class="font-bold text-slate-100 flex items-center gap-1.5 cursor-pointer hover:text-blue-400" onclick="window.showChartModal('${pos.market}', '${pos.exchange || state.activeExchange}')">
+                <span>${pos.korean_name || pos.market}</span>
+                <span class="text-xs text-slate-400 font-normal">(${pos.market})</span>
+                ${pos.strategy_mode ? `<span class="text-xs text-amber-300">${formatStrategyModeLabel(pos.strategy_mode)}</span>` : '<span class="text-xs text-blue-400">📈</span>'}
+              </div>
+            </td>
+            <td class="p-3 whitespace-nowrap">
+              <div class="font-medium text-slate-200">${formatPrice(pos.current_price)} 원</div>
+              <div class="text-xs text-slate-400">평단: ${formatPrice(pos.avg_buy_price)} 원</div>
+            </td>
+            <td class="p-3 whitespace-nowrap">
+              <div class="font-medium text-slate-200">${formatKrw(pos.value || pos.total_val)}</div>
+              <div class="text-xs text-slate-400">${Number(pos.balance || pos.volume || 0).toFixed(4)} 개</div>
+            </td>
+            <td class="p-3 whitespace-nowrap font-bold ${pnlCls}">
+              <div>${formatPct(pnlPct)}</div>
+              <div class="text-xs font-normal opacity-90">${formatSignedKrw(pnlKrw)}</div>
+            </td>
+            <td class="p-3 whitespace-nowrap">
+              ${renderPositionOperationalPriority(priority)}
+            </td>
+            <td class="p-3 whitespace-nowrap">
+              ${renderActionBadge(pos.action)}
+            </td>
+            <td class="p-3 whitespace-nowrap text-xs">
+              <div class="text-emerald-400">목표: ${targetStr}</div>
+              <div class="text-rose-400">손절: ${stopStr}</div>
+            </td>
+            <td class="p-3 whitespace-nowrap">
+              ${renderAlphaBadge(pos.alpha_score)}
+            </td>
+            <td class="p-3 text-xs text-slate-300 max-w-xs break-words">
+              ${formatReason(pos.reason)}
+              ${renderPositionRiskState(pos.risk_state)}
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // 2. 모바일 반응형 카드 뷰 렌더링
+    if (cardsContainer) {
+      cardsContainer.innerHTML = prioritizedPositions.map(({ pos, priority }, idx) => {
+        const pnlPct = Number(pos.pnl_pct || 0);
+        let pnlKrw = Number(pos.pnl_krw);
+        if (isNaN(pnlKrw) || pos.pnl_krw === undefined || pos.pnl_krw === null) {
+          const curPrice = Number(pos.current_price || 0);
+          const avgBuy = Number(pos.avg_buy_price || 0);
+          const bal = Number(pos.balance || pos.volume || 0);
+          if (avgBuy > 0 && bal > 0) {
+            pnlKrw = (curPrice - avgBuy) * bal;
+          } else {
+            pnlKrw = 0;
+          }
+        }
+        const isProfit = pnlPct >= 0;
+        const pnlCls = isProfit ? 'text-emerald-400' : 'text-rose-400';
+        const targetStr = pos.target_price > 0 ? `${formatPrice(pos.target_price)} 원 (${pos.target_pct >= 0 ? '+' : ''}${(pos.target_pct || 0).toFixed(1)}%)` : '-';
+        const stopStr = pos.stop_loss > 0 ? `${formatPrice(pos.stop_loss)} 원 (${pos.stop_pct || 0}%)` : '-';
+        const collapseId = `pos_detail_${idx}`;
+
+        return `
+          <div class="mobile-card">
+            <!-- Header: 종목명 + 손익 + AI 행동 -->
+            <div class="mobile-card-header">
+              <div>
+                <div class="font-bold text-slate-100 flex items-center gap-1.5 cursor-pointer hover:text-blue-400 text-sm" onclick="window.showChartModal('${pos.market}', '${pos.exchange || state.activeExchange}')">
+                  <span>${pos.korean_name || pos.market}</span>
+                  <span class="text-[11px] text-slate-400 font-normal">(${pos.market})</span>
+                  ${pos.strategy_mode ? `<span class="text-[10px] text-amber-300 font-normal">${formatStrategyModeLabel(pos.strategy_mode)}</span>` : '<span class="text-xs text-blue-400">📈</span>'}
+                </div>
+                <div class="mt-1 flex items-center gap-1.5">
+                  ${renderPositionOperationalPriority(priority)}
+                  ${renderAlphaBadge(pos.alpha_score)}
+                </div>
+              </div>
+              <div class="text-right">
+                <div class="font-bold text-sm ${pnlCls}">${formatPct(pnlPct)}</div>
+                <div class="text-[11px] opacity-90 ${pnlCls}">${formatSignedKrw(pnlKrw)}</div>
+                <div class="mt-1 flex justify-end">${renderActionBadge(pos.action)}</div>
+              </div>
             </div>
-          </td>
-          <td class="p-3 whitespace-nowrap">
-            <div class="font-medium text-slate-200">${formatPrice(pos.current_price)} 원</div>
-            <div class="text-xs text-slate-400">평단: ${formatPrice(pos.avg_buy_price)} 원</div>
-          </td>
-          <td class="p-3 whitespace-nowrap">
-            <div class="font-medium text-slate-200">${formatKrw(pos.value || pos.total_val)}</div>
-            <div class="text-xs text-slate-400">${Number(pos.balance || pos.volume || 0).toFixed(4)} 개</div>
-          </td>
-          <td class="p-3 whitespace-nowrap font-bold ${pnlCls}">
-            <div>${formatPct(pnlPct)}</div>
-            <div class="text-xs font-normal opacity-90">${formatSignedKrw(pnlKrw)}</div>
-          </td>
-          <td class="p-3 whitespace-nowrap">
-            ${renderPositionOperationalPriority(priority)}
-          </td>
-          <td class="p-3 whitespace-nowrap">
-            ${renderActionBadge(pos.action)}
-          </td>
-          <td class="p-3 whitespace-nowrap text-xs">
-            <div class="text-emerald-400">목표: ${targetStr}</div>
-            <div class="text-rose-400">손절: ${stopStr}</div>
-          </td>
-          <td class="p-3 whitespace-nowrap">
-            ${renderAlphaBadge(pos.alpha_score)}
-          </td>
-          <td class="p-3 text-xs text-slate-300 max-w-xs break-words">
-            ${formatReason(pos.reason)}
-            ${renderPositionRiskState(pos.risk_state)}
-          </td>
-        </tr>
-      `;
-    }).join('');
+
+            <!-- Grid: 핵심 지표 (현재가, 평단, 평가액, 목표가, 손절가) -->
+            <div class="mobile-card-grid">
+              <div>
+                <div class="mobile-card-field-label">현재가 / 평단가</div>
+                <div class="mobile-card-field-val">${formatPrice(pos.current_price)} 원</div>
+                <div class="text-[10px] text-slate-400">평단: ${formatPrice(pos.avg_buy_price)} 원</div>
+              </div>
+              <div>
+                <div class="mobile-card-field-label">평가액 / 보유량</div>
+                <div class="mobile-card-field-val">${formatKrw(pos.value || pos.total_val)}</div>
+                <div class="text-[10px] text-slate-400">${Number(pos.balance || pos.volume || 0).toFixed(4)} 개</div>
+              </div>
+              <div>
+                <div class="mobile-card-field-label">목표가</div>
+                <div class="text-emerald-400 font-semibold text-xs">${targetStr}</div>
+              </div>
+              <div>
+                <div class="mobile-card-field-label">손절가</div>
+                <div class="text-rose-400 font-semibold text-xs">${stopStr}</div>
+              </div>
+            </div>
+
+            <!-- Accordion: AI 분석 근거 및 차트 팝업 버튼 -->
+            <div class="mobile-card-footer">
+              <button type="button" onclick="document.getElementById('${collapseId}').classList.toggle('hidden')" class="mobile-accordion-toggle">
+                <span>🤖 AI 분석 근거 및 리스크 상세</span>
+                <span class="text-[10px]">상세 보기 ▾</span>
+              </button>
+              <div id="${collapseId}" class="hidden mt-2 p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 text-xs text-slate-300 space-y-2">
+                <div>${formatReason(pos.reason)}</div>
+                <div>${renderPositionRiskState(pos.risk_state)}</div>
+                <div class="pt-2 border-t border-slate-800/80 flex justify-end">
+                  <button onclick="window.showChartModal('${pos.market}', '${pos.exchange || state.activeExchange}')" class="px-2.5 py-1 rounded bg-blue-600/30 hover:bg-blue-600/50 text-blue-300 text-xs font-medium flex items-center gap-1">
+                    <span>📈</span> TradingView 차트 보기
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
   }
 
-  // Render Candidates Watchlist Table
+  // Render Candidates Watchlist Table & Mobile Cards
   function renderCandidatesTable(candidates, safety) {
     const tbody = document.getElementById('candidates_tbody');
-    if (!tbody) return;
+    const cardsContainer = document.getElementById('candidates_cards');
 
     const allCandidates = candidates || [];
     const q = (state.candidateFilter || '').trim().toLowerCase();
@@ -1479,80 +1580,179 @@
       ? allCandidates.filter(c => (c.market && c.market.toLowerCase().includes(q)) || (c.korean_name && c.korean_name.toLowerCase().includes(q)))
       : allCandidates;
 
-    if (filteredCandidates.length === 0) {
-      const emptyMsg = q
-        ? `'${state.candidateFilter}' 검색 조건에 일치하는 후보 종목이 없습니다.`
-        : '현재 진입 기준을 통과한 신규 스캔 후보 종목이 없습니다.';
-      tbody.innerHTML = `
-        <tr>
-          <td colspan="8" class="p-8 text-center text-slate-500">
-            <div class="text-3xl mb-2">🎯</div>
-            <div class="text-sm font-medium">${emptyMsg}</div>
-          </td>
-        </tr>
-      `;
-      return;
+    const emptyMsg = q
+      ? `'${state.candidateFilter}' 검색 조건에 일치하는 후보 종목이 없습니다.`
+      : '현재 진입 기준을 통과한 신규 스캔 후보 종목이 없습니다.';
+
+    // 1. 데스크톱 테이블 렌더링
+    if (tbody) {
+      if (filteredCandidates.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="8" class="p-8 text-center text-slate-500">
+              <div class="text-3xl mb-2">🎯</div>
+              <div class="text-sm font-medium">${emptyMsg}</div>
+            </td>
+          </tr>
+        `;
+      } else {
+        tbody.innerHTML = filteredCandidates.map((cand, idx) => {
+          const candidateTypeBadge = cand.candidate_type === 'EARLY_BREAKOUT'
+            ? '<span class="text-xs text-emerald-400">🌱 초기 돌파</span>'
+            : cand.candidate_type === 'NEW_LISTING'
+            ? '<span class="text-xs text-amber-400">🆕 신규상장 단타</span>'
+            : cand.candidate_type === 'MOMENTUM_BREAKOUT'
+            ? '<span class="text-xs text-purple-400">💥 모멘텀 돌파</span>'
+            : cand.candidate_type === 'SWING'
+            ? '<span class="text-xs text-cyan-400">🌊 스윙 추세</span>'
+            : '<span class="text-xs text-blue-400">📈 확인형</span>';
+          const rawRr = Number(cand.risk_reward_ratio || cand.rr_ratio || 0);
+          let rrDisplay = rawRr;
+          if (rrDisplay <= 0 && cand.target_pct && cand.stop_pct) {
+            rrDisplay = Math.abs(cand.target_pct) / Math.max(0.1, Math.abs(cand.stop_pct));
+          }
+          if (rrDisplay <= 0) rrDisplay = 1.0;
+          const rrStr = rrDisplay.toFixed(1);
+
+          const targetStr = cand.target_price > 0 ? `${formatPrice(cand.target_price)} 원 (${cand.target_pct >= 0 ? '+' : ''}${(cand.target_pct || 0).toFixed(1)}%)` : '-';
+          const stopStr = cand.stop_loss > 0 ? `${formatPrice(cand.stop_loss)} 원 (${cand.stop_pct || 0}%)` : '-';
+          const availability = getCandidateEntryAvailability(cand, safety);
+
+          return `
+            <tr class="hover:bg-slate-800/40 transition-colors border-b border-slate-800/80">
+              <td class="p-3 whitespace-nowrap">
+                <div class="font-bold text-slate-100 flex items-center gap-1.5 cursor-pointer hover:text-blue-400" onclick="window.showChartModal('${cand.market}', '${cand.exchange || state.activeExchange}')">
+                  <span class="text-slate-500 text-xs font-mono">#${idx + 1}</span>
+                  <span>${cand.korean_name || cand.market}</span>
+                  <span class="text-xs text-slate-400 font-normal">(${cand.market})</span>
+                  ${candidateTypeBadge}
+                </div>
+              </td>
+              <td class="p-3 whitespace-nowrap font-medium text-slate-200">
+                ${formatPrice(cand.current_price)} 원
+              </td>
+              <td class="p-3 whitespace-nowrap">
+                ${renderAlphaBadge(cand.alpha_score)}
+              </td>
+              <td class="p-3 whitespace-nowrap">
+                ${renderActionBadge(cand.action || (cand.allow_buy ? 'BUY' : 'HOLD'))}
+              </td>
+              <td class="p-3 whitespace-nowrap">
+                ${renderCandidateEntryAvailability(availability)}
+              </td>
+              <td class="p-3 whitespace-nowrap text-xs">
+                <div class="text-emerald-400">목표: ${targetStr}</div>
+                <div class="text-rose-400">손절: ${stopStr}</div>
+              </td>
+              <td class="p-3 whitespace-nowrap text-xs">
+                <span class="px-2 py-0.5 rounded font-mono font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                  ${rrStr} : 1
+                </span>
+              </td>
+              <td class="p-3 text-xs text-slate-300 max-w-xs break-words">
+                ${formatReason(cand.reason)}
+              </td>
+            </tr>
+          `;
+        }).join('');
+      }
     }
 
-    tbody.innerHTML = filteredCandidates.map((cand, idx) => {
-      const candidateTypeBadge = cand.candidate_type === 'EARLY_BREAKOUT'
-        ? '<span class="text-xs text-emerald-400">🌱 초기 돌파</span>'
-        : cand.candidate_type === 'NEW_LISTING'
-        ? '<span class="text-xs text-amber-400">🆕 신규상장 단타</span>'
-        : cand.candidate_type === 'MOMENTUM_BREAKOUT'
-        ? '<span class="text-xs text-purple-400">💥 모멘텀 돌파</span>'
-        : cand.candidate_type === 'SWING'
-        ? '<span class="text-xs text-cyan-400">🌊 스윙 추세</span>'
-        : '<span class="text-xs text-blue-400">📈 확인형</span>';
-      const rawRr = Number(cand.risk_reward_ratio || cand.rr_ratio || 0);
-      let rrDisplay = rawRr;
-      if (rrDisplay <= 0 && cand.target_pct && cand.stop_pct) {
-        rrDisplay = Math.abs(cand.target_pct) / Math.max(0.1, Math.abs(cand.stop_pct));
-      }
-      if (rrDisplay <= 0) rrDisplay = 1.0;
-      const rrStr = rrDisplay.toFixed(1);
+    // 2. 모바일 반응형 카드 뷰 렌더링
+    if (cardsContainer) {
+      if (filteredCandidates.length === 0) {
+        cardsContainer.innerHTML = `
+          <div class="mobile-card text-center p-6 text-slate-500">
+            <div class="text-2xl mb-1.5">🎯</div>
+            <div class="text-xs font-medium">${emptyMsg}</div>
+          </div>
+        `;
+      } else {
+        cardsContainer.innerHTML = filteredCandidates.map((cand, idx) => {
+          const candidateTypeBadge = cand.candidate_type === 'EARLY_BREAKOUT'
+            ? '<span class="text-[10px] text-emerald-400">🌱 초기 돌파</span>'
+            : cand.candidate_type === 'NEW_LISTING'
+            ? '<span class="text-[10px] text-amber-400">🆕 신규상장</span>'
+            : cand.candidate_type === 'MOMENTUM_BREAKOUT'
+            ? '<span class="text-[10px] text-purple-400">💥 모멘텀 돌파</span>'
+            : cand.candidate_type === 'SWING'
+            ? '<span class="text-[10px] text-cyan-400">🌊 스윙 추세</span>'
+            : '<span class="text-[10px] text-blue-400">📈 확인형</span>';
+          const rawRr = Number(cand.risk_reward_ratio || cand.rr_ratio || 0);
+          let rrDisplay = rawRr;
+          if (rrDisplay <= 0 && cand.target_pct && cand.stop_pct) {
+            rrDisplay = Math.abs(cand.target_pct) / Math.max(0.1, Math.abs(cand.stop_pct));
+          }
+          if (rrDisplay <= 0) rrDisplay = 1.0;
+          const rrStr = rrDisplay.toFixed(1);
 
-      const targetStr = cand.target_price > 0 ? `${formatPrice(cand.target_price)} 원 (${cand.target_pct >= 0 ? '+' : ''}${(cand.target_pct || 0).toFixed(1)}%)` : '-';
-      const stopStr = cand.stop_loss > 0 ? `${formatPrice(cand.stop_loss)} 원 (${cand.stop_pct || 0}%)` : '-';
-      const availability = getCandidateEntryAvailability(cand, safety);
+          const targetStr = cand.target_price > 0 ? `${formatPrice(cand.target_price)} 원 (${cand.target_pct >= 0 ? '+' : ''}${(cand.target_pct || 0).toFixed(1)}%)` : '-';
+          const stopStr = cand.stop_loss > 0 ? `${formatPrice(cand.stop_loss)} 원 (${cand.stop_pct || 0}%)` : '-';
+          const availability = getCandidateEntryAvailability(cand, safety);
+          const collapseId = `cand_detail_${idx}`;
 
-      return `
-        <tr class="hover:bg-slate-800/40 transition-colors border-b border-slate-800/80">
-          <td class="p-3 whitespace-nowrap">
-            <div class="font-bold text-slate-100 flex items-center gap-1.5 cursor-pointer hover:text-blue-400" onclick="window.showChartModal('${cand.market}', '${cand.exchange || state.activeExchange}')">
-              <span class="text-slate-500 text-xs font-mono">#${idx + 1}</span>
-              <span>${cand.korean_name || cand.market}</span>
-              <span class="text-xs text-slate-400 font-normal">(${cand.market})</span>
-              ${candidateTypeBadge}
+          return `
+            <div class="mobile-card">
+              <!-- Header: 순번+종목명 + 알파스코어 + 추천행동 -->
+              <div class="mobile-card-header">
+                <div>
+                  <div class="font-bold text-slate-100 flex items-center gap-1.5 cursor-pointer hover:text-blue-400 text-sm" onclick="window.showChartModal('${cand.market}', '${cand.exchange || state.activeExchange}')">
+                    <span class="text-slate-500 text-xs font-mono">#${idx + 1}</span>
+                    <span>${cand.korean_name || cand.market}</span>
+                    <span class="text-[11px] text-slate-400 font-normal">(${cand.market})</span>
+                  </div>
+                  <div class="mt-1 flex items-center gap-1.5">
+                    ${candidateTypeBadge}
+                    ${renderCandidateEntryAvailability(availability)}
+                  </div>
+                </div>
+                <div class="text-right">
+                  <div class="font-bold text-sm text-slate-100">${formatPrice(cand.current_price)} 원</div>
+                  <div class="mt-1 flex items-center justify-end gap-1">
+                    ${renderAlphaBadge(cand.alpha_score)}
+                    ${renderActionBadge(cand.action || (cand.allow_buy ? 'BUY' : 'HOLD'))}
+                  </div>
+                </div>
+              </div>
+
+              <!-- Grid: 목표가/손절가/손익비 -->
+              <div class="mobile-card-grid">
+                <div>
+                  <div class="mobile-card-field-label">목표가 (+%)</div>
+                  <div class="text-emerald-400 font-semibold text-xs">${targetStr}</div>
+                </div>
+                <div>
+                  <div class="mobile-card-field-label">손절가 (-%)</div>
+                  <div class="text-rose-400 font-semibold text-xs">${stopStr}</div>
+                </div>
+                <div>
+                  <div class="mobile-card-field-label">예상 손익비 (R:R)</div>
+                  <span class="px-1.5 py-0.5 rounded font-mono font-bold text-xs bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                    ${rrStr} : 1
+                  </span>
+                </div>
+                <div class="flex items-end justify-end">
+                  <button onclick="window.showChartModal('${cand.market}', '${cand.exchange || state.activeExchange}')" class="px-2.5 py-1 rounded bg-blue-600/20 hover:bg-blue-600/40 text-blue-300 text-xs font-medium flex items-center gap-1">
+                    <span>📈</span> 차트
+                  </button>
+                </div>
+              </div>
+
+              <!-- Accordion: AI 분석 근거 -->
+              <div class="mobile-card-footer">
+                <button type="button" onclick="document.getElementById('${collapseId}').classList.toggle('hidden')" class="mobile-accordion-toggle">
+                  <span>🎯 AI / 퀀트 진입 분석 근거</span>
+                  <span class="text-[10px]">상세 보기 ▾</span>
+                </button>
+                <div id="${collapseId}" class="hidden mt-2 p-2.5 rounded-lg bg-slate-950/60 border border-slate-800 text-xs text-slate-300 leading-relaxed">
+                  ${formatReason(cand.reason)}
+                </div>
+              </div>
             </div>
-          </td>
-          <td class="p-3 whitespace-nowrap font-medium text-slate-200">
-            ${formatPrice(cand.current_price)} 원
-          </td>
-          <td class="p-3 whitespace-nowrap">
-            ${renderAlphaBadge(cand.alpha_score)}
-          </td>
-          <td class="p-3 whitespace-nowrap">
-            ${renderActionBadge(cand.action || (cand.allow_buy ? 'BUY' : 'HOLD'))}
-          </td>
-          <td class="p-3 whitespace-nowrap">
-            ${renderCandidateEntryAvailability(availability)}
-          </td>
-          <td class="p-3 whitespace-nowrap text-xs">
-            <div class="text-emerald-400">목표: ${targetStr}</div>
-            <div class="text-rose-400">손절: ${stopStr}</div>
-          </td>
-          <td class="p-3 whitespace-nowrap text-xs">
-            <span class="px-2 py-0.5 rounded font-mono font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30">
-              ${rrStr} : 1
-            </span>
-          </td>
-          <td class="p-3 text-xs text-slate-300 max-w-xs break-words">
-            ${formatReason(cand.reason)}
-          </td>
-        </tr>
-      `;
-    }).join('');
+          `;
+        }).join('');
+      }
+    }
   }
 
   // Render Daily Performance Canvas Chart (14일 자산 추이 및 일일 손익 히스토그램)
@@ -2484,8 +2684,14 @@
 
     if (titleEl) titleEl.innerText = `[${exNameKo}] ${market} 실시간 인터랙티브 차트 (TradingView)`;
 
+    // 모바일 뷰포트 높이 비율에 맞춘 유연한 차트 위젯 높이 산출 (상단바/헤더 고려 300~440px)
+    const isMobile = window.innerWidth < 640;
+    const chartHeight = isMobile
+      ? Math.min(Math.max(Math.floor(window.innerHeight * 0.58), 300), 440)
+      : 480;
+
     container.innerHTML = `
-      <div id="tradingview_widget" style="height: 480px; width: 100%;"></div>
+      <div id="tradingview_widget" style="height: ${chartHeight}px; width: 100%;"></div>
     `;
 
     if (window.TradingView) {
@@ -2557,6 +2763,19 @@
   document.addEventListener('DOMContentLoaded', () => {
     window.switchExchange('combined');
     setupPolling();
+
+    // 모바일 화면 회전 및 브라우저 창 리사이즈 시 14일 자산 Canvas 차트 선명하게 재계산
+    let resizeTimer = null;
+    function handleResize() {
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        if (state.lastData && state.lastData.history) {
+          renderDailyPerformanceChart(state.lastData.history);
+        }
+      }, 150);
+    }
+    window.addEventListener('resize', handleResize);
+    window.addEventListener('orientationchange', handleResize);
   });
 
 })();
