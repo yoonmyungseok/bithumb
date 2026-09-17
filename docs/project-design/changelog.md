@@ -2,6 +2,15 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v8.94 (2026-09-17)
+
+- 주문 즉시 단건 REST 대사(Fast Reconciliation) 및 종목별 차단 격리(Per-Market Isolation) 구현:
+  - `AckReconcileScheduler.trigger_async` 추가: 주문 접수(ACK) 및 Private WebSocket `trade`/`done` 알림 직후 0.5~1.5초 내에 비동기 백그라운드 단건 REST 대사를 자동 실행하여 체결 대사 지연을 기존 최대 300초(5분)에서 1~2초 이내로 단축.
+  - `OrderJournal`: `is_system_entry_ready()`, `get_entry_blocking_markets()` 추가로 시스템 전역 정지와 단일 종목 대사 대기 격리.
+  - `trading_runtime.py`: 단일 종목 대사 중에도 시스템 레벨이 정상이면 AI 후보 랭킹 및 AI 예산 배분을 차단하지 않고 타 종목 매수 기회 보존.
+  - `bot_controller.py` & `dashboard_server.py`: `entry_blocking_markets`를 `safety` 페이로드에 연동.
+  - `dashboard/src/app.js`: 대사 대기 중인 종목만 황색 `[체결 대사 대기]`로 표기하고, 무관한 타 후보 종목은 녹색 `[진입 검토 가능]` 또는 `[전략 관망]`으로 정상 판정.
+
 ## v8.93 (2026-09-17)
 
 - 알트코인 단일 종목 최소 진입 비중(`MIN_ALT_ALLOC_PCT`) 상향 조정:

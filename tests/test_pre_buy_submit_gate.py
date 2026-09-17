@@ -219,6 +219,37 @@ class TestPreBuySubmitGate(unittest.TestCase):
         self.assertTrue(reconciled)
         mock_api.create_order.assert_not_called()
 
+    def test_ack_scheduler_trigger_async_reconciles_quickly(self):
+        scheduler = AckReconcileScheduler(min_interval_sec=0.0)
+        executor = SafeOrderExecutor(self.journal_bithumb, ack_reconcile_scheduler=scheduler)
+        mock_api = MagicMock()
+        mock_api.get_order.return_value = {
+            "uuid": "ex-async-1",
+            "state": "done",
+            "executed_volume": "1.0",
+            "remaining_volume": "0.0",
+            "price": "100.0",
+            "paid_fee": "0.05",
+        }
+        mock_api.create_order.return_value = {"uuid": "ex-async-1", "status": "ACKNOWLEDGED"}
+        mock_api.get_current_price.return_value = 100.0
+
+        res = executor.submit(mock_api, "KRW-BTC", "bid", volume=1.0, price=100.0, expected_price=100.0)
+        client_id = res["client_order_id"]
+
+        scheduler.trigger_async(
+            client_id,
+            journal=self.journal_bithumb,
+            exchange=mock_api,
+            fill_processor=None,
+            delay_sec=0.01,
+        )
+        time.sleep(0.1)
+
+        order = self.journal_bithumb.get_order_by_client_id(client_id)
+        self.assertIsNotNone(order)
+        self.assertEqual(order["status"], OrderStatus.FILLED)
+
 
 if __name__ == "__main__":
     unittest.main()

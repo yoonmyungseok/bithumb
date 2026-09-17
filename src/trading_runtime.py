@@ -620,8 +620,13 @@ class TradingCycleEngine:
                     screened_candidate_metadata[market_code] = dict(candidate)
 
         # 아래 상태에서는 신규 매수가 불가능하므로 후보 순위용 외부 AI 호출만 생략한다.
+        # 단일 종목의 대사 대기 등으로 전체 AI 랭킹이 중단되지 않도록 시스템 레벨(is_system_entry_ready)을 확인한다.
         # 보유 포지션의 청산·방어 및 REST 체결 재조정은 이 조건과 무관하게 계속 실행한다.
-        is_entry_ready = bool(ctx.order_journal.is_entry_ready()) if hasattr(ctx.order_journal, "is_entry_ready") else True
+        is_entry_ready = (
+            ctx.order_journal.is_system_entry_ready()
+            if hasattr(ctx.order_journal, "is_system_entry_ready")
+            else (bool(ctx.order_journal.is_entry_ready()) if hasattr(ctx.order_journal, "is_entry_ready") else True)
+        )
         allow_ai_candidate_ranking = not (
             is_paused or is_kill_switch or is_btc_crashing or not is_entry_ready
         )
@@ -2398,7 +2403,13 @@ class TradingCycleEngine:
         current_total_equity = prefix.current_total_equity
         now_str = prefix.now_str
         is_bot_paused = self.config.is_bot_paused()
-        is_entry_ready = bool(ctx.order_journal.is_entry_ready()) if hasattr(ctx.order_journal, "is_entry_ready") else True
+        # 단일 종목의 대사 대기로 무관한 타 종목의 AI 심층 분석 기회가 상실되지 않도록 시스템 레벨 준비 상태를 확인한다.
+        # 개별 종목의 실제 주문 가능 여부는 각 종목별 루프(is_entry_ready(market))에서 정밀하게 차단된다.
+        is_entry_ready = (
+            ctx.order_journal.is_system_entry_ready()
+            if hasattr(ctx.order_journal, "is_system_entry_ready")
+            else (bool(ctx.order_journal.is_entry_ready()) if hasattr(ctx.order_journal, "is_entry_ready") else True)
+        )
         slow_markets = slow_markets if slow_markets is not None else []
 
         # 거래소별 격리된 텔레메트리로부터 일일 쿼터 가드 상태를 도출한다.

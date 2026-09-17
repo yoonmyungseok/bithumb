@@ -126,3 +126,36 @@ class AckReconcileScheduler:
         if updated:
             journal.complete_reconciliation_if_safe()
         return updated
+
+    def trigger_async(
+        self,
+        client_order_id: str,
+        journal: OrderJournal,
+        exchange: Any,
+        fill_processor: Any = None,
+        delay_sec: float = 1.2,
+    ) -> None:
+        """주문 접수(ACK) 또는 Private WS 체결 알림 직후 비동기 단건 REST 대사를 실행한다."""
+        if not client_order_id:
+            return
+        self.schedule(client_order_id)
+        if journal is None or exchange is None:
+            return
+
+        def _worker() -> None:
+            if delay_sec > 0:
+                time.sleep(delay_sec)
+            with self._lock:
+                elapsed = time.monotonic() - self._last_run_monotonic
+                remaining = self._min_interval_sec - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+            try:
+                self.reconcile_next(journal, exchange, fill_processor)
+            except Exception as exc:
+                logger.debug("비동기 단건 REST 대사 실행 예외(%s): %s", client_order_id, exc)
+
+        suffix = client_order_id[-8:] if len(client_order_id) >= 8 else client_order_id
+        t = threading.Thread(target=_worker, name=f"fast_reconcile_{suffix}", daemon=True)
+        t.start()
+

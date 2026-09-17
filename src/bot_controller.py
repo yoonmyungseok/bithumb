@@ -90,6 +90,7 @@ class BotController:
             "safety": {
                 "entry_ready": False,
                 "entry_block_reasons": ["대시보드 상태 초기화 대기"],
+                "entry_blocking_markets": [],
                 "order_status_counts": {},
                 "feed": {"is_healthy": False, "status": "DATA_UNAVAILABLE"},
             },
@@ -145,10 +146,18 @@ class BotController:
         if not bool(feed.get("is_healthy", False)):
             block_reasons.append(f"시세 스트림 비정상 ({feed.get('status', 'DATA_UNAVAILABLE')})")
 
+        blocking_markets: list[str] = []
+        if hasattr(self.order_journal, "get_entry_blocking_markets"):
+            try:
+                blocking_markets = list(self.order_journal.get_entry_blocking_markets())
+            except Exception as exc:
+                logger.debug("대사 차단 마켓 조회 예외: %s", exc)
+
         return {
             # 화면의 매수 가능 표시는 엔진의 대사 상태와 운영 안전 조건을 모두 만족할 때만 켠다.
             "entry_ready": len(block_reasons) == 0,
             "entry_block_reasons": block_reasons,
+            "entry_blocking_markets": blocking_markets,
             # 구형 테스트 더블과의 호환을 위해 상태 필드가 없으면 보수적으로 PENDING으로 처리한다.
             "reconciliation_state": getattr(self.order_journal, "reconciliation_state", "PENDING"),
             "order_status_counts": status_counts,

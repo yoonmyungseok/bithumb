@@ -198,9 +198,12 @@ class DashboardFrontendKoreanTests(unittest.TestCase):
           ack: getOrderLifecycle({{ status: 'ACKNOWLEDGED' }}),
           filled: getOrderLifecycle({{ status: 'FILLED' }}),
           blocked: getCandidateEntryAvailability({{ allow_buy: true }}, {{ entry_ready: false, entry_block_reasons: ['체결 대사 진행 주문 1건'] }}),
+          market_blocked: getCandidateEntryAvailability({{ market: 'KRW-FOLD', allow_buy: true }}, {{ entry_ready: false, entry_block_reasons: ['체결 대사 진행 주문 1건'], entry_blocking_markets: ['KRW-FOLD'] }}),
+          other_market_eligible: getCandidateEntryAvailability({{ market: 'KRW-LSK', allow_buy: true }}, {{ entry_ready: false, entry_block_reasons: ['체결 대사 진행 주문 1건'], entry_blocking_markets: ['KRW-FOLD'] }}),
           eligible: getCandidateEntryAvailability({{ allow_buy: true }}, {{ entry_ready: true }}),
           watching: getCandidateEntryAvailability({{ allow_buy: false, reason: '1차 퀀트 관망 대기: 하드게이트 통과, 알파스코어 74점, MA5 <= MA20, RSI 45.8' }}, {{ entry_ready: true }}),
-          rendered_badge: renderCandidateEntryAvailability({{ label: '진입 검토 가능', tone: 'emerald', detail: '상세 사유' }})
+          rendered_badge: renderCandidateEntryAvailability({{ label: '진입 검토 가능', tone: 'emerald', detail: '상세 사유' }}),
+          rendered_amber_badge: renderCandidateEntryAvailability({{ label: '체결 대사 대기', tone: 'amber', detail: '상세 사유' }})
         }};
         console.log(JSON.stringify(results));
         """
@@ -218,11 +221,17 @@ class DashboardFrontendKoreanTests(unittest.TestCase):
         self.assertIn("체결 아님", results["ack"]["label"])
         self.assertIn("체결 확정", results["filled"]["label"])
         self.assertEqual(results["blocked"]["label"], "전역 차단")
+        self.assertEqual(results["market_blocked"]["label"], "체결 대사 대기")
+        self.assertEqual(results["other_market_eligible"]["label"], "진입 검토 가능")
         self.assertEqual(results["eligible"]["label"], "진입 검토 가능")
         self.assertEqual(results["watching"]["detail"], "1차 퀀트 관망 대기 · 알파 74점")
         self.assertEqual(
             results["rendered_badge"],
             '<span class="px-2 py-0.5 rounded text-xs font-bold border bg-emerald-500/20 text-emerald-200 border-emerald-500/40">진입 검토 가능</span>',
+        )
+        self.assertEqual(
+            results["rendered_amber_badge"],
+            '<span class="px-2 py-0.5 rounded text-xs font-bold border bg-amber-500/20 text-amber-200 border-amber-500/40">체결 대사 대기</span>',
         )
 
     def test_watchlist_and_order_journal_use_scroll_limits(self):

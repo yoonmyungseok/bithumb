@@ -20,9 +20,11 @@ class SafeOrderExecutor:
         self,
         journal: OrderJournal,
         ack_reconcile_scheduler: AckReconcileScheduler | None = None,
+        fill_processor: Any | None = None,
     ):
         self.journal = journal
         self.ack_reconcile_scheduler = ack_reconcile_scheduler
+        self.fill_processor = fill_processor
 
     def submit(
         self,
@@ -118,8 +120,17 @@ class SafeOrderExecutor:
         )
         logger.info("주문 접수 확인 (ACKNOWLEDGED): client_order_id=%s exchange_id=%s", client_order_id, exchange_uuid or exchange_order_id)
         if side.lower() in ("bid", "buy") and self.ack_reconcile_scheduler is not None:
-            # ACK는 체결 증빙이 아니므로 단건 REST 대사만 예약한다(재주문·중복 제출 없음).
-            self.ack_reconcile_scheduler.schedule(client_order_id)
+            # ACK는 체결 증빙이 아니므로 비동기 단건 REST 대사를 즉시 예약한다(재주문·중복 제출 없음).
+            if hasattr(self.ack_reconcile_scheduler, "trigger_async"):
+                self.ack_reconcile_scheduler.trigger_async(
+                    client_order_id,
+                    journal=self.journal,
+                    exchange=exchange,
+                    fill_processor=self.fill_processor,
+                    delay_sec=1.5,
+                )
+            else:
+                self.ack_reconcile_scheduler.schedule(client_order_id)
         if isinstance(response, dict):
             response["client_order_id"] = client_order_id
             if "status" not in response:

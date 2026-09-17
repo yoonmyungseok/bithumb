@@ -4,9 +4,12 @@
 
 ACK, `OPEN`, `PARTIALLY_FILLED`, Private WebSocket 이벤트는 체결 확정이 아니다. REST 주문 대사에서 체결 수량·잔량·평균가·수수료를 검증한 뒤에만 포지션, 손익, 보유 시간, 쿨다운, 거래 메모리를 갱신한다. `OrderJournal`과 `OrderFillProcessor`는 확정 체결 증가분만 반영해 중복 이벤트를 방지하고, 업비트 주문은 고유 `identifier`를 사용한다.
 
-## 신규 BUY 안전 게이트
+## 신규 BUY 안전 게이트 및 종목별 격리 (Per-Market Isolation)
 
-`evaluate_pre_buy_submit_gate()`는 주문 직전에 최신가, 시세 WebSocket 상태, 대사 대기, 미해결 주문, 쿨다운, 호가 영향 조건을 재확인한다. 조회 실패, 0 이하 가격, `RECONCILIATION_PENDING`, 모순 상태, 호가 잔량 부족, 과도한 슬리피지는 신규 BUY를 차단한다. 또한 알트코인 최소 주문 예산 하한선(`MIN_ALT_ALLOC_PCT`)을 통해 수수료 대비 유효 마진을 보장하고 극소액 푼돈 주문을 방지한다. ACK 뒤 `AckReconcileScheduler`는 중복 주문 없이 단건 REST 대사만 예약한다. 기존 포지션의 보호 청산은 계속 수행한다.
+`evaluate_pre_buy_submit_gate()`는 주문 직전에 최신가, 시세 WebSocket 상태, 대사 대기, 미해결 주문, 쿨다운, 호가 영향 조건을 재확인한다. 조회 실패, 0 이하 가격, `RECONCILIATION_PENDING`, 모순 상태, 호가 잔량 부족, 과도한 슬리피지는 신규 BUY를 차단한다. 또한 알트코인 최소 주문 예산 하한선(`MIN_ALT_ALLOC_PCT`)을 통해 수수료 대비 유효 마진을 보장하고 극소액 푼돈 주문을 방지한다.
+- **Fast REST Reconciliation (빠른 단건 대사):** ACK 및 Private WebSocket `trade`/`done` 알림 직후 `AckReconcileScheduler.trigger_async`를 통해 0.5~1.5초 내에 비동기 단건 REST 조회를 즉시 실행한다. 이를 통해 기존 5분 주기 사이클 대기 지연을 1~2초 이내로 단축한다.
+- **종목별 진입 격리 (Per-Market Isolation):** 특정 종목에 대사 대기(`RECONCILIATION_PENDING`)가 있더라도, 시스템 자체가 정상(`READY`)이라면 해당 종목(`entry_blocking_markets`)만 국소적으로 차단하고 무관한 다른 후보 종목의 AI 분석 및 매수 기회는 보존한다.
+- 기존 포지션의 보호 청산은 계속 수행한다.
 
 ## 연결·성과
 

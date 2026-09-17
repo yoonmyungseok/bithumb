@@ -160,6 +160,7 @@ class UnifiedDashboardServerTests(unittest.TestCase):
                 "safety": {
                     "entry_ready": is_bithumb,
                     "entry_block_reasons": [] if is_bithumb else ["체결 대사 진행 주문 1건"],
+                    "entry_blocking_markets": [] if is_bithumb else ["KRW-FOLD"],
                     "order_status_counts": {"FILLED": 2} if is_bithumb else {"RECONCILIATION_PENDING": 1},
                 },
             }
@@ -169,6 +170,7 @@ class UnifiedDashboardServerTests(unittest.TestCase):
 
         self.assertFalse(safety["entry_ready"])
         self.assertIn("업비트: 체결 대사 진행 주문 1건", safety["entry_block_reasons"])
+        self.assertEqual(safety["entry_blocking_markets"], ["KRW-FOLD"])
         self.assertEqual(safety["order_status_counts"]["FILLED"], 2)
         self.assertEqual(safety["order_status_counts"]["RECONCILIATION_PENDING"], 1)
 

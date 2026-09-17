@@ -338,6 +338,7 @@ class UnifiedDashboardServer:
             "safety": {
                 "entry_ready": False,
                 "entry_block_reasons": ["봇 프로세스 미구동 또는 응답 없음"],
+                "entry_blocking_markets": [],
                 "order_status_counts": {},
                 "feed": {"is_healthy": False, "status": "OFFLINE"},
             },
@@ -563,9 +564,14 @@ class UnifiedDashboardServer:
             ),
             "by_exchange": feed_by_exchange,
         }
+        combined_blocking_markets = sorted(set(
+            list(bithumb_data.get("safety", {}).get("entry_blocking_markets", []) or []) +
+            list(upbit_data.get("safety", {}).get("entry_blocking_markets", []) or [])
+        ))
         combined_safety = {
             "entry_ready": len(combined_block_reasons) == 0,
             "entry_block_reasons": combined_block_reasons,
+            "entry_blocking_markets": combined_blocking_markets,
             "order_status_counts": combined_counts,
             "by_exchange": safety_by_exchange,
             "feed": combined_feed,

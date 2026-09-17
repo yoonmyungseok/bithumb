@@ -1181,10 +1181,30 @@
   function getCandidateEntryAvailability(candidate, safety) {
     const cand = (candidate && typeof candidate === 'object') ? candidate : {};
     const safe = (safety && typeof safety === 'object') ? safety : {};
+    const candMarket = String(cand.market || '').trim().toUpperCase();
+    const blockingMarkets = Array.isArray(safe.entry_blocking_markets)
+      ? safe.entry_blocking_markets.map(m => String(m).trim().toUpperCase())
+      : [];
+
+    // 1. 해당 종목에 직접적인 체결 대사 대기나 확인 불가 주문이 있는 경우 (종목별 격리)
+    if (candMarket && blockingMarkets.includes(candMarket)) {
+      return { label: '체결 대사 대기', detail: '주문 접수 후 REST 체결 확정 확인 중', tone: 'amber' };
+    }
+
+    // 2. 시스템 전역 차단 (봇 일시정지, 킬스위치, 시세 스트림 비정상, 전역 대사 미완료 등)
     if (safe.entry_ready !== true) {
       const reasons = Array.isArray(safe.entry_block_reasons) ? safe.entry_block_reasons : [];
-      return { label: '전역 차단', detail: reasons[0] || '안전 상태 확인 대기', tone: 'rose' };
+      // 차단 사유가 오직 특정 종목의 체결 대사/확인 불가뿐이고, 이 후보 종목은 해당 마켓이 아니라면 매수 검토 허용
+      const onlyOtherMarketReconciling = candMarket
+        && reasons.length > 0
+        && reasons.every(r => r.includes('체결 대사 진행 주문') || r.includes('확인 불가 주문'))
+        && !blockingMarkets.includes(candMarket);
+
+      if (!onlyOtherMarketReconciling) {
+        return { label: '전역 차단', detail: reasons[0] || '안전 상태 확인 대기', tone: 'rose' };
+      }
     }
+
     if (cand.allow_buy !== true) {
       return { label: '전략 관망', detail: summarizeCandidateReason(cand.reason), tone: 'slate' };
     }
@@ -1197,7 +1217,9 @@
       ? 'bg-rose-500/20 text-rose-200 border-rose-500/40'
       : (data.tone === 'emerald'
         ? 'bg-emerald-500/20 text-emerald-200 border-emerald-500/40'
-        : 'bg-slate-700/60 text-slate-200 border-slate-600');
+        : (data.tone === 'amber'
+          ? 'bg-amber-500/20 text-amber-200 border-amber-500/40'
+          : 'bg-slate-700/60 text-slate-200 border-slate-600'));
     return `<span class="px-2 py-0.5 rounded text-xs font-bold border ${color}">${data.label}</span>`;
   }
 

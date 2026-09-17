@@ -649,6 +649,23 @@ class OrderJournal:
             return not self.has_entry_blocking_market(market)
         return not self._has_entry_blocking_orders()
 
+    def is_system_entry_ready(self) -> bool:
+        """시스템 레벨(초기 대사 완료, 대사 실패 없음)에서 신규 진입이 가능한 상태인지 확인한다."""
+        if self.reconciliation_state != "READY":
+            return False
+        if int(self.reconciliation_metrics.get("last_failed_count", 0) or 0) > 0:
+            return False
+        return True
+
+    def get_entry_blocking_markets(self) -> list[str]:
+        """현재 체결 대사 대기, UNKNOWN 등 신규 BUY가 차단된 마켓 코드 목록을 반환한다."""
+        with self._lock:
+            return sorted({
+                str(order.get("market", "")).upper()
+                for order in self.orders
+                if order.get("market") and order.get("status") in _ENTRY_BLOCKING_ORDER_STATUSES
+            })
+
     def suspend_entry_for_reconciliation(self, reason: str) -> None:
         """신규 BUY만 차단하고 기존 포지션 보호·청산 경로는 유지한다."""
         reason = str(reason or "").strip()

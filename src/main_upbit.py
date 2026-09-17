@@ -252,6 +252,7 @@ fill_processor = OrderFillProcessor(
     risk_off_loss_reentry_guard=risk_off_loss_reentry_guard,
     telegram=telegram,
 )
+order_executor.fill_processor = fill_processor
 
 paper_broker: PaperBroker | None = None
 cycle_orchestrator = TradingOrchestrator(logger)
@@ -331,8 +332,17 @@ if UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY:
         UPBIT_ACCESS_KEY,
         UPBIT_SECRET_KEY,
         # Private 이벤트는 알림만 반영하고 손익 확정은 REST 대사에서만 수행한다.
-        on_order=lambda event: order_journal.apply_private_order_event(
-            event, fill_processor=fill_processor, require_rest_confirmation=True,
+        on_order=lambda event: (
+            order_journal.apply_private_order_event(
+                event, fill_processor=fill_processor, require_rest_confirmation=True,
+            ),
+            ack_reconcile_scheduler.trigger_async(
+                str(event.get("client_order_id") or event.get("coid") or event.get("identifier") or "").strip(),
+                journal=order_journal,
+                exchange=create_exchange_client(),
+                fill_processor=fill_processor,
+                delay_sec=0.5,
+            ) if ack_reconcile_scheduler is not None and str(event.get("state") or event.get("s") or event.get("status") or "").lower() in ("trade", "done") else None,
         ),
         on_queue_overflow=lambda: (
             order_journal.suspend_entry_for_reconciliation("private_ws_queue_full"),
