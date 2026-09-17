@@ -1656,6 +1656,7 @@ class GeminiAnalyzer:
                 return ranked_candidates
 
         try:
+            reset_desc = "09:00 KST(업비트 기준)" if "upbit" in exchange_scope else "00:00 KST(빗썸 기준)"
             cand_rows = []
             for i, c in enumerate(candidates[:10], 1):
                 m = c.get("market", "")
@@ -1665,16 +1666,18 @@ class GeminiAnalyzer:
                 rs = float(c.get("relative_strength", 0.0)) * 100.0
                 c_type = c.get("candidate_type", "CONFIRMED")
                 cand_rows.append(
-                    f"{i}. {m} | 현재가: {p:,.2f}원 | 변동률: {chg:+.2f}% | RS: {rs:+.2f}% | 24h거래대금: {tb_krw:,.0f}억원 | 유형: {c_type}"
+                    f"{i}. {m} | 현재가: {p:,.2f}원 | 당일변동({reset_desc} 리셋): {chg:+.2f}% | RS: {rs:+.2f}% | 24h거래대금: {tb_krw:,.0f}억원 | 유형: {c_type}"
                 )
             cand_summary = "\n".join(cand_rows)
 
             prompt = f"""당신은 월가 수석 암호화폐 퀀트 트레이더입니다.
 아래는 실시간 1차 수량/거래대금/스프레드 필터를 통과한 후보 암호화폐 목록입니다.
-비트코인 시장 상태: {btc_regime} (BTC 24h 변동: {btc_change_rate*100:+.2f}%)
+비트코인 시장 상태: {btc_regime} (BTC 당일 변동: {btc_change_rate*100:+.2f}%, {reset_desc} 리셋)
+거래소: {exchange_scope.upper()} (일봉 및 당일변동률 초기화 기준: {reset_desc})
 
-각 종목의 [상대강도(RS)], [24h 거래대금 유동성], [상승률 및 모멘텀 건전성]을 종합 평가하여,
+각 종목의 [상대강도(RS)], [24h 거래대금 유동성], [당일 상승률 및 모멘텀 건전성]을 종합 평가하여,
 진짜 세력 수급 주도주와 가짜 펌핑/설거지 종목을 선별하고 최우선순위 랭킹을 지정하세요.
+(주의: 변동률은 거래소 공식 당일 전일대비 기준이며, 리셋 직후에는 변동률이 낮을 수 있으니 24h 거래대금과 RS를 함께 고려하세요.)
 
 ### [스크리너 단계 신규상장 사전 필터]
 이 목록은 이미 `classify_listing_maturity()` + `is_new_listing_eligible()` SSOT로 NEW_LISTING 자격 미충족(과열·RS·거래대금·CRASH 등) 종목이 제외된 shortlist입니다.

@@ -2,6 +2,15 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v8.95 (2026-09-17)
+
+- 빗썸(00:00 KST)과 업비트(09:00 KST) 일봉 리셋 시차 및 스크리너 완충(Reset Grace Period) 정책 도입:
+  - `market_screener.py`: 거래소별 리셋 직후 30분(업비트 09:00~09:30, 빗썸 00:00~00:30) 동안 `min_change_rate`를 50% 수준(최소 +0.2% 이상)으로 완화하는 완충 세션(`is_reset_grace_period`, `get_effective_change_rate_thresholds`) 도입으로 개장 직후 후보 기근 방어.
+  - 리셋 직후 10% 이상 급등한 개장 펌핑 잡코인에 대해 과열 피로도 감점(`momentum_multiplier = 0.3`) 및 `EXTENDED` 단계 지정으로 뇌동 추격 매수 차단.
+  - `gemini_analyzer.py`: AI 프롬프트의 `24h변동` 오표기를 `당일변동({reset_desc} 리셋)`으로 정정하고 거래소별 리셋 기준을 명시하여 LLM의 추세 오판 방지.
+  - `strategy_engine.py` & `docs/project-design/strategy-and-risk.md`: 빗썸(00,04,08,12,16,20시)과 업비트(01,05,09,13,17,21시) 간 4시간봉(240분봉) 1시간 위상차 특성 및 확정봉 기반 안전성 명문화.
+  - `trading_bot_bootstrap.py` & `bot_controller.py`: 09:00 KST 일일 모닝 리포트 및 대화형 명령어(`/status`, `/trades`) 메시지에 `손익 집계 기준: KST 자정(00:00) 리셋` 문구를 명시하여 업비트 앱(09:00 리셋)과의 혼동 방지.
+
 ## v8.94 (2026-09-17)
 
 - 주문 즉시 단건 REST 대사(Fast Reconciliation) 및 종목별 차단 격리(Per-Market Isolation) 구현:

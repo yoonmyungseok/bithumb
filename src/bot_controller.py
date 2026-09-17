@@ -236,7 +236,7 @@ class BotController:
                 f"• <b>총 평가 자산:</b> {total_equity:,.0f} KRW\n"
                 f"• <b>가용 원화 잔고:</b> {krw_avail:,.0f} KRW\n"
                 f"• <b>금일 자산 변동:</b> {daily_pnl_krw:+,.0f} KRW ({daily_pnl_pct:+.2f}%)\n"
-                f"• <b>금일 확정 실현 손익:</b> {self.risk_manager.realized_pnl_krw:+,.0f} KRW (거래 {self.risk_manager.total_trades_today}회)\n"
+                f"• <b>금일 확정 실현 손익:</b> {self.risk_manager.realized_pnl_krw:+,.0f} KRW (거래 {self.risk_manager.total_trades_today}회, 자정 리셋)\n"
                 f"• <b>현재 보유 종목:</b> {held_str}\n"
                 f"• <b>크립토 공포/탐욕 지수:</b> {fng['desc']}\n"
                 f"• <b>웹소켓 스트리밍:</b> ⚡ 0.1초 실시간 체결 감시 가동 중\n"
@@ -896,7 +896,7 @@ class BotController:
             icon = "🟢" if pnl_krw > 0 else "🔴"
             lines.append(f"{idx}. {icon} <b>{m}</b> [{reason}]: {pnl_krw:+,.0f}원 ({pnl_pct:+.2f}%) | 슬리피지: {slip:+.1f}bps")
 
-        lines.append(f"\n• <b>금일 누적 실현손익:</b> {self.risk_manager.realized_pnl_krw:+,.0f}원 (총 {self.risk_manager.total_trades_today}회)")
+        lines.append(f"\n• <b>금일 누적 실현손익:</b> {self.risk_manager.realized_pnl_krw:+,.0f}원 (총 {self.risk_manager.total_trades_today}회, 자정 리셋)")
         lines.append(f"• <b>조회 일시:</b> {now_str}")
         return "\n".join(lines)
 

@@ -399,6 +399,7 @@ def execute_daily_morning_report_shared(
             f"• <b>가용 원화 잔고:</b> {krw_avail:,.0f} KRW\n"
             f"• <b>현재 보유 포지션:</b> {held_desc}\n"
             f"• <b>크립토 공포/탐욕 지수:</b> {fng['desc']}\n"
+            f"• <b>손익 집계 기준:</b> KST 자정(00:00) 리셋 기준\n"
             f"• <b>웹 대시보드:</b> <code>http://localhost:{web_port}</code>\n"
             f"• <b>기준 일시:</b> {now_str}"
             f"{ai_briefing}"

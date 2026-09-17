@@ -360,6 +360,7 @@ class ExecuteDailyMorningReportSharedTests(unittest.TestCase):
         sent_text = telegram.send_message.call_args[0][0]
         self.assertIn("업비트", sent_text)
         self.assertIn("09:00 KST", sent_text)
+        self.assertIn("손익 집계 기준", sent_text)
         self.assertIn("시황 브리핑 내용", sent_text)
 
     def test_execute_daily_morning_report_shared_exception_handling(self):

@@ -1,3 +1,4 @@
+import datetime
 import logging
 import math
 import time
@@ -24,6 +25,42 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         return result if math.isfinite(result) else default
     except (TypeError, ValueError):
         return default
+
+
+def is_reset_grace_period(exchange_name: str, now_kst: datetime.datetime | None = None) -> bool:
+    """
+    거래소별 일봉 및 전일대비 변동률 리셋 직후 완충 세션(Grace Period) 여부 반환
+    - 업비트: 09:00 ~ 09:30 KST (UTC 00:00 일봉 리셋 직후 30분)
+    - 빗썸: 00:00 ~ 00:30 KST (KST 00:00 일봉 리셋 직후 30분)
+    """
+    if now_kst is None:
+        kst = datetime.timezone(datetime.timedelta(hours=9))
+        now_kst = datetime.datetime.now(kst)
+
+    ex = (exchange_name or "").lower()
+    h = now_kst.hour
+    m = now_kst.minute
+
+    if "upbit" in ex:
+        return h == 9 and m < 30
+    return h == 0 and m < 30
+
+
+def get_effective_change_rate_thresholds(
+    min_change_rate: float,
+    early_breakout_min_change_rate: float,
+    in_grace_period: bool,
+) -> tuple[float, float]:
+    """
+    완충 세션(리셋 직후 30분)일 경우 최소 변동률 임계값을 완화하여 리셋 직후 후보 기근을 방어한다.
+    - min_change_rate: 기본값의 50% 수준으로 완화 (최소 0.002, +0.2%)
+    - early_breakout_min_change_rate: 기본값의 50% 수준으로 완화 (최소 0.001, +0.1%)
+    """
+    if in_grace_period:
+        eff_min = max(0.002, min_change_rate * 0.5)
+        eff_early = max(0.001, early_breakout_min_change_rate * 0.5)
+        return eff_min, eff_early
+    return min_change_rate, early_breakout_min_change_rate
 
 
 EXCLUDED_STABLE_MARKETS: set[str] = {
@@ -215,7 +252,14 @@ class MarketScreener:
             self.last_scan_tickers = list(all_tickers)
 
             ex_name = "업비트" if self._exchange_name() == "upbit" else "빗썸"
-            logger.info(f"{ex_name} KRW 마켓 {len(all_tickers)}개 종목 시세 스캔 완료 (레짐: {btc_regime})")
+            in_grace = is_reset_grace_period(self._exchange_name())
+            eff_min_change_rate, eff_early_min_change_rate = get_effective_change_rate_thresholds(
+                self.min_change_rate,
+                self.early_breakout_min_change_rate,
+                in_grace,
+            )
+            grace_tag = f", 리셋 완충 세션: ON (최소변동률 {eff_min_change_rate*100:.2f}%)" if in_grace else ""
+            logger.info(f"{ex_name} KRW 마켓 {len(all_tickers)}개 종목 시세 스캔 완료 (레짐: {btc_regime}{grace_tag})")
 
             btc_ticker = next((t for t in all_tickers if t.get("market") == "KRW-BTC"), None)
             btc_change_rate = _safe_float(btc_ticker.get("signed_change_rate", btc_ticker.get("change_rate", 0.0))) if btc_ticker else 0.0
@@ -270,8 +314,8 @@ class MarketScreener:
                 if acc_price_24h < min_trade_val:
                     continue
 
-                # 확인형 후보는 기존 상승률 조건을 그대로 사용한다.
-                if self.min_change_rate <= change_rate <= self.max_change_rate:
+                # 확인형 후보는 변동률 조건을 검사한다 (리셋 완충 세션 반영).
+                if eff_min_change_rate <= change_rate <= self.max_change_rate:
                     # 모멘텀 주도주는 당일 변동률 3% 이상 및 상대강도(RS) 1.5% 이상인 종목으로 판정한다.
                     is_momentum_leader = (
                         self.enable_early_breakout
@@ -293,12 +337,17 @@ class MarketScreener:
                     is_rs_leader_flag = relative_strength >= getattr(StrategyPolicy, "RS_LEADER_MIN_RS", 0.030)
                     if 0.015 <= change_rate <= 0.060 or (is_rs_leader_flag and change_rate <= 0.120):
                         momentum_multiplier = 2.0   # 상승 초입 골든존 최고 가중치
-                    elif 0.005 <= change_rate < 0.015:
+                    elif eff_min_change_rate <= change_rate < 0.015:
                         momentum_multiplier = 1.3   # 바닥 탈출 초기 구간
                     elif 0.060 < change_rate <= 0.090:
                         momentum_multiplier = 1.0   # 진행 중인 상승세
                     else:
                         momentum_multiplier = 0.5   # 과열 급등 종목 (고점 피로도 감점)
+
+                    # 완충 세션 중 리셋 직후 비이성적 급등(+10% 이상)은 개장 펌핑 피로도로 추가 감점 및 EXTENDED 강화
+                    if in_grace and change_rate >= 0.100:
+                        momentum_multiplier = 0.3
+                        momentum_phase = "EXTENDED"
 
                     rs_bonus = max(0.0, relative_strength * 60.0)
                     # 거래대금의 로그 스케일과 초입 모멘텀 가중치를 결합
@@ -307,7 +356,12 @@ class MarketScreener:
                     ticker_info["score"] = score
                     ticker_info["candidate_type"] = "MOMENTUM_BREAKOUT" if is_momentum_leader else "CONFIRMED"
                     # 주문 엔진과 대시보드가 같은 진입 단계로 판단하도록 후보 메타데이터에만 추가한다.
-                    ticker_info["momentum_phase"] = momentum_phase if is_momentum_leader else "CONFIRMED"
+                    # 완충 세션 중 개장 펌핑(+10% 이상)은 추격 매수 차단을 위해 EXTENDED 단계를 보존한다.
+                    ticker_info["momentum_phase"] = (
+                        momentum_phase
+                        if (is_momentum_leader or (in_grace and change_rate >= 0.100))
+                        else "CONFIRMED"
+                    )
                     ticker_info["is_held"] = False
                     qualified_candidates.append(ticker_info)
                     continue
@@ -315,7 +369,7 @@ class MarketScreener:
                 # 초기 돌파 후보는 당일 상승률이 확인형 기준에 도달하기 전 구간만 별도로 감시한다.
                 if (
                     self.enable_early_breakout
-                    and self.early_breakout_min_change_rate <= change_rate < self.min_change_rate
+                    and eff_early_min_change_rate <= change_rate < eff_min_change_rate
                     and relative_strength >= StrategyPolicy.MOMENTUM_BREAKOUT_RS_MIN
                 ):
                     # 상대강도와 거래대금은 이미 위에서 검증했으므로, 초입 변동과 유동성을 함께 점수화한다.
@@ -381,11 +435,11 @@ class MarketScreener:
                 screened_by_spread, btc_regime,
             )
 
-            # 초기 돌파(변동률 < min_change_rate)는 별도 소수 슬롯으로 격리 관리하고,
-            # 주도주 모멘텀(변동률 >= min_change_rate)은 일반 확인형과 함께 종합 순위 풀에서 경쟁한다.
+            # 초기 돌파(변동률 < eff_min_change_rate)는 별도 소수 슬롯으로 격리 관리하고,
+            # 주도주 모멘텀(변동률 >= eff_min_change_rate)은 일반 확인형과 함께 종합 순위 풀에서 경쟁한다.
             screened_early_breakouts = [
                 c for c in screened_by_spread
-                if c.get("candidate_type") == "MOMENTUM_BREAKOUT" and c.get("change_rate", 0.0) < self.min_change_rate
+                if c.get("candidate_type") == "MOMENTUM_BREAKOUT" and c.get("change_rate", 0.0) < eff_min_change_rate
             ]
             qualified_candidates = [c for c in screened_by_spread if c not in screened_early_breakouts]
 
@@ -511,7 +565,7 @@ class MarketScreener:
                 trade_b_krw = item.get("acc_trade_price_24h", 0.0) / 100_000_000.0
                 rs_info = f" | RS: {item.get('relative_strength', 0.0)*100:+.2f}%" if "relative_strength" in item else ""
                 logger.info(
-                    f"#{rank} {item['market']}{held_tag} | 현재가: {item['trade_price']:,.2f}원 | 24h변동: {item['change_rate']*100:+.2f}%{rs_info} | 24h거래대금: {trade_b_krw:,.0f}억 원"
+                    f"#{rank} {item['market']}{held_tag} | 현재가: {item['trade_price']:,.2f}원 | 당일변동: {item['change_rate']*100:+.2f}%{rs_info} | 24h거래대금: {trade_b_krw:,.0f}억 원"
                 )
 
             total_duration = max(0.0, time.monotonic() - scan_started_at)
