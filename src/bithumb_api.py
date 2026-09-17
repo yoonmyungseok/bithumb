@@ -1,3 +1,4 @@
+import email.utils
 import hashlib
 import logging
 import math
@@ -36,6 +37,11 @@ class BithumbAPI:
     exchange_name: str = "bithumb"
     API_ROOT = "https://api.bithumb.com"
 
+    # 로컬 시계 드리프트 방어를 위한 서버 시간 오프셋 (초 단위: 서버 시각 - 로컬 시각)
+    _shared_server_time_offset: float = 0.0
+    _shared_last_sync_ts: float = 0.0
+    _time_sync_lock = threading.Lock()
+
     def __init__(self, access_key: str = "", secret_key: str = ""):
         self.access_key = (access_key or os.getenv("BITHUMB_ACCESS_KEY", "")).strip()
         self.secret_key = (secret_key or os.getenv("BITHUMB_SECRET_KEY", "")).strip()
@@ -49,14 +55,69 @@ class BithumbAPI:
         self._ticker_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._ticker_cache_ttl = 1.5
 
+    @classmethod
+    def get_server_time_offset(cls) -> float:
+        """현재 추정된 서버 시간 오프셋(초, 서버 시각 - 로컬 시각) 반환"""
+        with cls._time_sync_lock:
+            return cls._shared_server_time_offset
+
+    @classmethod
+    def set_server_time_offset_for_test(cls, offset: float) -> None:
+        """테스트 전용 서버 시간 오프셋 강제 설정"""
+        with cls._time_sync_lock:
+            cls._shared_server_time_offset = offset
+            cls._shared_last_sync_ts = time.time()
+
+    @classmethod
+    def _sync_server_time_from_headers(cls, headers: dict[str, Any] | Any) -> float:
+        """
+        HTTP 응답의 Date 헤더로부터 서버 시간 오프셋을 계산하여 갱신
+        """
+        if not headers or "Date" not in headers:
+            return cls.get_server_time_offset()
+
+        date_str = headers.get("Date")
+        if not date_str:
+            return cls.get_server_time_offset()
+
+        try:
+            dt = email.utils.parsedate_to_datetime(date_str)
+            server_ts = dt.timestamp()
+            now_local = time.time()
+            offset = server_ts - now_local
+
+            with cls._time_sync_lock:
+                cls._shared_server_time_offset = offset
+                cls._shared_last_sync_ts = now_local
+
+            return offset
+        except Exception as e:
+            logger.debug(f"빗썸 응답 Date 헤더 파싱 실패 ({date_str}): {e}")
+            return cls.get_server_time_offset()
+
+    def sync_server_time_now(self) -> float:
+        """
+        공개 엔드포인트를 가볍게 호출하여 최신 서버 시각 오프셋을 즉시 동기화
+        """
+        try:
+            url = f"{self.API_ROOT}/v1/ticker?markets=KRW-BTC"
+            res = self.session.get(url, timeout=5)
+            return self._sync_server_time_from_headers(dict(res.headers))
+        except Exception as e:
+            logger.warning(f"빗썸 서버 시각 즉시 동기화 실패: {e}")
+            return self.get_server_time_offset()
+
     def _generate_jwt_token(self, params: dict[str, Any] | None = None) -> str:
         """
         빗썸 API 2.0 규격에 맞는 JWT 토큰 생성
+        - 서버 시각 오프셋(Time Offset) 자동 보정 반영
         """
+        server_offset = self.get_server_time_offset()
+        now_ts = time.time() + server_offset
         payload = {
             "access_key": self.access_key,
             "nonce": str(uuid.uuid4()),
-            "timestamp": int(time.time() * 1000),
+            "timestamp": int(now_ts * 1000),
         }
 
         if params:
@@ -108,6 +169,9 @@ class BithumbAPI:
                 else:
                     raise ValueError(f"지원하지 않는 HTTP 메서드: {method}")
 
+                # 응답 Date 헤더로 서버 시간 오프셋 자연 동기화
+                self._sync_server_time_from_headers(dict(response.headers))
+
                 # 텔레메트리 계측 기록
                 self.telemetry.record_call(
                     method=method,
@@ -123,6 +187,20 @@ class BithumbAPI:
                             f"⚠️ Bithumb API [{response.status_code}] {endpoint} 일시 오류. {sleep_sec}초 후 재시도 ({attempt}/{max_retries})"
                         )
                         time.sleep(sleep_sec)
+                        continue
+
+                # 401 expired_jwt 처리: 서버 시간 불일치로 인한 만료 감지 시 오프셋 재동기화 및 안전 복구
+                if response.status_code == 401 and "expired_jwt" in response.text:
+                    logger.warning(
+                        f"⚠️ Bithumb API 401 expired_jwt 감지 ({endpoint}). 서버 시각 재동기화 수행."
+                    )
+                    # Date 헤더가 없었던 경우 명시적 공개 API 호출로 최신 서버 시각 갱신
+                    if "Date" not in response.headers:
+                        self.sync_server_time_now()
+
+                    # 안전 정책: 멱등성이 보장되는 조회(GET) 요청만 새 JWT로 1회 재시도 (POST 주문은 중복 주문 방지)
+                    if retryable and attempt < attempts:
+                        time.sleep(0.5)
                         continue
 
                 if response.status_code not in (200, 201):

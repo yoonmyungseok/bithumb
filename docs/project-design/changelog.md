@@ -2,6 +2,13 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v8.92 (2026-09-17)
+
+- 빗썸 API 서버 시간 오프셋 자동 보정 및 `expired_jwt` 복구 패치:
+  - HTTP 응답의 `Date` 헤더(RFC 2822) 기반 로컬 시계 드리프트(Time Drift) 오프셋 자동 계산 및 공용 상태 동기화.
+  - `BithumbAPI._generate_jwt_token` 및 `BithumbPrivateWebSocketClient`의 JWT `timestamp` 생성 시 서버 시각 오프셋 보정 적용.
+  - HTTP 401 `expired_jwt` 수신 시 서버 시각 즉시 재동기화 및 멱등성이 보장되는 조회(`GET`) 요청에 한해 1회 안전 자동 재시도 적용 (`POST` 주문은 중복 방지를 위해 fail-closed 유지).
+
 ## v8.91 (2026-09-17)
 
 - 대시보드 모바일 UI/UX 전면 최적화:

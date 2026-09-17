@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 from base_websocket import BasePrivateWebSocketClient
+from bithumb_api import BithumbAPI
 
 
 class BithumbPrivateWebSocketClient(BasePrivateWebSocketClient):
@@ -49,8 +50,10 @@ class BithumbPrivateWebSocketClient(BasePrivateWebSocketClient):
         )
 
     def _headers(self) -> list[str]:
+        offset = BithumbAPI.get_server_time_offset()
+        now_ms = int((time.time() + offset) * 1000)
         token = jwt.encode(
-            {"access_key": self.access_key, "nonce": str(uuid.uuid4()), "timestamp": int(time.time() * 1000)},
+            {"access_key": self.access_key, "nonce": str(uuid.uuid4()), "timestamp": now_ms},
             self.secret_key,
             algorithm="HS256",
         )
