@@ -341,6 +341,17 @@ COMMON_CONFIG_SCHEMA: dict[str, ConfigFieldDef] = {
         description="알트코인 단타 진입 시 종목당 투입할 수 있는 최대 비중 상한선입니다.",
         unit="%",
     ),
+    "MIN_ALT_ALLOC_PCT": ConfigFieldDef(
+        key="MIN_ALT_ALLOC_PCT",
+        type_name="percent",
+        default=0.10,
+        min_val=0.05,
+        max_val=0.30,
+        category="portfolio",
+        label="알트코인 단일 최소 비중 (하한 캡)",
+        description="알트코인 진입 시 수수료 대비 실익을 확보하기 위한 최소 비중 하한선입니다.",
+        unit="%",
+    ),
 }
 
 

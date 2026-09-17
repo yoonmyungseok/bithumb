@@ -186,10 +186,10 @@ class StrategyPolicy:
     MIN_PROFIT_BUFFER_PCT: float = 0.015 # 최소 보장 마진 (+1.5%로 상향하여 조기 털림 방지)
 
     # 2-1. 알트코인 포지션 사이징 균등화 정책 (몰빵 및 극소액 정찰병 방지)
-    DEFAULT_ALT_ALLOC_PCT: float = 0.10  # 알트코인 기본 목표 배분 비중 10% (120만원 기준 약 12만원)
+    DEFAULT_ALT_ALLOC_PCT: float = 0.12  # 알트코인 기본 목표 배분 비중 12% (120만원 기준 약 14~15만원)
     MAX_ALT_ALLOC_PCT: float = 0.15      # 알트코인 단일 종목 최대 비중 상한 15% (120만원 기준 18만원 한도)
-    MIN_ALT_ALLOC_PCT: float = 0.05      # 알트코인 단일 종목 최소 비중 하한 5% (120만원 기준 6만원 미만 극소액 방지)
-    NIGHT_SESSION_MAX_ALLOC_PCT: float = 0.05 # 심야 세션(00:00~06:00) 최대 비중 5% 하드 캡 (약 6만원)
+    MIN_ALT_ALLOC_PCT: float = 0.10      # 알트코인 단일 종목 최소 비중 하한 10% (120만원 기준 12만원 미만 극소액 방지)
+    NIGHT_SESSION_MAX_ALLOC_PCT: float = 0.10 # 심야 세션(00:00~06:00) 최대 비중 10% 하드 캡 (약 12만원)
 
     # 3. 시간 기반 청산 (타임스탑) & 15분 모멘텀 조기 탈출 & 쿨다운
     MOMENTUM_EARLY_EXIT_SECONDS: int = 2700 # 45분 모멘텀 소멸 조기 본전 탈출 (2700초로 유예 확대)

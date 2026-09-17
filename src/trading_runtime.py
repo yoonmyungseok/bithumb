@@ -2174,14 +2174,14 @@ class TradingCycleEngine:
             )
             trade_budget = min(krw_available, max_slot_budget, calculated_size)
 
-        # 알트코인 포지션 사이징 균등화 (5% ~ 15% 균등 분할 & 심야 5% 캡)
-        # 특정 종목 몰빵 및 1만원 미만 푼돈 진입 쏠림을 원천 차단
+        # 알트코인 포지션 사이징 균등화 (10% ~ 15% 균등 분할 & 심야 10% 캡)
+        # 특정 종목 몰빵 및 극소액 푼돈 진입 쏠림을 원천 차단
         is_major = is_major_market(market)
         is_swing = (strategy_mode == "SWING")
         if not is_major and not is_swing and current_total_equity > 0:
-            min_alt_budget = current_total_equity * getattr(StrategyPolicy, "MIN_ALT_ALLOC_PCT", 0.05)
+            min_alt_budget = current_total_equity * getattr(StrategyPolicy, "MIN_ALT_ALLOC_PCT", 0.10)
             max_alt_alloc = (
-                getattr(StrategyPolicy, "NIGHT_SESSION_MAX_ALLOC_PCT", 0.05)
+                getattr(StrategyPolicy, "NIGHT_SESSION_MAX_ALLOC_PCT", 0.10)
                 if is_night_session()
                 else getattr(StrategyPolicy, "MAX_ALT_ALLOC_PCT", 0.15)
             )
@@ -2194,7 +2194,7 @@ class TradingCycleEngine:
                     f"⚖️ [{korean_name} / {market} 알트 비중 균등화 조정] "
                     f"기존 {int(trade_budget):,d}원 ➜ 균등화 조정 {int(clamped_budget):,d}원 "
                     f"(시드 {int(current_total_equity):,d}원 대비 {((clamped_budget / current_total_equity) * 100):.1f}% | "
-                    f"허용범위: {getattr(StrategyPolicy, 'MIN_ALT_ALLOC_PCT', 0.05)*100:.0f}%~{max_alt_alloc*100:.0f}%)"
+                    f"허용범위: {getattr(StrategyPolicy, 'MIN_ALT_ALLOC_PCT', 0.10)*100:.0f}%~{max_alt_alloc*100:.0f}%)"
                 )
                 trade_budget = clamped_budget
 

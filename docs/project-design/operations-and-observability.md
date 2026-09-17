@@ -8,6 +8,7 @@
 - Public 가격 스트림 복구만으로 Private 주문·체결 정상화를 판단하지 않는다. 재연결 뒤 구독 상태와 REST 대사를 확인한다.
 - 워치독은 거래소별 하트비트, stale 상태, crash-loop를 감시한다. 재시작과 실거래 활성화는 문서 변경과 별도의 운영 승인 사항이다.
 - 대시보드 UI는 데스크톱 고밀도 다단 테이블과 스마트폰(sm 미만) 전용 반응형 카드 뷰(Card layout & Accordion)를 하이브리드로 지원한다. 모바일 환경에서 긴급 전량 매도 오터치를 방지하기 위해 터치 타겟과 간격을 분리하며, TradingView 차트 모달과 Canvas 성능 차트는 화면 회전(resize)에 즉시 반응하도록 설계되었다.
+- 런타임 설정 매니저(`CommonConfigManager`)는 `MAX_ALT_ALLOC_PCT`뿐 아니라 `MIN_ALT_ALLOC_PCT`도 지원하여 대시보드 및 내부 API를 통해 알트코인 최소 비중 하한선을 실시간 동적으로 조정 및 관측할 수 있다.
 
 상세 작업 규칙은 [대시보드·운영 규칙](../agent-rules/dashboard-operations.md)을 따른다.
 

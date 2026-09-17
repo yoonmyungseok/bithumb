@@ -709,6 +709,8 @@ class BotController:
         # 3. 인메모리 컴포넌트 실시간 주입
         if "MAX_ALT_ALLOC_PCT" in normalized_updates:
             StrategyPolicy.MAX_ALT_ALLOC_PCT = normalized_updates["MAX_ALT_ALLOC_PCT"]
+        if "MIN_ALT_ALLOC_PCT" in normalized_updates:
+            StrategyPolicy.MIN_ALT_ALLOC_PCT = normalized_updates["MIN_ALT_ALLOC_PCT"]
 
         if self.trailing_tracker:
             if "TRAILING_START_PCT" in normalized_updates:

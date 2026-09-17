@@ -15,7 +15,7 @@ Python과 Windows 배치·`process_manager.py` 기반의 듀얼 거래소 자동
 
 1. 거래소별 REST·Public WebSocket에서 시세·호가를 수집하고 Private 이벤트는 bounded queue에 적재한다.
 2. `TradingCycleEngine`이 REST 대사, 포트폴리오, 레짐, 스크리닝, 진입·청산을 공통 오케스트레이션으로 실행한다. 거래소 차이는 profile로만 주입한다.
-3. `StrategyPolicy`가 확정봉 기반 후보를 평가하고, `order_safety/`가 저널·멱등 주문·체결 증가분·쿨다운·호가 영향을 처리한다.
+3. `StrategyPolicy`가 확정봉 기반 후보를 평가하고 알트코인 포지션 사이징 하한(`MIN_ALT_ALLOC_PCT`) 균등화를 적용하며, `order_safety/`가 저널·멱등 주문·체결 증가분·쿨다운·호가 영향을 처리한다.
 4. 각 거래소 상태 API는 독립 제공하며 통합 대시보드는 표시용으로만 합산한다.
 
 `KRW-HOLO`는 업비트의 수동 관리 종목으로 환경 설정, 스크리닝, 매수, 주문, 자산 평가, 실시간 청산과 긴급 매도의 자동 경로에서 제외한다.

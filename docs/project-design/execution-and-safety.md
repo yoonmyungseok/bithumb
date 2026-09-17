@@ -6,7 +6,7 @@ ACK, `OPEN`, `PARTIALLY_FILLED`, Private WebSocket 이벤트는 체결 확정이
 
 ## 신규 BUY 안전 게이트
 
-`evaluate_pre_buy_submit_gate()`는 주문 직전에 최신가, 시세 WebSocket 상태, 대사 대기, 미해결 주문, 쿨다운, 호가 영향 조건을 재확인한다. 조회 실패, 0 이하 가격, `RECONCILIATION_PENDING`, 모순 상태, 호가 잔량 부족, 과도한 슬리피지는 신규 BUY를 차단한다. ACK 뒤 `AckReconcileScheduler`는 중복 주문 없이 단건 REST 대사만 예약한다. 기존 포지션의 보호 청산은 계속 수행한다.
+`evaluate_pre_buy_submit_gate()`는 주문 직전에 최신가, 시세 WebSocket 상태, 대사 대기, 미해결 주문, 쿨다운, 호가 영향 조건을 재확인한다. 조회 실패, 0 이하 가격, `RECONCILIATION_PENDING`, 모순 상태, 호가 잔량 부족, 과도한 슬리피지는 신규 BUY를 차단한다. 또한 알트코인 최소 주문 예산 하한선(`MIN_ALT_ALLOC_PCT`)을 통해 수수료 대비 유효 마진을 보장하고 극소액 푼돈 주문을 방지한다. ACK 뒤 `AckReconcileScheduler`는 중복 주문 없이 단건 REST 대사만 예약한다. 기존 포지션의 보호 청산은 계속 수행한다.
 
 ## 연결·성과
 
