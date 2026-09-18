@@ -74,6 +74,8 @@ class StrategyPolicy:
     SWING_ALLOC_RATIO: float = 0.50              # 스윙 포지션 기본 배분 비중
     SWING_TIME_STOP_ENABLED: bool = False        # 스윙은 시간 기반 타임스탑 미적용 (추세 기반 청산)
     SWING_4H_DATA_UNAVAILABLE_MAX_HOLD_SECONDS: int = 43200  # 4H 대사 불가가 12시간 지속되면 무기한 보유 방지 보호 청산
+    SWING_ENTRY_EMA20_BUFFER_RATIO: float = 1.000            # 스윙 진입 시 4H EMA20 상단 지지 최소 비율 (1.000 = EMA20 이상)
+    SWING_TREND_EXIT_BUFFER_RATIO: float = 0.985             # 스윙 추세 이탈 청산 비율 (4H EMA20의 98.5% 미달 시 청산)
 
     # 1-4. 신규 상장 단타(NEW_LISTING) 전용 파라미터 — 4H/1H 이력 부족 시 소액 단타 경로
     # 기본값은 후보 분석·감사만 수행하는 관찰 모드다. 실주문은 거래소별 명시 설정이 있어야 한다.
@@ -1781,10 +1783,41 @@ def should_force_swing_data_unavailable_exit(hold_duration_sec: float) -> bool:
     return hold_duration_sec >= StrategyPolicy.SWING_4H_DATA_UNAVAILABLE_MAX_HOLD_SECONDS
 
 
+def evaluate_swing_trend_entry(
+    candles_4h: list[dict[str, Any]] | None,
+    current_price: float,
+    buffer_ratio: float = StrategyPolicy.SWING_ENTRY_EMA20_BUFFER_RATIO,
+) -> tuple[bool, str]:
+    """
+    스윙 포지션의 추세 지지선 진입 적격성 (Trend-Support Entry Gate) 판정
+    - 4시간봉 확정 캔들의 EMA20 대비 buffer_ratio(기본 1.000, 100% 이상 지지) 상단 안착 여부 검증
+    - 현재가가 4H EMA20 * buffer_ratio 미달인 역배열/하락추세 종목은 진입을 차단하여
+      진입 직후 SWING_TREND_STOP에 걸려 조기 청산되는 자가당착을 원천 방지함
+    - 4H 확정봉 부족(20개 미만) 시 Fail-Closed 차단
+    """
+    if current_price <= 0:
+        return False, "현재가 오류로 스윙 진입 차단"
+
+    completed = select_completed_candles(candles_4h or [], 20)
+    if not completed:
+        return False, "4H 확정봉 부족으로 스윙 진입 차단"
+
+    prices = [float(c.get("trade_price", 0.0)) for c in completed]
+    ema20 = calculate_ema(prices, 20)
+    threshold = ema20 * buffer_ratio
+
+    if current_price < threshold:
+        gap_pct = (current_price - ema20) / ema20 * 100.0
+        return False, f"스윙 4H EMA20 지지선 미달 진입 차단: 현재가 {current_price:,.2f}원 < 4H EMA20 {ema20:,.2f}원 ({gap_pct:+.2f}%)"
+
+    gap_pct = (current_price - ema20) / ema20 * 100.0
+    return True, f"스윙 4H EMA20 추세 지지 확인: 현재가 {current_price:,.2f}원 >= 4H EMA20 {ema20:,.2f}원 ({gap_pct:+.2f}%)"
+
+
 def evaluate_swing_trend_exit(
     candles_4h: list[dict[str, Any]],
     current_price: float,
-    buffer_ratio: float = 0.985,
+    buffer_ratio: float = StrategyPolicy.SWING_TREND_EXIT_BUFFER_RATIO,
 ) -> tuple[bool, str]:
     """
     스윙 포지션의 추세 지지선 이탈 기반 청산 (Trend-Stop) 판정

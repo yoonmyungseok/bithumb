@@ -1337,6 +1337,108 @@ class UpbitCycleMarketCapTests(TradingRuntimePrefixTests):
             self.assertIn("candles_4h", payload)
             self.assertNotEqual(payload.get("four_hour_history_status"), "DEFERRED")
 
+    def test_swing_candidate_blocked_in_entry_gating_when_below_4h_ema20(self):
+        """스윙 후보 종목의 현재가가 4H EMA20 아래이면 entry_gating에서 즉시 차단됨을 검증."""
+        profile = ExchangeCycleProfile(
+            exchange_key="bithumb",
+            reconcile_label="빗썸 ",
+            decision_exchange="bithumb",
+            log_prefix="빗썸 ",
+            extra_excluded_markets=frozenset(),
+            create_screener=self.create_screener,
+            cycle_start_label="5분 AI 퀀트 트레이딩",
+            tier_label="스마트 자산 티어",
+            tier_top_wording="상위",
+            summary_label="자산 요약",
+            btc_crash_label="비트코인 급락 위험 감지",
+        )
+        engine = self._build_engine(profile)
+        candles_4h = [{"trade_price": 100.0} for _ in range(21)]
+        candles_5m = [{"trade_price": 95.0} for _ in range(30)]
+        candles_1h = [{"trade_price": 95.0} for _ in range(25)]
+        inputs = MarketEntryInputs(
+            exchange=self.exchange,
+            market="KRW-XRP",
+            korean_name="리플",
+            candidate_type="SWING",
+            candidate_metadata={"strategy_mode": "SWING"},
+            analyzer=None,
+            coin_available=0.0,
+            avg_buy_price=0.0,
+            current_price=97.0,  # 100.0(EMA20) 미달
+            coin_value=0.0,
+            krw_available=1_000_000.0,
+            candles_5m=candles_5m,
+            candles_1h=candles_1h,
+            orderbook={"orderbook_units": []},
+            btc_regime="BULL_TREND",
+            btc_status_msg="정상",
+            is_btc_crashing=False,
+            is_cooldown=False,
+            is_extreme_fear=False,
+            is_bot_paused=False,
+            is_kill_switch=False,
+            is_entry_ready=True,
+            dyn_max_pos_pct=0.25,
+            now_str="2026-09-18 09:00:00",
+            audit_decision=MagicMock(),
+            candles_4h=candles_4h,
+        )
+        res = engine.process_entry_gating(inputs)
+        # 스윙 4H EMA20 미달로 should_continue=True (조기 차단 및 다음 종목 이동)
+        self.assertTrue(res.should_continue)
+
+    def test_swing_candidate_allowed_in_entry_gating_when_above_4h_ema20(self):
+        """스윙 후보 종목의 현재가가 4H EMA20 위이면 1차 게이트를 통과함을 검증."""
+        profile = ExchangeCycleProfile(
+            exchange_key="bithumb",
+            reconcile_label="빗썸 ",
+            decision_exchange="bithumb",
+            log_prefix="빗썸 ",
+            extra_excluded_markets=frozenset(),
+            create_screener=self.create_screener,
+            cycle_start_label="5분 AI 퀀트 트레이딩",
+            tier_label="스마트 자산 티어",
+            tier_top_wording="상위",
+            summary_label="자산 요약",
+            btc_crash_label="비트코인 급락 위험 감지",
+        )
+        engine = self._build_engine(profile)
+        candles_4h = [{"trade_price": 100.0} for _ in range(21)]
+        candles_5m = [{"trade_price": 102.0} for _ in range(30)]
+        candles_1h = [{"trade_price": 102.0} for _ in range(25)]
+        inputs = MarketEntryInputs(
+            exchange=self.exchange,
+            market="KRW-XRP",
+            korean_name="리플",
+            candidate_type="SWING",
+            candidate_metadata={"strategy_mode": "SWING"},
+            analyzer=None,
+            coin_available=0.0,
+            avg_buy_price=0.0,
+            current_price=102.0,  # 100.0(EMA20) 상단 지지
+            coin_value=0.0,
+            krw_available=1_000_000.0,
+            candles_5m=candles_5m,
+            candles_1h=candles_1h,
+            orderbook={"orderbook_units": []},
+            btc_regime="BULL_TREND",
+            btc_status_msg="정상",
+            is_btc_crashing=False,
+            is_cooldown=False,
+            is_extreme_fear=False,
+            is_bot_paused=False,
+            is_kill_switch=False,
+            is_entry_ready=True,
+            dyn_max_pos_pct=0.25,
+            now_str="2026-09-18 09:00:00",
+            audit_decision=MagicMock(),
+            candles_4h=candles_4h,
+        )
+        res = engine.process_entry_gating(inputs)
+        # 4H EMA20 지지선 통과로 정상 평가 진행 (should_continue=False)
+        self.assertFalse(res.should_continue)
+
 
 if __name__ == "__main__":
     unittest.main()

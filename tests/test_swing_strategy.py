@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from market_screener import MarketScreener
 from risk_controls import RiskGuard, calculate_risk_position_size
 from risk_manager import TrailingStopTracker
-from strategy_engine import StrategyPolicy, evaluate_swing_trend_exit
+from strategy_engine import StrategyPolicy, evaluate_swing_trend_entry, evaluate_swing_trend_exit
 
 
 class FakeExchangeAPI:
@@ -69,6 +69,20 @@ class TestSwingStrategy(unittest.TestCase):
         is_exit, reason = evaluate_swing_trend_exit(candles_4h, current_price=97.0)
         self.assertTrue(is_exit)
         self.assertIn("추세 이탈 청산", reason)
+
+    def test_evaluate_swing_trend_entry(self):
+        """4시간봉 추세 지지선(EMA20) 상단 안착 기반 진입 적격성 판정 검증."""
+        candles_4h = [{"trade_price": 100.0} for _ in range(25)]
+
+        # 현재가 101원: EMA20(100원) 이상이므로 스윙 진입 승인
+        allowed, reason = evaluate_swing_trend_entry(candles_4h, current_price=101.0)
+        self.assertTrue(allowed)
+        self.assertIn("추세 지지 확인", reason)
+
+        # 현재가 99원: EMA20(100원) 미달이므로 스윙 진입 차단 (진입 직후 청산 방지)
+        allowed, reason = evaluate_swing_trend_entry(candles_4h, current_price=99.0)
+        self.assertFalse(allowed)
+        self.assertIn("지지선 미달 진입 차단", reason)
 
     def test_risk_guard_dual_track_slots(self):
         """RiskGuard에서 단타 슬롯과 스윙 슬롯이 독립적으로 격리되는지 검증."""

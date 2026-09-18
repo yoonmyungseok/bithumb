@@ -2,6 +2,18 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v8.98 (2026-09-18)
+
+- 스윙 전략(SWING) 4H EMA20 추세 지지 진입 게이트 신설 및 진입 직후 조기 청산(자가당착) 방지:
+  - `strategy_engine.py`: `StrategyPolicy.SWING_ENTRY_EMA20_BUFFER_RATIO` (기본 1.000, 100% 이상 지지) 및 `SWING_TREND_EXIT_BUFFER_RATIO` (기본 0.985) SSOT 상수 정의.
+  - `strategy_engine.py`: `evaluate_swing_trend_entry` 함수 신설. 4시간봉 확정 EMA20 상단 안착 여부를 사전 검증하여, 현재가가 4H EMA20 미달인 역배열/하락추세 종목의 스윙 진입을 원천 차단.
+  - `trading_runtime.py`:
+    - 1차 게이트(`entry_gating`): 스윙 후보 종목에 대해 4H EMA20 지지선 미달 시 조기 관망(`HOLD`) 처리하여 불필요한 AI 호출 및 휩소 진입 방지.
+    - 2차 게이트(`AI Direct Entry`): 로컬 관망 후 AI 단독 자율 승인 시에도 스윙 후보는 4H EMA20 지지 검증을 통과해야만 진입 허용.
+    - 3차/4차 방어선: 스윙 전략 목표가/손절가 할당 직전 및 주문 실행(`process_buy_execution`) 직전 4H 추세 미달 시 fail-closed 차단.
+  - `gemini_analyzer.py`: 스윙(SWING) 경로 프롬프트 지침에 4H EMA20 상단 지지 필수 원칙 및 역배열 종목 BUY 금지 지침 동기화.
+  - `tests/test_swing_4h_safety.py`, `tests/test_swing_strategy.py`, `tests/test_trading_runtime.py`: 스윙 진입 게이트 통과/차단 단위 및 통합 테스트 추가 완료.
+
 ## v8.97 (2026-09-17)
 
 - 투 트랙(Two-Track) 퀀트 분석 체계 구축 및 09:00 텔레그램 모닝 리포트 24시간 결산 연동:

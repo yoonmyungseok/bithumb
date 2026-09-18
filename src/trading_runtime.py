@@ -26,6 +26,7 @@ from strategy_engine import (
     classify_listing_maturity,
     entry_signal,
     should_block_for_minimum_candles,
+    evaluate_swing_trend_entry,
     evaluate_swing_trend_exit,
     get_momentum_extended_alpha_threshold,
     has_confirmed_swing_trend_candles,
@@ -309,6 +310,7 @@ class MarketBuyInputs:
     # 주문 실행 경계는 후보 메타데이터를 다시 해석하지 않고 상위 게이트가 확정한 전략 모드만 사용한다.
     strategy_mode: str = "SCALP"
     btc_regime: str = "NORMAL"
+    candles_4h: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -1378,6 +1380,19 @@ class TradingCycleEngine:
                 logger.warning("[%s] 5분/1시간 확정봉 데이터가 부족하거나 불일치하여 신규 매수 차단", market)
                 return EntryGatingResult(should_continue=True)
 
+            is_holding = coin_value >= min_order_krw and avg_buy_price > 0
+            is_swing_candidate = (
+                effective_candidate_type == "SWING"
+                or str(candidate_metadata.get("strategy_mode", "")).upper() == "SWING"
+            )
+            if is_swing_candidate and not is_holding:
+                is_swing_entry_ok, swing_entry_reason = evaluate_swing_trend_entry(
+                    candles_4h, current_price,
+                )
+                if not is_swing_entry_ok:
+                    logger.info("[%s] %s", market, swing_entry_reason)
+                    return EntryGatingResult(should_continue=True)
+
         local_entry = entry_signal(
             candles=completed_candles_5m,
             candles_1h=completed_candles_1h,
@@ -1657,8 +1672,25 @@ class TradingCycleEngine:
             pct_b_cap = 0.65 if btc_regime == "RISK_OFF" else 0.70
             is_dip_support = sel_pct_b <= pct_b_cap
 
-            if allow_ai_direct and is_ai_buy_signal and base_safety_passed and can_enter_daily and is_dip_support and is_ai_direct_entry_eligible(
-                ai_alpha, btc_regime, is_night_session(),
+            is_swing_candidate = (
+                effective_candidate_type == "SWING"
+                or str(candidate_metadata.get("strategy_mode", "")).upper() == "SWING"
+            )
+            swing_entry_passed = True
+            swing_fail_reason = ""
+            if is_swing_candidate:
+                swing_entry_passed, swing_fail_reason = evaluate_swing_trend_entry(
+                    candles_4h, current_price,
+                )
+
+            if (
+                allow_ai_direct
+                and is_ai_buy_signal
+                and base_safety_passed
+                and can_enter_daily
+                and is_dip_support
+                and swing_entry_passed
+                and is_ai_direct_entry_eligible(ai_alpha, btc_regime, is_night_session())
             ):
                 logger.info(
                     f"✨ [{market}] AI 단독 자율 승인 진입 (로컬 룰 관망 ➜ AI 적극 승인, 알파스코어: {ai_alpha}점, 레짐: {btc_regime}, %B: {sel_pct_b:.2f})"
@@ -1674,6 +1706,8 @@ class TradingCycleEngine:
                 action = "HOLD"
                 if not allow_ai_direct and is_ai_buy_signal:
                     reason = f"로컬 퀀트 관망 종목 AI 단독 매수 차단(안전 정책): {selected_entry.get('reason', '')} | {reason}"
+                elif not swing_entry_passed and is_ai_buy_signal:
+                    reason = f"AI 단독 매수 스윙 추세 지지 미달 차단: {swing_fail_reason} | {reason}"
                 elif not is_dip_support and is_ai_buy_signal:
                     reason = f"AI 단독 매수 상투/과열 차단(%B {sel_pct_b:.2f} > 한도 {pct_b_cap:.2f}): 눌림목 지지 대기 | {reason}"
                 else:
@@ -1804,10 +1838,16 @@ class TradingCycleEngine:
             reason = f"[🆕신규상장 단타 소액(목표 +{StrategyPolicy.NEW_LISTING_TARGET_PCT * 100:.1f}%, 손절 -{StrategyPolicy.NEW_LISTING_STOP_LOSS_PCT * 100:.1f}%)] {reason}"
 
         if (effective_candidate_type == "SWING" or candidate_metadata.get("strategy_mode") == "SWING") and action == "BUY":
-            target_price = entry_price * (1.0 + StrategyPolicy.SWING_TARGET_PCT)
-            stop_loss = entry_price * (1.0 - StrategyPolicy.SWING_STOP_LOSS_PCT)
-            alloc_pct = min(dyn_max_pos_pct, StrategyPolicy.SWING_ALLOC_RATIO)
-            reason = f"[🌊중기/추세추종 스윙 전략(목표 +15.0%, 손절 -5.5%)] {reason}"
+            swing_ok, swing_reason = evaluate_swing_trend_entry(candles_4h, current_price)
+            if not swing_ok:
+                action = "HOLD"
+                reason = f"스윙 전략 4H 추세 미달 최종 차단: {swing_reason} | {reason}"
+                alloc_pct = 0.0
+            else:
+                target_price = entry_price * (1.0 + StrategyPolicy.SWING_TARGET_PCT)
+                stop_loss = entry_price * (1.0 - StrategyPolicy.SWING_STOP_LOSS_PCT)
+                alloc_pct = min(dyn_max_pos_pct, StrategyPolicy.SWING_ALLOC_RATIO)
+                reason = f"[🌊중기/추세추종 스윙 전략(목표 +15.0%, 손절 -5.5%)] {reason}"
 
         if is_night_session() and action == "BUY":
             alloc_pct = alloc_pct * StrategyPolicy.NIGHT_SESSION_ALLOC_RATIO
@@ -2180,6 +2220,15 @@ class TradingCycleEngine:
         # 특정 종목 몰빵 및 극소액 푼돈 진입 쏠림을 원천 차단
         is_major = is_major_market(market)
         is_swing = (strategy_mode == "SWING")
+        if is_swing and getattr(market_inputs, "candles_4h", None):
+            swing_entry_ok, swing_fail_reason = evaluate_swing_trend_entry(
+                market_inputs.candles_4h, current_price,
+            )
+            if not swing_entry_ok:
+                logger.warning("[%s] 스윙 주문 실행 직전 4H 추세 미달 fail-closed 차단: %s", market, swing_fail_reason)
+                audit_decision(market, "BLOCKED", "SWING_TREND_ENTRY_FAILED", [swing_fail_reason], {})
+                return True
+
         if not is_major and not is_swing and current_total_equity > 0:
             min_alt_budget = current_total_equity * getattr(StrategyPolicy, "MIN_ALT_ALLOC_PCT", 0.10)
             max_alt_alloc = (
@@ -2687,6 +2736,7 @@ class TradingCycleEngine:
                     audit_decision=audit_decision,
                     strategy_mode=strategy_mode,
                     btc_regime=btc_regime,
+                    candles_4h=candles_4h,
                 )):
                     perf_slice = getattr(self, "_cycle_perf", None)
                     if perf_slice is not None:

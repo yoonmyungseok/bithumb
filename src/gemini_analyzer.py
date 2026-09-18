@@ -1222,6 +1222,16 @@ class GeminiAnalyzer:
                 f"{StrategyPolicy.RECOVERY_REBOUND_MTF_EMA20_RATIO:.3f}배 이상을 모두 충족해야 합니다. "
                 f"초기 주문 비중은 일반 슬롯의 {StrategyPolicy.RECOVERY_REBOUND_ALLOC_RATIO * 100:.0f}%입니다."
             )
+        elif normalized_candidate_type == "SWING":
+            current_alpha_threshold = get_alpha_buy_threshold(regime_upper, night_active)
+            policy_details = (
+                "중기/추세추종 스윙(SWING) 경로입니다. 4시간봉(4H) 확정 EMA20 상단 지지(현재가 >= 4H EMA20)가 필수 전제 조건이며, "
+                "4H EMA20 미달 상태(하향 이탈/역배열)인 종목은 진입 즉시 SWING_TREND_STOP에 의해 청산되므로 절대 BUY를 승인하지 마세요. "
+                f"기본 목표 수익률 +{StrategyPolicy.SWING_TARGET_PCT * 100:.1f}%, 기본 손절 -{StrategyPolicy.SWING_STOP_LOSS_PCT * 100:.1f}%, "
+                f"1차 익절 +{StrategyPolicy.SWING_PARTIAL_TP_1_PCT * 100:.1f}%({StrategyPolicy.SWING_PARTIAL_TP_1_RATIO * 100:.0f}%), "
+                f"2차 익절 +{StrategyPolicy.SWING_PARTIAL_TP_2_PCT * 100:.1f}%({StrategyPolicy.SWING_PARTIAL_TP_2_RATIO * 100:.0f}%), "
+                "타임스탑 미적용, 4H EMA20 -1.5% 하회 시 추세 이탈 청산을 적용합니다."
+            )
         else:
             current_alpha_threshold = get_alpha_buy_threshold(regime_upper, night_active)
             policy_details = (
