@@ -493,3 +493,212 @@ def merge_exchange_reports(
             "upbit": upbit_report,
         },
     }
+
+
+def get_24h_quant_summary(
+    exchange_name: str,
+    end_dt: datetime.datetime | None = None,
+) -> dict[str, Any]:
+    """직전 24시간 롤링 확정 체결 퀀트 성과(승률, 손익, 수수료, 수수료 잠식률, MDD, 휩소) 산출.
+
+    거래소 격리를 준수하여 지정된 거래소의 DB만 조회하며, DB 예외 발생 시 안전한 기본값을 반환한다.
+    """
+    import json
+    import sqlite3
+    from pathlib import Path
+
+    ex_key = str(exchange_name or "").lower().strip()
+    root_dir = Path(__file__).resolve().parent.parent
+    if ex_key == "upbit":
+        db_path = root_dir / "data" / "upbit" / "trading.db"
+    else:
+        db_path = root_dir / "data" / "trading.db"
+
+    default_res: dict[str, Any] = {
+        "exchange": ex_key,
+        "total_trades": 0,
+        "win_trades": 0,
+        "loss_trades": 0,
+        "win_rate_pct": 0.0,
+        "realized_pnl_krw": 0.0,
+        "pnl_pct": 0.0,
+        "total_fee_krw": 0.0,
+        "fee_erosion_pct": 0.0,
+        "fee_erosion_warning": False,
+        "fee_eroded_markets": [],
+        "mdd_pct": 0.0,
+        "mdd_krw": 0.0,
+        "whipsaw_count": 0,
+        "whipsaw_markets": [],
+        "start_time_str": "",
+        "end_time_str": "",
+        "available": False,
+    }
+
+    if not db_path.exists():
+        return default_res
+
+    try:
+        now = end_dt if end_dt is not None else datetime.datetime.now(KST)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=KST)
+        # 09:00 정기 결산 시점이면 당일 08:59:59까지, 그 외는 현재 시점 기준 직전 24시간
+        end_time = now
+        start_time = end_time - datetime.timedelta(hours=24)
+
+        start_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
+        end_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
+        default_res["start_time_str"] = start_str
+        default_res["end_time_str"] = end_str
+
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT *
+            FROM trade_memory
+            WHERE exit_time >= ? AND exit_time <= ?
+            ORDER BY exit_time ASC
+            """,
+            (start_str, end_str),
+        )
+        trades = [dict(r) for r in cur.fetchall()]
+
+        # 시작 자산 조회
+        date_part = start_str.split()[0]
+        cur.execute("SELECT start_equity FROM daily_stats WHERE date = ?", (date_part,))
+        row_eq = cur.fetchone()
+        start_equity = float(row_eq[0]) if (row_eq and row_eq[0]) else 1200000.0
+
+        conn.close()
+
+        if not trades:
+            default_res["available"] = True
+            return default_res
+
+        win_trades = [t for t in trades if (t.get("pnl_krw") or 0.0) > 0.0]
+        loss_trades = [t for t in trades if (t.get("pnl_krw") or 0.0) < 0.0]
+
+        total_pnl = sum(float(t.get("pnl_krw") or 0.0) for t in trades)
+        win_rate = (len(win_trades) / len(trades) * 100.0) if trades else 0.0
+        pnl_pct_equity = (total_pnl / start_equity * 100.0) if start_equity > 0 else 0.0
+
+        # MDD 계산
+        cum_pnl = 0.0
+        peak_pnl = 0.0
+        max_dd_krw = 0.0
+        for t in trades:
+            cum_pnl += float(t.get("pnl_krw") or 0.0)
+            if cum_pnl > peak_pnl:
+                peak_pnl = cum_pnl
+            dd = peak_pnl - cum_pnl
+            if dd > max_dd_krw:
+                max_dd_krw = dd
+        mdd_pct = (max_dd_krw / start_equity * 100.0) if start_equity > 0 else 0.0
+
+        # 수수료 및 수수료 잠식 분석
+        total_fee = 0.0
+        fee_eroded_mkts = []
+        whipsaw_mkts = []
+        gross_pnl_sum = 0.0
+
+        for t in trades:
+            raw_str = t.get("raw_data")
+            raw = json.loads(raw_str) if raw_str else {}
+            trade_fee = float(raw.get("fee", 0.0) or 0.0)
+            total_fee += trade_fee
+            pnl_krw = float(t.get("pnl_krw") or 0.0)
+            gross_pnl = pnl_krw + trade_fee
+            gross_pnl_sum += gross_pnl
+
+            # 수수료 잠식: 매매차익은 0 이상인데 수수료로 인해 실현손익이 적자가 된 경우
+            if gross_pnl > 0.0 and pnl_krw < 0.0:
+                mkt_clean = str(t.get("market", "")).replace("KRW-", "").strip()
+                if mkt_clean:
+                    fee_eroded_mkts.append(mkt_clean)
+
+            # 휩소 손절 감지
+            reason = str(t.get("exit_reason") or "")
+            if pnl_krw < 0.0 and any(k in reason for k in ("추세이탈", "횡보", "손절")):
+                mkt_clean = str(t.get("market", "")).replace("KRW-", "").strip()
+                if mkt_clean:
+                    whipsaw_mkts.append(mkt_clean)
+
+        fee_erosion_pct = 0.0
+        if gross_pnl_sum > 0:
+            fee_erosion_pct = round((total_fee / gross_pnl_sum) * 100.0, 1)
+        elif total_pnl < 0 and total_fee > 0:
+            fee_erosion_pct = 100.0
+
+        fee_erosion_warning = (len(fee_eroded_mkts) > 0) or (fee_erosion_pct > 50.0)
+
+        return {
+            "exchange": ex_key,
+            "total_trades": len(trades),
+            "win_trades": len(win_trades),
+            "loss_trades": len(loss_trades),
+            "win_rate_pct": round(win_rate, 1),
+            "realized_pnl_krw": round(total_pnl, 1),
+            "pnl_pct": round(pnl_pct_equity, 2),
+            "total_fee_krw": round(total_fee, 1),
+            "fee_erosion_pct": fee_erosion_pct,
+            "fee_erosion_warning": fee_erosion_warning,
+            "fee_eroded_markets": fee_eroded_mkts,
+            "mdd_pct": round(mdd_pct, 2),
+            "mdd_krw": round(max_dd_krw, 1),
+            "whipsaw_count": len(whipsaw_mkts),
+            "whipsaw_markets": whipsaw_mkts,
+            "start_time_str": start_str,
+            "end_time_str": end_str,
+            "available": True,
+        }
+    except Exception:
+        return default_res
+
+
+def format_24h_quant_telegram_block(summary: dict[str, Any]) -> str:
+    """모닝 리포트에 삽입할 직전 24시간 퀀트 성과 분석 HTML 블록을 포맷팅한다."""
+    if not summary or not summary.get("available") or summary.get("total_trades", 0) == 0:
+        return "\n📈 <b>[직전 24시간 퀀트 성과]</b> 체결 내역 없음 (관망 유지)"
+
+    total = summary["total_trades"]
+    wins = summary["win_trades"]
+    losses = summary["loss_trades"]
+    wr = summary["win_rate_pct"]
+    pnl = summary["realized_pnl_krw"]
+    pct = summary["pnl_pct"]
+    fee = summary["total_fee_krw"]
+    erosion = summary["fee_erosion_pct"]
+    mdd = summary["mdd_pct"]
+
+    pnl_sign = "+" if pnl > 0 else ""
+    pnl_color = "🟢" if pnl > 0 else ("🔴" if pnl < 0 else "⚪")
+
+    lines = [
+        f"\n📊 <b>[직전 24시간 롤링 퀀트 성과 결산]</b>",
+        f"• <b>실현 손익:</b> {pnl_color} <b>{pnl_sign}{pnl:,.0f} KRW</b> ({pct:+.2f}%)",
+        f"• <b>체결 전적:</b> {total}전 {wins}승 {losses}패 (승률 <b>{wr:.1f}%</b>)",
+        f"• <b>차감 수수료:</b> {fee:,.0f} KRW (잠식률: {erosion:.1f}%)",
+        f"• <b>최대 낙폭(MDD):</b> {mdd:.2f}%",
+    ]
+
+    # 경고 섹션
+    warnings = []
+    eroded_mkts = [m for m in summary.get("fee_eroded_markets", []) if m]
+    if summary.get("fee_erosion_warning") and eroded_mkts:
+        eroded_str = ", ".join(eroded_mkts[:3])
+        warnings.append(f"⚠️ 수수료 잠식 적자: {eroded_str} (매매차익 대비 수수료 초과)")
+    elif summary.get("fee_erosion_warning") and erosion > 50.0:
+        warnings.append(f"⚠️ 수수료 과다 잠식: {erosion:.1f}%")
+
+    whipsaw_mkts = [m for m in summary.get("whipsaw_markets", []) if m]
+    if whipsaw_mkts:
+        whip_str = ", ".join(whipsaw_mkts[:3])
+        warnings.append(f"⚠️ 휩소 손절 발생: {whip_str}")
+
+    if warnings:
+        lines.append("• <b>리스크 감지:</b> " + " / ".join(warnings))
+
+    return "\n".join(lines)

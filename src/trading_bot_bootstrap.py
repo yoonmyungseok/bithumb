@@ -371,6 +371,18 @@ def execute_daily_morning_report_shared(
         held_names = [f"{exchange_client.get_korean_name(m)}({m.split('-')[-1]})" for m in held_markets]
         held_desc = ", ".join(held_names) if held_names else "없음 (100% 현금 보유)"
 
+        # 24시간 롤링 퀀트 성과 분석 (수수료 잠식, 승률, 휩소 감지)
+        quant_block = ""
+        try:
+            from confirmed_fill_performance import (
+                format_24h_quant_telegram_block,
+                get_24h_quant_summary,
+            )
+            q_summary = get_24h_quant_summary(exchange_name)
+            quant_block = format_24h_quant_telegram_block(q_summary)
+        except Exception as q_err:
+            logger.debug("%s 24시간 퀀트 성과 요약 생성 예외: %s", exchange_name, q_err)
+
         ai_briefing = ""
         analyzer = build_analyzer()
         if analyzer is not None and hasattr(analyzer, "generate_market_briefing"):
@@ -399,6 +411,7 @@ def execute_daily_morning_report_shared(
             f"• <b>가용 원화 잔고:</b> {krw_avail:,.0f} KRW\n"
             f"• <b>현재 보유 포지션:</b> {held_desc}\n"
             f"• <b>크립토 공포/탐욕 지수:</b> {fng['desc']}\n"
+            f"{quant_block}\n\n"
             f"• <b>손익 집계 기준:</b> KST 자정(00:00) 리셋 기준\n"
             f"• <b>웹 대시보드:</b> <code>http://localhost:{web_port}</code>\n"
             f"• <b>기준 일시:</b> {now_str}"

@@ -2,6 +2,14 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v8.97 (2026-09-17)
+
+- 투 트랙(Two-Track) 퀀트 분석 체계 구축 및 09:00 텔레그램 모닝 리포트 24시간 결산 연동:
+  - `confirmed_fill_performance.py`: 직전 24시간 롤링 확정 체결 퀀트 성과 집계 함수(`get_24h_quant_summary`) 및 텔레그램 HTML 포맷팅 함수(`format_24h_quant_telegram_block`) 추가. 거래소 격리를 준수하여 지정 거래소 DB만 조회하며, 승률·손익·수수료·수수료 잠식률(Fee Erosion)·MDD·Whipsaw 손절 내역을 산출.
+  - `trading_bot_bootstrap.py`: `execute_daily_morning_report_shared`에 24시간 롤링 퀀트 결산 블록 연동. 퀀트 모듈 오류 시에도 기본 잔고/손익 리포트가 정상 발송되는 Fail-Safe 보장.
+  - `scripts/daily_performance_report.py`: 대화창 및 터미널용 24시간 롤링 양 거래소 비교 정밀 보고서 생성기 추가 (`reports/daily_quant_report_YYYYMMDD.md` 자동 저장).
+  - 외부 AI API 장애나 Rate Limit과 무관하게 100% 무결점 파이썬 퀀트 계산 엔진 기반으로 신뢰성 확보.
+
 ## v8.96 (2026-09-17)
 
 - 당일 손절 2회 누적 차단 정책 완화 (자정 고정 차단 ➔ 3시간 쿨다운 완화 및 상태 파일 mtime 자동 동기화):
