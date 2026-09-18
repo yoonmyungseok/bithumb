@@ -2,6 +2,18 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.00 (2026-09-18)
+
+- **주문 수량 정밀도 내림(ROUND_DOWN) 보정 및 잔고 부족(`insufficient_funds`) 오류 원천 해결**:
+  - `src/bithumb_api.py`: `BithumbAPI.round_volume`을 기존 과거 4자리 반올림(`round(volume, 4)`)에서 빗썸 v2 공식 규격인 소수점 8자리 및 `Decimal` 기반 무조건 내림(`ROUND_DOWN`)으로 전면 개편.
+    - **원인 분석**: 1차 50% 분할 익절 후 남은 잔여 수량(예: EDEN 283.50009262개)을 타임스탑/보호청산으로 전량 매도할 때, `round(..., 4)`로 인해 `283.5001`개로 올림되어 계좌 잔고를 초과, 빗썸 API에서 `400 Client Error: insufficient_funds (주문가능한 금액(EDEN)이 부족합니다.)` 에러가 발생하여 5분 루프마다 크래시가 반복되던 문제를 해결.
+  - `src/upbit_api.py`: `UpbitAPI.round_volume` 역시 반올림(`round(volume, 8)`) 대신 `Decimal` 기반 소수점 8자리 내림(`ROUND_DOWN`)을 적용하고, `create_order` 지정가/시장가 매도 시 보정 수량을 전송하도록 일관화.
+  - `tests/test_startup_integration.py`, `tests/test_upbit_api.py`: 빗썸/업비트 소수점 8자리 보존 및 초과 자릿수 내림 검증, EDEN 잔고 이슈 재현 케이스 단위 테스트 추가 및 통과 검증.
+- **APScheduler 일시 지연 시 사이클 건너뜀(Missed Run Time) 방지**:
+  - `src/trading_bot_bootstrap.py`: `BackgroundScheduler.add_job`에 `misfire_grace_time`을 명시적으로 설정(`run_cycle` 최소 120초, 모닝 리포트 600초).
+  - **원인 분석**: APScheduler 기본 `misfire_grace_time`이 1초에 불과하여, WebSocket I/O나 고래 체결 감지 등 백그라운드 작업 경합으로 스케줄러가 예정 시각보다 단 1.3초 늦게 트리거되었을 때 사이클 전체가 건너뛰어지던(`missed by 0:00:01.326796`) 문제를 해결.
+  - `tests/test_trading_bot_bootstrap.py`: 스케줄러 등록 시 `misfire_grace_time` 적용 여부 검증 테스트 추가.
+
 ## v8.99 (2026-09-18)
 
 - 전일 매매 실데이터 분석 기반 3대 전략·리스크 안전성 정밀 강화 (승률-손익 역전 해소 및 조기 청산 방지):

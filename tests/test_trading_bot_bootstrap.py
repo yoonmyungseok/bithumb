@@ -120,6 +120,10 @@ class TradingBotBootstrapTests(unittest.TestCase):
         cycle_job_call = scheduler.add_job.call_args_list[0]
         self.assertEqual(cycle_job_call.args[0], run_cycle)
         self.assertIn("next_run_time", cycle_job_call.kwargs)
+        self.assertGreaterEqual(cycle_job_call.kwargs.get("misfire_grace_time", 0), 120)
+
+        morning_job_call = scheduler.add_job.call_args_list[1]
+        self.assertGreaterEqual(morning_job_call.kwargs.get("misfire_grace_time", 0), 300)
 
     @patch("trading_bot_bootstrap.sys.exit")
     @patch("trading_bot_bootstrap.signal.signal")

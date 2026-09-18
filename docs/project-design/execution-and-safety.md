@@ -22,4 +22,9 @@ WebSocket은 상태머신, bounded queue, ping timeout, 지수 백오프를 사�
 - **`expired_jwt` 안전 복구:** 401 `expired_jwt` 감지 시 즉시 서버 시각 오프셋을 재동기화한다. 멱등성이 보장되는 조회(`GET`) 요청은 새 토큰으로 1회 자동 재시도하며, 중복 체결 위험이 있는 주문(`POST`) 요청은 재시도하지 않고 fail-closed로 차단한다.
 - **Private WebSocket 공유:** `BithumbPrivateWebSocketClient`도 동일한 서버 시간 오프셋을 반영하여 핸드셰이크 토큰을 생성한다.
 
+## 주문 수량 정밀도 및 잔고 초과(insufficient_funds) 방지 내림(ROUND_DOWN) 정책
+
+- **소수점 8자리 지원 및 내림(Floor/ROUND_DOWN) 강제**: 빗썸 API v2 및 업비트 API는 가상자산 주문 수량(`volume`)을 소수점 8자리까지 지원한다.
+- **올림(Round Up) 원천 차단**: 분할 익절, 수수료 차감 등으로 발생하는 부동소수점 오차나 8자리 초과 수량을 반올림(`round()`)할 경우, 계좌 가용 잔고보다 주문 수량이 커져 거래소에서 `insufficient_funds (주문가능한 금액이 부족합니다)` 400 에러를 반환한다. 이를 방지하기 위해 빗썸(`BithumbAPI.round_volume`)과 업비트(`UpbitAPI.round_volume`) 모두 `Decimal` 기반의 소수점 8자리 무조건 내림(`ROUND_DOWN`) 처리를 단일 원칙으로 적용한다.
+
 상세 작업 규칙은 [주문·체결 안전 규칙](../agent-rules/trading-safety.md)을 따른다.

@@ -47,8 +47,17 @@ class StartupAndIntegrationAuditTests(unittest.TestCase):
         server.stop()
 
     def test_bithumb_api_round_volume_and_tick(self):
+        # 빗썸 v2: 소수점 8자리까지 보존 및 잔고 초과 방지를 위한 내림(ROUND_DOWN) 검증
         vol = BithumbAPI.round_volume("KRW-BTC", 0.12345678)
-        self.assertEqual(vol, 0.1235)
+        self.assertEqual(vol, 0.12345678)
+
+        # 9자리 이상은 올림 없이 내림되어 잔고 초과 방지
+        vol_floor = BithumbAPI.round_volume("KRW-BTC", 0.123456789)
+        self.assertEqual(vol_floor, 0.12345678)
+
+        # EDEN 잔고 이슈 재현 케이스 검증 (283.50009262가 283.5001로 올림되지 않고 283.50009262로 유지)
+        vol_eden = BithumbAPI.round_volume("KRW-EDEN", 283.50009262)
+        self.assertEqual(vol_eden, 283.50009262)
 
         vol_zero = BithumbAPI.round_volume("KRW-XRP", -1.0)
         self.assertEqual(vol_zero, 0.0)

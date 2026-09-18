@@ -17,6 +17,7 @@ import time
 import urllib.parse
 import uuid
 import warnings
+from decimal import Decimal, ROUND_DOWN
 from typing import Any
 from requests.adapters import HTTPAdapter
 
@@ -694,10 +695,15 @@ class UpbitAPI:
 
     @staticmethod
     def round_volume(market: str, volume: float) -> float:
-        """업비트 주문 가능 수량 정밀도 반올림 (소수점 8자리)"""
+        """업비트 주문 가능 수량 정밀도 내림 보정 (소수점 8자리 내림).
+
+        잔고 초과(insufficient_funds_ask 등) 에러를 방지하기 위해 반올림(round)이 아닌 내림(ROUND_DOWN)을 적용한다.
+        """
         if volume <= 0:
             return 0.0
-        return round(volume, 8)
+        d = Decimal(str(round(volume, 12)))
+        truncated = d.quantize(Decimal("1e-8"), rounding=ROUND_DOWN)
+        return float(truncated)
 
     def get_open_orders(self, market: str | None = None) -> list[dict[str, Any]]:
         """대기(미체결) 주문 목록 조회 (state=wait)"""
@@ -795,7 +801,8 @@ class UpbitAPI:
             if volume is None or price is None or float(volume) <= 0:
                 raise ValueError("지정가(limit) 주문은 0보다 큰 volume과 price가 모두 필요합니다.")
             adjusted_price = self.adjust_price_to_tick(price, side=side)
-            formatted_vol = f"{float(volume):.8f}".rstrip("0").rstrip(".") or "0"
+            adjusted_vol = self.round_volume(market, float(volume))
+            formatted_vol = f"{adjusted_vol:.8f}".rstrip("0").rstrip(".") or "0"
             data["volume"] = formatted_vol
             data["price"] = str(int(adjusted_price) if adjusted_price.is_integer() else adjusted_price)
 
@@ -809,7 +816,8 @@ class UpbitAPI:
         elif ord_type == "market":  # 시장가 매도 (volume = 코인 수량)
             if volume is None or float(volume) <= 0:
                 raise ValueError("시장가 매도(market)는 0보다 큰 매도수량(volume)이 필요합니다.")
-            formatted_vol = f"{float(volume):.8f}".rstrip("0").rstrip(".") or "0"
+            adjusted_vol = self.round_volume(market, float(volume))
+            formatted_vol = f"{adjusted_vol:.8f}".rstrip("0").rstrip(".") or "0"
             data["volume"] = formatted_vol
 
         logger.info(f"업비트 주문 요청 데이터: {data}")

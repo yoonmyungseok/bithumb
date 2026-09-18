@@ -92,7 +92,9 @@ class UpbitAPITests(unittest.TestCase):
         self.assertEqual(UpbitAPI.round_price_to_tick(0.0004567), 0.000457)
 
     def test_round_volume(self):
-        self.assertEqual(UpbitAPI.round_volume("KRW-BTC", 0.123456789), 0.12345679)
+        # 잔고 초과(insufficient_funds_ask) 방지를 위한 8자리 내림(ROUND_DOWN) 검증
+        self.assertEqual(UpbitAPI.round_volume("KRW-BTC", 0.123456789), 0.12345678)
+        self.assertEqual(UpbitAPI.round_volume("KRW-BTC", 0.12345678), 0.12345678)
         self.assertEqual(UpbitAPI.round_volume("KRW-BTC", -1.0), 0.0)
 
     def test_rate_limit_header_parsing_blocks_only_exhausted_group(self):

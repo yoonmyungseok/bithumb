@@ -9,6 +9,7 @@ from requests.adapters import HTTPAdapter
 import urllib.parse
 import uuid
 import warnings
+from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
 import jwt
@@ -478,10 +479,16 @@ class BithumbAPI:
 
     @staticmethod
     def round_volume(market: str, volume: float) -> float:
-        """빗썸 마켓별 주문 가능 수량 정밀도 반올림 (기본 소수점 4자리)"""
+        """빗썸 마켓별 주문 가능 수량 정밀도 내림 보정 (소수점 8자리 내림).
+
+        잔고 초과(insufficient_funds) 에러를 방지하기 위해 반올림(round)이 아닌 내림(ROUND_DOWN)을 적용한다.
+        빗썸 v2 API는 최대 소수점 8자리까지 수량을 지원한다.
+        """
         if volume <= 0:
             return 0.0
-        return round(volume, 4)
+        d = Decimal(str(round(volume, 12)))
+        truncated = d.quantize(Decimal("1e-8"), rounding=ROUND_DOWN)
+        return float(truncated)
 
     def get_open_orders(self, market: str | None = None) -> list[dict[str, Any]]:
         """v2 대기 주문 목록 조회. 반환 스키마를 기존 호출부와 호환시킨다."""

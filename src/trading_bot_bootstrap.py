@@ -193,6 +193,9 @@ class TradingBotBootstrap:
                 first_run_time = datetime.now() + timedelta(minutes=interval_minutes)
 
         self._scheduler = BackgroundScheduler(timezone="Asia/Seoul")
+        # 시스템 일시 부하나 WebSocket/I/O 경합으로 1~2초 지연 시 사이클이 누락(missed)되지 않도록
+        # misfire_grace_time을 충분히 부여한다 (기본값 1초 -> 120초).
+        cycle_grace_time = max(120, interval_minutes * 30)
         self._scheduler.add_job(
             self.ctx.run_cycle,
             "interval",
@@ -201,6 +204,7 @@ class TradingBotBootstrap:
             id=self.profile.scheduler_cycle_job_id,
             max_instances=1,
             coalesce=True,
+            misfire_grace_time=cycle_grace_time,
         )
         self._scheduler.add_job(
             self.ctx.send_daily_morning_report,
@@ -209,6 +213,8 @@ class TradingBotBootstrap:
             minute=0,
             id=self.profile.scheduler_morning_job_id,
             max_instances=1,
+            coalesce=True,
+            misfire_grace_time=600,
         )
         self._scheduler.start()
         self.ctx.logger.info(
