@@ -97,11 +97,18 @@ class OrderFillProcessor:
                 OrderStatus.PENDING_SUBMISSION,
             }
             if fill_delta <= 0.0 and status == OrderStatus.FILLED:
-                logger.warning(
-                    "[%s] 체결 증가분 없이 FILLED 상태를 거부했습니다 (client_order_id=%s)",
-                    market, client_order_id,
-                )
-                status = str(order.get("status") or OrderStatus.RECONCILIATION_PENDING)
+                if str(order.get("status")) == OrderStatus.FILLED:
+                    logger.debug(
+                        "[%s] 이미 FILLED 완료된 주문의 후속 대사 확인 (client_order_id=%s)",
+                        market, client_order_id,
+                    )
+                    status = OrderStatus.FILLED
+                else:
+                    logger.warning(
+                        "[%s] 체결 증가분 없이 FILLED 상태를 거부했습니다 (client_order_id=%s)",
+                        market, client_order_id,
+                    )
+                    status = str(order.get("status") or OrderStatus.RECONCILIATION_PENDING)
             elif fill_delta <= 0.0 and status in non_fill_statuses:
                 status = str(status)
 

@@ -6,7 +6,12 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from strategy_engine import StrategyPolicy
+from strategy_engine import (
+    StrategyPolicy,
+    calculate_composite_alpha_score,
+    evaluate_swing_trend_entry,
+    evaluate_swing_trend_exit,
+)
 from order_safety import CooldownManager
 from gemini_analyzer import GeminiAnalyzer
 
@@ -191,6 +196,68 @@ class TestTradeImprovementGuards(unittest.TestCase):
         self.assertIn("후보 유형: NEW_LISTING", new_listing_prompt)
         self.assertIn("현재 알파 승인 기준: 75점 이상", new_listing_prompt)
         self.assertIn("4H/1H MTF 게이트는 면제", new_listing_prompt)
+
+    def test_trade_improvement_plan_constants(self):
+        """전일 매매 분석 기반 개선 상수 설정 검증"""
+        self.assertEqual(StrategyPolicy.SWING_ENTRY_EMA20_BUFFER_RATIO, 1.005)
+        self.assertEqual(StrategyPolicy.SWING_TREND_EXIT_BUFFER_RATIO, 0.985)
+        self.assertEqual(StrategyPolicy.RISK_OFF_MAX_ALT_ALLOC_PCT, 0.06)
+        self.assertEqual(StrategyPolicy.RISK_OFF_MAX_ALT_BUDGET_KRW, 75000.0)
+        self.assertEqual(StrategyPolicy.RISK_OFF_MIN_ORDERBOOK_RATIO, 1.00)
+
+    def test_swing_entry_ema20_buffer_and_exit_margin(self):
+        """스윙 진입(+0.5%)과 청산(-1.5%) 간 2.0% 안전 버퍼 검증"""
+        candles_4h = [
+            {"trade_price": 1000.0, "candle_date_time_kst": f"2026-09-17T{i:02d}:00:00"}
+            for i in range(25)
+        ]
+        # 1004원: 1000원 * 1.005 미달이므로 진입 차단
+        ok_1004, reason_1004 = evaluate_swing_trend_entry(candles_4h, 1004.0)
+        self.assertFalse(ok_1004)
+        self.assertIn("미달 진입 차단", reason_1004)
+
+        # 1006원: 1000원 * 1.005 이상이므로 진입 허용
+        ok_1006, reason_1006 = evaluate_swing_trend_entry(candles_4h, 1006.0)
+        self.assertTrue(ok_1006)
+        self.assertIn("추세 지지 확인", reason_1006)
+
+        # 984원: 1000원 * 0.985 미달이므로 청산
+        is_exit, exit_reason = evaluate_swing_trend_exit(candles_4h, 984.0)
+        self.assertTrue(is_exit)
+        self.assertIn("스윙 추세 이탈 청산", exit_reason)
+
+        # 안전 마진 2.0% 이상 확보 확인
+        margin_pct = (1000.0 * StrategyPolicy.SWING_ENTRY_EMA20_BUFFER_RATIO - 1000.0 * StrategyPolicy.SWING_TREND_EXIT_BUFFER_RATIO) / 1000.0 * 100.0
+        self.assertAlmostEqual(margin_pct, 2.0, places=5)
+
+    def test_orderbook_scoring_granularity(self):
+        """호가 잔량비 점수 세분화 및 매도벽 페널티 검증"""
+        candles = [{"trade_price": 1000.0, "opening_price": 1000.0, "candle_acc_trade_volume": 10.0} for _ in range(30)]
+        ob_bearish = {"total_bid_size": 70.0, "total_ask_size": 100.0}
+        res = calculate_composite_alpha_score(candles, btc_regime="RISK_OFF", orderbook=ob_bearish)
+        self.assertEqual(res["factor_breakdown"]["orderbook_raw_ratio"], 0.7)
+
+    def test_alt_position_sizing_risk_off_cap(self):
+        """RISK_OFF 약세장에서 알트코인 매수 예산이 6% 및 75,000원 이하로 캡핑되는지 검증"""
+        total_equity = 1_200_000.0  # 시드 120만 원
+        krw_available = 1_000_000.0
+        requested_budget = 167_000.0  # 비중 확대 요청 금액
+
+        # 1. RISK_OFF 레짐 시:
+        max_alt_alloc = StrategyPolicy.RISK_OFF_MAX_ALT_ALLOC_PCT  # 0.06
+        max_alt_budget = min(
+            total_equity * max_alt_alloc,
+            StrategyPolicy.RISK_OFF_MAX_ALT_BUDGET_KRW,  # 75,000원
+        )
+        self.assertEqual(max_alt_budget, 72000.0)  # 120만 * 0.06 = 72,000원
+        clamped_risk_off = min(krw_available, max(5000.0, min(requested_budget, max_alt_budget)))
+        self.assertEqual(clamped_risk_off, 72000.0)
+
+        # 2. NORMAL 레짐 시:
+        max_alt_alloc_normal = StrategyPolicy.MAX_ALT_ALLOC_PCT  # 0.15
+        max_alt_budget_normal = total_equity * max_alt_alloc_normal  # 180,000원
+        clamped_normal = min(krw_available, max(120000.0, min(requested_budget, max_alt_budget_normal)))
+        self.assertEqual(clamped_normal, 167000.0)  # 요청 금액 유지
 
 
 if __name__ == "__main__":

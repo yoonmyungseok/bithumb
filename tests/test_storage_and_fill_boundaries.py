@@ -97,6 +97,30 @@ class StorageAndFillBoundaryTests(unittest.TestCase):
         cooldown.record_exit.assert_called_once_with("KRW-BTC", "AI_EMERGENCY_EXIT", exit_price=110.0)
         self.assertEqual(trade_mem.record_completed_trade.call_args.kwargs["reason"], "AI 긴급 익절탈출")
 
+    def test_reconcile_idempotent_filled_order_does_not_warn(self):
+        """이미 FILLED 상태인 주문의 후속 대사는 경고 없이 FILLED를 유지하고, 미체결 FILLED는 거부한다."""
+        journal = _InMemoryJournal()
+        processor = OrderFillProcessor(journal)
+
+        # 1. 0체결 상태에서 FILLED 요구 -> 거부 및 RECONCILIATION_PENDING
+        with self.assertLogs("order_safety.fill_processor", level="WARNING") as cm:
+            res = processor.process_order_fill("sell-1", OrderStatus.FILLED, 0.0, avg_price=110.0)
+            self.assertIn("체결 증가분 없이 FILLED 상태를 거부했습니다", cm.output[0])
+            self.assertEqual(res["status"], OrderStatus.RECONCILIATION_PENDING)
+
+        # 2. 정상 전량 체결로 FILLED 승격
+        res_fill = processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=110.0, remaining_volume=0.0)
+        self.assertEqual(res_fill["status"], OrderStatus.FILLED)
+        self.assertEqual(res_fill["fill_delta"], 1.0)
+
+        # 3. 이미 FILLED된 주문에 대해 후속 REST 대사가 다시 동일 수량으로 들어올 때: WARNING 없이 통과
+        with self.assertLogs("order_safety.fill_processor", level="DEBUG") as cm_debug:
+            res_dup = processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=110.0, remaining_volume=0.0)
+            self.assertEqual(res_dup["status"], OrderStatus.FILLED)
+            self.assertEqual(res_dup["fill_delta"], 0.0)
+            self.assertTrue(any("이미 FILLED 완료된 주문" in o for o in cm_debug.output))
+
+
     def test_insert_trade_canonical_field_mapping(self):
         """insert_trade 호출 시 레거시 키(reason, btc_regime, bars_held)가 표준 컬럼으로 매핑된다."""
         import tempfile

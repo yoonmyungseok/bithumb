@@ -74,7 +74,7 @@ class StrategyPolicy:
     SWING_ALLOC_RATIO: float = 0.50              # 스윙 포지션 기본 배분 비중
     SWING_TIME_STOP_ENABLED: bool = False        # 스윙은 시간 기반 타임스탑 미적용 (추세 기반 청산)
     SWING_4H_DATA_UNAVAILABLE_MAX_HOLD_SECONDS: int = 43200  # 4H 대사 불가가 12시간 지속되면 무기한 보유 방지 보호 청산
-    SWING_ENTRY_EMA20_BUFFER_RATIO: float = 1.000            # 스윙 진입 시 4H EMA20 상단 지지 최소 비율 (1.000 = EMA20 이상)
+    SWING_ENTRY_EMA20_BUFFER_RATIO: float = 1.005            # 스윙 진입 시 4H EMA20 상단 지지 최소 비율 (1.005 = EMA20 +0.5% 이상 지지)
     SWING_TREND_EXIT_BUFFER_RATIO: float = 0.985             # 스윙 추세 이탈 청산 비율 (4H EMA20의 98.5% 미달 시 청산)
 
     # 1-4. 신규 상장 단타(NEW_LISTING) 전용 파라미터 — 4H/1H 이력 부족 시 소액 단타 경로
@@ -192,6 +192,11 @@ class StrategyPolicy:
     MAX_ALT_ALLOC_PCT: float = 0.15      # 알트코인 단일 종목 최대 비중 상한 15% (120만원 기준 18만원 한도)
     MIN_ALT_ALLOC_PCT: float = 0.10      # 알트코인 단일 종목 최소 비중 하한 10% (120만원 기준 12만원 미만 극소액 방지)
     NIGHT_SESSION_MAX_ALLOC_PCT: float = 0.10 # 심야 세션(00:00~06:00) 최대 비중 10% 하드 캡 (약 12만원)
+
+    # 2-2. RISK_OFF 레짐 하 알트코인 리스크 통제 정책 (승률-손익 역전 방지)
+    RISK_OFF_MAX_ALT_ALLOC_PCT: float = 0.06      # RISK_OFF 시 알트 최대 비중 6% (평상시 15% 대비 대폭 축소)
+    RISK_OFF_MAX_ALT_BUDGET_KRW: float = 75000.0  # RISK_OFF 시 알트 1종목 최대 매수 금액 7.5만 원 캡
+    RISK_OFF_MIN_ORDERBOOK_RATIO: float = 1.00    # RISK_OFF 시 최소 요구 호가 잔량비 (매수벽 >= 매도벽)
 
     # 3. 시간 기반 청산 (타임스탑) & 15분 모멘텀 조기 탈출 & 쿨다운
     MOMENTUM_EARLY_EXIT_SECONDS: int = 2700 # 45분 모멘텀 소멸 조기 본전 탈출 (2700초로 유예 확대)
@@ -982,7 +987,13 @@ def calculate_composite_alpha_score(
             score_orderflow = 10
         elif effective_ratio >= 1.4:
             score_orderflow = 15
-        elif effective_ratio < 0.6:
+        elif effective_ratio >= 1.0:
+            score_orderflow = 10
+        elif effective_ratio >= 0.8:
+            score_orderflow = 7
+        elif effective_ratio >= 0.6:
+            score_orderflow = 5
+        else:
             score_orderflow = 3
 
     # 7. 볼륨 스파이크 (10점)

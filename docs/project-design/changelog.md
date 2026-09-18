@@ -2,6 +2,23 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v8.99 (2026-09-18)
+
+- 전일 매매 실데이터 분석 기반 3대 전략·리스크 안전성 정밀 강화 (승률-손익 역전 해소 및 조기 청산 방지):
+  - **포지션 사이징 균등화 및 RISK_OFF 하드 캡**:
+    - `strategy_engine.py`: `StrategyPolicy.RISK_OFF_MAX_ALT_ALLOC_PCT` (6.0%), `RISK_OFF_MAX_ALT_BUDGET_KRW` (최대 75,000 KRW), `RISK_OFF_MIN_ORDERBOOK_RATIO` (1.00) 정책 상수 신설.
+    - `trading_runtime.py`: 약세장(`RISK_OFF`) 시 알트코인 포지션 배분 한도를 최대 6.0% 및 최대 75,000원으로 강제 클램핑. 평상시 알트 최소 10% 하한선 강제를 약세장에서 제외하여 소액/분할 진입을 보장하고, 승률이 높아도 손실 종목에 과다 금액이 투입되어 계좌가 역전되는 현상 원천 차단.
+  - **스윙 전략 진입·청산 룰 안전 버퍼 동기화**:
+    - `strategy_engine.py`: `SWING_ENTRY_EMA20_BUFFER_RATIO`를 기존 1.000에서 1.005(+0.5% 상단 지지)로 상향. 청산 기준(0.985, -1.5%)과의 간격을 최소 2.0% 확보.
+    - `market_screener.py`: 스윙 후보 스크리닝(`screen_swing_candidates`) 시점에 4H 확정봉 지지 여부를 사전 평가하여 4H EMA20 미달 종목을 조기 탈락.
+    - `trading_runtime.py`: 스윙 진입 승인 시 목표가/손절가/배분비중 및 지지 확인 상세 내역을 명시적으로 로깅.
+  - **약세장(RISK_OFF) AI 단독 승인 안전 가드 강화**:
+    - `trading_runtime.py`: 로컬 관망 후 AI 단독 자율 승인 시, `RISK_OFF` 환경에서는 반등 확정(`rebound_confirmed == True`) 및 호가 잔량비(`orderbook_ratio >= 1.00`)를 필수 통과 조건으로 강제. 떨어지는 칼날 잡기와 매도 압박 구간 진입 차단.
+    - `strategy_engine.py`: 호가 잔량비 점수(`score_orderflow`) 구간을 세분화하여 1.0 미만 매도벽 우세 종목에 대한 감점 반영.
+  - **체결 처리기(fill_processor) 멱등적 후속 대사 경고 노이즈 억제**:
+    - `src/order_safety/fill_processor.py`: 이미 `FILLED` 완료된 주문에 대해 직후 도착한 REST 대사의 체결 증가분이 0인 경우, 기존에는 불필요한 `WARNING`("체결 증가분 없이 FILLED 상태를 거부했습니다")이 발생하여 콘솔(StreamHandler)에 출력되던 문제를 개선. 이미 완료된 주문의 후속 대사는 `DEBUG` 레벨로 정상 처리하여 커맨드 창 노이즈를 제거하고, 미체결 주문에 대한 가짜 체결 승격 방어는 완벽히 유지.
+  - `tests/test_trade_improvement_guards.py`, `tests/test_storage_and_fill_boundaries.py`: 단위 테스트 추가 및 검증 완료.
+
 ## v8.98 (2026-09-18)
 
 - 스윙 전략(SWING) 4H EMA20 추세 지지 진입 게이트 신설 및 진입 직후 조기 청산(자가당착) 방지:

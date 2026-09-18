@@ -1672,6 +1672,22 @@ class TradingCycleEngine:
             pct_b_cap = 0.65 if btc_regime == "RISK_OFF" else 0.70
             is_dip_support = sel_pct_b <= pct_b_cap
 
+            # RISK_OFF 약세장에서는 떨어지는 칼날 잡기 및 매도벽 압박 진입을 차단하기 위한 하드 가드
+            entry_indicators = selected_entry.get("strategy_snapshot", {}).get("indicators", {})
+            rebound_ok = True
+            orderbook_ok = True
+            risk_off_guard_reason = ""
+            if btc_regime == "RISK_OFF":
+                rebound_val = entry_indicators.get("rebound_confirmed", selected_entry.get("rebound_confirmed", True))
+                if not rebound_val:
+                    rebound_ok = False
+                    risk_off_guard_reason = "RISK_OFF 약세장 반등 미확정(rebound_confirmed=False) 매수 차단"
+                ob_ratio = float(entry_indicators.get("orderbook_smoothed_ratio") or entry_indicators.get("orderbook_raw_ratio") or 1.0)
+                min_ob_ratio = getattr(StrategyPolicy, "RISK_OFF_MIN_ORDERBOOK_RATIO", 1.00)
+                if ob_ratio < min_ob_ratio:
+                    orderbook_ok = False
+                    risk_off_guard_reason = f"RISK_OFF 호가 잔량비 미달({ob_ratio:.2f} < {min_ob_ratio:.2f}) 매수 차단"
+
             is_swing_candidate = (
                 effective_candidate_type == "SWING"
                 or str(candidate_metadata.get("strategy_mode", "")).upper() == "SWING"
@@ -1689,6 +1705,8 @@ class TradingCycleEngine:
                 and base_safety_passed
                 and can_enter_daily
                 and is_dip_support
+                and rebound_ok
+                and orderbook_ok
                 and swing_entry_passed
                 and is_ai_direct_entry_eligible(ai_alpha, btc_regime, is_night_session())
             ):
@@ -1710,6 +1728,10 @@ class TradingCycleEngine:
                     reason = f"AI 단독 매수 스윙 추세 지지 미달 차단: {swing_fail_reason} | {reason}"
                 elif not is_dip_support and is_ai_buy_signal:
                     reason = f"AI 단독 매수 상투/과열 차단(%B {sel_pct_b:.2f} > 한도 {pct_b_cap:.2f}): 눌림목 지지 대기 | {reason}"
+                elif not rebound_ok and is_ai_buy_signal:
+                    reason = f"AI 단독 매수 약세장 반등 미확정 차단: {risk_off_guard_reason} | {reason}"
+                elif not orderbook_ok and is_ai_buy_signal:
+                    reason = f"AI 단독 매수 약세장 호가 매도벽 우세 차단: {risk_off_guard_reason} | {reason}"
                 else:
                     reason = f"정량 공통 진입 게이트 차단: {selected_entry.get('reason', '')} | {reason}"
         elif action == "BUY" and selected_entry.get("allow_buy", False):
@@ -1847,6 +1869,10 @@ class TradingCycleEngine:
                 target_price = entry_price * (1.0 + StrategyPolicy.SWING_TARGET_PCT)
                 stop_loss = entry_price * (1.0 - StrategyPolicy.SWING_STOP_LOSS_PCT)
                 alloc_pct = min(dyn_max_pos_pct, StrategyPolicy.SWING_ALLOC_RATIO)
+                logger.info(
+                    "[%s] 🌊 %s (목표가: %,.2f원, 손절가: %,.2f원, 배분비중: %.0f%%)",
+                    market, swing_reason, target_price, stop_loss, alloc_pct * 100,
+                )
                 reason = f"[🌊중기/추세추종 스윙 전략(목표 +15.0%, 손절 -5.5%)] {reason}"
 
         if is_night_session() and action == "BUY":
@@ -2230,22 +2256,32 @@ class TradingCycleEngine:
                 return True
 
         if not is_major and not is_swing and current_total_equity > 0:
-            min_alt_budget = current_total_equity * getattr(StrategyPolicy, "MIN_ALT_ALLOC_PCT", 0.10)
-            max_alt_alloc = (
-                getattr(StrategyPolicy, "NIGHT_SESSION_MAX_ALLOC_PCT", 0.10)
-                if is_night_session()
-                else getattr(StrategyPolicy, "MAX_ALT_ALLOC_PCT", 0.15)
-            )
-            max_alt_budget = current_total_equity * max_alt_alloc
+            is_risk_off = (getattr(market_inputs, "btc_regime", "") == "RISK_OFF")
+            if is_risk_off:
+                # 약세장 RISK_OFF 시: 알트코인 과다 배팅 방지 및 승률-손익 역전 차단을 위한 보수적 하드 캡
+                max_alt_alloc = getattr(StrategyPolicy, "RISK_OFF_MAX_ALT_ALLOC_PCT", 0.06)
+                max_alt_budget = min(
+                    current_total_equity * max_alt_alloc,
+                    getattr(StrategyPolicy, "RISK_OFF_MAX_ALT_BUDGET_KRW", 75000.0),
+                )
+                min_alt_budget = safe_order_krw
+            else:
+                min_alt_budget = current_total_equity * getattr(StrategyPolicy, "MIN_ALT_ALLOC_PCT", 0.10)
+                max_alt_alloc = (
+                    getattr(StrategyPolicy, "NIGHT_SESSION_MAX_ALLOC_PCT", 0.10)
+                    if is_night_session()
+                    else getattr(StrategyPolicy, "MAX_ALT_ALLOC_PCT", 0.15)
+                )
+                max_alt_budget = current_total_equity * max_alt_alloc
 
             # 클램핑 적용 (가용 원화 한도 내에서 안전하게 제한)
             clamped_budget = min(krw_available, max(min_alt_budget, min(trade_budget, max_alt_budget)))
             if abs(clamped_budget - trade_budget) > 100.0:
                 logger.info(
-                    f"⚖️ [{korean_name} / {market} 알트 비중 균등화 조정] "
-                    f"기존 {int(trade_budget):,d}원 ➜ 균등화 조정 {int(clamped_budget):,d}원 "
+                    f"⚖️ [{korean_name} / {market} 알트 비중 {'RISK_OFF' if is_risk_off else '균등화'} 조정] "
+                    f"기존 {int(trade_budget):,d}원 ➜ 조정 {int(clamped_budget):,d}원 "
                     f"(시드 {int(current_total_equity):,d}원 대비 {((clamped_budget / current_total_equity) * 100):.1f}% | "
-                    f"허용범위: {getattr(StrategyPolicy, 'MIN_ALT_ALLOC_PCT', 0.10)*100:.0f}%~{max_alt_alloc*100:.0f}%)"
+                    f"상한: {max_alt_alloc*100:.0f}%, 최대 {int(max_alt_budget):,d}원)"
                 )
                 trade_budget = clamped_budget
 

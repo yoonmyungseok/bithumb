@@ -11,6 +11,7 @@ from market_policy import get_excluded_markets
 from strategy_engine import (
     StrategyPolicy,
     classify_listing_maturity,
+    evaluate_swing_trend_entry,
     is_new_listing_eligible,
     is_night_session,
 )
@@ -674,6 +675,13 @@ class MarketScreener:
                     continue
                 elif not is_major and acc_price_24h < min_swing_trade_val:
                     continue
+
+                # 4시간봉 확정봉 지지선 사전 검증 (청산 룰 충돌 및 즉시 손절 방지)
+                candles_4h, four_hour_status = self._load_four_hour_history(market)
+                if four_hour_status == "AVAILABLE" and candles_4h:
+                    is_swing_ok, _ = evaluate_swing_trend_entry(candles_4h, trade_price)
+                    if not is_swing_ok:
+                        continue
 
                 # 스윙 점수 산출: 메이저 가산점(50점) + 거래대금 로그 점수 + 상대강도 보너스
                 major_bonus = 50.0 if is_major else 0.0
