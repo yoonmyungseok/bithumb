@@ -671,6 +671,10 @@ class TradingCycleEngine:
         ctx.orchestrator.record_latency("market_selection_overhead", sub_other)
 
         max_cycle_markets = profile.max_cycle_markets
+        env_max_markets = os.getenv("UPBIT_MAX_CYCLE_MARKETS")
+        if profile.exchange_key == "upbit" and env_max_markets is not None and env_max_markets.strip().isdigit():
+            val = int(env_max_markets.strip())
+            max_cycle_markets = val if val > 0 else None
         if profile.exchange_key == "upbit" and max_cycle_markets is not None and max_cycle_markets > 0:
             original_count = len(target_markets)
             capped_markets = ctx.orchestrator.cap_cycle_target_markets(
@@ -2176,10 +2180,14 @@ class TradingCycleEngine:
         current_price = market_inputs.current_price
 
         # 스마트 오더 체결 (Smart Order Placement):
-        # 고알파(>=80점) A+ 셋업 또는 모멘텀 돌파 경로의 경우,
-        # 호가 스프레드가 0.20% 이하로 매우 촘촘하면 최우선 매도호가(Ask 1)로 제출하여 즉시 체결 유도 (미체결 취소 방지)
+        # 고알파(>=65점), 모멘텀 돌파/신규상장, 또는 고확신 셋업의 경우,
+        # 호가 스프레드가 0.50% 이하이고 최우선 매도호가가 현재가 대비 0.50% 이내이면
+        # 최우선 매도호가(Ask 1)로 제출하여 즉시 체결 유도 (상승장 미체결 취소 방지)
         alpha_score = int(market_inputs.selected_entry.get("alpha_score", 0) or 0)
-        is_high_conviction = (alpha_score >= 80) or (str(market_inputs.candidate_type).upper() == "MOMENTUM_BREAKOUT")
+        cand_type = str(market_inputs.candidate_type or "").upper()
+        eff_cand_type = str(getattr(market_inputs, "effective_candidate_type", "") or cand_type).upper()
+        is_breakout_or_listing = (cand_type in ("MOMENTUM_BREAKOUT", "NEW_LISTING")) or (eff_cand_type in ("MOMENTUM_BREAKOUT", "NEW_LISTING"))
+        is_high_conviction = (alpha_score >= 65) or is_breakout_or_listing
         smart_taker_price = None
         if is_high_conviction and market_inputs.orderbook:
             ob_units = market_inputs.orderbook.get("orderbook_units") or []
@@ -2188,7 +2196,7 @@ class TradingCycleEngine:
                 best_bid = float(ob_units[0].get("bid_price", 0.0) or 0.0)
                 if best_ask > 0 and best_bid > 0:
                     spread_ratio = (best_ask - best_bid) / best_bid
-                    if spread_ratio <= 0.0020 and best_ask <= current_price * 1.003:
+                    if spread_ratio <= 0.0050 and best_ask <= current_price * 1.005:
                         smart_taker_price = best_ask
 
         if buy_profile.use_slot_based_budget:
@@ -2203,12 +2211,17 @@ class TradingCycleEngine:
                 max_slot_budget * (alloc_pct / dyn_max_pos_pct if alloc_pct < dyn_max_pos_pct else 1.0),
             )
             if smart_taker_price is not None:
-                order_price = smart_taker_price
+                order_price = exchange.adjust_price_to_tick(smart_taker_price, side="bid", mode="round")
+                logger.info(
+                    f"⚡ [{market}] 스마트 오더 발동 (알파={alpha_score}점, 후보={cand_type}): "
+                    f"최우선 매도호가(Ask 1) {order_price:,.2f}원으로 즉시 체결 유도"
+                )
             elif buy_profile.use_entry_price_guard:
                 order_price = entry_price if (0 < entry_price <= current_price * 1.002) else current_price
+                order_price = exchange.adjust_price_to_tick(order_price, side="bid")
             else:
                 order_price = entry_price or current_price
-            order_price = exchange.adjust_price_to_tick(order_price, side="bid")
+                order_price = exchange.adjust_price_to_tick(order_price, side="bid")
             risk_scale = ctx.risk_manager.get_risk_scale_factor()
             strategy_mode = str(market_inputs.strategy_mode or "SCALP").upper()
             risk_based_budget = calculate_risk_position_size(
@@ -2226,8 +2239,15 @@ class TradingCycleEngine:
             effective_risk_budget = risk_based_budget if risk_based_budget > 0 else slot_budget
             trade_budget = min(krw_available, slot_budget, effective_risk_budget)
         else:
-            base_order_price = smart_taker_price or entry_price or current_price
-            order_price = exchange.adjust_price_to_tick(base_order_price, side="bid")
+            if smart_taker_price is not None:
+                order_price = exchange.adjust_price_to_tick(smart_taker_price, side="bid", mode="round")
+                logger.info(
+                    f"⚡ [{market}] 스마트 오더 발동 (알파={alpha_score}점, 후보={cand_type}): "
+                    f"최우선 매도호가(Ask 1) {order_price:,.2f}원으로 즉시 체결 유도"
+                )
+            else:
+                base_order_price = entry_price or current_price
+                order_price = exchange.adjust_price_to_tick(base_order_price, side="bid")
             alloc_pct = alloc_pct or dyn_max_pos_pct
             max_slot_budget = current_total_equity * alloc_pct
             risk_scale = ctx.risk_manager.get_risk_scale_factor()

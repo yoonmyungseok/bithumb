@@ -152,8 +152,11 @@ INTERVAL_MINUTES = int(os.getenv("INTERVAL_MINUTES", "5"))
 GEMINI_API_KEY = os.getenv("UPBIT_GEMINI_API_KEY", "").strip()
 # 타 거래소와의 동시 퀀트 사이클 호출 분산을 위한 오프셋 (기본값: 0초, 독립 계정 운영 시 동시 즉시 가동)
 CYCLE_OFFSET_SECONDS = int(os.getenv("UPBIT_CYCLE_OFFSET_SECONDS", os.getenv("CYCLE_OFFSET_SECONDS", "0")))
-# 스크리너 top_count와 무관하게 한 사이클 런타임 분석·캔들 prefetch 상한
-UPBIT_MAX_CYCLE_MARKETS = max(1, int(os.getenv("UPBIT_MAX_CYCLE_MARKETS", "6")))
+# 한 사이클 런타임 분석 종목 수 상한 (빗썸과 동일하게 기본값은 None/0으로 제한 해제, 환경 변수로 양수 지정 시에만 제한)
+_upbit_max_markets_raw = os.getenv("UPBIT_MAX_CYCLE_MARKETS", "0").strip()
+UPBIT_MAX_CYCLE_MARKETS: int | None = (
+    int(_upbit_max_markets_raw) if _upbit_max_markets_raw.isdigit() and int(_upbit_max_markets_raw) > 0 else None
+)
 
 _risk_settings = load_runtime_risk_settings()
 BTC_CRASH_THRESHOLD_PCT = _risk_settings.btc_crash_threshold_pct

@@ -2,6 +2,23 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.02 (2026-09-21)
+
+- **상승장 매수 지정가 미체결 취소 방지를 위한 스마트 오더 체결(Smart Order Placement) 적극성 상향**:
+  - `src/trading_runtime.py`:
+    - 상승장에서 가격이 급등할 때 매수 호가 내림(`floor`) 지정가가 체결되지 못하고 3분 타임아웃(`clean_stale_orders`)으로 취소되는 결함을 해결.
+    - 스마트 테이커 발동 조건 완화: 고알파(`alpha_score >= 65`), 모멘텀 돌파(`MOMENTUM_BREAKOUT`), 신규상장(`NEW_LISTING`) 포함.
+    - 호가 스프레드 허용폭을 기존 0.20%에서 **0.50%**로, 최우선 매도호가 한도를 현재가 대비 **0.50% 이내**로 현실화.
+    - 최우선 매도호가(Ask 1) 제출 시 `adjust_price_to_tick(side="bid", mode="round")`을 적용하여 불필요한 매수호가 내림 방지 및 즉시 체결 유도.
+- **업비트 5분 사이클 분석 종목 수 상한 해제 (빗썸과 동일화)**:
+  - `src/main_upbit.py`, `src/trading_runtime.py`, `.env.upbit`:
+    - 기존 업비트 전용 `UPBIT_MAX_CYCLE_MARKETS=6` 하드 캡을 기본값 `0`(제한 없음, `None`)으로 전환하여, 빗썸과 동일하게 스크리너가 추출한 전 종목(약 18~20개)을 5분마다 전수 분석하도록 개편.
+    - 런타임 환경 변수(`UPBIT_MAX_CYCLE_MARKETS`) 변경 시 다음 사이클에 즉시 동적 반영 지원.
+  - `tests/test_smart_taker_and_cycle_cap.py`:
+    - 스마트 테이커 발동 조건, 모멘텀 돌파, 스프레드 과대 폴백, 업비트 마켓 상한 해제 동작 단위 테스트 작성 및 전원 통과 검증.
+- `docs/project-design/strategy-and-risk.md`:
+  - 스마트 오더 체결 적극성 정책 및 업비트 분석 종목 수 상한 해제 설계 문서화 완료.
+
 ## v9.01 (2026-09-21)
 
 - **시장 국면(Regime) 연동 동적 유동 슬롯(Dynamic Slots) 및 자본 노출도(Exposure) 중심 포트폴리오 관리 시스템 구축**:
