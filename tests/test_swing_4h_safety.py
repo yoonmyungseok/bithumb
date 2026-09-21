@@ -20,7 +20,7 @@ class SwingFourHourSafetyTests(unittest.TestCase):
 
     def test_swing_buffer_constants(self):
         """스윙 진입 및 청산 버퍼 비율 상수가 올바르게 정의되어 있는지 검증한다."""
-        self.assertEqual(StrategyPolicy.SWING_ENTRY_EMA20_BUFFER_RATIO, 1.000)
+        self.assertEqual(StrategyPolicy.SWING_ENTRY_EMA20_BUFFER_RATIO, 1.005)
         self.assertEqual(StrategyPolicy.SWING_TREND_EXIT_BUFFER_RATIO, 0.985)
 
     def test_swing_trend_entry_requires_ema20_support(self):

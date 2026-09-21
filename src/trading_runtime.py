@@ -1870,8 +1870,7 @@ class TradingCycleEngine:
                 stop_loss = entry_price * (1.0 - StrategyPolicy.SWING_STOP_LOSS_PCT)
                 alloc_pct = min(dyn_max_pos_pct, StrategyPolicy.SWING_ALLOC_RATIO)
                 logger.info(
-                    "[%s] 🌊 %s (목표가: %,.2f원, 손절가: %,.2f원, 배분비중: %.0f%%)",
-                    market, swing_reason, target_price, stop_loss, alloc_pct * 100,
+                    f"[{market}] 🌊 {swing_reason} (목표가: {target_price:,.2f}원, 손절가: {stop_loss:,.2f}원, 배분비중: {alloc_pct * 100:.0f}%)"
                 )
                 reason = f"[🌊중기/추세추종 스윙 전략(목표 +15.0%, 손절 -5.5%)] {reason}"
 

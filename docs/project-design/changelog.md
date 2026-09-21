@@ -12,7 +12,9 @@
 - **APScheduler 일시 지연 시 사이클 건너뜀(Missed Run Time) 방지**:
   - `src/trading_bot_bootstrap.py`: `BackgroundScheduler.add_job`에 `misfire_grace_time`을 명시적으로 설정(`run_cycle` 최소 120초, 모닝 리포트 600초).
   - **원인 분석**: APScheduler 기본 `misfire_grace_time`이 1초에 불과하여, WebSocket I/O나 고래 체결 감지 등 백그라운드 작업 경합으로 스케줄러가 예정 시각보다 단 1.3초 늦게 트리거되었을 때 사이클 전체가 건너뛰어지던(`missed by 0:00:01.326796`) 문제를 해결.
-  - `tests/test_trading_bot_bootstrap.py`: 스케줄러 등록 시 `misfire_grace_time` 적용 여부 검증 테스트 추가.
+- **스윙 전략 진입 승인 로깅 포맷 에러 수정**:
+  - `src/trading_runtime.py`: `process_entry_gating`의 스윙 전략 진입 승인 로그에서 파이썬 `%` 연산자에 지원되지 않는 콤마 포맷 지정자(`%,.2f`)를 사용하여 `ValueError: unsupported format character ',' (0x2c)` 에러가 발생하던 문제를 표준 f-string (`{target_price:,.2f}원`)으로 교체하여 해결.
+  - `tests/test_swing_4h_safety.py`: 버퍼 비율 상향(1.005)에 맞게 단위 테스트 단언문 동기화 및 14건 전체 통과.
 
 ## v8.99 (2026-09-18)
 
