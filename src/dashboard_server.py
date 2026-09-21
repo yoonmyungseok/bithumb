@@ -1649,94 +1649,10 @@ class UnifiedDashboardServer:
                             el.value = item.value;
                         }
                     }
-
-                    // 슬롯 3종에 대한 지능형 복원 및 localStorage 2중 방어 처리
-                    let savedSlots = null;
-                    try {
-                        savedSlots = JSON.parse(localStorage.getItem('bithumb_cfg_slots') || '{}');
-                    } catch (_) {}
-
-                    const swInput = document.getElementById('cfg_MAX_SWING_POSITIONS');
-                    if (swInput) {
-                        if (data.settings.MAX_SWING_POSITIONS && data.settings.MAX_SWING_POSITIONS.value !== undefined) {
-                            swInput.value = data.settings.MAX_SWING_POSITIONS.value;
-                        } else if (savedSlots && savedSlots.MAX_SWING_POSITIONS !== undefined) {
-                            swInput.value = savedSlots.MAX_SWING_POSITIONS;
-                        } else if (!swInput.value) {
-                            swInput.value = 1;
-                        }
-                    }
-
-                    const nlInput = document.getElementById('cfg_MAX_NEW_LISTING_POSITIONS');
-                    if (nlInput) {
-                        if (data.settings.MAX_NEW_LISTING_POSITIONS && data.settings.MAX_NEW_LISTING_POSITIONS.value !== undefined) {
-                            nlInput.value = data.settings.MAX_NEW_LISTING_POSITIONS.value;
-                        } else if (savedSlots && savedSlots.MAX_NEW_LISTING_POSITIONS !== undefined) {
-                            nlInput.value = savedSlots.MAX_NEW_LISTING_POSITIONS;
-                        } else if (!nlInput.value) {
-                            nlInput.value = 1;
-                        }
-                    }
-
-                    const scInput = document.getElementById('cfg_MAX_SCALP_POSITIONS');
-                    if (scInput) {
-                        if (data.settings.MAX_SCALP_POSITIONS && data.settings.MAX_SCALP_POSITIONS.value !== undefined) {
-                            scInput.value = data.settings.MAX_SCALP_POSITIONS.value;
-                        } else if (savedSlots && savedSlots.MAX_SCALP_POSITIONS !== undefined) {
-                            scInput.value = savedSlots.MAX_SCALP_POSITIONS;
-                        } else {
-                            const openVal = data.settings.MAX_OPEN_POSITIONS ? parseInt(data.settings.MAX_OPEN_POSITIONS.value, 10) : 5;
-                            const curSwing = swInput ? (parseInt(swInput.value, 10) || 1) : 1;
-                            const curNL = nlInput ? (parseInt(nlInput.value, 10) || 1) : 1;
-                            scInput.value = Math.max(0, openVal - (curSwing + curNL));
-                        }
-                    }
-
-                    updateSlotsBreakdownDisplay();
-                    ['cfg_MAX_SCALP_POSITIONS', 'cfg_MAX_SWING_POSITIONS', 'cfg_MAX_NEW_LISTING_POSITIONS'].forEach(id => {
-                        const input = document.getElementById(id);
-                        if (input && !input._hasSlotListener) {
-                            input.addEventListener('input', updateSlotsBreakdownDisplay);
-                            input._hasSlotListener = true;
-                        }
-                    });
                 }
             } catch (err) {
                 showConfigBanner('설정 로드 실패: ' + err.message, 'error');
             }
-        }
-
-        function saveSlotsToLocalStorage() {
-            const sc = document.getElementById('cfg_MAX_SCALP_POSITIONS')?.value;
-            const sw = document.getElementById('cfg_MAX_SWING_POSITIONS')?.value;
-            const nl = document.getElementById('cfg_MAX_NEW_LISTING_POSITIONS')?.value;
-            if (sc === undefined || sw === undefined || nl === undefined) return;
-            try {
-                localStorage.setItem('bithumb_cfg_slots', JSON.stringify({
-                    MAX_SCALP_POSITIONS: parseInt(sc, 10) || 0,
-                    MAX_SWING_POSITIONS: parseInt(sw, 10) || 0,
-                    MAX_NEW_LISTING_POSITIONS: parseInt(nl, 10) || 0,
-                }));
-            } catch (_) {}
-        }
-
-        function updateSlotsBreakdownDisplay() {
-            const sc = document.getElementById('cfg_MAX_SCALP_POSITIONS');
-            const sw = document.getElementById('cfg_MAX_SWING_POSITIONS');
-            const nl = document.getElementById('cfg_MAX_NEW_LISTING_POSITIONS');
-            const op = document.getElementById('cfg_MAX_OPEN_POSITIONS');
-            const pp = document.getElementById('cfg_MAX_POSITION_PCT');
-            const bg = document.getElementById('cfg_SLOTS_BREAKDOWN_BADGE');
-            const scalp = sc ? (parseInt(sc.value, 10) || 0) : 3;
-            const swing = sw ? (parseInt(sw.value, 10) || 0) : 1;
-            const newListing = nl ? (parseInt(nl.value, 10) || 0) : 1;
-            const total = Math.max(1, scalp + swing + newListing);
-            if (op) op.value = total;
-            if (bg) bg.innerText = '단타 ' + scalp + ' + 스윙 ' + swing + ' + 신규 ' + newListing;
-            if (pp) {
-                pp.value = Math.min(50, Math.max(15, Math.round((1.0 / total + 0.05) * 100)));
-            }
-            saveSlotsToLocalStorage();
         }
 
         function closeConfigModal() {
@@ -1802,13 +1718,10 @@ class UnifiedDashboardServer:
                 else payload[k] = el.value;
             }
 
-            // 슬롯 3종이 cachedUnifiedConfig에 없더라도 DOM에 있으면 반드시 payload에 포함
-            ['MAX_SCALP_POSITIONS', 'MAX_SWING_POSITIONS', 'MAX_NEW_LISTING_POSITIONS'].forEach(slotKey => {
-                const el = document.getElementById('cfg_' + slotKey);
-                if (el && el.value !== '' && payload[slotKey] === undefined) {
-                    payload[slotKey] = parseInt(el.value, 10);
-                }
-            });
+            const dynEl = document.getElementById('cfg_DYNAMIC_SLOTS_ENABLED');
+            if (dynEl && payload['DYNAMIC_SLOTS_ENABLED'] === undefined) {
+                payload['DYNAMIC_SLOTS_ENABLED'] = dynEl.checked;
+            }
 
             if (saveBtn) {
                 saveBtn.disabled = true;
@@ -1943,28 +1856,46 @@ class UnifiedDashboardServer:
                 </div>
                 <div id="cfg-panel-portfolio" class="cfg-panel hidden space-y-4">
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                        <div class="bg-indigo-950/40 p-3 rounded-xl border border-indigo-500/40 sm:col-span-2">
-                            <div class="flex justify-between items-center mb-1">
-                                <label class="text-xs font-bold text-indigo-300">총 동시 보유 포지션 수 (자동 합산)</label>
-                                <span id="cfg_SLOTS_BREAKDOWN_BADGE" class="text-[11px] font-semibold text-indigo-300 bg-indigo-900/60 px-2 py-0.5 rounded border border-indigo-500/30">단타 1 + 스윙 1 + 신규 1</span>
+                        <!-- 스마트 동적 슬롯 상태 카드 -->
+                        <div class="bg-gradient-to-r from-emerald-950/40 via-teal-950/30 to-indigo-950/40 p-4 rounded-xl border border-emerald-500/40 sm:col-span-2 space-y-2.5">
+                            <div class="flex items-center justify-between">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-sm">🌊</span>
+                                    <span class="text-xs font-bold text-emerald-300">스마트 동적 슬롯 시스템 (Dynamic Slots)</span>
+                                </div>
+                                <span class="text-[11px] font-semibold text-emerald-300 bg-emerald-900/70 px-2.5 py-0.5 rounded-full border border-emerald-500/30">자동 유동 배분 가동 중</span>
                             </div>
-                            <input type="number" id="cfg_MAX_OPEN_POSITIONS" readonly class="w-full bg-slate-900 border border-indigo-500/40 rounded px-2.5 py-1 text-xs font-bold text-indigo-200 cursor-not-allowed">
+                            <p class="text-[11px] text-slate-300 leading-relaxed">
+                                슬롯 수를 숫자로 고정하지 않고, 비트코인 시장 국면(레짐)과 가용 자본에 맞춰 슬롯과 스윙 비중을 유동적으로 자동 배분합니다.
+                            </p>
+                            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 text-[11px]">
+                                <div class="bg-slate-900/80 p-2 rounded-lg border border-slate-800">
+                                    <div class="text-slate-400 text-[10px]">🚀 강세장 (BULL)</div>
+                                    <div class="text-emerald-400 font-bold">노출 85% · 스윙 자율</div>
+                                </div>
+                                <div class="bg-slate-900/80 p-2 rounded-lg border border-slate-800">
+                                    <div class="text-slate-400 text-[10px]">⚖️ 횡보장 (NORMAL)</div>
+                                    <div class="text-indigo-300 font-bold">노출 55% · 스윙 1개</div>
+                                </div>
+                                <div class="bg-slate-900/80 p-2 rounded-lg border border-slate-800">
+                                    <div class="text-slate-400 text-[10px]">🛡️ 약세장 (RISK_OFF)</div>
+                                    <div class="text-amber-400 font-bold">노출 20% · 스윙 차단</div>
+                                </div>
+                                <div class="bg-slate-900/80 p-2 rounded-lg border border-slate-800">
+                                    <div class="text-slate-400 text-[10px]">🛑 안전 상한선</div>
+                                    <div class="text-slate-300 font-bold">최대 8종목 캡</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 자금 및 리스크 핵심 설정 -->
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="text-xs font-semibold block mb-1">총 익스포저 최대 비중 (%)</label>
+                            <input type="number" id="cfg_MAX_TOTAL_EXPOSURE_PCT" step="5" min="10" max="100" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
                         </div>
                         <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
-                            <label class="text-xs font-semibold block mb-1">⚡ 단타 예약 슬롯 수 (개)</label>
-                            <input type="number" id="cfg_MAX_SCALP_POSITIONS" value="3" step="1" min="0" max="10" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
-                        </div>
-                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
-                            <label class="text-xs font-semibold block mb-1">🌊 스윙 예약 슬롯 수 (개)</label>
-                            <input type="number" id="cfg_MAX_SWING_POSITIONS" value="1" step="1" min="0" max="5" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
-                        </div>
-                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
-                            <label class="text-xs font-semibold block mb-1">🆕 신규상장 예약 슬롯 수 (개)</label>
-                            <input type="number" id="cfg_MAX_NEW_LISTING_POSITIONS" value="1" step="1" min="0" max="5" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
-                        </div>
-                        <div class="bg-indigo-950/20 p-3 rounded-xl border border-indigo-500/30">
-                            <label class="text-xs font-semibold text-indigo-200 block mb-1">단일 포지션 최대 비중 (자동 계산, %)</label>
-                            <input type="number" id="cfg_MAX_POSITION_PCT" readonly class="w-full bg-slate-900/80 border border-indigo-500/30 rounded px-2.5 py-1 text-xs font-bold text-indigo-200 cursor-not-allowed">
+                            <label class="text-xs font-semibold block mb-1">단일 포지션 최대 비중 (%)</label>
+                            <input type="number" id="cfg_MAX_POSITION_PCT" step="1" min="5" max="50" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
                         </div>
                         <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
                             <label class="text-xs font-semibold block mb-1">🪙 알트코인 단일 최대 비중 (%)</label>
@@ -1974,9 +1905,9 @@ class UnifiedDashboardServer:
                             <label class="text-xs font-semibold block mb-1">🪙 알트코인 단일 최소 비중 (%)</label>
                             <input type="number" id="cfg_MIN_ALT_ALLOC_PCT" step="1" min="5" max="30" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
                         </div>
-                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
-                            <label class="text-xs font-semibold block mb-1">총 익스포저 최대 비중 (%)</label>
-                            <input type="number" id="cfg_MAX_TOTAL_EXPOSURE_PCT" step="5" min="10" max="100" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800 sm:col-span-2">
+                            <label class="text-xs font-semibold block mb-1">건당 최대 주문 한도 (원, 0은 무제한)</label>
+                            <input type="number" id="cfg_MAX_ORDER_KRW" step="10000" min="0" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
                         </div>
                         <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800 sm:col-span-2">
                             <label class="text-xs font-semibold block mb-1">단일 주문 최대 금액 (원)</label>

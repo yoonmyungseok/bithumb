@@ -2,6 +2,29 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.01 (2026-09-21)
+
+- **시장 국면(Regime) 연동 동적 유동 슬롯(Dynamic Slots) 및 자본 노출도(Exposure) 중심 포트폴리오 관리 시스템 구축**:
+  - `src/strategy_engine.py`:
+    - `StrategyPolicy.DYNAMIC_SLOTS_ENABLED` (기본 활성, 환경변수/대시보드 제어), `DYNAMIC_SLOT_SAFETY_MAX_POSITIONS` (물리적 안전 상한선 8개) 정책 상수 신설.
+    - `REGIME_MAX_EXPOSURE`: 강세장(`BULL_TREND`: 85%), 횡보/일반(`NORMAL`: 55%), 약세장(`RISK_OFF`: 20%), 급락장(`CRASH`: 0%) 차등 배분.
+    - `REGIME_SWING_CAP`: 강세장 무제한(최대 8개 내 자율 확장), 횡보장 1개 캡, 약세/급락장 0개(스윙 차단) 정의.
+    - 레짐별 정책 조회 헬퍼 메서드(`get_regime_max_exposure`, `get_regime_swing_cap`) 구현.
+  - `src/risk_controls.py`:
+    - `RiskGuard`: `dynamic_slots_enabled`, `dynamic_safety_max_positions`, `current_regime` 속성 및 `set_current_regime` 메서드 추가.
+    - `validate_buy`: 동적 모드 활성화 시 고정 칸막이(`max_swing_positions`, `max_scalp_positions`) 대신 [물리적 안전 상한선(8개)] + [레짐별 스윙 캡] + [레짐별 총 익스포저 상한선]을 종합 판정하여 슬롯 인위적 병목을 완전 해소.
+    - 기존 고정 슬롯 모드(`dynamic_slots_enabled=False`)와의 100% 하위 호환성 유지.
+  - `src/trading_orchestrator.py`:
+    - 스윙 후보 스크리닝(`scan_swing_markets`): 기존 무조건 `top_count=1` 고정 호출에서 탈피하여, 동적 모드 및 강세장(`BULL_TREND`) 시 상위 3개까지 유망 스윙 후보를 수집해 복수 진입 파이프라인으로 연결.
+  - `src/trading_runtime.py`:
+    - 사이클마다 확정된 `btc_regime`을 `ctx.risk_guard.set_current_regime(btc_regime)`에 즉시 전달하여 실시간 리스크 가드 동기화.
+  - `src/runtime_config.py`, `src/bot_controller.py`, `src/dashboard_server.py`:
+    - 대시보드 포트폴리오 탭에서 혼란을 유발하던 수동 슬롯 입력 필드(`단타/스윙/신규상장 예약 슬롯 수`, `총 동시 보유 수`) 및 자동 합산/로컬스토리지 보존 자바스크립트 로직을 전면 제거.
+    - 대신 직관적이고 현대적인 **[스마트 동적 슬롯 시스템 가동 중] 상태 안내 카드**(레짐별 노출도·스윙 운용·안전 상한 8개 표시)로 교체하여 사용자 인지 부하를 최소화하고, 자본 익스포저 핵심 설정에만 집중하도록 UI를 대폭 단순화.
+    - 런타임 핫 리로드(Hot-Reload) 연동 유지.
+  - `tests/test_dynamic_slots.py`:
+    - 강세장 복수 스윙 연속 승인, 횡보장 스윙 1개 캡 및 단타 허용, 약세장 스윙 차단 및 20% 노출도 캡, 물리적 상한선 8개 차단, 기존 고정 모드 호환성 등 8개 단위 테스트 작성 및 전원 통과 검증 완료.
+
 ## v9.00 (2026-09-18)
 
 - **주문 수량 정밀도 내림(ROUND_DOWN) 보정 및 잔고 부족(`insufficient_funds`) 오류 원천 해결**:

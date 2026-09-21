@@ -24,6 +24,19 @@
   - 4H 확정봉이 20개 미만인 경우 스윙 진입은 Fail-Closed로 차단된다.
 - **약세장(RISK_OFF) AI 단독 승인 안전 가드 강화**:
   - `RISK_OFF` 레짐에서는 로컬 룰 관망 후 AI가 단독 자율 승인하더라도, 5분봉 상 반등 확정(`rebound_confirmed == True`) 및 호가 잔량비(`orderbook_ratio >= StrategyPolicy.RISK_OFF_MIN_ORDERBOOK_RATIO`, 1.00 이상)를 필수로 충족해야만 진입이 허용된다. 떨어지는 칼날 잡기와 매도벽 압박 구간에서의 진입을 원천 차단한다.
+- **시장 국면(Regime) 연동 동적 유동 슬롯(Dynamic Slots) 및 자본 노출도(Exposure) 관리**:
+  - 기존의 고정 슬롯 수량 칸막이(`max_open_positions`, `max_swing_positions`)의 비효율성을 해소하기 위해, 시장 레짐과 자본 노출도 중심의 동적 유동 슬롯 모드(`DYNAMIC_SLOTS_ENABLED`)를 지원한다.
+  - **물리적 안전 상한선(Safety Ceiling)**: 아무리 강세장이라도 웹소켓/API 부하 및 동시 체결 지연을 방어하기 위해 최대 동시 보유 종목 수를 `StrategyPolicy.DYNAMIC_SLOT_SAFETY_MAX_POSITIONS`(기본 8개)로 엄격히 제한한다.
+  - **레짐별 총 투자 허용 노출도(`REGIME_MAX_EXPOSURE`)**:
+    - `BULL_TREND` (강세장): 자산의 최대 **85%**까지 적극 투자 허용 (현금 15% 버퍼 확보).
+    - `NORMAL` (횡보/일반): 자산의 최대 **55%** 투자 (현금 45% 유동성 확보).
+    - `RISK_OFF` (조정/약세): 자산의 최대 **20%**만 투자 (현금 80% 안전 방어).
+    - `CRASH` (급락/위기): 신규 BUY **0%** 전면 차단 (Fail-Closed).
+  - **레짐별 스윙 진입 캡(`REGIME_SWING_CAP`)**:
+    - `BULL_TREND`: 스윙 무제한 허용 (안전 상한 8개 및 총 노출도 85% 내에서 2~4개 이상 자율 확장).
+    - `NORMAL`: 스윙 최대 1개로 제한하여 횡보장 휩소 방어.
+    - `RISK_OFF` / `CRASH`: 스윙 신규 진입 0개 전면 차단.
+  - **기존 보유 포지션 보호 (Graceful Runoff)**: 레짐 하향 전환 등으로 슬롯 허용량이 축소되더라도 기보유 종목은 강제 청산되지 않으며, 신규 BUY만 차단되고 기존 포지션은 고유 청산 규칙(익절/트레일링/손절)에 따라 안전하게 완결된다.
 - `QuantBacktester`는 실거래와 같은 확정봉·정책 값을 사용한다. 전략 변경 시 Gemini 프롬프트와 단위·회귀 테스트를 함께 갱신한다.
 
 ## 거래소별 일봉 리셋 주기 및 스크리너 완충(Grace Period) 정책

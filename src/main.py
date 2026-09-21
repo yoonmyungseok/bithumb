@@ -211,6 +211,7 @@ risk_guard = RiskGuard(
     max_order_krw=MAX_ORDER_KRW,
     max_swing_positions=MAX_SWING_POSITIONS,
     max_new_listing_positions=MAX_NEW_LISTING_POSITIONS,
+    dynamic_slots_enabled=StrategyPolicy.is_dynamic_slots_enabled("bithumb"),
 )
 trailing_tracker = TrailingStopTracker(
     start_profit_pct=TRAILING_START_PCT, trailing_drop_pct=TRAILING_STOP_PCT

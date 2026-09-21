@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 from exchange_adapter import ExchangeAdapter
 from market_intelligence import MarketIntelligenceService
-from strategy_engine import classify_btc_regime, classify_listing_maturity
+from strategy_engine import StrategyPolicy, classify_btc_regime, classify_listing_maturity
 
 # 단일 사이클 내 전략 입력 prefetch 유효 시간(초). 주문 직전 검증에는 사용하지 않는다.
 DEFAULT_STRATEGY_INPUT_PREFETCH_TTL_SEC = 45.0
@@ -321,21 +321,33 @@ class TradingOrchestrator:
                 if isinstance(ticker, dict) and isinstance(ticker.get("market"), str):
                     self._last_screener_ticker_seed[ticker["market"]] = ticker
 
-            # [Dual-Track] 스윙 전용 유망 후보군 병합 스캔 (최대 1종목)
+            # [Dual-Track] 스윙 전용 유망 후보군 병합 스캔 (레짐 연동 동적 수량)
             swing_scan_sec = 0.0
             if hasattr(screener, "scan_swing_markets"):
                 swing_started_at = time.monotonic()
                 try:
-                    swing_kwargs: dict[str, Any] = {
-                        "top_count": 1,
-                        "held_markets": held,
-                        "btc_regime": btc_regime,
-                    }
-                    if ticker_seed:
-                        swing_kwargs["ticker_seed"] = ticker_seed
-                    swing_candidates = screener.scan_swing_markets(**swing_kwargs)
-                    if swing_candidates:
-                        screened.extend(swing_candidates)
+                    if StrategyPolicy.is_dynamic_slots_enabled():
+                        regime_cap = StrategyPolicy.get_regime_swing_cap(btc_regime)
+                        if regime_cap <= 0:
+                            swing_top_count = 0
+                        elif str(btc_regime).upper() == "BULL_TREND":
+                            swing_top_count = min(3, regime_cap)
+                        else:
+                            swing_top_count = min(1, regime_cap)
+                    else:
+                        swing_top_count = 1
+
+                    if swing_top_count > 0:
+                        swing_kwargs: dict[str, Any] = {
+                            "top_count": swing_top_count,
+                            "held_markets": held,
+                            "btc_regime": btc_regime,
+                        }
+                        if ticker_seed:
+                            swing_kwargs["ticker_seed"] = ticker_seed
+                        swing_candidates = screener.scan_swing_markets(**swing_kwargs)
+                        if swing_candidates:
+                            screened.extend(swing_candidates)
                 except TypeError:
                     try:
                         swing_candidates = screener.scan_swing_markets(top_count=1, held_markets=held, btc_regime=btc_regime)

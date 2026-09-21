@@ -941,69 +941,36 @@
         <!-- 3. 포트폴리오 한도 탭 -->
         <div id="cfg-panel-portfolio" class="cfg-panel hidden space-y-4">
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <!-- 총 동시 보유 포지션 수 (자동 합산 뱃지) -->
-            <div class="bg-indigo-950/40 p-3.5 rounded-xl border border-indigo-500/40 sm:col-span-2">
-              <div class="flex justify-between items-center mb-1.5">
-                <label class="text-xs font-bold text-indigo-300">총 동시 보유 포지션 수 (자동 합산)</label>
-                <span id="cfg_SLOTS_BREAKDOWN_BADGE" class="text-[11px] font-semibold text-indigo-300 bg-indigo-900/60 px-2.5 py-0.5 rounded-md border border-indigo-500/30">단타 1 + 스윙 1 + 신규상장 1</span>
+            <!-- 스마트 동적 슬롯 상태 카드 -->
+            <div class="bg-gradient-to-r from-emerald-950/40 via-teal-950/30 to-indigo-950/40 p-4 rounded-xl border border-emerald-500/40 sm:col-span-2 space-y-2.5">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                  <span class="text-sm">🌊</span>
+                  <span class="text-xs font-bold text-emerald-300">스마트 동적 슬롯 시스템 (Dynamic Slots)</span>
+                </div>
+                <span class="text-[11px] font-semibold text-emerald-300 bg-emerald-900/70 px-2.5 py-0.5 rounded-full border border-emerald-500/30">자동 유동 배분 가동 중</span>
               </div>
-              <div class="flex items-center gap-2">
-                <input type="number" id="cfg_MAX_OPEN_POSITIONS" readonly class="w-full bg-slate-900/80 border border-indigo-500/40 rounded-lg px-3 py-1.5 text-xs font-bold text-indigo-200 cursor-not-allowed">
-                <span class="text-xs text-indigo-300 font-bold">개</span>
+              <p class="text-[11px] text-slate-300 leading-relaxed">
+                슬롯 수를 숫자로 고정하지 않고, 비트코인 시장 국면(레짐)과 가용 자본에 맞춰 슬롯과 스윙 비중을 유동적으로 자동 배분합니다.
+              </p>
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 text-[11px]">
+                <div class="bg-slate-900/80 p-2 rounded-lg border border-slate-800">
+                  <div class="text-slate-400 text-[10px]">🚀 강세장 (BULL)</div>
+                  <div class="text-emerald-400 font-bold">노출 85% · 스윙 자율</div>
+                </div>
+                <div class="bg-slate-900/80 p-2 rounded-lg border border-slate-800">
+                  <div class="text-slate-400 text-[10px]">⚖️ 횡보장 (NORMAL)</div>
+                  <div class="text-indigo-300 font-bold">노출 55% · 스윙 1개</div>
+                </div>
+                <div class="bg-slate-900/80 p-2 rounded-lg border border-slate-800">
+                  <div class="text-slate-400 text-[10px]">🛡️ 약세장 (RISK_OFF)</div>
+                  <div class="text-amber-400 font-bold">노출 20% · 스윙 차단</div>
+                </div>
+                <div class="bg-slate-900/80 p-2 rounded-lg border border-slate-800">
+                  <div class="text-slate-400 text-[10px]">🛑 안전 상한선</div>
+                  <div class="text-slate-300 font-bold">최대 8종목 캡</div>
+                </div>
               </div>
-              <p class="text-[11px] text-indigo-300/80 mt-1">💡 아래 단타, 스윙, 신규상장 슬롯의 합계로 자동 산출됩니다.</p>
-            </div>
-
-            <!-- 1. 단타 슬롯 -->
-            <div class="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
-              <div class="flex justify-between items-center mb-1.5">
-                <label class="text-xs font-semibold text-slate-200">⚡ 단타 예약 슬롯 수</label>
-                <span class="text-[10px] text-slate-400">0 ~ 10개</span>
-              </div>
-              <div class="flex items-center gap-2">
-                <input type="number" id="cfg_MAX_SCALP_POSITIONS" value="3" step="1" min="0" max="10" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-indigo-500">
-                <span class="text-xs text-slate-400 font-bold">개</span>
-              </div>
-              <p class="text-[11px] text-slate-400 mt-1">일반 5분봉 단타/스캘핑 전략 전용 슬롯</p>
-            </div>
-
-            <!-- 2. 스윙 슬롯 -->
-            <div class="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
-              <div class="flex justify-between items-center mb-1.5">
-                <label class="text-xs font-semibold text-slate-200">🌊 스윙 예약 슬롯 수</label>
-                <span class="text-[10px] text-slate-400">0 ~ 5개</span>
-              </div>
-              <div class="flex items-center gap-2">
-                <input type="number" id="cfg_MAX_SWING_POSITIONS" value="1" step="1" min="0" max="5" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-indigo-500">
-                <span class="text-xs text-slate-400 font-bold">개</span>
-              </div>
-              <p class="text-[11px] text-slate-400 mt-1">대형 우량 코인 중기 추세추종 전용 슬롯 (0이면 비활성화)</p>
-            </div>
-
-            <!-- 3. 신규상장 슬롯 -->
-            <div class="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
-              <div class="flex justify-between items-center mb-1.5">
-                <label class="text-xs font-semibold text-slate-200">🆕 신규상장 예약 슬롯 수</label>
-                <span class="text-[10px] text-slate-400">0 ~ 5개</span>
-              </div>
-              <div class="flex items-center gap-2">
-                <input type="number" id="cfg_MAX_NEW_LISTING_POSITIONS" value="1" step="1" min="0" max="5" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-indigo-500">
-                <span class="text-xs text-slate-400 font-bold">개</span>
-              </div>
-              <p class="text-[11px] text-slate-400 mt-1">상장 72시간 이내 단타 전용 슬롯 (0이면 비활성화)</p>
-            </div>
-
-            <!-- 단일 포지션 최대 비중 (자동 계산) -->
-            <div class="bg-indigo-950/20 p-3.5 rounded-xl border border-indigo-500/30">
-              <div class="flex justify-between items-center mb-1.5">
-                <label class="text-xs font-semibold text-indigo-200">단일 포지션 최대 비중 (자동 계산)</label>
-                <span class="text-[10px] text-indigo-400">슬롯 연동</span>
-              </div>
-              <div class="flex items-center gap-2">
-                <input type="number" id="cfg_MAX_POSITION_PCT" readonly class="w-full bg-slate-900/80 border border-indigo-500/30 rounded-lg px-3 py-1.5 text-xs font-bold text-indigo-200 cursor-not-allowed">
-                <span class="text-xs text-indigo-300 font-bold">%</span>
-              </div>
-              <p class="text-[11px] text-indigo-300/70 mt-1">💡 총 슬롯 수에 맞춰 안전한 최적 비중이 자동 산출됩니다.</p>
             </div>
 
             <!-- 알트코인 단일 최대 비중 (상한 캡) -->

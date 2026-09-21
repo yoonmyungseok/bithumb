@@ -41,6 +41,8 @@ class RiskGuard:
         max_order_krw: float,
         max_swing_positions: int = 0,
         max_new_listing_positions: int = 0,
+        dynamic_slots_enabled: bool | None = None,
+        dynamic_safety_max_positions: int | None = None,
     ):
         self.min_order_krw = min_order_krw
         self.max_open_positions = max_open_positions
@@ -49,6 +51,21 @@ class RiskGuard:
         self.max_order_krw = max_order_krw
         self.max_swing_positions = max_swing_positions
         self.max_new_listing_positions = max_new_listing_positions
+        self.dynamic_slots_enabled = (
+            bool(dynamic_slots_enabled)
+            if dynamic_slots_enabled is not None
+            else False
+        )
+        self.dynamic_safety_max_positions = (
+            StrategyPolicy.get_dynamic_slot_safety_max_positions()
+            if dynamic_safety_max_positions is None
+            else int(dynamic_safety_max_positions)
+        )
+        self.current_regime: str = "NORMAL"
+
+    def set_current_regime(self, regime: str) -> None:
+        """시장 오케스트레이터로부터 최신 확정 레짐을 전달받아 동적 슬롯 정책에 반영"""
+        self.current_regime = str(regime or "NORMAL").strip().upper()
 
     @property
     def max_scalp_positions(self) -> int:
@@ -64,7 +81,13 @@ class RiskGuard:
         max_new_listing_positions: int | None = None,
         max_order_krw: float | None = None,
         max_scalp_positions: int | None = None,
+        dynamic_slots_enabled: bool | None = None,
+        current_regime: str | None = None,
     ) -> None:
+        if dynamic_slots_enabled is not None:
+            self.dynamic_slots_enabled = bool(dynamic_slots_enabled)
+        if current_regime is not None:
+            self.set_current_regime(current_regime)
         if max_swing_positions is not None:
             self.max_swing_positions = max_swing_positions
         if max_new_listing_positions is not None:
@@ -116,6 +139,42 @@ class RiskGuard:
 
         swing_held = set(held_swing_markets or [])
         new_listing_held = set(held_new_listing_markets or [])
+
+        # ==========================================================
+        # 1. 동적 슬롯(Dynamic Slots) 모드: 레짐 및 자본 노출도 중심 판정
+        # ==========================================================
+        if self.dynamic_slots_enabled:
+            # (1) 시스템 물리적 안전 상한선 (하드웨어/웹소켓/API 한도 보호)
+            if len(held_markets) >= self.dynamic_safety_max_positions and market not in held_markets:
+                return False, f"동적 슬롯 물리적 안전 상한({self.dynamic_safety_max_positions}개) 도달"
+
+            # (2) 시장 레짐별 전략 허용 캡 검사
+            if is_swing:
+                swing_cap = StrategyPolicy.get_regime_swing_cap(self.current_regime)
+                if swing_cap <= 0:
+                    return False, f"현재 시장 레짐({self.current_regime})에서는 스윙 신규 진입이 차단됩니다"
+                if len(swing_held) >= swing_cap and market not in swing_held:
+                    return False, f"현재 레짐({self.current_regime}) 스윙 전용 보유 종목 수 한도({swing_cap}개) 초과"
+            elif is_new_listing:
+                if (
+                    self.max_new_listing_positions > 0
+                    and len(new_listing_held) >= self.max_new_listing_positions
+                    and market not in new_listing_held
+                ):
+                    return False, f"신규상장 전용 보유 종목 수 한도({self.max_new_listing_positions}개) 초과"
+
+            # (3) 레짐별 동적 총 투자 비중(Total Exposure) 한도 검사
+            regime_max_exposure = StrategyPolicy.get_regime_max_exposure(self.current_regime, self.max_total_exposure_pct)
+            effective_total_exposure = min(self.max_total_exposure_pct, regime_max_exposure)
+            projected_exposure = 1.0 - max(0.0, available_krw - order_krw) / total_equity
+            if projected_exposure > effective_total_exposure:
+                return False, f"총 투자 비중 한도 초과 ({self.current_regime} 레짐 상한 {effective_total_exposure*100:.0f}%)"
+
+            return True, "OK"
+
+        # ==========================================================
+        # 2. 기존 정적(Static) 슬롯 모드: 고정 칸막이 수량 검사 (하위 호환성)
+        # ==========================================================
         uses_reserved_slots = self.max_swing_positions > 0 or self.max_new_listing_positions > 0
         if uses_reserved_slots:
             if is_swing:

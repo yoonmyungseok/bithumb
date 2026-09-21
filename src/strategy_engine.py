@@ -135,6 +135,58 @@ class StrategyPolicy:
             return False
         return cls.NEW_LISTING_ENABLED
 
+    # 1-5. 동적 슬롯(Dynamic Slots) 및 시장 레짐별 자본 노출도(Exposure) 정책
+    DYNAMIC_SLOTS_ENABLED: bool = True           # 레짐 연동 동적 슬롯 모드 기본 활성화
+    DYNAMIC_SLOT_SAFETY_MAX_POSITIONS: int = 8   # 동적 슬롯 모드 물리적 안전 상한선 (최대 동시 보유 8종목)
+
+    # 레짐별 최대 총 투자 노출도 (Max Total Exposure)
+    REGIME_MAX_EXPOSURE: dict[str, float] = {
+        "BULL_TREND": 0.85,  # 강세장: 자산의 최대 85%까지 적극 투자 (현금 15% 버퍼)
+        "NORMAL": 0.55,      # 횡보/일반: 자산의 55% 투자 (현금 45% 확보)
+        "RISK_OFF": 0.20,    # 조정/약세: 자산의 20%만 투자 (현금 80% 안전 방어)
+        "CRASH": 0.00,       # 급락/위기: 신규 매수 0% 차단
+    }
+
+    # 레짐별 스윙 허용 한도 (스윙 슬롯 캡)
+    REGIME_SWING_CAP: dict[str, int] = {
+        "BULL_TREND": 8,     # 강세장: 스윙 무제한 허용 (안전 상한선 8개 및 익스포저 85% 내에서 자율 확장)
+        "NORMAL": 1,         # 횡보/일반: 스윙 최대 1개 엄선
+        "RISK_OFF": 0,       # 조정/약세: 스윙 진입 전면 금지
+        "CRASH": 0,          # 급락/위기: 전면 금지
+    }
+
+    @classmethod
+    def is_dynamic_slots_enabled(cls, exchange: str | None = None) -> bool:
+        """시장 레짐 연동 동적 슬롯 활성화 여부를 반환한다. 거래소별 설정 우선."""
+        env_val = cls._get_new_listing_env_value("DYNAMIC_SLOTS_ENABLED", exchange)
+        if env_val in ("true", "1", "yes", "y", "on", "enable", "enabled"):
+            return True
+        if env_val in ("false", "0", "no", "n", "off", "disable", "disabled"):
+            return False
+        return cls.DYNAMIC_SLOTS_ENABLED
+
+    @classmethod
+    def get_dynamic_slot_safety_max_positions(cls) -> int:
+        raw = os.getenv("DYNAMIC_SLOT_SAFETY_MAX_POSITIONS", "").strip()
+        if raw:
+            try:
+                val = int(raw)
+                if val > 0:
+                    return val
+            except ValueError:
+                pass
+        return cls.DYNAMIC_SLOT_SAFETY_MAX_POSITIONS
+
+    @classmethod
+    def get_regime_max_exposure(cls, regime: str, default: float = 0.55) -> float:
+        regime_key = str(regime or "NORMAL").upper()
+        return cls.REGIME_MAX_EXPOSURE.get(regime_key, default)
+
+    @classmethod
+    def get_regime_swing_cap(cls, regime: str, default: int = 1) -> int:
+        regime_key = str(regime or "NORMAL").upper()
+        return cls.REGIME_SWING_CAP.get(regime_key, default)
+
     @classmethod
     def is_new_listing_enforcement_enabled(cls, exchange: str | None = None) -> bool:
         """명시 설정 전에는 신규상장 진입을 관찰 모드로 유지하고 실주문을 차단한다."""

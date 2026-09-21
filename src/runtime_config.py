@@ -253,6 +253,15 @@ COMMON_CONFIG_SCHEMA: dict[str, ConfigFieldDef] = {
     ),
 
     # 3. 포트폴리오 한도
+    "DYNAMIC_SLOTS_ENABLED": ConfigFieldDef(
+        key="DYNAMIC_SLOTS_ENABLED",
+        type_name="bool",
+        default=True,
+        category="portfolio",
+        label="시장 레짐 연동 동적 슬롯",
+        description="시장 국면(강세/횡보/약세)에 맞춰 슬롯 한도 및 총 투자 노출도를 유동적으로 자동 전환합니다.",
+        unit="",
+    ),
     "MAX_SCALP_POSITIONS": ConfigFieldDef(
         key="MAX_SCALP_POSITIONS",
         type_name="int",

@@ -663,6 +663,9 @@ class BotController:
             if "MAX_NEW_LISTING_POSITIONS" in settings and hasattr(self.risk_guard, "max_new_listing_positions"):
                 settings["MAX_NEW_LISTING_POSITIONS"]["value"] = self.risk_guard.max_new_listing_positions
                 settings["MAX_NEW_LISTING_POSITIONS"]["display_value"] = self.risk_guard.max_new_listing_positions
+            if "DYNAMIC_SLOTS_ENABLED" in settings and hasattr(self.risk_guard, "dynamic_slots_enabled"):
+                settings["DYNAMIC_SLOTS_ENABLED"]["value"] = self.risk_guard.dynamic_slots_enabled
+                settings["DYNAMIC_SLOTS_ENABLED"]["display_value"] = "활성" if self.risk_guard.dynamic_slots_enabled else "비활성"
 
         return {
             "success": True,
@@ -747,6 +750,9 @@ class BotController:
                 guard_updates["max_swing_positions"] = normalized_updates["MAX_SWING_POSITIONS"]
             if "MAX_NEW_LISTING_POSITIONS" in normalized_updates:
                 guard_updates["max_new_listing_positions"] = normalized_updates["MAX_NEW_LISTING_POSITIONS"]
+            if "DYNAMIC_SLOTS_ENABLED" in normalized_updates:
+                guard_updates["dynamic_slots_enabled"] = bool(normalized_updates["DYNAMIC_SLOTS_ENABLED"])
+                StrategyPolicy.DYNAMIC_SLOTS_ENABLED = bool(normalized_updates["DYNAMIC_SLOTS_ENABLED"])
             if guard_updates:
                 self.risk_guard.update_limits(**guard_updates)
 

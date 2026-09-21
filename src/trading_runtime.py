@@ -588,6 +588,8 @@ class TradingCycleEngine:
         )
         timings["레짐"] = time.monotonic() - regime_started_at
         ctx.orchestrator.record_latency("cycle_regime", timings["레짐"])
+        if hasattr(ctx.risk_guard, "set_current_regime"):
+            ctx.risk_guard.set_current_regime(btc_regime)
         ctx.trailing_tracker.set_macro_defensive_mode(is_btc_crashing)
         if is_btc_crashing:
             logger.warning(
