@@ -1,0 +1,43 @@
+{
+  "date": "2026-09-21",
+  "start_equity": 1249371.117520142,
+  "realized_pnl_krw": 0.0,
+  "total_trades": 0,
+  "win_trades": 0,
+  "consecutive_losses": 3,
+  "cooldown_until_ts": 0.0,
+  "kill_switch_latched_date": "",
+  "kill_switch_active": false,
+  "history": [
+    {
+      "date": "2026-08-29",
+      "total_trades": 1,
+      "win_trades": 0,
+      "realized_pnl_krw": -293.67840000000433
+    },
+    {
+      "date": "2026-08-30",
+      "total_trades": 26,
+      "win_trades": 12,
+      "realized_pnl_krw": -3734.685404618106
+    },
+    {
+      "date": "2026-09-18",
+      "total_trades": 0,
+      "win_trades": 0,
+      "realized_pnl_krw": 0.0
+    },
+    {
+      "date": "2026-09-19",
+      "total_trades": 7,
+      "win_trades": 3,
+      "realized_pnl_krw": -1773.0220826975346
+    },
+    {
+      "date": "2026-09-20",
+      "total_trades": 11,
+      "win_trades": 4,
+      "realized_pnl_krw": -908.941888490037
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "date": "2026-09-20",
+  "date_kst": "2026-09-20",
+  "quota_date_pt": "2026-09-19",
+  "api_calls": 3,
+  "api_success": 3,
+  "rate_limited": 0,
+  "http_errors": 0,
+  "list_models_calls": 3,
+  "local_fallback": 0,
+  "cache_hits": 0,
+  "quota_limit": 1000,
+  "by_model": {
+    "list_models": {
+      "calls": 3,
+      "success": 3,
+      "rate_limited": 0,
+      "errors": 0
+    }
+  },
+  "last_event_at": 1789876452.831733,
+  "last_event": "list_models list_models HTTP 200"
+}

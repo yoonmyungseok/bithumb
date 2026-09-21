@@ -1,0 +1,22 @@
+{
+  "exchange": "bithumb",
+  "date": "2026-09-21",
+  "total_calls": 42185,
+  "by_method": {
+    "GET": 42183,
+    "POST": 1,
+    "DELETE": 1
+  },
+  "by_group": {},
+  "status_codes": {
+    "200": 42184,
+    "201": 1
+  },
+  "rate_limited_429": 0,
+  "errors": 0,
+  "remaining_sec": null,
+  "remaining_min": null,
+  "last_call_at": 1789941386.0153534,
+  "last_endpoint": "/accounts",
+  "last_status": 200
+}

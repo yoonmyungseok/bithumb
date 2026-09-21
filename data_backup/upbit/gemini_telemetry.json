@@ -1,0 +1,53 @@
+{
+  "date": "2026-09-21",
+  "date_kst": "2026-09-21",
+  "quota_date_pt": "2026-09-20",
+  "api_calls": 210,
+  "api_success": 189,
+  "rate_limited": 0,
+  "http_errors": 21,
+  "list_models_calls": 1,
+  "local_fallback": 0,
+  "cache_hits": 448,
+  "quota_limit": 1000,
+  "by_model": {
+    "list_models": {
+      "calls": 1,
+      "success": 1,
+      "rate_limited": 0,
+      "errors": 0
+    },
+    "gemini-3.8-flash": {
+      "calls": 8,
+      "success": 0,
+      "rate_limited": 0,
+      "errors": 8
+    },
+    "gemini-3.5-flash-lite": {
+      "calls": 181,
+      "success": 181,
+      "rate_limited": 0,
+      "errors": 0
+    },
+    "gemini-3.7-flash": {
+      "calls": 8,
+      "success": 1,
+      "rate_limited": 0,
+      "errors": 7
+    },
+    "gemini-3.6-flash": {
+      "calls": 7,
+      "success": 2,
+      "rate_limited": 0,
+      "errors": 5
+    },
+    "gemini-3.5-flash": {
+      "calls": 5,
+      "success": 4,
+      "rate_limited": 0,
+      "errors": 1
+    }
+  },
+  "last_event_at": 1789941278.0627873,
+  "last_event": "KRW-SUI gemini-3.5-flash-lite HTTP 200"
+}

@@ -1,0 +1,111 @@
+{
+  "date": "2026-09-21",
+  "reset_at": 0.0,
+  "reset_remaining_raw": "",
+  "reset_header_at": 0.0,
+  "entry_safety": {
+    "upbit": {
+      "entry_blocked": false,
+      "status": "NORMAL",
+      "reason": "",
+      "context": "KRW-SUI",
+      "model": "gemini-3.5-flash-lite",
+      "http_status": 200,
+      "error_code": "",
+      "updated_at": 1789941278.0527499
+    },
+    "bithumb": {
+      "entry_blocked": true,
+      "status": "BLOCKED",
+      "reason": "legacy_http_404",
+      "context": "KRW-ARB gemini-2.5-flash-lite",
+      "model": "",
+      "http_status": 404,
+      "error_code": "",
+      "updated_at": 1789876455.5277345
+    }
+  },
+  "observability": {
+    "upbit": {
+      "root_api_failures": 0,
+      "derived_buy_blocks": 0,
+      "model_fallbacks": 4,
+      "cache_hits": 0,
+      "last_root_failure": {},
+      "last_event_kst": "",
+      "last_fallback": {
+        "from_model": "gemini-3.6-flash",
+        "to_model": "gemini-3.5-flash",
+        "context": "macro_regime",
+        "at_kst": "2026-09-21 06:29:45"
+      }
+    }
+  },
+  "stats": [
+    {
+      "provider": "gemini",
+      "exchange": "upbit",
+      "model": "gemini-3.5-flash-lite",
+      "calls": 80,
+      "success": 80,
+      "rate_limited": 0,
+      "errors": 0,
+      "cache_hits": 0,
+      "latency_total_ms": 200930.9999999532,
+      "last_event": "KRW-SUI gemini-3.5-flash-lite HTTP 200",
+      "last_event_at": 1789941278.0647871
+    },
+    {
+      "provider": "gemini",
+      "exchange": "upbit",
+      "model": "gemini-3.8-flash",
+      "calls": 4,
+      "success": 0,
+      "rate_limited": 0,
+      "errors": 4,
+      "cache_hits": 0,
+      "latency_total_ms": 18328.000000008615,
+      "last_event": "macro_regime gemini-3.8-flash HTTP 503",
+      "last_event_at": 1789939771.3329897
+    },
+    {
+      "provider": "gemini",
+      "exchange": "upbit",
+      "model": "gemini-3.7-flash",
+      "calls": 4,
+      "success": 0,
+      "rate_limited": 0,
+      "errors": 4,
+      "cache_hits": 0,
+      "latency_total_ms": 16047.999999980675,
+      "last_event": "macro_regime gemini-3.7-flash HTTP 503",
+      "last_event_at": 1789939772.2776937
+    },
+    {
+      "provider": "gemini",
+      "exchange": "upbit",
+      "model": "gemini-3.6-flash",
+      "calls": 4,
+      "success": 1,
+      "rate_limited": 0,
+      "errors": 3,
+      "cache_hits": 0,
+      "latency_total_ms": 12154.999999998836,
+      "last_event": "macro_regime gemini-3.6-flash HTTP 503",
+      "last_event_at": 1789939774.676716
+    },
+    {
+      "provider": "gemini",
+      "exchange": "upbit",
+      "model": "gemini-3.5-flash",
+      "calls": 3,
+      "success": 2,
+      "rate_limited": 0,
+      "errors": 1,
+      "cache_hits": 0,
+      "latency_total_ms": 27250.99999998929,
+      "last_event": "macro_regime gemini-3.5-flash HTTP 200",
+      "last_event_at": 1789939785.0313025
+    }
+  ]
+}

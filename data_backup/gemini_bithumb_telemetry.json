@@ -1,0 +1,154 @@
+{
+  "date": "2026-09-21",
+  "reset_at": 1789974000.0,
+  "reset_remaining_raw": "PT_MIDNIGHT",
+  "reset_header_at": 1789941244.7472441,
+  "entry_safety": {
+    "bithumb": {
+      "entry_blocked": false,
+      "status": "NORMAL",
+      "reason": "",
+      "context": "KRW-ADA",
+      "model": "gemini-3.5-flash-lite",
+      "http_status": 200,
+      "error_code": "",
+      "updated_at": 1789941244.73173
+    },
+    "upbit": {
+      "entry_blocked": false,
+      "status": "NORMAL",
+      "reason": "",
+      "context": "KRW-TEST",
+      "model": "gemini-3.5-flash-lite",
+      "http_status": 200,
+      "error_code": "",
+      "updated_at": 1789791473.7472777
+    }
+  },
+  "observability": {
+    "bithumb": {
+      "root_api_failures": 4,
+      "derived_buy_blocks": 121,
+      "model_fallbacks": 41,
+      "cache_hits": 1654,
+      "last_root_failure": {
+        "reason": "http_error",
+        "context": "KRW-PIEVERSE",
+        "model": "gemini-2.5-flash-lite",
+        "http_status": 404,
+        "error_code": "NOT_FOUND",
+        "at": 1789874333.2251065,
+        "at_kst": "2026-09-20 12:18:53"
+      },
+      "last_event_kst": "2026-09-20 12:18:53",
+      "last_fallback": {
+        "from_model": "gemini-3.8-flash",
+        "to_model": "gemini-3.7-flash",
+        "context": "macro_regime",
+        "at_kst": "2026-09-21 05:19:04"
+      }
+    },
+    "upbit": {
+      "root_api_failures": 9,
+      "derived_buy_blocks": 0,
+      "model_fallbacks": 1,
+      "cache_hits": 0,
+      "last_root_failure": {
+        "reason": "http_error",
+        "context": "list_models",
+        "model": "",
+        "http_status": 400,
+        "error_code": "INVALID_ARGUMENT",
+        "at": 1789776593.89835,
+        "at_kst": "2026-09-19 09:09:53"
+      },
+      "last_event_kst": "2026-09-19 09:09:53",
+      "last_fallback": {
+        "from_model": "gemini-3.8-flash",
+        "to_model": "gemini-3.7-flash",
+        "context": "macro_regime",
+        "at_kst": "2026-09-19 09:09:09"
+      }
+    }
+  },
+  "stats": [
+    {
+      "provider": "gemini",
+      "exchange": "bithumb",
+      "model": "gemini-3.5-flash-lite",
+      "calls": 390,
+      "success": 389,
+      "rate_limited": 0,
+      "errors": 1,
+      "cache_hits": 390,
+      "latency_total_ms": 892829.0000000561,
+      "last_event": "KRW-ADA gemini-3.5-flash-lite HTTP 200",
+      "last_event_at": 1789941244.7472441
+    },
+    {
+      "provider": "gemini",
+      "exchange": "bithumb",
+      "model": "gemini-3.8-flash",
+      "calls": 7,
+      "success": 1,
+      "rate_limited": 0,
+      "errors": 6,
+      "cache_hits": 0,
+      "latency_total_ms": 25063.999999983935,
+      "last_event": "macro_regime gemini-3.8-flash HTTP 503",
+      "last_event_at": 1789935541.7967827
+    },
+    {
+      "provider": "gemini",
+      "exchange": "bithumb",
+      "model": "gemini-3.7-flash",
+      "calls": 6,
+      "success": 1,
+      "rate_limited": 0,
+      "errors": 5,
+      "cache_hits": 0,
+      "latency_total_ms": 33345.000000001164,
+      "last_event": "macro_regime gemini-3.7-flash HTTP 200",
+      "last_event_at": 1789935544.6710255
+    },
+    {
+      "provider": "gemini",
+      "exchange": "bithumb",
+      "model": "gemini-3.6-flash",
+      "calls": 5,
+      "success": 3,
+      "rate_limited": 0,
+      "errors": 2,
+      "cache_hits": 0,
+      "latency_total_ms": 22858.00000000745,
+      "last_event": "macro_regime gemini-3.6-flash HTTP 503",
+      "last_event_at": 1789928052.017726
+    },
+    {
+      "provider": "gemini",
+      "exchange": "bithumb",
+      "model": "gemini-3.5-flash",
+      "calls": 2,
+      "success": 2,
+      "rate_limited": 0,
+      "errors": 0,
+      "cache_hits": 0,
+      "latency_total_ms": 20593.000000022585,
+      "last_event": "macro_regime gemini-3.5-flash HTTP 200",
+      "last_event_at": 1789928062.4335105
+    },
+    {
+      "provider": "gemini",
+      "exchange": "bithumb",
+      "model": "gemini-3.1-flash-lite",
+      "calls": 1,
+      "success": 1,
+      "rate_limited": 0,
+      "errors": 0,
+      "cache_hits": 0,
+      "latency_total_ms": 3687.000000005355,
+      "last_event": "holding_eval:KRW-BTC gemini-3.1-flash-lite HTTP 200",
+      "last_event_at": 1789914565.1897156
+    }
+  ]
+}

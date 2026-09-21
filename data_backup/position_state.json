@@ -1,0 +1,12 @@
+{
+  "peaks": {},
+  "partial_tp_done": {},
+  "entry_times": {
+    "KRW-BTC": 1789804245.70041,
+    "KRW-ETH": 1789864772.189909
+  },
+  "strategy_modes": {
+    "KRW-BTC": "SWING",
+    "KRW-ETH": "SWING"
+  }
+}

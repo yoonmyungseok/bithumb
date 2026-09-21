@@ -1,0 +1,11 @@
+{
+  "regime": "CAUTION_PULLBACK",
+  "risk_score": 45,
+  "recommended_cash_ratio": 0.3,
+  "market_summary": "중기 상승 추세는 유지되고 있으나 단기 기술적 지표가 역배열로 전환되며 단기 조정 및 차익실현 압력이 나타나는 구간입니다.",
+  "action_guideline": "신규 매수 비중을 축소하고 기존 보유 포지션의 손절 라인 점검 및 분할 매도 전략을 통해 리스크를 관리하세요.",
+  "analyzed_at": 1789940502.2874212,
+  "provider": "groq",
+  "model": "qwen/qwen3.8-27b",
+  "latency_sec": 0.717
+}

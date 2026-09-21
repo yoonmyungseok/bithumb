@@ -1,0 +1,29 @@
+{
+  "exchange": "upbit",
+  "date": "2026-09-21",
+  "total_calls": 23697,
+  "by_method": {
+    "GET": 23695,
+    "POST": 1,
+    "DELETE": 1
+  },
+  "by_group": {
+    "default": 6902,
+    "market": 6713,
+    "ticker": 6402,
+    "candles": 3132,
+    "orderbook": 547,
+    "order": 1
+  },
+  "status_codes": {
+    "200": 23696,
+    "201": 1
+  },
+  "rate_limited_429": 0,
+  "errors": 0,
+  "remaining_sec": 9,
+  "remaining_min": 600,
+  "last_call_at": 1789941385.7275968,
+  "last_endpoint": "/market/all",
+  "last_status": 200
+}

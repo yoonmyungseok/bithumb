@@ -1,0 +1,13 @@
+{
+  "schema_version": 2,
+  "markets": {
+    "KRW-ONDO": {
+      "kst_date": "2026-09-20",
+      "exit_ts": 1789868039.9226184,
+      "exit_reason": "STOP_LOSS",
+      "confirmed_net_pnl_krw": -5309.774621656572,
+      "exchange": "upbit",
+      "loss_count": 1
+    }
+  }
+}

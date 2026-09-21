@@ -1,0 +1,45 @@
+{
+  "schema_version": 2,
+  "markets": {
+    "KRW-SUI": {
+      "kst_date": "2026-09-20",
+      "exit_ts": 1789853022.7764833,
+      "exit_reason": "STOP_LOSS",
+      "confirmed_net_pnl_krw": -601.192415739999,
+      "exchange": "bithumb",
+      "loss_count": 1
+    },
+    "KRW-XRP": {
+      "kst_date": "2026-09-20",
+      "exit_ts": 1789872244.318318,
+      "exit_reason": "STOP_LOSS",
+      "confirmed_net_pnl_krw": -4283.965022999997,
+      "exchange": "bithumb",
+      "loss_count": 1
+    },
+    "KRW-ADA": {
+      "kst_date": "2026-09-20",
+      "exit_ts": 1789890849.554971,
+      "exit_reason": "TIME_STOP",
+      "confirmed_net_pnl_krw": -523.6890937999997,
+      "exchange": "bithumb",
+      "loss_count": 1
+    },
+    "KRW-STX": {
+      "kst_date": "2026-09-20",
+      "exit_ts": 1789910350.8306699,
+      "exit_reason": "STOP_LOSS",
+      "confirmed_net_pnl_krw": -1107.3665817400033,
+      "exchange": "bithumb",
+      "loss_count": 1
+    },
+    "KRW-AVAX": {
+      "kst_date": "2026-09-20",
+      "exit_ts": 1789911253.927558,
+      "exit_reason": "AI_TIGHTENED_STOP",
+      "confirmed_net_pnl_krw": -129.11322950000613,
+      "exchange": "bithumb",
+      "loss_count": 1
+    }
+  }
+}
