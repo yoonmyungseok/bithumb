@@ -160,9 +160,9 @@ class TestSwingStrategy(unittest.TestCase):
         self.assertEqual(msg, "OK")
 
     def test_trailing_stop_tracker_swing_mode(self):
-        """TrailingStopTracker에서 스윙 모드 설정 및 분할익절/트레일링 동작 검증."""
+        """TrailingStopTracker에서 일반 알트코인 스윙 모드 설정 및 분할익절/트레일링 동작 검증."""
         tracker = TrailingStopTracker(data_dir=self.temp_dir)
-        market = "KRW-BTC"
+        market = "KRW-DOGE"
 
         # 스윙 모드 설정
         tracker.set_strategy_mode(market, "SWING")
@@ -170,34 +170,83 @@ class TestSwingStrategy(unittest.TestCase):
         self.assertEqual(tracker.get_strategy_mode(market), "SWING")
         self.assertIn(market, tracker.get_swing_markets())
 
-        avg_buy_price = 100_000_000.0
+        avg_buy_price = 1000.0
 
-        # 1. +5% 상승 시: 단타는 1차 익절(+3.5%) 나갔겠지만, 스윙은 +8% 목표이므로 익절 안 나감
+        # 0. 진입 직후(+1.0%): +1.8% 미달이므로 자동 본전 스탑 및 익절 미작동
         action, peak, trigger, peak_pct, cur_pct = tracker.check_position(
             market=market,
-            current_price=105_000_000.0,
+            current_price=1010.0,
             avg_buy_price=avg_buy_price,
         )
         self.assertEqual(action, "NONE")
+        self.assertFalse(tracker.is_breakeven_active(market))
+        self.assertEqual(tracker.get_tp_stage(market), 0)
+
+        # 1. +5% 상승 시: 일반 스윙은 +8% 목표이므로 익절 안 나감, 대신 +1.8% 초과로 자동 본전 스탑 활성화
+        action, peak, trigger, peak_pct, cur_pct = tracker.check_position(
+            market=market,
+            current_price=1050.0,
+            avg_buy_price=avg_buy_price,
+        )
+        self.assertEqual(action, "NONE")
+        self.assertTrue(tracker.is_breakeven_active(market))
+        self.assertEqual(tracker.get_tp_stage(market), 0)
 
         # 2. +8.5% 상승 시: 스윙 1차 분할 익절 (+8.0% 이상 도달) 트리거
         action, peak, trigger, peak_pct, cur_pct = tracker.check_position(
             market=market,
-            current_price=108_500_000.0,
+            current_price=1085.0,
             avg_buy_price=avg_buy_price,
         )
         self.assertEqual(action, "PARTIAL_TP_1")
 
-        # 3. 주문 신호만으로는 본전 보호를 켜지 않고, 확인 체결 뒤에만 활성화한다.
-        self.assertFalse(tracker.is_breakeven_active(market))
+        # 3. 주문 신호만으로는 분할익절 단계가 오르지 않고, 확인 체결 뒤에만 단계가 1로 올라간다.
+        self.assertEqual(tracker.get_tp_stage(market), 0)
         self.assertTrue(tracker.mark_partial_take_profit_filled(market, 1, 0.4))
+        self.assertEqual(tracker.get_tp_stage(market), 1)
         self.assertTrue(tracker.is_breakeven_active(market))
 
-        # 4. 최고점 120_000_000원(+20%) 찍은 후 -4.5% 반락 시 ➜ 스윙 트레일링(드롭 4%) 청산
-        tracker.peaks[market] = 120_000_000.0
+        # 4. 최고점 1200원(+20%) 찍은 후 -4.5% 반락 시 ➜ 스윙 트레일링(드롭 4%) 청산
+        tracker.peaks[market] = 1200.0
         action, peak, trigger, peak_pct, cur_pct = tracker.check_position(
             market=market,
-            current_price=114_000_000.0,  # 120,000,000 * 0.96 = 115,200,000 이하
+            current_price=1140.0,  # 1200 * 0.96 = 1152 이하
+            avg_buy_price=avg_buy_price,
+        )
+        self.assertEqual(action, "TRAILING_STOP")
+
+    def test_trailing_stop_tracker_major_swing_mode(self):
+        """TrailingStopTracker에서 메이저 코인(BTC/ETH/SOL) 스윙 모드 현실적 익절(+2.5%) 동작 검증."""
+        tracker = TrailingStopTracker(data_dir=self.temp_dir)
+        market = "KRW-BTC"
+
+        tracker.set_strategy_mode(market, "SWING")
+        self.assertTrue(tracker.is_swing_position(market))
+
+        avg_buy_price = 100_000_000.0
+
+        # 1. +2.0% 상승 시: +1.8% 자동 본전 스탑 활성화, 하지만 1차 익절(+2.5%)은 미달
+        action, peak, trigger, peak_pct, cur_pct = tracker.check_position(
+            market=market,
+            current_price=102_000_000.0,
+            avg_buy_price=avg_buy_price,
+        )
+        self.assertEqual(action, "NONE")
+        self.assertTrue(tracker.is_breakeven_active(market, avg_buy_price=avg_buy_price))
+
+        # 2. +2.6% 상승 시: 메이저 스윙 1차 익절(+2.5% 이상) 즉시 트리거!
+        action, peak, trigger, peak_pct, cur_pct = tracker.check_position(
+            market=market,
+            current_price=102_600_000.0,
+            avg_buy_price=avg_buy_price,
+        )
+        self.assertEqual(action, "PARTIAL_TP_1")
+
+        # 3. 최고점 103_000_000원 찍은 후 1.2% 반락 시 ➜ 메이저 스윙 트레일링(드롭 1.2%) 익절 청산
+        tracker.peaks[market] = 103_000_000.0
+        action, peak, trigger, peak_pct, cur_pct = tracker.check_position(
+            market=market,
+            current_price=101_700_000.0,  # 103,000,000 * (1 - 0.012) = 101,764,000 이하
             avg_buy_price=avg_buy_price,
         )
         self.assertEqual(action, "TRAILING_STOP")

@@ -348,6 +348,7 @@ class TrailingStopTracker:
         self.macro_defensive_mode = False
         self.peaks: dict[str, float] = {}
         self.partial_tp_done: dict[str, Any] = {}
+        self.auto_breakeven_active: dict[str, bool] = {}
         self.entry_times: dict[str, float] = {}
         self.strategy_modes: dict[str, str] = {}
         self.dynamic_stop_losses: dict[str, float] = {}
@@ -438,6 +439,7 @@ class TrailingStopTracker:
             if isinstance(data, dict):
                 self.peaks = data.get("peaks", {})
                 self.partial_tp_done = data.get("partial_tp_done", {})
+                self.auto_breakeven_active = data.get("auto_breakeven_active", {})
                 self.entry_times = data.get("entry_times", {})
                 self.strategy_modes = data.get("strategy_modes", {})
 
@@ -456,6 +458,7 @@ class TrailingStopTracker:
             payload = {
                 "peaks": self.peaks,
                 "partial_tp_done": self.partial_tp_done,
+                "auto_breakeven_active": self.auto_breakeven_active,
                 "entry_times": self.entry_times,
                 "strategy_modes": self.strategy_modes,
             }
@@ -519,15 +522,43 @@ class TrailingStopTracker:
         current_profit_pct = current_profit_rate * 100.0
 
         with self._lock:
+            m_upper = market.upper()
             is_swing = self.is_swing_position(market)
             is_new_listing = self.is_new_listing_position(market)
             is_major = is_major_market(market)
             regime = (btc_regime or getattr(self, "current_btc_regime", "NORMAL")).upper()
             is_bull = (regime == "BULL_TREND")
 
+            # 0. 최고가(Peak) 상시 갱신 및 자동 본전 스탑(Auto Break-Even) 활성화 검사
+            previous_peak = max(
+                float(self.peaks.get(market, 0.0) or 0.0),
+                float(self.peaks.get(m_upper, 0.0) or 0.0),
+                avg_buy_price,
+            )
+            current_peak = max(previous_peak, current_price)
+            if current_peak > previous_peak:
+                self.peaks[market] = current_peak
+                self.peaks[m_upper] = current_peak
+                self._save_state()
+
+            auto_be_trigger = getattr(StrategyPolicy, "AUTO_BREAKEVEN_TRIGGER_PCT", 0.018)
+            if (current_peak - avg_buy_price) / avg_buy_price >= auto_be_trigger:
+                if not (self.auto_breakeven_active.get(m_upper, False) or self.auto_breakeven_active.get(market, False)):
+                    self.auto_breakeven_active[m_upper] = True
+                    self.auto_breakeven_active[market] = True
+                    logger.info(
+                        f"🛡️ [{market}] 고점 수익률 +{((current_peak - avg_buy_price)/avg_buy_price)*100:.2f}% 도달 "
+                        f"➜ [자동 본전 보장 스탑(Auto Break-Even)] 활성화 (손실 전환 방어)"
+                    )
+                    self._save_state(force=True)
+
             if is_swing:
-                tp_1_target = StrategyPolicy.SWING_PARTIAL_TP_1_PCT
-                tp_2_target = StrategyPolicy.SWING_PARTIAL_TP_2_PCT
+                if is_major:
+                    tp_1_target = getattr(StrategyPolicy, "SWING_MAJOR_PARTIAL_TP_1_PCT", 0.025)
+                    tp_2_target = getattr(StrategyPolicy, "SWING_MAJOR_PARTIAL_TP_2_PCT", 0.050)
+                else:
+                    tp_1_target = StrategyPolicy.SWING_PARTIAL_TP_1_PCT
+                    tp_2_target = StrategyPolicy.SWING_PARTIAL_TP_2_PCT
             elif is_new_listing:
                 # 신규상장은 1차 분할익절(+3.0%, 50%)만 적용하고 2차 단계는 사용하지 않는다.
                 tp_1_target = StrategyPolicy.NEW_LISTING_PARTIAL_TP_PCT
@@ -543,7 +574,7 @@ class TrailingStopTracker:
                 tp_2_target = StrategyPolicy.PARTIAL_TP_2_PCT
 
             # 1. [다단계 분할 익절: 1차 / 2차 / 잔여 러너 가속 트레일링]
-            raw_stage = self.partial_tp_done.get(market, 0)
+            raw_stage = self.partial_tp_done.get(market, self.partial_tp_done.get(m_upper, 0))
             cur_stage = 1 if raw_stage is True else int(raw_stage or 0)
 
             # 1-A. 1차 분할 익절
@@ -551,12 +582,14 @@ class TrailingStopTracker:
             # 도착할 때만 mark_partial_take_profit_filled()가 단계를 전진시킨다.
             if current_profit_rate >= tp_1_target and cur_stage < 1:
                 self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
+                self.peaks[m_upper] = self.peaks[market]
                 self._save_state()
                 return "PARTIAL_TP_1", current_price, current_price, current_profit_pct, current_profit_pct
 
             # 1-B. 2차 추가 분할 익절
             if current_profit_rate >= tp_2_target and cur_stage < 2:
                 self.peaks[market] = max(self.peaks.get(market, avg_buy_price), current_price)
+                self.peaks[m_upper] = self.peaks[market]
                 self._save_state()
                 return "PARTIAL_TP_2", current_price, current_price, current_profit_pct, current_profit_pct
 
@@ -566,8 +599,12 @@ class TrailingStopTracker:
                 effective_start_pct = 0.008
                 base_drop_pct = 0.004
             elif is_swing:
-                effective_start_pct = StrategyPolicy.SWING_TRAILING_START_PCT  # +8.0%
-                base_drop_pct = StrategyPolicy.SWING_TRAILING_DROP_PCT        # 4.0%
+                if is_major:
+                    effective_start_pct = getattr(StrategyPolicy, "SWING_MAJOR_TRAILING_START_PCT", 0.025)
+                    base_drop_pct = getattr(StrategyPolicy, "SWING_MAJOR_TRAILING_DROP_PCT", 0.012)
+                else:
+                    effective_start_pct = StrategyPolicy.SWING_TRAILING_START_PCT  # +8.0%
+                    base_drop_pct = StrategyPolicy.SWING_TRAILING_DROP_PCT        # 4.0%
             elif is_new_listing:
                 effective_start_pct = StrategyPolicy.NEW_LISTING_TRAILING_START_PCT  # +4.0%
                 base_drop_pct = StrategyPolicy.NEW_LISTING_TRAILING_DROP_PCT        # 2.0%
@@ -587,6 +624,7 @@ class TrailingStopTracker:
                 previous_peak = self.peaks.get(market, avg_buy_price)
                 current_peak = max(previous_peak, current_price)
                 self.peaks[market] = current_peak
+                self.peaks[m_upper] = current_peak
                 self._save_state()
 
                 peak_profit_pct = ((current_peak - avg_buy_price) / avg_buy_price) * 100.0
@@ -594,7 +632,10 @@ class TrailingStopTracker:
                 if self.macro_defensive_mode:
                     active_drop_pct = 0.004  # 비상 방어 모드: 0.4% 극초밀착
                 elif is_swing:
-                    active_drop_pct = StrategyPolicy.SWING_TRAILING_DROP_PCT  # 스윙 4.0%
+                    if is_major:
+                        active_drop_pct = getattr(StrategyPolicy, "SWING_MAJOR_TRAILING_DROP_PCT", 0.012)
+                    else:
+                        active_drop_pct = StrategyPolicy.SWING_TRAILING_DROP_PCT  # 스윙 4.0%
                 elif is_new_listing:
                     active_drop_pct = StrategyPolicy.NEW_LISTING_TRAILING_DROP_PCT  # 신규상장 2.0%
                 elif is_major:
@@ -616,7 +657,10 @@ class TrailingStopTracker:
                 if self.macro_defensive_mode:
                     min_buffer = 1.005
                 elif is_swing:
-                    min_buffer = 1.0 + StrategyPolicy.SWING_BREAKEVEN_STOP_PCT
+                    if is_major:
+                        min_buffer = 1.0 + getattr(StrategyPolicy, "SWING_MAJOR_BREAKEVEN_STOP_PCT", 0.005)
+                    else:
+                        min_buffer = 1.0 + StrategyPolicy.SWING_BREAKEVEN_STOP_PCT
                 elif is_new_listing:
                     min_buffer = 1.0 + StrategyPolicy.BREAKEVEN_STOP_PCT
                 elif is_major:
@@ -626,8 +670,8 @@ class TrailingStopTracker:
                 min_guaranteed_profit = avg_buy_price * min_buffer
                 trailing_stop_price = max(trailing_stop_price, min_guaranteed_profit)
 
-                # 트레일링 손절선이 고점 대비 너무 바짝 붙어 조기 털리지 않도록 최소 여유 간격(Gap, 최소 1.5%) 확보
-                min_gap_pct = getattr(StrategyPolicy, "MIN_TRAILING_GAP_PCT", 0.015)
+                # 트레일링 손절선이 고점 대비 너무 바짝 붙어 조기 털리지 않도록 최소 여유 간격(Gap, 최소 1.5%) 확보 (단 메이저는 1.0%)
+                min_gap_pct = 0.010 if is_major else getattr(StrategyPolicy, "MIN_TRAILING_GAP_PCT", 0.015)
                 max_allowed_trailing = current_peak * (1.0 - min_gap_pct)
                 if max_allowed_trailing > min_guaranteed_profit:
                     trailing_stop_price = min(trailing_stop_price, max_allowed_trailing)
@@ -640,7 +684,7 @@ class TrailingStopTracker:
                     if self.macro_defensive_mode:
                         mode_tag = " [🚨비상방어]"
                     elif is_swing:
-                        mode_tag = "[🌊스윙]"
+                        mode_tag = "[🌊메이저스윙]" if is_major else "[🌊스윙]"
                     elif is_new_listing:
                         mode_tag = "[🆕신규상장]"
                     else:
@@ -677,9 +721,23 @@ class TrailingStopTracker:
             self._save_state(force=True)
             return True
 
-    def is_breakeven_active(self, market: str) -> bool:
-        """1차 분할 익절 완료 후 본전 보장(Break-Even) 스탑 가동 여부"""
-        return self.get_tp_stage(market) >= 1
+    def is_breakeven_active(self, market: str, avg_buy_price: float = 0.0) -> bool:
+        """1차 분할 익절 완료 또는 고점 수익률(+1.8%) 도달 시 본전 보장(Break-Even) 스탑 가동 여부"""
+        with self._lock:
+            m_upper = market.upper()
+            if self.get_tp_stage(market) >= 1:
+                return True
+            if self.auto_breakeven_active.get(m_upper, False) or self.auto_breakeven_active.get(market, False):
+                return True
+            if avg_buy_price > 0:
+                peak = float(self.peaks.get(market, self.peaks.get(m_upper, 0.0)) or 0.0)
+                trigger_pct = getattr(StrategyPolicy, "AUTO_BREAKEVEN_TRIGGER_PCT", 0.018)
+                if peak >= avg_buy_price * (1.0 + trigger_pct):
+                    self.auto_breakeven_active[m_upper] = True
+                    self.auto_breakeven_active[market] = True
+                    self._save_state(force=True)
+                    return True
+            return False
 
     def clear(self, market: str):
         with self._lock:
@@ -688,6 +746,8 @@ class TrailingStopTracker:
             self.peaks.pop(m_upper, None)
             self.partial_tp_done.pop(market, None)
             self.partial_tp_done.pop(m_upper, None)
+            self.auto_breakeven_active.pop(market, None)
+            self.auto_breakeven_active.pop(m_upper, None)
             self.entry_times.pop(market, None)
             self.entry_times.pop(m_upper, None)
             self.strategy_modes.pop(market, None)

@@ -77,6 +77,19 @@ class StrategyPolicy:
     SWING_ENTRY_EMA20_BUFFER_RATIO: float = 1.005            # 스윙 진입 시 4H EMA20 상단 지지 최소 비율 (1.005 = EMA20 +0.5% 이상 지지)
     SWING_TREND_EXIT_BUFFER_RATIO: float = 0.985             # 스윙 추세 이탈 청산 비율 (4H EMA20의 98.5% 미달 시 청산)
 
+    # 1-3-1. 메이저 코인(BTC/ETH/SOL) 스윙 전용 파라미터 (낮은 변동성 적응 및 선제 수익 보존)
+    SWING_MAJOR_PARTIAL_TP_1_PCT: float = 0.025          # 메이저 스윙 1차 익절 +2.5% (수량 40% 실현)
+    SWING_MAJOR_PARTIAL_TP_1_RATIO: float = 0.40         # 메이저 스윙 1차 익절 비중 40%
+    SWING_MAJOR_PARTIAL_TP_2_PCT: float = 0.050          # 메이저 스윙 2차 익절 +5.0% (수량 30% 실현)
+    SWING_MAJOR_PARTIAL_TP_2_RATIO: float = 0.30         # 메이저 스윙 2차 익절 비중 30%
+    SWING_MAJOR_TRAILING_START_PCT: float = 0.025        # +2.5% 도달 시 트레일링 스탑 활성화
+    SWING_MAJOR_TRAILING_DROP_PCT: float = 0.012         # 최고점 대비 1.2% 하락 시 시장가 청산
+    SWING_MAJOR_BREAKEVEN_STOP_PCT: float = 0.005        # 메이저 본전 보장 스탑 (+0.5% 안전 마진)
+
+    # 1-3-2. 전 전략 공통 자동 본전 보장(Auto Break-Even) 파라미터
+    AUTO_BREAKEVEN_TRIGGER_PCT: float = 0.018            # 고점 수익률 +1.8% 도달 시 즉시 본전 보장 스탑 활성화
+    AUTO_BREAKEVEN_STOP_PCT: float = 0.003               # 자동 본전 스탑 시 최소 보장 마진 (+0.3%, 수수료 커버)
+
     # 1-4. 신규 상장 단타(NEW_LISTING) 전용 파라미터 — 4H/1H 이력 부족 시 소액 단타 경로
     # 기본값은 후보 분석·감사만 수행하는 관찰 모드다. 실주문은 거래소별 명시 설정이 있어야 한다.
     NEW_LISTING_ENABLED: bool = True
@@ -143,7 +156,7 @@ class StrategyPolicy:
     REGIME_MAX_EXPOSURE: dict[str, float] = {
         "BULL_TREND": 0.85,  # 강세장: 자산의 최대 85%까지 적극 투자 (현금 15% 버퍼)
         "NORMAL": 0.55,      # 횡보/일반: 자산의 55% 투자 (현금 45% 확보)
-        "RISK_OFF": 0.20,    # 조정/약세: 자산의 20%만 투자 (현금 80% 안전 방어)
+        "RISK_OFF": 0.50,    # 조정/약세: 자산의 최대 50%까지 적극 매수 허용 (현금 50% 버퍼)
         "CRASH": 0.00,       # 급락/위기: 신규 매수 0% 차단
     }
 
@@ -151,7 +164,7 @@ class StrategyPolicy:
     REGIME_SWING_CAP: dict[str, int] = {
         "BULL_TREND": 8,     # 강세장: 스윙 무제한 허용 (안전 상한선 8개 및 익스포저 85% 내에서 자율 확장)
         "NORMAL": 1,         # 횡보/일반: 스윙 최대 1개 엄선
-        "RISK_OFF": 0,       # 조정/약세: 스윙 진입 전면 금지
+        "RISK_OFF": 0,       # 조정/약세: 스윙 진입 전면 금지 (단타만 적극 매수)
         "CRASH": 0,          # 급락/위기: 전면 금지
     }
 
@@ -180,6 +193,15 @@ class StrategyPolicy:
     @classmethod
     def get_regime_max_exposure(cls, regime: str, default: float = 0.55) -> float:
         regime_key = str(regime or "NORMAL").upper()
+        env_key = f"REGIME_{regime_key}_MAX_EXPOSURE"
+        raw = os.getenv(env_key, "").strip()
+        if raw:
+            try:
+                val = float(raw)
+                if 0.0 <= val <= 1.0:
+                    return val
+            except ValueError:
+                pass
         return cls.REGIME_MAX_EXPOSURE.get(regime_key, default)
 
     @classmethod
@@ -245,10 +267,34 @@ class StrategyPolicy:
     MIN_ALT_ALLOC_PCT: float = 0.10      # 알트코인 단일 종목 최소 비중 하한 10% (120만원 기준 12만원 미만 극소액 방지)
     NIGHT_SESSION_MAX_ALLOC_PCT: float = 0.10 # 심야 세션(00:00~06:00) 최대 비중 10% 하드 캡 (약 12만원)
 
-    # 2-2. RISK_OFF 레짐 하 알트코인 리스크 통제 정책 (승률-손익 역전 방지)
-    RISK_OFF_MAX_ALT_ALLOC_PCT: float = 0.06      # RISK_OFF 시 알트 최대 비중 6% (평상시 15% 대비 대폭 축소)
-    RISK_OFF_MAX_ALT_BUDGET_KRW: float = 75000.0  # RISK_OFF 시 알트 1종목 최대 매수 금액 7.5만 원 캡
+    # 2-2. RISK_OFF 레짐 하 알트코인 리스크 통제 정책 (단타 적극 매수)
+    RISK_OFF_MAX_ALT_ALLOC_PCT: float = 0.12      # RISK_OFF 시 알트 최대 비중 12% (단타 적극 매수 허용)
+    RISK_OFF_MAX_ALT_BUDGET_KRW: float = 200000.0  # RISK_OFF 시 알트 1종목 최대 매수 금액 20만 원 캡
     RISK_OFF_MIN_ORDERBOOK_RATIO: float = 1.00    # RISK_OFF 시 최소 요구 호가 잔량비 (매수벽 >= 매도벽)
+
+    @classmethod
+    def get_risk_off_max_alt_alloc_pct(cls) -> float:
+        raw = os.getenv("RISK_OFF_MAX_ALT_ALLOC_PCT", "").strip()
+        if raw:
+            try:
+                val = float(raw)
+                if 0.0 < val <= 1.0:
+                    return val
+            except ValueError:
+                pass
+        return cls.RISK_OFF_MAX_ALT_ALLOC_PCT
+
+    @classmethod
+    def get_risk_off_max_alt_budget_krw(cls) -> float:
+        raw = os.getenv("RISK_OFF_MAX_ALT_BUDGET_KRW", "").strip()
+        if raw:
+            try:
+                val = float(raw)
+                if val > 0:
+                    return val
+            except ValueError:
+                pass
+        return cls.RISK_OFF_MAX_ALT_BUDGET_KRW
 
     # 3. 시간 기반 청산 (타임스탑) & 15분 모멘텀 조기 탈출 & 쿨다운
     MOMENTUM_EARLY_EXIT_SECONDS: int = 2700 # 45분 모멘텀 소멸 조기 본전 탈출 (2700초로 유예 확대)

@@ -2,6 +2,41 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.05 (2026-09-22)
+
+- **약세장(RISK_OFF) 레짐 알트코인 단타 적극 매수 완화 및 가용 헤드룸 사전 클램핑 구현**:
+  - `src/strategy_engine.py`:
+    - `StrategyPolicy.REGIME_MAX_EXPOSURE["RISK_OFF"]`: 기존 `0.20`(20%)에서 `0.50`(50%)로 상향하여 조정/약세장에서도 최대 50%까지 코인 보유 허용.
+    - 환경변수 `REGIME_RISK_OFF_MAX_EXPOSURE`를 통한 동적 오버라이드 지원 (`get_regime_max_exposure`).
+    - `StrategyPolicy.RISK_OFF_MAX_ALT_ALLOC_PCT`: 기존 `0.06`(6%)에서 `0.12`(12%)로 상향 (`get_risk_off_max_alt_alloc_pct`).
+    - `StrategyPolicy.RISK_OFF_MAX_ALT_BUDGET_KRW`: 기존 75,000원에서 200,000원으로 상향 (`get_risk_off_max_alt_budget_krw`).
+    - `REGIME_SWING_CAP["RISK_OFF"]`: `0` 유지 (약세장에서는 단타만 집중 운용).
+  - `src/trading_runtime.py`:
+    - `trade_budget` 산정 시 `StrategyPolicy` 헬퍼 메서드 및 환경변수와 완벽 연동.
+    - 레짐별 총 투자 비중 상한에 따른 남은 가용 헤드룸(`max_headroom_order`) 사전 계산 및 자동 클램핑 로직 구현.
+    - 한도에 미세하게 걸쳐 주문이 전면 차단되던 구조적 문제를 해결하고, 남은 헤드룸 범위 내에서 안전하게 부분 매수 집행.
+  - `tests/test_dynamic_slots.py`:
+    - 상향된 50% 익스포저 한도, 단타 연속 매수 허용, 3번째 한도 초과 차단 및 환경변수 오버라이드 단위 테스트 갱신/추가 완료 (전원 통과).
+  - `docs/project-design/strategy-and-risk.md`:
+    - `RISK_OFF` 알트코인 단타 적극 매수 정책 및 한도, 헤드룸 사전 클램핑 설계 명세 반영.
+
+- **수익 반납 및 손실 전환 방지를 위한 메이저 스윙 분할익절 현실화 및 전 전략 자동 본전 보장(Auto Break-Even) 스탑 구현**:
+  - `src/strategy_engine.py`:
+    - `StrategyPolicy`에 메이저 전용 스윙 파라미터 신규 정의: `SWING_MAJOR_PARTIAL_TP_1_PCT=0.025` (+2.5%, 40%), `SWING_MAJOR_PARTIAL_TP_2_PCT=0.050` (+5.0%, 30%), `SWING_MAJOR_TRAILING_START_PCT=0.025` (+2.5%), `SWING_MAJOR_TRAILING_DROP_PCT=0.012` (1.2% 반락 시 시장가 청산), `SWING_MAJOR_BREAKEVEN_STOP_PCT=0.005` (+0.5% 마진).
+    - 전 전략 공통 자동 본전 보장 파라미터 정의: `AUTO_BREAKEVEN_TRIGGER_PCT=0.018` (+1.8% 고점 도달 시 활성화), `AUTO_BREAKEVEN_STOP_PCT=0.003` (+0.3% 수수료 보장).
+  - `src/risk_manager.py`:
+    - `TrailingStopTracker`: 포지션 진입가 초과 시 상시 최고가(`self.peaks`) 갱신 체계 구축.
+    - 고점 수익률 `+1.8%` 도달 시 `auto_breakeven_active`를 영속 활성화하여 분할익절 완료 전이라도 손절선을 평단가 위로 강제 락인.
+    - `is_breakeven_active(market, avg_buy_price)` 개선: 1차 분할익절 체결 또는 +1.8% 고점 도달 시 모두 `True` 반환.
+    - `check_position()`에서 `is_swing and is_major` 분기 적용하여 BTC/ETH/SOL이 비현실적인 +8%를 기다리지 않고 +2.5%에서 선제 익절 및 트레일링하도록 개편.
+  - `src/realtime_engine.py`, `src/trading_runtime.py`:
+    - 실시간 0.1초 틱 및 5분 주기 평가 시 `is_breakeven_active`와 연동하여 메이저 스윙 `+0.5%`, 알트 스윙 `+1.5%`, 일반 단타 `+0.3%` 이상으로 손절선 하한선 보장.
+    - 메이저 스윙 1차/2차 분할익절 문구 및 로그를 실제 기준(+2.5%/+5.0%)에 맞게 정밀 표기.
+  - `tests/test_swing_major_and_breakeven.py`, `tests/test_swing_strategy.py`:
+    - 어제 발생한 ETH(+2.11% 도달 후 급락) 시나리오 완벽 방어 검증, SOL 메이저 스윙 분할익절, 비트코인 1.2% 트레일링 청산, 재시작 복원, 알트 스윙 독립성 단위 테스트 전원 통과 검증.
+  - `docs/project-design/strategy-and-risk.md`:
+    - 메이저 스윙 분할익절 및 자동 본전 보장 스탑 설계 정책 명세화 완료.
+
 ## v9.03 (2026-09-22)
 
 - **사이클당 최대 분석 종목 수(`MAX_CYCLE_MARKETS`) 대시보드 웹 UI 연동 및 빗썸/업비트 공통 핫리로드 구축**:

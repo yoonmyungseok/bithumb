@@ -5,7 +5,7 @@ import time
 from typing import Any
 
 from position_guard import is_exit_allowed
-from strategy_engine import StrategyPolicy
+from strategy_engine import StrategyPolicy, is_major_market
 from order_safety import (
     CooldownManager,
     OrderFillProcessor,
@@ -388,6 +388,7 @@ class RealtimeRiskEngine:
             is_bull_regime = (curr_regime == "BULL_TREND")
             is_swing = getattr(self.trailing_tracker, "is_swing_position", lambda m: False)(market)
             is_new_listing = getattr(self.trailing_tracker, "is_new_listing_position", lambda m: False)(market)
+            is_major = is_major_market(market)
 
             raw_stop_loss = float(strat.get("STOP_LOSS", 0.0) or strat.get("stop_loss", 0.0))
             # 진입 직후 털림 방지: 손절선은 평단가 대비 레짐/전략별 기본 손절 이하로 안전 마진 보장
@@ -404,9 +405,15 @@ class RealtimeRiskEngine:
             effective_stop_loss = raw_stop_loss if raw_stop_loss > 0 else base_stop_loss
             effective_stop_loss = min(effective_stop_loss, base_stop_loss)
 
-            # 🛡️ [수익 보존 브레이크이븐]: 1차 분할 익절 완료 시 손절선 락인 (스윙 +1.5%, 단타 +0.3%)
-            if self.trailing_tracker.is_breakeven_active(market):
-                be_pct = StrategyPolicy.SWING_BREAKEVEN_STOP_PCT if is_swing else StrategyPolicy.BREAKEVEN_STOP_PCT
+            # 🛡️ [수익 보존 브레이크이븐]: 1차 분할 익절 완료 또는 고점 +1.8% 도달 시 손절선 락인 (스윙알트 +1.5%, 스윙메이저 +0.5%, 단타 +0.3%)
+            if self.trailing_tracker.is_breakeven_active(market, avg_buy_price=avg_buy_price):
+                if is_swing:
+                    if is_major:
+                        be_pct = getattr(StrategyPolicy, "SWING_MAJOR_BREAKEVEN_STOP_PCT", 0.005)
+                    else:
+                        be_pct = StrategyPolicy.SWING_BREAKEVEN_STOP_PCT
+                else:
+                    be_pct = StrategyPolicy.BREAKEVEN_STOP_PCT
                 breakeven_sl = avg_buy_price * (1.0 + be_pct)
                 effective_stop_loss = max(effective_stop_loss, breakeven_sl)
             now_str = get_kst_now_str()
@@ -524,11 +531,42 @@ class RealtimeRiskEngine:
                         return
 
                     try:
-                        stage_label = (
-                            f"2차 +{StrategyPolicy.PARTIAL_TP_2_PCT*100:.1f}%(25%)"
-                            if is_stage2
-                            else f"1차 +{StrategyPolicy.PARTIAL_TP_1_PCT*100:.1f}%({int(StrategyPolicy.PARTIAL_TP_1_RATIO*100)}%)"
-                        )
+                        if is_swing:
+                            if is_major:
+                                stage_target_pct = (
+                                    getattr(StrategyPolicy, "SWING_MAJOR_PARTIAL_TP_2_PCT", 0.050)
+                                    if is_stage2
+                                    else getattr(StrategyPolicy, "SWING_MAJOR_PARTIAL_TP_1_PCT", 0.025)
+                                )
+                                stage_ratio_pct = int(
+                                    (
+                                        getattr(StrategyPolicy, "SWING_MAJOR_PARTIAL_TP_2_RATIO", 0.30)
+                                        if is_stage2
+                                        else getattr(StrategyPolicy, "SWING_MAJOR_PARTIAL_TP_1_RATIO", 0.40)
+                                    )
+                                    * 100
+                                )
+                            else:
+                                stage_target_pct = (
+                                    StrategyPolicy.SWING_PARTIAL_TP_2_PCT
+                                    if is_stage2
+                                    else StrategyPolicy.SWING_PARTIAL_TP_1_PCT
+                                )
+                                stage_ratio_pct = int(
+                                    (
+                                        StrategyPolicy.SWING_PARTIAL_TP_2_RATIO
+                                        if is_stage2
+                                        else StrategyPolicy.SWING_PARTIAL_TP_1_RATIO
+                                    )
+                                    * 100
+                                )
+                            stage_label = f"{'2차' if is_stage2 else '1차'} +{stage_target_pct*100:.1f}%({stage_ratio_pct}%)"
+                        else:
+                            stage_label = (
+                                f"2차 +{StrategyPolicy.PARTIAL_TP_2_PCT*100:.1f}%(25%)"
+                                if is_stage2
+                                else f"1차 +{StrategyPolicy.PARTIAL_TP_1_PCT*100:.1f}%({int(StrategyPolicy.PARTIAL_TP_1_RATIO*100)}%)"
+                            )
                         logger.info(
                             f"⚡ [실시간 {stage_label} 분할익절] {korean_name}({market}) 현재가 {current_price:,.2f}원(+{realized_profit_pct:.2f}%). 시장가 분할 익절!"
                         )

@@ -15,8 +15,10 @@ class TestDynamicSlotsPolicy:
         assert StrategyPolicy.DYNAMIC_SLOT_SAFETY_MAX_POSITIONS == 8
         assert StrategyPolicy.get_regime_max_exposure("BULL_TREND") == 0.85
         assert StrategyPolicy.get_regime_max_exposure("NORMAL") == 0.55
-        assert StrategyPolicy.get_regime_max_exposure("RISK_OFF") == 0.20
+        assert StrategyPolicy.get_regime_max_exposure("RISK_OFF") == 0.50
         assert StrategyPolicy.get_regime_max_exposure("CRASH") == 0.00
+        assert StrategyPolicy.RISK_OFF_MAX_ALT_ALLOC_PCT == 0.12
+        assert StrategyPolicy.RISK_OFF_MAX_ALT_BUDGET_KRW == 200000.0
 
     def test_regime_swing_caps(self):
         assert StrategyPolicy.get_regime_swing_cap("BULL_TREND") >= 3
@@ -120,10 +122,10 @@ class TestDynamicRiskGuard:
         assert ok is True, f"NORMAL에서 단타는 승인되어야 함: {msg}"
 
     def test_risk_off_blocks_swing_and_limits_exposure(self, guard):
-        """RISK_OFF 약세장에서는 스윙이 전면 차단되고 총 노출도 20% 초과 시 단타도 차단된다."""
+        """RISK_OFF 약세장에서는 스윙이 전면 차단되고 총 노출도 50% 초과 시 단타도 차단된다."""
         guard.set_current_regime("RISK_OFF")
         total_equity = 1_000_000.0
-        order_krw = 150_000.0  # 15%
+        order_krw = 200_000.0  # 20%
 
         # 스윙 시도 -> 즉시 차단
         ok, msg = guard.validate_buy(
@@ -137,7 +139,7 @@ class TestDynamicRiskGuard:
         assert ok is False
         assert "스윙 신규 진입이 차단" in msg
 
-        # 1번째 소액 단타 시도 (15% <= 20%) -> 승인
+        # 1번째 단타 시도 (20% <= 50%) -> 승인
         ok, msg = guard.validate_buy(
             market="KRW-XRP",
             order_krw=order_krw,
@@ -148,18 +150,30 @@ class TestDynamicRiskGuard:
         )
         assert ok is True
 
-        # 2번째 단타 시도 (누적 노출 30% > 20% 한도) -> 차단
+        # 2번째 단타 시도 (누적 노출 40% <= 50% 한도) -> 적극 매수 승인!
         ok, msg = guard.validate_buy(
             market="KRW-DOGE",
             order_krw=order_krw,
-            available_krw=850_000.0,  # 150,000 이미 매수됨
+            available_krw=800_000.0,  # 200,000 이미 매수됨
             total_equity=total_equity,
             held_markets=["KRW-XRP"],
+            strategy_mode="SCALP",
+        )
+        assert ok is True, f"50% 한도 내 2번째 단타는 승인되어야 함: {msg}"
+
+        # 3번째 단타 시도 (누적 노출 60% > 50% 한도) -> 50% 한도 초과 차단
+        ok, msg = guard.validate_buy(
+            market="KRW-SOL",
+            order_krw=order_krw,
+            available_krw=600_000.0,  # 400,000 이미 매수됨
+            total_equity=total_equity,
+            held_markets=["KRW-XRP", "KRW-DOGE"],
             strategy_mode="SCALP",
         )
         assert ok is False
         assert "총 투자 비중 한도 초과" in msg
         assert "RISK_OFF" in msg
+        assert "50%" in msg
 
     def test_crash_regime_blocks_all(self, guard):
         """CRASH 급락장에서는 모든 매수 진입이 차단된다."""
@@ -214,3 +228,13 @@ class TestDynamicRiskGuard:
         )
         assert ok is False
         assert "스윙 전용 보유 종목 수 한도" in msg
+
+    def test_risk_off_env_overrides(self, monkeypatch):
+        """환경변수로 RISK_OFF 익스포저 및 알트 비중/예산 오버라이드가 정상 동작함을 검증"""
+        monkeypatch.setenv("REGIME_RISK_OFF_MAX_EXPOSURE", "0.45")
+        monkeypatch.setenv("RISK_OFF_MAX_ALT_ALLOC_PCT", "0.15")
+        monkeypatch.setenv("RISK_OFF_MAX_ALT_BUDGET_KRW", "250000")
+
+        assert StrategyPolicy.get_regime_max_exposure("RISK_OFF") == 0.45
+        assert StrategyPolicy.get_risk_off_max_alt_alloc_pct() == 0.15
+        assert StrategyPolicy.get_risk_off_max_alt_budget_krw() == 250000.0

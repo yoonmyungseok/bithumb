@@ -1789,8 +1789,16 @@ class TradingCycleEngine:
         if is_holding:
             entry_price = avg_buy_price
             stop_loss = avg_buy_price * (1.0 - StrategyPolicy.STOP_LOSS_PCT)
-            if ctx.trailing_tracker.is_breakeven_active(market):
-                stop_loss = max(stop_loss, avg_buy_price * (1.0 + StrategyPolicy.BREAKEVEN_STOP_PCT))
+            if ctx.trailing_tracker.is_breakeven_active(market, avg_buy_price=avg_buy_price):
+                is_swing_m = getattr(ctx.trailing_tracker, "is_swing_position", lambda m: False)(market)
+                if is_swing_m:
+                    if is_major_market(market):
+                        be_pct = getattr(StrategyPolicy, "SWING_MAJOR_BREAKEVEN_STOP_PCT", 0.005)
+                    else:
+                        be_pct = StrategyPolicy.SWING_BREAKEVEN_STOP_PCT
+                else:
+                    be_pct = StrategyPolicy.BREAKEVEN_STOP_PCT
+                stop_loss = max(stop_loss, avg_buy_price * (1.0 + be_pct))
             target_price = avg_buy_price * (
                 1.0 + getattr(StrategyPolicy, "PROFIT_TARGET_PCT", StrategyPolicy.PARTIAL_TP_1_PCT)
             )
@@ -2288,11 +2296,19 @@ class TradingCycleEngine:
         if not is_major and not is_swing and current_total_equity > 0:
             is_risk_off = (getattr(market_inputs, "btc_regime", "") == "RISK_OFF")
             if is_risk_off:
-                # 약세장 RISK_OFF 시: 알트코인 과다 배팅 방지 및 승률-손익 역전 차단을 위한 보수적 하드 캡
-                max_alt_alloc = getattr(StrategyPolicy, "RISK_OFF_MAX_ALT_ALLOC_PCT", 0.06)
+                # 약세장 RISK_OFF 시: 알트코인 단타 적극 매수 허용 (설정 및 환경변수 반영)
+                max_alt_alloc = (
+                    StrategyPolicy.get_risk_off_max_alt_alloc_pct()
+                    if hasattr(StrategyPolicy, "get_risk_off_max_alt_alloc_pct")
+                    else getattr(StrategyPolicy, "RISK_OFF_MAX_ALT_ALLOC_PCT", 0.12)
+                )
                 max_alt_budget = min(
                     current_total_equity * max_alt_alloc,
-                    getattr(StrategyPolicy, "RISK_OFF_MAX_ALT_BUDGET_KRW", 75000.0),
+                    (
+                        StrategyPolicy.get_risk_off_max_alt_budget_krw()
+                        if hasattr(StrategyPolicy, "get_risk_off_max_alt_budget_krw")
+                        else getattr(StrategyPolicy, "RISK_OFF_MAX_ALT_BUDGET_KRW", 200000.0)
+                    ),
                 )
                 min_alt_budget = safe_order_krw
             else:
@@ -2317,6 +2333,21 @@ class TradingCycleEngine:
 
         if trade_budget < safe_order_krw and krw_available >= safe_order_krw:
             trade_budget = min(krw_available, max(max_slot_budget, safe_order_krw))
+
+        # 동적 슬롯 총 투자 비중(Total Exposure) 상한 사전 헤드룸 클램핑
+        # (체결 직전 리스크 가드에서 총 비중 초과로 전면 차단되는 현상 방지)
+        if current_total_equity > 0 and hasattr(ctx, "risk_guard") and getattr(ctx.risk_guard, "dynamic_slots_enabled", False):
+            regime = getattr(market_inputs, "btc_regime", "NORMAL")
+            guard_max_exp = getattr(ctx.risk_guard, "max_total_exposure_pct", 0.90)
+            regime_max_exp = StrategyPolicy.get_regime_max_exposure(regime, guard_max_exp)
+            effective_max_exp = min(guard_max_exp, regime_max_exp)
+            max_headroom_order = max(0.0, krw_available - current_total_equity * (1.0 - effective_max_exp))
+            if max_headroom_order < trade_budget:
+                logger.info(
+                    f"🛡️ [{market}] 레짐({regime}) 총 투자 비중 상한({effective_max_exp*100:.0f}%) 가용 헤드룸 클램핑: "
+                    f"기존 {int(trade_budget):,d}원 ➜ 가용 {int(max_headroom_order):,d}원"
+                )
+                trade_budget = max_headroom_order
 
         if trade_budget < safe_order_krw or (trade_budget * 0.995) < min_order_krw:
             if buy_profile.use_slot_based_budget:
