@@ -180,6 +180,17 @@ COMMON_CONFIG_SCHEMA: dict[str, ConfigFieldDef] = {
     ),
 
     # 2. 스크리닝 & 전략
+    "MAX_CYCLE_MARKETS": ConfigFieldDef(
+        key="MAX_CYCLE_MARKETS",
+        type_name="int",
+        default=10,
+        min_val=0,
+        max_val=30,
+        category="screening",
+        label="사이클당 최대 분석 종목 수 (0=제한없음)",
+        description="각 사이클마다 AI 심층 분석을 수행할 최대 마켓 수입니다. 보유 종목은 최우선 보장되며, 0 설정 시 제한 없이 전수 분석합니다.",
+        unit="개",
+    ),
     "TOP_COUNT": ConfigFieldDef(
         key="TOP_COUNT",
         type_name="int",

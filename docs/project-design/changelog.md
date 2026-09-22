@@ -2,6 +2,25 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.03 (2026-09-22)
+
+- **사이클당 최대 분석 종목 수(`MAX_CYCLE_MARKETS`) 대시보드 웹 UI 연동 및 빗썸/업비트 공통 핫리로드 구축**:
+  - `src/runtime_config.py`:
+    - `COMMON_CONFIG_SCHEMA`에 `MAX_CYCLE_MARKETS` (정수형, 기본값 10개, 0=제한없음, 범위 0~30개) 필드 신규 등록 및 유효성 검증 체계 구현.
+  - `src/dashboard_server.py`:
+    - 대시보드 `⚙️ 공통 설정` 모달의 `🔍 스크리닝 & 전략` 탭에 `cfg_MAX_CYCLE_MARKETS` 입력 폼 추가.
+    - [💾 저장 및 즉시 적용] 클릭 시 `.env` 영구 저장 및 활성 봇 코어(17979/17980) 핫리로드 무중단 반영 지원.
+  - `src/trading_runtime.py`:
+    - 빗썸과 업비트 공통으로 사이클당 타겟 마켓 상한 로직(`cap_cycle_target_markets`) 확장.
+    - 거래소 전용 환경변수(`BITHUMB_MAX_CYCLE_MARKETS`, `UPBIT_MAX_CYCLE_MARKETS`) 우선순위 및 공통 `MAX_CYCLE_MARKETS` 연동.
+    - 캡핑 시 현재 보유 종목(`held_markets`)을 최우선 보장하여 포지션 보호 완벽 유지.
+  - `.env`, `.env.sample`, `.env.upbit`:
+    - 공통 `.env` 및 샘플에 `MAX_CYCLE_MARKETS=10` 적용, `.env.upbit`는 주석화하여 공통 설정 자동 상속 지원.
+  - `tests/test_runtime_config_manager.py`, `tests/test_trading_runtime.py`:
+    - 스키마 커버리지, 정규화/유효성 검사 및 빗썸/업비트 캡핑 동작 단위 테스트 추가 및 전원 통과 검증.
+  - `docs/project-design/strategy-and-risk.md`:
+    - 사이클당 최대 분석 종목 수 상한 캡 및 대시보드 핫리로드 정책 명세화.
+
 ## v9.02 (2026-09-21)
 
 - **상승장 매수 지정가 미체결 취소 방지를 위한 스마트 오더 체결(Smart Order Placement) 적극성 상향**:

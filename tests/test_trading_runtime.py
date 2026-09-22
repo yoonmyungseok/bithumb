@@ -150,12 +150,18 @@ class TradingRuntimePrefixTests(unittest.TestCase):
         profile: ExchangeCycleProfile,
         *,
         env_file: str | None = None,
+        common_env_file: str | None = None,
         exit_profile: ExchangeExitProfile | None = None,
         entry_profile: ExchangeEntryProfile | None = None,
         buy_profile: ExchangeBuyProfile | None = None,
         trailing_tracker=None,
         risk_guard=None,
     ) -> TradingCycleEngine:
+        empty_env = os.path.join(self.tmp_dir.name, "test_empty.env")
+        if not os.path.exists(empty_env):
+            with open(empty_env, "w", encoding="utf-8") as f:
+                f.write("")
+        common_env_file = common_env_file or empty_env
         if trailing_tracker is None:
             trailing_tracker = types.SimpleNamespace(
                 start_profit_pct=0.0,
@@ -222,6 +228,7 @@ class TradingRuntimePrefixTests(unittest.TestCase):
             ),
             buy_profile=buy_profile or ExchangeBuyProfile(exchange_name=profile.exchange_key),
             env_file=env_file,
+            common_env_file=common_env_file,
             interval_minutes=5,
             gemini_api_key="",
             is_bot_paused=lambda: False,
@@ -1246,6 +1253,7 @@ class UpbitCycleMarketCapTests(TradingRuntimePrefixTests):
         self.assertEqual(len(capped_no_held), 6)
         self.assertEqual(capped_no_held, [f"KRW-{i}" for i in range(6)])
 
+    @patch.dict(os.environ, {"MAX_CYCLE_MARKETS": "", "UPBIT_MAX_CYCLE_MARKETS": "", "BITHUMB_MAX_CYCLE_MARKETS": ""})
     @patch("trading_runtime.get_fear_and_greed_index", return_value={"desc": "중립"})
     @patch("trading_runtime.load_runtime_risk_settings")
     def test_upbit_prefix_applies_cycle_cap(self, mock_risk_settings, _mock_fng):
@@ -1276,9 +1284,10 @@ class UpbitCycleMarketCapTests(TradingRuntimePrefixTests):
         prefix = engine.run_cycle_prefix()
         self.assertEqual(len(prefix.target_markets), 6)
 
+    @patch.dict(os.environ, {"MAX_CYCLE_MARKETS": "", "UPBIT_MAX_CYCLE_MARKETS": "", "BITHUMB_MAX_CYCLE_MARKETS": ""})
     @patch("trading_runtime.get_fear_and_greed_index", return_value={"desc": "중립"})
     @patch("trading_runtime.load_runtime_risk_settings")
-    def test_bithumb_prefix_does_not_apply_cycle_cap(self, mock_risk_settings, _mock_fng):
+    def test_bithumb_prefix_does_not_apply_cycle_cap_without_env(self, mock_risk_settings, _mock_fng):
         mock_risk_settings.return_value = types.SimpleNamespace(
             btc_crash_threshold_pct=-0.03,
             max_daily_loss_pct=0.05,
@@ -1304,6 +1313,35 @@ class UpbitCycleMarketCapTests(TradingRuntimePrefixTests):
         engine.context.orchestrator.select_target_markets = MagicMock(return_value=list(many_markets))
         prefix = engine.run_cycle_prefix()
         self.assertEqual(len(prefix.target_markets), 8)
+
+    @patch.dict(os.environ, {"MAX_CYCLE_MARKETS": "5"})
+    @patch("trading_runtime.get_fear_and_greed_index", return_value={"desc": "중립"})
+    @patch("trading_runtime.load_runtime_risk_settings")
+    def test_bithumb_prefix_applies_cycle_cap_from_env(self, mock_risk_settings, _mock_fng):
+        mock_risk_settings.return_value = types.SimpleNamespace(
+            btc_crash_threshold_pct=-0.03,
+            max_daily_loss_pct=0.05,
+            trailing_start_pct=0.02,
+            trailing_stop_pct=0.01,
+        )
+        many_markets = [f"KRW-{i}" for i in range(8)]
+        profile = ExchangeCycleProfile(
+            exchange_key="bithumb",
+            reconcile_label="",
+            decision_exchange="bithumb",
+            log_prefix="",
+            extra_excluded_markets=frozenset(),
+            create_screener=self.create_screener,
+            cycle_start_label="5분 AI 퀀트 트레이딩",
+            tier_label="스마트 자산 티어",
+            tier_top_wording="스크리닝 상위",
+            summary_label="자산 요약",
+            btc_crash_label="비트코인 급락 위험 감지",
+        )
+        engine = self._build_engine(profile)
+        engine.context.orchestrator.select_target_markets = MagicMock(return_value=list(many_markets))
+        prefix = engine.run_cycle_prefix()
+        self.assertEqual(len(prefix.target_markets), 5)
 
     @patch("trading_runtime.get_fear_and_greed_index", return_value={"desc": "중립"})
     @patch("trading_runtime.load_runtime_risk_settings")

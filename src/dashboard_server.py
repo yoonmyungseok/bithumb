@@ -1815,8 +1815,16 @@ class UnifiedDashboardServer:
                 </div>
                 <div id="cfg-panel-screening" class="cfg-panel hidden space-y-4">
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800 sm:col-span-2">
+                            <div class="flex items-center justify-between mb-1">
+                                <label class="text-xs font-semibold">사이클당 최대 분석 종목 수 (상한 캡)</label>
+                                <span class="text-[10px] text-indigo-400 bg-indigo-950/60 px-2 py-0.5 rounded border border-indigo-800/50">0 = 제한 없음 (전수 분석)</span>
+                            </div>
+                            <input type="number" id="cfg_MAX_CYCLE_MARKETS" step="1" min="0" max="30" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                            <p class="text-[11px] text-slate-400 mt-1">보유 종목은 최우선 보장되며, 남은 슬롯을 스크리너 상위 종목으로 채웁니다. (권장: 10개)</p>
+                        </div>
                         <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
-                            <label class="text-xs font-semibold block mb-1">분석 대상 후보 수 (개)</label>
+                            <label class="text-xs font-semibold block mb-1">스크리너 1차 추출 후보 수 (개)</label>
                             <input type="number" id="cfg_TOP_COUNT" step="1" min="1" max="10" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
                         </div>
                         <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">

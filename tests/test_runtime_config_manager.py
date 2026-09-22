@@ -31,7 +31,7 @@ class TestCommonConfigManager(unittest.TestCase):
     def test_schema_coverage(self):
         expected_keys = [
             "TRAILING_START_PCT", "TRAILING_STOP_PCT", "MAX_DAILY_LOSS_PCT", "BTC_CRASH_THRESHOLD_PCT",
-            "ORDERBOOK_SLIPPAGE_ENFORCEMENT", "TOP_COUNT", "MIN_TRADE_VALUE", "MIN_CHANGE_RATE",
+            "ORDERBOOK_SLIPPAGE_ENFORCEMENT", "MAX_CYCLE_MARKETS", "TOP_COUNT", "MIN_TRADE_VALUE", "MIN_CHANGE_RATE",
             "MAX_CHANGE_RATE", "MOMENTUM_BREAKOUT_ENABLED", "NEW_LISTING_ENABLED", "NEW_LISTING_ENFORCEMENT",
             "MAX_OPEN_POSITIONS", "MAX_POSITION_PCT", "MAX_TOTAL_EXPOSURE_PCT", "MAX_ORDER_KRW",
             "MAX_SWING_POSITIONS", "MAX_NEW_LISTING_POSITIONS", "MAX_SCALP_POSITIONS",
@@ -86,6 +86,21 @@ class TestCommonConfigManager(unittest.TestCase):
         self.assertEqual(val, 5)
 
         ok, val, err = self.manager.validate_and_normalize("TOP_COUNT", 15)
+        self.assertFalse(ok)
+
+        # MAX_CYCLE_MARKETS: 0(제한없음) 및 10(정상), 30(최대), 초과/미달 검증
+        ok, val, err = self.manager.validate_and_normalize("MAX_CYCLE_MARKETS", 0)
+        self.assertTrue(ok)
+        self.assertEqual(val, 0)
+
+        ok, val, err = self.manager.validate_and_normalize("MAX_CYCLE_MARKETS", 10)
+        self.assertTrue(ok)
+        self.assertEqual(val, 10)
+
+        ok, val, err = self.manager.validate_and_normalize("MAX_CYCLE_MARKETS", 35)
+        self.assertFalse(ok)
+
+        ok, val, err = self.manager.validate_and_normalize("MAX_CYCLE_MARKETS", -1)
         self.assertFalse(ok)
 
         ok, val, err = self.manager.validate_and_normalize("MOMENTUM_BREAKOUT_ENABLED", "true")

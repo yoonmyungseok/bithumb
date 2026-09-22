@@ -17,7 +17,7 @@ from exchange_adapter import ExchangeAdapter
 from gemini_analyzer import GeminiAnalyzer
 from order_safety import calculate_partial_take_profit_volume, calculate_risk_position_size, evaluate_buy_orderbook_impact
 from risk_manager import get_fear_and_greed_index, get_kst_now, get_kst_now_str
-from runtime_config import load_runtime_risk_settings
+from runtime_config import get_exchange_env_setting, load_runtime_risk_settings
 from strategy_engine import (
     StrategyPolicy,
     calculate_ema,
@@ -670,20 +670,29 @@ class TradingCycleEngine:
         ctx.orchestrator.record_latency("market_swing_scan", sub_swing_scan)
         ctx.orchestrator.record_latency("market_selection_overhead", sub_other)
 
-        max_cycle_markets = profile.max_cycle_markets
-        env_max_markets = os.getenv("UPBIT_MAX_CYCLE_MARKETS")
-        if profile.exchange_key == "upbit" and env_max_markets is not None and env_max_markets.strip().isdigit():
-            val = int(env_max_markets.strip())
-            max_cycle_markets = val if val > 0 else None
-        if profile.exchange_key == "upbit" and max_cycle_markets is not None and max_cycle_markets > 0:
+        # 사이클 분석 종목 수 상한 (프로필 기본값 및 거래소/공통 환경변수 연동)
+        # 업비트는 프로필 기본값을 수용하며, 빗썸은 프로필 하드코딩 없이 환경변수로 제어된다.
+        max_cycle_markets = profile.max_cycle_markets if profile.exchange_key == "upbit" else None
+        env_max_markets = get_exchange_env_setting(
+            profile.exchange_key,
+            "MAX_CYCLE_MARKETS",
+            default=None,
+            type_cast=int,
+        )
+        if env_max_markets is not None:
+            max_cycle_markets = env_max_markets if env_max_markets > 0 else None
+
+        if max_cycle_markets is not None and max_cycle_markets > 0:
             original_count = len(target_markets)
             capped_markets = ctx.orchestrator.cap_cycle_target_markets(
                 target_markets, held_markets, max_cycle_markets,
             )
             if len(capped_markets) < original_count:
                 excluded = [market for market in target_markets if market not in capped_markets]
+                ex_name = "업비트" if profile.exchange_key == "upbit" else "빗썸"
                 logger.info(
-                    "📊 [업비트 사이클 분석 상한] %d개→%d개 축소 (상한=%d, 제외=%s)",
+                    "📊 [%s 사이클 분석 상한] %d개→%d개 축소 (상한=%d, 제외=%s)",
+                    ex_name,
                     original_count,
                     len(capped_markets),
                     max_cycle_markets,
