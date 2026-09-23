@@ -2,12 +2,32 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.10 (2026-09-24)
+
+- **로컬 퀀트 고알파 자율 매수(Local Autonomous Buy·옵션 B) 경로 신설**:
+  - `src/strategy_engine.py`:
+    - `StrategyPolicy`에 `LOCAL_AUTONOMOUS_BUY_ENABLED: bool = True`, `LOCAL_AUTONOMOUS_BUY_MIN_ALPHA: int = 70`, `LOCAL_AUTONOMOUS_BUY_ALLOC_RATIO: float = 0.80` 추가.
+    - 환경변수 제어 헬퍼: `is_local_autonomous_buy_enabled()`, `get_local_autonomous_buy_min_alpha()`, `get_local_autonomous_buy_alloc_ratio()` 제공.
+  - `src/trading_runtime.py`:
+    - `TradingCycleEngine.process_entry_gating`: 24시간 쿼터 페이싱으로 인해 사이클당 AI 분석 상한(1~2개)에 들지 못했거나 일일 AI 쿼터가 소진된 경우(`allow_ai=False`), 로컬 퀀트 룰이 매수를 승인(`selected_entry['allow_buy']=True`)하고 알파 점수가 70점 이상이면 AI 승인 없이 즉시 매수를 집행하는 자율 매수 분기 추가.
+    - 진입 사유: `[로컬 퀀트 고알파 자율 매수·AI예산보존] (알파:{local_alpha_score}점) ...`
+    - 진입 비중: AI 미검증 감안 기본 비중의 80%(`LOCAL_AUTONOMOUS_BUY_ALLOC_RATIO`)로 안전 진입.
+    - `pre_qualification_passed` 변수 정의 복구: 캔들·매크로·RSI·1H 대세 추세 정합성 보장.
+  - `tests/test_local_autonomous_buy.py`:
+    - 환경변수 오버라이드, AI 예산 부재 시 고알파(75점) 자율 매수 발동, 알파 기준 미달(65점) 시 HOLD 관망, 정책 비활성화 시 HOLD 관망 검증 단위 테스트 4종 추가 및 100% 통과.
+  - `docs/project-design/strategy-and-risk.md`:
+    - 로컬 퀀트 고알파 자율 매수 설계 정책 문서 갱신.
+
 ## v9.09 (2026-09-24)
 
-- **Gemini AI API 호출량 폭증 방어 및 1단계 즉각 안정화 구현**:
+- **Gemini AI API 호출량 폭증 방어 및 1·2단계 안정화·예산 페이싱 구현**:
+  - `src/gemini_telemetry.py` & `src/ai_provider.py`:
+    - **24시간 쿼터 페이싱(Pacing) 동적 토큰 제어기**: PT 자정 리셋 시점까지 남은 시간과 잔여 쿼터를 실시간 계산하여 사이클당 허용량을 동적으로 조절하는 `get_pacing_budget()` 구현 (여유 시 2개, 부족 시 1개, 고갈 시 0개 로컬 전용).
   - `src/gemini_analyzer.py`:
     - **실패 응답 네거티브 캐싱 (Negative Caching - 300초)**: 구글 서버 503/Timeout 등으로 실패(fail-closed) 시, 해당 결과를 300초(5분, 1개 사이클) 동안 캐싱하여 동일 사이클 내 반복 호출 폭풍 차단.
     - `evaluate_holding_position` 및 `rank_candidate_markets`에도 예외 발생 시 300초 네거티브 캐시를 적용하여 에러 시 재호출 낭비 방지.
+    - **스크리너 AI 랭킹 캐시 유연화 (TTL 60분 / 40% 완화)**: 스크리너 캐시 기본값을 1,800초에서 **3,600초(60분)**로 확대하고, 개별 종목 점수 캐시 재사용 비율을 60%에서 **40%**(8개 중 4개 이상 유효 시 API 생략 및 캐시 점수 합성)로 완화하여 스크리너 단계의 Gemini 호출 횟수를 70% 이상 절감.
+    - **보유 포지션 평가 LOSS_ALERT 간격 정상화 (300초)**: 손익 -2% 이하(`LOSS_ALERT`) 재평가 간격을 기존 60초에서 **300초(5분)**로 상향하여, 로컬 손절/트레일링 스탑에 1차 안전을 위임하고 동일 사이클 내 불필요한 반복 AI 호출 낭비를 방지.
   - `src/ai_provider.py`:
     - **서버 에러(500/502/503/504) 및 타임아웃 단기 모델 쿨다운(120초)**: 구글 서버 장애 시 120초간 해당 모델 쿨다운을 부여하여, 한 사이클 내 10개 종목 전체가 503을 맞으며 차순위 모델로 연쇄 폴백(호출수 2배 가속)하는 현상 원천 차단.
   - `src/strategy_engine.py`:
@@ -15,11 +35,12 @@
   - `src/trading_runtime.py`:
     - 관망 종목의 AI Direct Entry 품질 게이트 기준을 기존 50점에서 **65점**으로 상향하여 무의미한 관망 종목에 대한 AI 호출 60% 이상 절감.
     - `EntryGatingResult` 조기 반환(`should_continue=True`) 시 `called_ai` 플래그 누락 버그 수정: AI가 HOLD/PAUSE를 반환하더라도 `ai_budget_remaining`이 정상 차감되도록 보장하여, 사이클당 신규 AI 분석 상한(기본 2개)이 엄격히 준수되도록 수정.
+    - 24시간 쿼터 페이싱 예산(`pacing_budget`)을 실시간 반영하여 시간대별 가용량에 맞게 사이클당 후보 수를 동적 제어.
     - `MAX_AI_CALLS_PER_CYCLE` 환경변수 호환 지원.
   - `tests/test_gemini_call_reduction.py`:
-    - 네거티브 캐싱 재호출 방지, 503/Timeout 쿨다운 등록, 최소 알파 기준(65점) 및 called_ai 플래그 보존 단위 테스트 추가 및 전원 통과 검증.
+    - 네거티브 캐싱 재호출 방지, 503/Timeout 쿨다운 등록, 최소 알파 기준(65점), called_ai 플래그 보존, 24시간 페이싱 예산 계산, 스크리너 40% 캐시 합성, LOSS_ALERT 300초 TTL 등 7개 신규 단위 테스트 추가 및 전원 통과 검증.
   - `docs/project-design/strategy-and-risk.md`:
-    - Gemini 호출량 절감 및 네거티브 캐싱 설계 정책 문서 동기화.
+    - Gemini 호출량 절감, 네거티브 캐싱 및 페이싱 제어 설계 정책 문서 동기화.
 
 ## v9.08 (2026-09-23)
 

@@ -1517,7 +1517,7 @@ class GeminiAnalyzer:
         # 보유 포지션도 15분 캐시를 사용하고, 손익 구간 전환 때만 별도 재평가한다.
         pnl_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100.0 if avg_buy_price > 0 else 0.0
         pnl_band = "LOSS_ALERT" if pnl_pct <= -2.0 else ("PROFIT_PROTECT" if pnl_pct >= 2.0 else "NORMAL")
-        adaptive_ttl = 60.0 if pnl_band == "LOSS_ALERT" else max(300.0, float(os.getenv("GEMINI_HOLDING_CACHE_SEC", "900")))
+        adaptive_ttl = 300.0 if pnl_band == "LOSS_ALERT" else max(300.0, float(os.getenv("GEMINI_HOLDING_CACHE_SEC", "900")))
 
         # 거래소와 손익 구간을 키에 포함해 거래소 혼합을 막고 임계값 통과 시에만 즉시 재평가한다.
         exchange_scope = str(getattr(self.provider, "exchange", "default")).lower()
@@ -1643,7 +1643,7 @@ class GeminiAnalyzer:
         exchange_scope = str(getattr(self.provider, "exchange", "default")).lower()
         cand_keys = ",".join(sorted(str(c.get("market", "")).upper() for c in candidates[:8]))
         cache_key = f"RANK:{exchange_scope}:{cand_keys}"
-        rank_cache_ttl = max(900.0, float(os.getenv("GEMINI_RANK_CACHE_SEC", "1800")))
+        rank_cache_ttl = max(1800.0, float(os.getenv("GEMINI_RANK_CACHE_SEC", "3600")))
         now_ts = time.time()
         if hasattr(self, "_screener_rank_cache") and cache_key in self._screener_rank_cache:
             cached = self._screener_rank_cache[cache_key]
@@ -1651,7 +1651,7 @@ class GeminiAnalyzer:
                 self._record_cache_hit("RANK")
                 return list(cached["result"])
 
-        # 개별 종목 점수 캐시(_MARKET_AI_SCORE_CACHE) 활용: 이미 60% 이상 캐시되어 있고 미평가 신규 종목이 2개 이하이면 API 호출 생략 및 캐시 합성
+        # 개별 종목 점수 캐시(_MARKET_AI_SCORE_CACHE) 활용: 이미 40% 이상 캐시되어 있고 미평가 신규 종목이 4개 이하이면 API 호출 생략 및 캐시 합성
         if hasattr(self, "_MARKET_AI_SCORE_CACHE"):
             valid_cached = {
                 m: meta for m, meta in self._MARKET_AI_SCORE_CACHE.items()
@@ -1660,8 +1660,8 @@ class GeminiAnalyzer:
             top_candidates = candidates[:8]
             cached_count = sum(1 for c in top_candidates if c.get("market", "").upper() in valid_cached)
             uncached_markets = [c.get("market", "").upper() for c in top_candidates if c.get("market", "").upper() not in valid_cached]
-            if len(top_candidates) >= 2 and cached_count > 0 and (cached_count / len(top_candidates)) >= 0.6 and len(uncached_markets) <= 2:
-                # 60% 이상 유효 캐시 보유 ➜ API 호출 생략하고 캐시 점수 합성
+            if len(top_candidates) >= 2 and cached_count > 0 and (cached_count / len(top_candidates)) >= 0.4 and len(uncached_markets) <= 4:
+                # 40% 이상 유효 캐시 보유 ➜ API 호출 생략하고 캐시 점수 합성
                 self._record_cache_hit("RANK")
                 logger.info(f"⚡ [{self.provider_label} AI 랭킹] 개별 종목 캐시 재사용 (미평가 {len(uncached_markets)}개 ➜ API 호출 생략, 쿼터 보존)")
                 tier_order = {"TIER_1": 1, "TIER_2": 2, "TIER_3": 3, "REJECT": 9}

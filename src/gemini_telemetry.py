@@ -331,6 +331,47 @@ class GeminiTelemetry:
             }
 
     @classmethod
+    def get_pacing_budget(cls) -> dict[str, Any]:
+        """
+        PT 자정 리셋 시점까지 남은 시간과 잔여 쿼터 기반 24시간 페이싱(Pacing) 동적 예산 계산:
+        - 하루 288 사이클(5분 기준)에 걸쳐 쿼터가 조기 고갈되지 않도록 사이클당 허용량 자동 조절
+        """
+        with cls._lock:
+            cls._ensure_configured_locked()
+            cls._check_and_rollover()
+            calls = cls._api_calls
+            limit = cls._quota_limit
+
+            reset_info = get_pt_reset_info()
+            remaining_sec = max(300, int(reset_info.get("remaining_sec", 86400)))
+            remaining_cycles = max(1, remaining_sec // 300)
+
+            # 안전선 95% 기준 잔여 예산
+            safety_limit = int(limit * 0.95)
+            remaining_budget = max(0, safety_limit - calls)
+
+            # 사이클당 균등 배분량 (정수 내림)
+            ideal_per_cycle = remaining_budget / remaining_cycles
+
+            # 쿼터 잔여 상태에 따른 사이클당 최대 허용 후보 수 산출 (최대 2개 상한)
+            if remaining_budget <= 0 or calls >= safety_limit:
+                allowed_candidates = 0
+            elif ideal_per_cycle >= 1.5:
+                allowed_candidates = 2
+            elif ideal_per_cycle >= 0.5:
+                allowed_candidates = 1
+            else:
+                allowed_candidates = 0
+
+            return {
+                "allowed_candidates": allowed_candidates,
+                "remaining_cycles": remaining_cycles,
+                "remaining_budget": remaining_budget,
+                "ideal_per_cycle": round(ideal_per_cycle, 2),
+                "is_pacing_restricted": allowed_candidates < 2,
+            }
+
+    @classmethod
     def reset_for_test(cls) -> None:
         """단위 테스트 격리를 위한 프로세스 내 카운터 초기화 및 디스크 상태 격리"""
         import tempfile

@@ -409,6 +409,44 @@ class StrategyPolicy:
     AI_DIRECT_ENTRY_ALLOC_RATIO: float = 0.50
     AI_DIRECT_ENTRY_MIN_ALPHA: int = 65
 
+    # 4-0-1. 로컬 퀀트 고알파 자율 매수 (Local Autonomous Buy)
+    # AI 예산이 소진되었거나(일일 쿼터 페이싱/사이클 상한 초과), AI 분석기가 비활성/에러일 때,
+    # 로컬 퀀트 룰이 매수를 승인(allow_buy=True)하고 알파 점수 임계값(기본 70점)을 넘으면 AI 없이 자율 매수를 집행한다.
+    LOCAL_AUTONOMOUS_BUY_ENABLED: bool = True
+    LOCAL_AUTONOMOUS_BUY_MIN_ALPHA: int = 70
+    LOCAL_AUTONOMOUS_BUY_ALLOC_RATIO: float = 0.80
+
+    @classmethod
+    def is_local_autonomous_buy_enabled(cls) -> bool:
+        """환경 변수 또는 클래스 속성을 통해 로컬 퀀트 자율 매수 활성화 여부를 확인"""
+        env_val = os.getenv("LOCAL_AUTONOMOUS_BUY_ENABLED", "").strip().lower()
+        if env_val in ("true", "1", "yes", "y", "enable", "enabled"):
+            return True
+        if env_val in ("false", "0", "no", "n", "disable", "disabled"):
+            return False
+        return cls.LOCAL_AUTONOMOUS_BUY_ENABLED
+
+    @classmethod
+    def get_local_autonomous_buy_min_alpha(cls) -> int:
+        """로컬 퀀트 자율 매수를 위한 최소 알파 점수 (기본 70점)"""
+        env_val = os.getenv("LOCAL_AUTONOMOUS_BUY_MIN_ALPHA", "").strip()
+        if env_val.isdigit():
+            return max(50, min(100, int(env_val)))
+        return cls.LOCAL_AUTONOMOUS_BUY_MIN_ALPHA
+
+    @classmethod
+    def get_local_autonomous_buy_alloc_ratio(cls) -> float:
+        """로컬 퀀트 자율 매수 시 진입 비중 배수 (기본 0.80)"""
+        env_val = os.getenv("LOCAL_AUTONOMOUS_BUY_ALLOC_RATIO", "").strip()
+        if env_val:
+            try:
+                val = float(env_val)
+                if 0.1 <= val <= 1.0:
+                    return val
+            except ValueError:
+                pass
+        return cls.LOCAL_AUTONOMOUS_BUY_ALLOC_RATIO
+
     @classmethod
     def is_ai_direct_entry_enabled(cls) -> bool:
         """환경 변수 또는 클래스 속성을 통해 AI 단독 진입 허용 여부를 안전하게 확인"""

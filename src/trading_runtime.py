@@ -1560,6 +1560,10 @@ class TradingCycleEngine:
             if (ema20_1h < ema50_1h and current_price < ema20_1h) or (current_price < ema20_1h * 0.985):
                 is_1h_trend_valid = False
 
+        pre_qualification_passed = (
+            is_candle_valid and is_macro_valid and rsi_valid and is_1h_trend_valid
+        )
+
         # 로컬 퀀트 알파 스코어 기반 품질 게이트: 관망 종목은 최소 기준치(기본 65점) 이상일 때만 AI 심층 분석 요청 (쿼터 낭비 방지)
         local_alpha_score = int(selected_entry.get("alpha_score", 0))
         min_ai_alpha = (
@@ -1667,6 +1671,30 @@ class TradingCycleEngine:
                 "stop_loss": local_entry.get("stop_loss", current_price * 0.98),
                 "alloc_pct": dyn_max_pos_pct * StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO,
                 "reason": f"[확정봉 모멘텀 돌파·최초 소액] {local_entry.get('reason', '')}",
+            }
+        elif (
+            (StrategyPolicy.is_local_autonomous_buy_enabled() if hasattr(StrategyPolicy, "is_local_autonomous_buy_enabled") else True)
+            and selected_entry.get("allow_buy", False)
+            and base_safety_passed
+            and not is_holding
+            and local_alpha_score >= (StrategyPolicy.get_local_autonomous_buy_min_alpha() if hasattr(StrategyPolicy, "get_local_autonomous_buy_min_alpha") else 70)
+            and is_macro_valid
+            and is_candle_valid
+            and is_1h_trend_valid
+        ):
+            auto_alloc_ratio = (
+                StrategyPolicy.get_local_autonomous_buy_alloc_ratio()
+                if hasattr(StrategyPolicy, "get_local_autonomous_buy_alloc_ratio")
+                else 0.80
+            )
+            strategy = {
+                "status": "ACTIVE",
+                "action": "BUY",
+                "entry_price": selected_entry.get("entry_price", current_price),
+                "target_price": selected_entry.get("target_price", current_price * 1.03),
+                "stop_loss": selected_entry.get("stop_loss", current_price * 0.98),
+                "alloc_pct": dyn_max_pos_pct * auto_alloc_ratio,
+                "reason": f"[로컬 퀀트 고알파 자율 매수·AI예산보존] (알파:{local_alpha_score}점) {selected_entry.get('reason', '')}",
             }
 
         else:
@@ -2642,23 +2670,37 @@ class TradingCycleEngine:
         )
         slow_markets = slow_markets if slow_markets is not None else []
 
-        # 거래소별 격리된 텔레메트리로부터 일일 쿼터 가드 상태를 도출한다.
+        # 거래소별 격리된 텔레메트리로부터 일일 쿼터 가드 상태 및 24시간 페이싱 예산을 도출한다.
         if getattr(profile, "exchange_key", "") == "bithumb":
             from ai_provider import AIProviderTelemetry
             quota_budget = AIProviderTelemetry.get_daily_quota_budget("bithumb")
+            pacing_budget = AIProviderTelemetry.get_pacing_budget("bithumb") if hasattr(AIProviderTelemetry, "get_pacing_budget") else {}
         else:
             from gemini_telemetry import GeminiTelemetry
             quota_budget = GeminiTelemetry.get_daily_quota_budget()
+            pacing_budget = GeminiTelemetry.get_pacing_budget() if hasattr(GeminiTelemetry, "get_pacing_budget") else {}
+
         if quota_budget.get("is_critical"):
             max_ai_candidates = 0
-            logger.info("🛑 [AI 쿼터 가드] 일일 호출 450회(90%) 도달 ➜ 신규 매수 AI 분석 차단 (100% 로컬 퀀트 엔진 가동)")
+            logger.info("🛑 [AI 쿼터 가드] 일일 호출 임계선(90%) 도달 ➜ 신규 매수 AI 분석 차단 (100% 로컬 퀀트 엔진 가동)")
         elif quota_budget.get("is_tight"):
             max_ai_candidates = 1
-            logger.info("⚠️ [AI 쿼터 가드] 일일 호출 350회(70%) 도달 ➜ 사이클당 AI 심층 분석 상위 1개 종목으로 압축")
+            logger.info("⚠️ [AI 쿼터 가드] 일일 호출 주의선(70%) 도달 ➜ 사이클당 AI 심층 분석 상위 1개 종목으로 압축")
         else:
             default_max_ai = int(os.getenv("MAX_AI_CANDIDATES_PER_CYCLE", os.getenv("MAX_AI_CALLS_PER_CYCLE", "2")))
             # 로컬 게이트 상위 2개만 AI 심층 분석해 5분 주기 다종목 반복 호출을 제한한다.
             max_ai_candidates = min(2, max(1, default_max_ai))
+            if pacing_budget.get("is_pacing_restricted"):
+                p_allowed = int(pacing_budget.get("allowed_candidates", max_ai_candidates))
+                if p_allowed < max_ai_candidates:
+                    max_ai_candidates = p_allowed
+                    logger.info(
+                        "⏱️ [24시간 쿼터 페이싱] 잔여 %d사이클 대비 예산(%d회, 사이클당 %.2f회) 조절 ➜ 이번 사이클 최대 %d개 분석",
+                        pacing_budget.get("remaining_cycles", 0),
+                        pacing_budget.get("remaining_budget", 0),
+                        pacing_budget.get("ideal_per_cycle", 0.0),
+                        max_ai_candidates,
+                    )
 
         # 확실한 전역 진입 차단 상태에서는 개별 신규 진입 AI 분석도 수행하지 않는다.
         if is_bot_paused or is_kill_switch or is_btc_crashing or not is_entry_ready:

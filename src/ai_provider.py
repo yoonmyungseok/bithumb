@@ -735,6 +735,42 @@ class AIProviderTelemetry:
             "is_exhausted": calls >= int(limit * 0.98),
         }
 
+    @classmethod
+    def get_pacing_budget(cls, exchange: str = "bithumb") -> dict[str, Any]:
+        """
+        거래소별 PT 자정 잔여 시간 및 일일 쿼터 기반 24시간 페이싱 예산 계산:
+        - 하루 288 사이클 동안 쿼터 조기 고갈 방지 및 사이클당 허용량 자동 조절
+        """
+        snap = cls.snapshot(exchange)
+        calls = int(snap.get("total", {}).get("api_calls", 0))
+        limit = int(snap.get("quota_limit", 1000) or 1000)
+
+        from gemini_telemetry import get_pt_reset_info
+        reset_info = get_pt_reset_info()
+        remaining_sec = max(300, int(reset_info.get("remaining_sec", 86400)))
+        remaining_cycles = max(1, remaining_sec // 300)
+
+        safety_limit = int(limit * 0.95)
+        remaining_budget = max(0, safety_limit - calls)
+        ideal_per_cycle = remaining_budget / remaining_cycles
+
+        if remaining_budget <= 0 or calls >= safety_limit:
+            allowed_candidates = 0
+        elif ideal_per_cycle >= 1.5:
+            allowed_candidates = 2
+        elif ideal_per_cycle >= 0.5:
+            allowed_candidates = 1
+        else:
+            allowed_candidates = 0
+
+        return {
+            "allowed_candidates": allowed_candidates,
+            "remaining_cycles": remaining_cycles,
+            "remaining_budget": remaining_budget,
+            "ideal_per_cycle": round(ideal_per_cycle, 2),
+            "is_pacing_restricted": allowed_candidates < 2,
+        }
+
 
 
 def _parse_json_text(raw: str) -> dict[str, Any] | list[Any] | None:
