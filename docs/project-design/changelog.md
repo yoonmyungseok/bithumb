@@ -2,6 +2,22 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.06 (2026-09-23)
+
+- **Gemini AI 일일 쿼터(RPD) 안전 가드 임계치 95% 상향 및 쿨다운 자동 복구 개선**:
+  - `src/gemini_telemetry.py`:
+    - `can_call_model`: 모델별 평시 안전 임계치를 기존 85%(Flash-Lite 425회)에서 `95%`(Flash-Lite 475회, 일반 Flash 19회)로 상향. 긴급 탈출(`for_emergency_exit=True`)은 `98%`(Flash-Lite 490회, 일반 Flash 20회)로 보장.
+    - `can_make_api_call`: 일일 총 HTTP 호출 시도량 기준 가드를 기존 850회(85%)에서 `950회`(95%)로 상향하여, 단체 가드로 인한 가용 모델(3.1 Flash-Lite 등)의 조기 차단 방지. 긴급 탈출은 `980회`(98%)까지 허용.
+  - `src/ai_provider.py`:
+    - `_COOLDOWN_REASONS_BY_EXCHANGE` 추가: 쿨다운 등록 사유를 거래소별로 정밀 추적.
+    - `can_call_model_safety`: 빗썸 쿼터 안전선을 95%로 상향하고, 사전 임계치 검사("한도 도달")로 걸렸던 쿨다운에 대해 잔여 쿼터 확인 시 자동 해제(`clear_model_cooldown`) 로직 구현. 외부 HTTP 429 에러 쿨다운은 안전하게 보존.
+  - `src/gemini_analyzer.py`:
+    - `get_candidate_models` 주석 및 독스트링을 95% 안전선(Flash-Lite 475회 / Flash 19회)으로 동기화.
+  - `tests/test_gemini_quota_guard.py`, `tests/test_gemini_pt_rollover.py`, `tests/test_gemini_model_cooldown.py`:
+    - 95% 임계치 및 비상 탈출 한도 단위 테스트 갱신 및 36개 관련 테스트 전원 통과 검증.
+  - `docs/project-design/strategy-and-risk.md`, `docs/project-design/operations-and-observability.md`:
+    - 일일 쿼터 가드 정책 및 텔레메트리 관측성 설계 문서 동반 갱신.
+
 ## v9.05 (2026-09-22)
 
 - **약세장(RISK_OFF) 레짐 알트코인 단타 적극 매수 완화 및 가용 헤드룸 사전 클램핑 구현**:

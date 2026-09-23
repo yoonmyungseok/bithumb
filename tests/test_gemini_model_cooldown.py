@@ -101,14 +101,14 @@ class TestGeminiModelCooldown(unittest.TestCase):
 
     def test_quota_exhausted_skips_model_in_models_for(self):
         """
-        GeminiTelemetry에서 3.5 모델 쿼터가 85%(425회)에 도달하면,
+        GeminiTelemetry에서 3.5 모델 쿼터가 95%(475회)에 도달하면,
         models_for("trading")에서 3.5가 사전 제외되고 3.1만 반환되는지 검증
         """
         provider = GeminiProvider(api_key="test-key")
         provider._models = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
 
-        # 3.5 모델의 호출 횟수를 425회로 기록 (85% 임계값)
-        for _ in range(425):
+        # 3.5 모델의 호출 횟수를 475회로 기록 (95% 임계값)
+        for _ in range(475):
             GeminiTelemetry.record_api_success("gemini-3.5-flash-lite", "trading")
 
         # models_for 호출 시 3.5는 제외되고 3.1만 1순위로 반환되어야 함
@@ -123,8 +123,8 @@ class TestGeminiModelCooldown(unittest.TestCase):
         provider = GeminiProvider(api_key="test-key")
         provider._models = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
 
-        # 3.5 및 3.1 모델 모두 425회 소진
-        for _ in range(425):
+        # 3.5 및 3.1 모델 모두 475회 소진
+        for _ in range(475):
             GeminiTelemetry.record_api_success("gemini-3.5-flash-lite", "trading")
             GeminiTelemetry.record_api_success("gemini-3.1-flash-lite", "trading")
 

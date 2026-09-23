@@ -400,13 +400,13 @@ class GeminiAnalyzer:
     def get_candidate_models(self, limit: int = 2, for_emergency_exit: bool = False) -> list[str]:
         """
         현재 시점에 쿨다운이나 블랙리스트가 아니고, 모델별 일일 쿼터 여유가 있는 최우선 순위 모델 목록을 최대 limit개 반환합니다.
-        - 모델별 일일 한도(85% 안전선) 도달 시 Google 429 에러 방지를 위해 빈 리스트 []를 반환합니다 (하드 컷오프).
+        - 모델별 일일 한도(95% 안전선) 도달 시 Google 429 에러 방지를 위해 빈 리스트 []를 반환합니다 (하드 컷오프).
         """
         now_ts = time.time()
         with self._CLASS_LOCK:
             all_models = self.get_available_models(self._effective_api_key)
             usable = [m for m in all_models if self._MODEL_COOLDOWNS.get(m, 0.0) <= now_ts]
-            # 모델별 일일 쿼터(Flash-Lite 425회 / 일반 Flash 17회) 여유가 있는 모델만 선별
+            # 모델별 일일 쿼터(Flash-Lite 475회 / 일반 Flash 19회) 여유가 있는 모델만 선별
             quota_available = [m for m in usable if GeminiTelemetry.can_call_model(m, for_emergency_exit=for_emergency_exit)]
             return quota_available[:limit]
 

@@ -811,6 +811,7 @@ class BaseGeminiProvider:
 
     # 모델별 쿨다운(429/할당량 초과) 만료 시점 캐시 (거래소별 격리)
     _COOLDOWNS_BY_EXCHANGE: ClassVar[dict[str, dict[str, float]]] = {}
+    _COOLDOWN_REASONS_BY_EXCHANGE: ClassVar[dict[str, dict[str, str]]] = {}
     _COOLDOWN_LOCK: ClassVar[threading.RLock] = threading.RLock()
 
     @classmethod
@@ -819,8 +820,10 @@ class BaseGeminiProvider:
         with cls._COOLDOWN_LOCK:
             if exchange:
                 cls._COOLDOWNS_BY_EXCHANGE.pop(exchange, None)
+                cls._COOLDOWN_REASONS_BY_EXCHANGE.pop(exchange, None)
             else:
                 cls._COOLDOWNS_BY_EXCHANGE.clear()
+                cls._COOLDOWN_REASONS_BY_EXCHANGE.clear()
 
     def is_model_cooling_down(self, model: str) -> bool:
         """모델의 쿨다운 만료 여부를 확인하고 만료 시 자동 해제합니다."""
@@ -831,6 +834,8 @@ class BaseGeminiProvider:
             if exp <= now:
                 if model in exchange_map:
                     exchange_map.pop(model, None)
+                    reason_map = self._COOLDOWN_REASONS_BY_EXCHANGE.setdefault(self.exchange, {})
+                    reason_map.pop(model, None)
                 return False
             return True
 
@@ -856,6 +861,8 @@ class BaseGeminiProvider:
         with self._COOLDOWN_LOCK:
             exchange_map = self._COOLDOWNS_BY_EXCHANGE.setdefault(self.exchange, {})
             exchange_map[model] = expire_at
+            reason_map = self._COOLDOWN_REASONS_BY_EXCHANGE.setdefault(self.exchange, {})
+            reason_map[model] = reason
 
         # GeminiAnalyzer 전역 캐시와도 동기화 (분석기 라우터 연동)
         try:
@@ -871,15 +878,31 @@ class BaseGeminiProvider:
             self.exchange, model, reason, remaining,
         )
 
+    def clear_model_cooldown(self, model: str) -> None:
+        """지정된 모델의 쿨다운을 거래소 캐시 및 GeminiAnalyzer에서 해제합니다."""
+        with self._COOLDOWN_LOCK:
+            exchange_map = self._COOLDOWNS_BY_EXCHANGE.setdefault(self.exchange, {})
+            exchange_map.pop(model, None)
+            reason_map = self._COOLDOWN_REASONS_BY_EXCHANGE.setdefault(self.exchange, {})
+            reason_map.pop(model, None)
+        try:
+            from gemini_analyzer import GeminiAnalyzer
+            with GeminiAnalyzer._CLASS_LOCK:
+                GeminiAnalyzer._MODEL_COOLDOWNS.pop(model, None)
+        except Exception:
+            pass
+
     def can_call_model_safety(self, model: str, for_emergency_exit: bool = False) -> bool:
         """
         호출 전 쿨다운 상태 및 거래소별 일일 쿼터 잔여 여부를 사전 검증합니다:
-        - 쿨다운 중인 모델은 즉시 False
-        - 업비트: GeminiTelemetry.can_call_model 검증 (소진 시 PT 자정까지 쿨다운 자동 등록)
-        - 빗썸: AIProviderTelemetry 기반 Flash-Lite 쿼터 안전선(85%) 검증
+        - 업비트: GeminiTelemetry.can_call_model 검증 (소진 시 PT 자정까지 쿨다운 자동 등록, 쿼터 여유 시 사전 차단 쿨다운 자동 해제)
+        - 빗썸: AIProviderTelemetry 기반 Flash-Lite 쿼터 안전선(95%) 검증
+        - 쿨다운 중인 모델은 즉시 False (단기 에러 쿨다운 및 429 보호)
         """
-        if self.is_model_cooling_down(model):
-            return False
+        with self._COOLDOWN_LOCK:
+            reason_map = self._COOLDOWN_REASONS_BY_EXCHANGE.setdefault(self.exchange, {})
+            reason = reason_map.get(model, "")
+            is_quota_guard_cooldown = "한도 도달" in reason
 
         if self.exchange == "upbit":
             if hasattr(GeminiTelemetry, "can_call_model"):
@@ -888,17 +911,24 @@ class BaseGeminiProvider:
                         model, until_pt_midnight=True, reason="업비트 Gemini 일일 쿼터(RPD) 한도 도달",
                     )
                     return False
+                elif is_quota_guard_cooldown:
+                    self.clear_model_cooldown(model)
         elif self.exchange == "bithumb":
             stat = AIProviderTelemetry.get_model_stat(self.name, self.exchange, model)
             calls = stat.get("calls", 0)
             limit = 500 if "flash-lite" in model else (20 if "-flash" in model else 0)
             if limit > 0:
-                threshold = int(limit * 0.95) if for_emergency_exit else int(limit * 0.85)
+                threshold = min(limit, max(int(limit * 0.95) + 1, int(limit * 0.98))) if for_emergency_exit else int(limit * 0.95)
                 if calls >= threshold:
                     self.set_model_cooldown(
                         model, until_pt_midnight=True, reason="빗썸 Gemini 일일 쿼터(RPD) 한도 도달",
                     )
                     return False
+                elif is_quota_guard_cooldown:
+                    self.clear_model_cooldown(model)
+
+        if self.is_model_cooling_down(model):
+            return False
 
         return True
 

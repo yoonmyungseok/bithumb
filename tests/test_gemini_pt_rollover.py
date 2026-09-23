@@ -86,8 +86,8 @@ class TestGeminiPTRollover(unittest.TestCase):
         self.assertEqual(models["gemini-3.1-flash-lite"]["quota_used_pct"], 1.0)
 
     def test_can_call_model_guard(self):
-        """특정 모델이 450회(일반) 또는 490회(긴급) 도달 시 개별 가드가 동작하는지 검증"""
-        GeminiTelemetry._by_model["gemini-3.5-flash-lite"] = {"calls": 450, "success": 0, "rate_limited": 0, "errors": 0}
+        """특정 모델이 475회(일반) 또는 490회(긴급) 도달 시 개별 가드가 동작하는지 검증"""
+        GeminiTelemetry._by_model["gemini-3.5-flash-lite"] = {"calls": 475, "success": 0, "rate_limited": 0, "errors": 0}
         GeminiTelemetry._by_model["gemini-3.1-flash-lite"] = {"calls": 100, "success": 0, "rate_limited": 0, "errors": 0}
 
         # 3.5 모델은 일반 매수 분석 차단, 긴급 탈출은 허용

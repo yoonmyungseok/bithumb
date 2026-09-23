@@ -30,32 +30,32 @@ class TestGeminiQuotaGuard(unittest.TestCase):
         GeminiAnalyzer.clear_caches()
 
     def test_can_call_model_dynamic_threshold_flash_and_lite(self):
-        """일반 Flash(한도 20회)와 Flash-Lite(한도 500회)의 85% 임계값 기반 선제 차단 검증"""
-        # 1. 일반 Flash (한도 20회): 85% = 17회
+        """일반 Flash(한도 20회)와 Flash-Lite(한도 500회)의 95% 임계값 기반 선제 차단 검증"""
+        # 1. 일반 Flash (한도 20회): 95% = 19회
         self.assertTrue(GeminiTelemetry.can_call_model("gemini-3.5-flash", for_emergency_exit=False))
-        # 16회 호출 기록 시 여전히 허용
-        for _ in range(16):
+        # 18회 호출 기록 시 여전히 허용
+        for _ in range(18):
             GeminiTelemetry.record_api_success("gemini-3.5-flash", "TEST")
         self.assertTrue(GeminiTelemetry.can_call_model("gemini-3.5-flash", for_emergency_exit=False))
-        # 17회 도달 시 차단
+        # 19회 도달 시 평시 차단
         GeminiTelemetry.record_api_success("gemini-3.5-flash", "TEST")
         self.assertFalse(GeminiTelemetry.can_call_model("gemini-3.5-flash", for_emergency_exit=False))
-        # 긴급 탈출(95% = 19회) 모드에서는 17회 시 허용
+        # 긴급 탈출(20회 한도) 모드에서는 19회 시 허용
         self.assertTrue(GeminiTelemetry.can_call_model("gemini-3.5-flash", for_emergency_exit=True))
 
-        # 2. Flash-Lite (한도 500회): 85% = 425회
+        # 2. Flash-Lite (한도 500회): 95% = 475회
         self.assertTrue(GeminiTelemetry.can_call_model("gemini-3.5-flash-lite", for_emergency_exit=False))
-        for _ in range(424):
+        for _ in range(474):
             GeminiTelemetry.record_api_success("gemini-3.5-flash-lite", "TEST")
         self.assertTrue(GeminiTelemetry.can_call_model("gemini-3.5-flash-lite", for_emergency_exit=False))
-        # 425회 도달 시 평시 차단
+        # 475회 도달 시 평시 차단
         GeminiTelemetry.record_api_success("gemini-3.5-flash-lite", "TEST")
         self.assertFalse(GeminiTelemetry.can_call_model("gemini-3.5-flash-lite", for_emergency_exit=False))
-        # 긴급 탈출(95% = 475회) 모드에서는 허용
+        # 긴급 탈출(490회) 모드에서는 허용
         self.assertTrue(GeminiTelemetry.can_call_model("gemini-3.5-flash-lite", for_emergency_exit=True))
 
     def test_get_candidate_models_hard_cutoff(self):
-        """모든 가용 모델이 85% 쿼터에 도달했을 때 빈 리스트 []를 반환하여 429 요청을 원천 차단하는지 검증"""
+        """모든 가용 모델이 95% 쿼터에 도달했을 때 빈 리스트 []를 반환하여 429 요청을 원천 차단하는지 검증"""
         analyzer = GeminiAnalyzer(api_key="test-key")
 
         with patch.object(GeminiAnalyzer, "get_available_models", return_value=["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]):
@@ -63,15 +63,15 @@ class TestGeminiQuotaGuard(unittest.TestCase):
             candidates = analyzer.get_candidate_models(limit=2)
             self.assertEqual(len(candidates), 2)
 
-            # 3.5-flash-lite 425회 소진
-            for _ in range(425):
+            # 3.5-flash-lite 475회 소진
+            for _ in range(475):
                 GeminiTelemetry.record_api_success("gemini-3.5-flash-lite", "TEST")
             # 3.5는 빠지고 3.1만 1개 반환
             candidates = analyzer.get_candidate_models(limit=2)
             self.assertEqual(candidates, ["gemini-3.1-flash-lite"])
 
-            # 3.1-flash-lite도 425회 소진
-            for _ in range(425):
+            # 3.1-flash-lite도 475회 소진
+            for _ in range(475):
                 GeminiTelemetry.record_api_success("gemini-3.1-flash-lite", "TEST")
             # 모든 모델 쿼터 소진 시 빈 리스트 [] 반환 (하드 컷오프)
             candidates = analyzer.get_candidate_models(limit=2)
