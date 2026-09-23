@@ -1560,10 +1560,14 @@ class TradingCycleEngine:
             if (ema20_1h < ema50_1h and current_price < ema20_1h) or (current_price < ema20_1h * 0.985):
                 is_1h_trend_valid = False
 
-        pre_qualification_passed = is_candle_valid and is_macro_valid and rsi_valid and is_1h_trend_valid
-        # 로컬 퀀트 알파 스코어 기반 품질 게이트: 관망 종목은 최소 50점 이상(정상장 기본 승인선 60점의 80% 이상)일 때만 AI 심층 분석 요청 (쿼터 낭비 방지)
+        # 로컬 퀀트 알파 스코어 기반 품질 게이트: 관망 종목은 최소 기준치(기본 65점) 이상일 때만 AI 심층 분석 요청 (쿼터 낭비 방지)
         local_alpha_score = int(selected_entry.get("alpha_score", 0))
-        is_quality_promising = (local_alpha_score >= 50)
+        min_ai_alpha = (
+            StrategyPolicy.get_ai_direct_entry_min_alpha()
+            if hasattr(StrategyPolicy, "get_ai_direct_entry_min_alpha")
+            else 65
+        )
+        is_quality_promising = (local_alpha_score >= min_ai_alpha)
 
         allow_ai_direct = (
             StrategyPolicy.is_ai_direct_entry_enabled()
@@ -2087,7 +2091,7 @@ class TradingCycleEngine:
                 market, "BLOCKED", "AI_PROVIDER", [refreshed_provider_block],
                 {"btc_regime": btc_regime},
             )
-            return EntryGatingResult(should_continue=True)
+            return EntryGatingResult(should_continue=True, called_ai=called_ai_flag)
 
         audit_decision(
             market,
@@ -2098,7 +2102,7 @@ class TradingCycleEngine:
         )
 
         if entry_profile.continue_on_inactive_status and status != "ACTIVE":
-            return EntryGatingResult(should_continue=True)
+            return EntryGatingResult(should_continue=True, called_ai=called_ai_flag)
 
         return EntryGatingResult(
             should_continue=False,
@@ -2652,7 +2656,7 @@ class TradingCycleEngine:
             max_ai_candidates = 1
             logger.info("⚠️ [AI 쿼터 가드] 일일 호출 350회(70%) 도달 ➜ 사이클당 AI 심층 분석 상위 1개 종목으로 압축")
         else:
-            default_max_ai = int(os.getenv("MAX_AI_CANDIDATES_PER_CYCLE", "2"))
+            default_max_ai = int(os.getenv("MAX_AI_CANDIDATES_PER_CYCLE", os.getenv("MAX_AI_CALLS_PER_CYCLE", "2")))
             # 로컬 게이트 상위 2개만 AI 심층 분석해 5분 주기 다종목 반복 호출을 제한한다.
             max_ai_candidates = min(2, max(1, default_max_ai))
 

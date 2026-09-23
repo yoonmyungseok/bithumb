@@ -1419,8 +1419,17 @@ class GeminiAnalyzer:
         last_error = provider_result.error_kind or "api_failure"
         if self.provider.is_entry_fail_closed:
             logger.warning("[%s] %s 호출 실패(%s)로 신규 BUY를 fail-closed 차단합니다.", market, self.provider_label, last_error)
-            return {"status": "PAUSE", "action": "HOLD", "entry_price": current_price, "target_price": dynamic_tp,
-                    "stop_loss": dynamic_sl, "alloc_pct": 0.0, "reason": f"{self.provider_label} 실패({last_error}) 신규 BUY 차단", "alpha_score": 0}
+            fail_res = {
+                "status": "PAUSE", "action": "HOLD", "entry_price": current_price, "target_price": dynamic_tp,
+                "stop_loss": dynamic_sl, "alloc_pct": 0.0, "reason": f"{self.provider_label} 실패({last_error}) 신규 BUY 차단", "alpha_score": 0,
+            }
+            # [네거티브 캐싱] 실패한 응답도 300초(5분) 동안 캐시하여 다음 사이클에서 동일 종목 무한 재호출 폭풍 차단
+            if hasattr(self, "_analysis_cache") and cache_key:
+                self._analysis_cache[cache_key] = {"cached_at": time.time(), "result": fail_res}
+                self._analysis_cache[stable_cache_key] = {
+                    "cached_at": time.time(), "price": current_price, "result": fail_res,
+                }
+            return fail_res
 
         logger.warning(f"{self.provider_label} API 호출 제한({last_error}) ➜ [로컬 퀀트 알고리즘 엔진]으로 즉시 자동 전환합니다.")
         self._record_local_fallback(market, last_error)
@@ -1611,6 +1620,8 @@ class GeminiAnalyzer:
                 return res
         except Exception as e:
             logger.warning(f"[{market}] evaluate_holding_position 예외: {e}")
+            if hasattr(self, "_holding_eval_cache") and cache_key:
+                self._holding_eval_cache[cache_key] = {"cached_at": time.time(), "result": fallback_res}
 
         return fallback_res
 
@@ -1774,6 +1785,8 @@ MATURE 종목은 신규상장 상한을 적용하지 않으며, NEW_LISTING 후�
                 return ranked_candidates
         except Exception as e:
             logger.warning(f"rank_candidate_markets 예외 발생: {e} ➜ 기존 퀀트 순위 유지")
+            if hasattr(self, "_screener_rank_cache") and cache_key:
+                self._screener_rank_cache[cache_key] = {"cached_at": now_ts, "result": candidates}
 
         return candidates
 

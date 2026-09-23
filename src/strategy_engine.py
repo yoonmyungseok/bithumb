@@ -403,10 +403,11 @@ class StrategyPolicy:
 
 
     # 4-0. AI 단독 자율 승인 (AI Direct Entry) 활성화
-    # 로컬 퀀트 관망(allow_buy=False) 상태여도 품질 게이트(알파 50점 이상, 음봉 폭락 아님)를 통과한
+    # 로컬 퀀트 관망(allow_buy=False) 상태여도 품질 게이트(알파 65점 이상, 음봉 폭락 아님)를 통과한
     # 유망 종목에 대해 Gemini AI의 자율 매수 승인을 허용하며, 리스크 방어를 위해 초기 비중을 50% 축소한다.
     ENABLE_AI_DIRECT_ENTRY: bool = True
     AI_DIRECT_ENTRY_ALLOC_RATIO: float = 0.50
+    AI_DIRECT_ENTRY_MIN_ALPHA: int = 65
 
     @classmethod
     def is_ai_direct_entry_enabled(cls) -> bool:
@@ -417,6 +418,14 @@ class StrategyPolicy:
         if env_val in ("false", "0", "no", "n", "disable", "disabled"):
             return False
         return cls.ENABLE_AI_DIRECT_ENTRY
+
+    @classmethod
+    def get_ai_direct_entry_min_alpha(cls) -> int:
+        """AI 단독 진입 허용을 위한 최소 알파 점수 (기본 65점)"""
+        env_val = os.getenv("AI_DIRECT_ENTRY_MIN_ALPHA", "").strip()
+        if env_val.isdigit():
+            return max(50, min(100, int(env_val)))
+        return cls.AI_DIRECT_ENTRY_MIN_ALPHA
 
     # 4-2. 급락 후 반등 전용 정책: 일반 RISK_OFF 기준을 낮추지 않고, 별도·축소 비중으로만 사용한다.
     RECOVERY_REBOUND_ENABLED: bool = True

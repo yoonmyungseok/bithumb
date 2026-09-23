@@ -1167,6 +1167,11 @@ class BaseGeminiProvider:
                                 model, duration_sec=retry_sec or 300.0,
                                 reason=f"429 Rate Limit (일시 초과, Retry-After={retry_after_str or 'None'})",
                             )
+                    elif status_code in (500, 502, 503, 504):
+                        self.set_model_cooldown(
+                            model, duration_sec=120.0,
+                            reason=f"HTTP {status_code} 서버 일시 장애 ({error_code or 'UNAVAILABLE'})",
+                        )
                     last_result = ProviderResult(None, model, error_kind, status_code, error_code)
                     failed_models.append(model)
                     continue
@@ -1190,6 +1195,10 @@ class BaseGeminiProvider:
                 return self._record_entry_safety(res, context)
             except requests.exceptions.Timeout:
                 error_kind = "timeout"
+                self.set_model_cooldown(
+                    model, duration_sec=120.0,
+                    reason="API 호출 타임아웃 (서버 무응답)",
+                )
                 last_result = ProviderResult(None, model, error_kind, status_code, error_code)
                 failed_models.append(model)
                 continue
@@ -1278,6 +1287,11 @@ class BaseGeminiProvider:
                                 model, duration_sec=retry_sec or 300.0,
                                 reason=f"429 Rate Limit (일시 초과, Retry-After={retry_after_str or 'None'})",
                             )
+                    elif status_code in (500, 502, 503, 504):
+                        self.set_model_cooldown(
+                            model, duration_sec=120.0,
+                            reason=f"HTTP {status_code} 서버 일시 장애 ({error_code or 'UNAVAILABLE'})",
+                        )
                     last_error = error_kind
                     last_status_code = status_code
                     last_error_code = error_code
@@ -1295,6 +1309,10 @@ class BaseGeminiProvider:
                 last_error = "invalid_response"
             except requests.exceptions.Timeout:
                 error_kind = "timeout"
+                self.set_model_cooldown(
+                    model, duration_sec=120.0,
+                    reason="API 호출 타임아웃 (서버 무응답)",
+                )
                 last_error = "timeout"
             except (requests.exceptions.RequestException, ValueError, TypeError, KeyError, IndexError):
                 error_kind = "exception"

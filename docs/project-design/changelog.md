@@ -2,6 +2,25 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.09 (2026-09-24)
+
+- **Gemini AI API 호출량 폭증 방어 및 1단계 즉각 안정화 구현**:
+  - `src/gemini_analyzer.py`:
+    - **실패 응답 네거티브 캐싱 (Negative Caching - 300초)**: 구글 서버 503/Timeout 등으로 실패(fail-closed) 시, 해당 결과를 300초(5분, 1개 사이클) 동안 캐싱하여 동일 사이클 내 반복 호출 폭풍 차단.
+    - `evaluate_holding_position` 및 `rank_candidate_markets`에도 예외 발생 시 300초 네거티브 캐시를 적용하여 에러 시 재호출 낭비 방지.
+  - `src/ai_provider.py`:
+    - **서버 에러(500/502/503/504) 및 타임아웃 단기 모델 쿨다운(120초)**: 구글 서버 장애 시 120초간 해당 모델 쿨다운을 부여하여, 한 사이클 내 10개 종목 전체가 503을 맞으며 차순위 모델로 연쇄 폴백(호출수 2배 가속)하는 현상 원천 차단.
+  - `src/strategy_engine.py`:
+    - `StrategyPolicy.AI_DIRECT_ENTRY_MIN_ALPHA` 상수(기본 65점) 및 `get_ai_direct_entry_min_alpha()` 헬퍼 추가.
+  - `src/trading_runtime.py`:
+    - 관망 종목의 AI Direct Entry 품질 게이트 기준을 기존 50점에서 **65점**으로 상향하여 무의미한 관망 종목에 대한 AI 호출 60% 이상 절감.
+    - `EntryGatingResult` 조기 반환(`should_continue=True`) 시 `called_ai` 플래그 누락 버그 수정: AI가 HOLD/PAUSE를 반환하더라도 `ai_budget_remaining`이 정상 차감되도록 보장하여, 사이클당 신규 AI 분석 상한(기본 2개)이 엄격히 준수되도록 수정.
+    - `MAX_AI_CALLS_PER_CYCLE` 환경변수 호환 지원.
+  - `tests/test_gemini_call_reduction.py`:
+    - 네거티브 캐싱 재호출 방지, 503/Timeout 쿨다운 등록, 최소 알파 기준(65점) 및 called_ai 플래그 보존 단위 테스트 추가 및 전원 통과 검증.
+  - `docs/project-design/strategy-and-risk.md`:
+    - Gemini 호출량 절감 및 네거티브 캐싱 설계 정책 문서 동기화.
+
 ## v9.08 (2026-09-23)
 
 - **개미털기(SHAKEOUT_SWEEP) 유동성 스윕 역매수 및 휩쏘 방어·스마트 재진입 구현**:

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from ai_provider import AIProviderTelemetry, BithumbGeminiProvider
+from ai_provider import AIProviderTelemetry, BaseGeminiProvider, BithumbGeminiProvider
 from bithumb_ai import build_bithumb_analyzer, get_bithumb_ai_config_block_reason, get_bithumb_ai_entry_block_reason
 from gemini_analyzer import ENTRY_JSON_SCHEMA, GeminiProvider
 from gemini_telemetry import GeminiTelemetry
@@ -27,6 +27,7 @@ class BithumbGeminiProviderTests(unittest.TestCase):
         self.lock_path.unlink(missing_ok=True)
         AIProviderTelemetry.configure(data_dir=str(self.root / "data"), storage_filename=self.filename)
         AIProviderTelemetry.reset()
+        BaseGeminiProvider.clear_cooldowns()
         os.environ.update({
             "BITHUMB_AI_PROVIDER": "gemini", "BITHUMB_GEMINI_API_KEY": "bithumb-only-key",
             "GEMINI_API_KEY": "shared-key-must-not-be-used", "UPBIT_GEMINI_API_KEY": "upbit-key-must-not-be-used",
@@ -36,6 +37,7 @@ class BithumbGeminiProviderTests(unittest.TestCase):
         self.path.unlink(missing_ok=True)
         self.lock_path.unlink(missing_ok=True)
         AIProviderTelemetry.configure(data_dir=str(self.root / "data"), storage_filename="gemini_bithumb_telemetry.json")
+        BaseGeminiProvider.clear_cooldowns()
         os.environ.clear()
         os.environ.update(self.env)
 
