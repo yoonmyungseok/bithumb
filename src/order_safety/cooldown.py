@@ -252,11 +252,13 @@ class CooldownManager:
         current_price: float,
         min_gap_pct: float = 0.015,
         expiry_sec: float = 7200.0,
+        allow_shakeout_reclaim: bool = False,
     ) -> tuple[bool, str]:
         """
         쿨다운 타이머, 당일 손절 한도 및 직전 청산가 갭 필터를 검증하여 재진입 허용 여부를 결정한다.
         - 1차: 당일 종목당 손절 2회 누적 여부 확인 (당일 자정까지 차단)
         - 2차: 활성 쿨다운 잔여 시간 확인 (손절 30분 / 타임스탑 45분 / 익절 30분)
+          (단, allow_shakeout_reclaim=True이고 직전 손절가를 종가로 재탈환한 경우 쿨다운 유예 통과)
         - 3차: 손절 후 추가 급락(-1.5% 미만) 추세 진행 시 떨어지는 칼날 잡기 방지
         - 4차: 타임스탑 청산가 대비 ±1.5% 박스권 횡보 구간 재진입 차단
         - 5차: 트레일링 익절 후 고점 근처(0 ~ +1.5%) 휩쏘 추격 방지
@@ -285,6 +287,7 @@ class CooldownManager:
             expire_at = float(rec.get("expire_at", 0.0))
             exit_type = str(rec.get("exit_type", ""))
             exit_type_upper = exit_type.upper()
+            exit_price = float(rec.get("exit_price", 0.0))
 
             if expire_at > now:
                 cd_rem = expire_at - now
@@ -292,6 +295,21 @@ class CooldownManager:
                     return False, f"🛑 당일 손절 {loss_cnt}회 누적으로 재진입 쿨다운 대기 중 ({cd_rem/60:.1f}분 남음)"
                 if "NEW_LISTING" in exit_type_upper:
                     return False, f"🆕 신규상장 재진입 쿨다운 대기 중 ({cd_rem/60:.1f}분 남음)"
+
+                # 개미털기 재탈환(Shakeout Reclaim) 특례:
+                # 손절 1회 후 쿨다운 중이더라도, 현재가가 직전 손절가 이상으로 복귀하여 개미털기 역매수 신호가 발생한 경우 쿨다운 유예 통과
+                if (
+                    allow_shakeout_reclaim
+                    and is_stop_loss_exit(exit_type_upper)
+                    and exit_price > 0
+                    and current_price >= exit_price
+                ):
+                    logger.info(
+                        f"🎯 [{market}] 손절 쿨다운 중({cd_rem/60:.1f}분 남음) 개미털기 재탈환(Shakeout Reclaim) 감지! "
+                        f"현재가({current_price:,.2f}원) >= 직전손절가({exit_price:,.2f}원) 재진입 허용"
+                    )
+                    return True, "SHAKEOUT_RECLAIM_OK"
+
                 return False, f"⏳ {exit_type} 쿨다운 대기 중 ({cd_rem/60:.1f}분 남음)"
 
             ts = float(rec.get("timestamp", 0.0))

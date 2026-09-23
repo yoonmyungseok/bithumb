@@ -432,7 +432,7 @@ class RealtimeRiskEngine:
             if (effective_stop_loss > 0 and current_price <= effective_stop_loss) or is_hard_stop:
                 with self._lock:
                     self._sl_hit_count[market] = self._sl_hit_count.get(market, 0) + 1
-                    severe_drop_threshold = 0.965 if is_bull_regime else 0.975
+                    severe_drop_threshold = 0.950 if is_bull_regime else 0.975
                     is_severe_drop = current_price <= (avg_buy_price * severe_drop_threshold)
                     if not is_hard_stop and not is_severe_drop and self._sl_hit_count[market] < 2:
                         logger.debug(f"⚠️ [{market}] 1차 손절선 터치 ({current_price:,.2f}원 <= {effective_stop_loss:,.2f}원) - 휩소 확인 중")

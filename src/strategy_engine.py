@@ -47,14 +47,14 @@ class StrategyPolicy:
     MAJOR_TIME_STOP_SECONDS_NORMAL: int = 7200   # 메이저 정상장 120분 타임스탑
     MAJOR_TIME_STOP_SECONDS_RISK_OFF: int = 3600 # 메이저 약세장 60분 타임스탑
 
-    # 1-2. 대세 상승장(BULL_TREND) 전용 파라미터 (정상화: 휩소 과다 손실 차단 및 선제 익절)
-    BULL_STOP_LOSS_PCT: float = 0.020            # 상승장 손절 -2.0% (과다 손절 방어, 추세 강세선 보호)
-    BULL_PARTIAL_TP_1_PCT: float = 0.030         # 상승장 1차 분할 익절 +3.0% (선제 수익 실현 후 Break-Even 락인)
-    BULL_PARTIAL_TP_2_PCT: float = 0.060         # 상승장 2차 분할 익절 +6.0% (현실적 2차 목표)
-    BULL_TRAILING_START_PCT: float = 0.030       # +3.0% 도달 시 트레일링 스탑 개시
-    BULL_TRAILING_DROP_PCT: float = 0.015        # 최고점 대비 1.5% 하락 시 청산 (상승장 고점 반락 선제 익절)
-    BULL_TIME_STOP_SECONDS: int = 7200           # 상승장 120분 (2시간) 타임스탑 (자금 잠김 방어)
-    BULL_TIME_STOP_MAX_HOLD_SECONDS: int = 10800 # 지지선 유지 시 최대 180분 (3시간) 홀딩 유예
+    # 1-2. 대세 상승장(BULL_TREND) 전용 파라미터 (손익비 정상화 및 휩소 방어)
+    BULL_STOP_LOSS_PCT: float = 0.035            # 상승장 손절 -3.5% (알트 휩소 노이즈 방어 및 반등 여유 확보)
+    BULL_PARTIAL_TP_1_PCT: float = 0.050         # 상승장 1차 분할 익절 +5.0% (수익 실현 후 Break-Even 락인)
+    BULL_PARTIAL_TP_2_PCT: float = 0.100         # 상승장 2차 분할 익절 +10.0% (대세 상승 추세 수익 극대화)
+    BULL_TRAILING_START_PCT: float = 0.050       # +5.0% 도달 시 트레일링 스탑 개시
+    BULL_TRAILING_DROP_PCT: float = 0.025        # 최고점 대비 2.5% 하락 시 청산 (상승장 눌림목 허용)
+    BULL_TIME_STOP_SECONDS: int = 14400          # 상승장 240분 (4시간) 타임스탑 (자금 잠김 방어 및 충분한 추세 형성 대기)
+    BULL_TIME_STOP_MAX_HOLD_SECONDS: int = 21600 # 지지선 유지 시 최대 360분 (6시간) 홀딩 유예
     ALPHA_BUY_THRESHOLD_BULL: int = 65           # 상승장 알파 승인 점수 (65점으로 엄선하여 고점 상투 차단)
     ALPHA_BUY_THRESHOLD_NIGHT_BULL: int = 70     # 상승장 심야 알파 승인 점수 (70점)
     MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_BULL: int = 60       # 상승장 모멘텀 돌파 알파 (60점)
@@ -87,7 +87,7 @@ class StrategyPolicy:
     SWING_MAJOR_BREAKEVEN_STOP_PCT: float = 0.005        # 메이저 본전 보장 스탑 (+0.5% 안전 마진)
 
     # 1-3-2. 전 전략 공통 자동 본전 보장(Auto Break-Even) 파라미터
-    AUTO_BREAKEVEN_TRIGGER_PCT: float = 0.018            # 고점 수익률 +1.8% 도달 시 즉시 본전 보장 스탑 활성화
+    AUTO_BREAKEVEN_TRIGGER_PCT: float = 0.030            # 고점 수익률 +3.0% 도달 시 즉시 본전 보장 스탑 활성화
     AUTO_BREAKEVEN_STOP_PCT: float = 0.003               # 자동 본전 스탑 시 최소 보장 마진 (+0.3%, 수수료 커버)
 
     # 1-4. 신규 상장 단타(NEW_LISTING) 전용 파라미터 — 4H/1H 이력 부족 시 소액 단타 경로
@@ -127,6 +127,36 @@ class StrategyPolicy:
     NEW_LISTING_RSI_MIN: float = 50.0
     NEW_LISTING_RSI_MAX: float = 82.0
     NEW_LISTING_BREAKOUT_LOOKBACK_BARS: int = 3
+
+    # 1-4-1. 개미털기 유동성 스윕(SHAKEOUT_SWEEP) 역이용 전용 파라미터 (Stop Hunt Reversal)
+    SHAKEOUT_SWEEP_ENABLED: bool = True
+    SHAKEOUT_SWEEP_LOOKBACK_BARS: int = 12            # 직전 전저점 탐색 구간 (최근 12봉 = 60분)
+    SHAKEOUT_SWEEP_MIN_LOWER_SHADOW_RATIO: float = 0.50 # 캔들 전체 진폭 대비 아랫꼬리 최소 비율 (50% 이상)
+    SHAKEOUT_SWEEP_MAX_UPPER_SHADOW_RATIO: float = 0.25 # 캔들 전체 진폭 대비 윗꼬리 최대 허용 비율 (25% 이하)
+    SHAKEOUT_SWEEP_VOLUME_RATIO_MIN: float = 1.3       # 직전 20봉 평균 대비 최소 거래량 배수 (1.3배 이상)
+    SHAKEOUT_SWEEP_RECLAIM_BUFFER_RATIO: float = 1.001  # 전저점 재탈환(Reclaim) 기준 (전저점의 100.1% 이상 종가/현재가 형성)
+    SHAKEOUT_SWEEP_ALLOC_RATIO: float = 0.70           # 기본 비중 대비 배분 비율 (70%로 안전 진입)
+    SHAKEOUT_SWEEP_MIN_STOP_PCT: float = 0.010         # 최소 손절폭 (-1.0%)
+    SHAKEOUT_SWEEP_MAX_STOP_PCT: float = 0.020         # 최대 허용 손절폭 (-2.0%, 꼬리가 너무 길면 리스크 캡)
+    SHAKEOUT_SWEEP_TARGET_PCT: float = 0.040           # 기본 목표 수익률 (+4.0%)
+    SHAKEOUT_SWEEP_PARTIAL_TP_1_PCT: float = 0.030     # 1차 익절 +3.0% (수량 50%)
+    SHAKEOUT_SWEEP_PARTIAL_TP_2_PCT: float = 0.060     # 2차 익절 +6.0% (수량 25%)
+    SHAKEOUT_SWEEP_TIME_STOP_SECONDS: int = 2700       # 45분 타임스탑 (V자 반등 지연 시 조기 탈출)
+    SHAKEOUT_SWEEP_ALPHA_THRESHOLD_NORMAL: int = 55    # 정상장 알파 승인 점수 (55점)
+    SHAKEOUT_SWEEP_ALPHA_THRESHOLD_BULL: int = 50      # 상승장 알파 승인 점수 (50점)
+    SHAKEOUT_SWEEP_ALPHA_THRESHOLD_RISK_OFF: int = 60  # 약세장 알파 승인 점수 (60점)
+    SHAKEOUT_SWEEP_RSI_MIN: float = 30.0               # 과매도 탈출 수용 RSI 하한 (30.0 이상)
+    SHAKEOUT_SWEEP_PCT_B_MIN: float = 0.10             # 볼린저밴드 하단권 수용 %B 하한 (0.10 이상)
+
+    @classmethod
+    def is_shakeout_sweep_enabled(cls, exchange: str | None = None) -> bool:
+        """개미털기 역이용 매수 활성화 여부를 반환한다. 거래소별 설정 우선."""
+        env_val = cls._get_new_listing_env_value("SHAKEOUT_SWEEP_ENABLED", exchange)
+        if env_val in ("true", "1", "yes", "y", "on", "enable", "enabled"):
+            return True
+        if env_val in ("false", "0", "no", "n", "off", "disable", "disabled"):
+            return False
+        return cls.SHAKEOUT_SWEEP_ENABLED
 
     @classmethod
     def _get_new_listing_env_value(cls, setting: str, exchange: str | None = None) -> str:
@@ -563,6 +593,120 @@ def get_momentum_extended_alpha_threshold(
         )
 
     return 75 if is_rs_leader(relative_strength, regime_upper) else 80
+
+
+def get_shakeout_sweep_alpha_threshold(
+    btc_regime: str = "NORMAL",
+    is_night: bool | None = None,
+) -> int:
+    """개미털기 유동성 스윕(SHAKEOUT_SWEEP) 전용 알파 기준을 반환한다."""
+    regime_upper = str(btc_regime or "NORMAL").upper()
+    night_active = is_night if is_night is not None else is_night_session()
+
+    if night_active:
+        if regime_upper == "BULL_TREND":
+            return StrategyPolicy.SHAKEOUT_SWEEP_ALPHA_THRESHOLD_BULL + 5
+        elif regime_upper == "RISK_OFF":
+            return StrategyPolicy.SHAKEOUT_SWEEP_ALPHA_THRESHOLD_RISK_OFF + 5
+        return StrategyPolicy.SHAKEOUT_SWEEP_ALPHA_THRESHOLD_NORMAL + 5
+
+    if regime_upper == "BULL_TREND":
+        return StrategyPolicy.SHAKEOUT_SWEEP_ALPHA_THRESHOLD_BULL
+    elif regime_upper == "RISK_OFF":
+        return StrategyPolicy.SHAKEOUT_SWEEP_ALPHA_THRESHOLD_RISK_OFF
+    return StrategyPolicy.SHAKEOUT_SWEEP_ALPHA_THRESHOLD_NORMAL
+
+
+def evaluate_shakeout_sweep_setup(
+    candles: list[dict[str, Any]],
+    current: float,
+    rsi: float,
+    pct_b: float,
+    lookback_bars: int = StrategyPolicy.SHAKEOUT_SWEEP_LOOKBACK_BARS,
+) -> tuple[bool, str, float, dict[str, Any]]:
+    """
+    5분봉 캔들과 지표를 기반으로 개미털기(유동성 스윕 & 지지선 재탈환) 패턴을 정량 평가한다.
+    반환값: (passed: bool, reason: str, sweep_low: float, details: dict)
+    """
+    if not candles or len(candles) < max(21, lookback_bars + 2):
+        return False, "캔들 데이터 부족", current, {}
+
+    c0 = candles[0]
+    high_0 = float(c0.get("high_price", current) or current)
+    low_0 = float(c0.get("low_price", current) or current)
+    open_0 = float(c0.get("opening_price", current) or current)
+    close_0 = float(c0.get("trade_price", current) or current)
+    vol_0 = float(c0.get("candle_acc_trade_volume", 0.0) or 0.0)
+
+    candle_range = high_0 - low_0
+    if candle_range <= 0:
+        return False, "캔들 진폭 0", low_0, {}
+
+    # 1. 직전 N봉 최저점 (직전 지지선)
+    prev_candles = candles[1:lookback_bars + 1]
+    prev_low = min(float(c.get("low_price", c.get("trade_price", 0.0)) or 0.0) for c in prev_candles)
+    if prev_low <= 0:
+        return False, "직전 지지선 저점 산출 실패", low_0, {}
+
+    # 2. 스탑 헌팅(저점 이탈) 검증: 캔들 저점이 직전 지지선을 하회했는가?
+    sweep_occurred = low_0 < prev_low
+
+    # 3. 재탈환(Reclaim) 검증: 캔들 종가 또는 현재가가 직전 지지선 위로 복귀 마감했는가?
+    effective_close = max(close_0, current)
+    reclaim_threshold = prev_low * StrategyPolicy.SHAKEOUT_SWEEP_RECLAIM_BUFFER_RATIO
+    reclaim_passed = effective_close >= reclaim_threshold
+
+    # 4. 아랫꼬리/윗꼬리 비율 검증 (아랫꼬리 긴 핀바/해머)
+    lower_shadow = min(open_0, close_0) - low_0
+    upper_shadow = high_0 - max(open_0, close_0)
+    lower_shadow_ratio = (lower_shadow / candle_range) if candle_range > 0 else 0.0
+    upper_shadow_ratio = (upper_shadow / candle_range) if candle_range > 0 else 0.0
+
+    lower_shadow_passed = lower_shadow_ratio >= StrategyPolicy.SHAKEOUT_SWEEP_MIN_LOWER_SHADOW_RATIO
+    upper_shadow_passed = upper_shadow_ratio <= StrategyPolicy.SHAKEOUT_SWEEP_MAX_UPPER_SHADOW_RATIO
+
+    # 5. 투매 소화 거래량 (직전 20봉 평균 대비)
+    prev_volumes = [float(c.get("candle_acc_trade_volume", 0.0) or 0.0) for c in candles[1:21]]
+    avg_vol = (sum(prev_volumes) / len(prev_volumes)) if prev_volumes else 0.0
+    vol_ratio = (vol_0 / avg_vol) if avg_vol > 0 else 0.0
+    volume_passed = avg_vol > 0 and vol_0 >= avg_vol * StrategyPolicy.SHAKEOUT_SWEEP_VOLUME_RATIO_MIN
+
+    # 6. 보조지표 과매도 탈출선 검증
+    rsi_passed = rsi >= StrategyPolicy.SHAKEOUT_SWEEP_RSI_MIN
+    pct_b_passed = pct_b >= StrategyPolicy.SHAKEOUT_SWEEP_PCT_B_MIN
+
+    passed = (
+        sweep_occurred
+        and reclaim_passed
+        and lower_shadow_passed
+        and upper_shadow_passed
+        and volume_passed
+        and rsi_passed
+        and pct_b_passed
+    )
+
+    reason = (
+        f"스윕이탈={'통과' if sweep_occurred else '미달'}(저점 {low_0:,.1f} < 전저 {prev_low:,.1f}), "
+        f"재탈환={'통과' if reclaim_passed else '미달'}(종가 {effective_close:,.1f} >= 기준 {reclaim_threshold:,.1f}), "
+        f"아랫꼬리={lower_shadow_ratio:.1%}({'통과' if lower_shadow_passed else '미달'}), "
+        f"윗꼬리={upper_shadow_ratio:.1%}({'통과' if upper_shadow_passed else '미달'}), "
+        f"거래량배수={vol_ratio:.2f}배({'통과' if volume_passed else '미달'}), "
+        f"RSI={rsi:.1f}({'통과' if rsi_passed else '미달'})"
+    )
+
+    details = {
+        "sweep_occurred": sweep_occurred,
+        "reclaim_passed": reclaim_passed,
+        "prev_low": prev_low,
+        "sweep_low": low_0,
+        "lower_shadow_ratio": round(lower_shadow_ratio, 3),
+        "upper_shadow_ratio": round(upper_shadow_ratio, 3),
+        "volume_ratio": round(vol_ratio, 2),
+        "rsi": round(rsi, 2),
+        "pct_b": round(pct_b, 3),
+    }
+
+    return passed, reason, low_0, details
 
 
 def get_time_stop_bars_5m(btc_regime: str = "NORMAL", is_night: bool | None = None) -> tuple[int, int]:
@@ -1454,11 +1598,15 @@ def entry_signal(
     )
     normalized_entry_type = (entry_type or "CONFIRMED").upper()
 
-    # 모멘텀 돌파는 최신 확정 5분봉의 고점·거래량·양봉·RSI를 함께 확인한다.
+    # 모멘텀 돌파 및 개미털기 스윕 상태 변수 초기화
     momentum_breakout_passed = False
     momentum_breakout_reason = "확인형 후보"
     momentum_mtf_allowed = mtf_allowed
     momentum_mtf_reason = mtf_reason
+    shakeout_sweep_passed = False
+    shakeout_sweep_reason = "확인형 후보"
+    shakeout_sweep_details: dict[str, Any] = {}
+    sweep_low = current
     is_leader = is_rs_leader(relative_strength, regime_upper)
     if normalized_entry_type == "MOMENTUM_BREAKOUT":
         lookback = StrategyPolicy.MOMENTUM_BREAKOUT_LOOKBACK_BARS
@@ -1495,6 +1643,14 @@ def entry_signal(
             f"양봉={'통과' if bullish_candle else '차단'}, RSI={'통과' if momentum_rsi_passed else '차단'}, "
             f"1H MTF={'통과' if momentum_mtf_allowed else '차단'}"
         )
+    elif normalized_entry_type == "SHAKEOUT_SWEEP":
+        shakeout_sweep_passed, shakeout_sweep_reason, sweep_low, shakeout_sweep_details = evaluate_shakeout_sweep_setup(
+            candles=candles,
+            current=current,
+            rsi=rsi,
+            pct_b=pct_b,
+        )
+
     if normalized_entry_type == "MOMENTUM_BREAKOUT":
         # 반등형의 저점 근접 조건은 적용하지 않되, 급락·상위 추세·이격·윗꼬리 안전 게이트는 유지한다.
         entry_alpha_threshold = get_momentum_breakout_alpha_threshold(
@@ -1504,6 +1660,9 @@ def entry_signal(
         hard_gate_disparity_momentum = current <= (ma20 * StrategyPolicy.MAX_MA20_DISPARITY_MOMENTUM)
         momentum_safety_passed = hard_gate_btc and momentum_mtf_allowed and hard_gate_disparity_momentum and hard_gate_shadow
         allowed = momentum_safety_passed and momentum_breakout_passed and total_score >= entry_alpha_threshold
+    elif normalized_entry_type == "SHAKEOUT_SWEEP":
+        entry_alpha_threshold = get_shakeout_sweep_alpha_threshold(btc_regime, night_active)
+        allowed = hard_gate_btc and shakeout_sweep_passed and total_score >= entry_alpha_threshold
     else:
         # 알파 점수는 후보 품질 확인용이며, 저점권 반등 하드 게이트를 우회할 수 없다.
         # 심야 기준도 점수 계산과 같은 단일 함수에서 가져와 주문 경로 불일치를 막는다.
@@ -1517,21 +1676,37 @@ def entry_signal(
 
     is_major = is_major_market(market)
     is_bull = (regime_upper == "BULL_TREND")
-    if is_major:
+    if normalized_entry_type == "SHAKEOUT_SWEEP":
+        # 개미털기 역매수: 스윕 최저점 바로 아래를 손절선으로 잡되 -1.0%~-2.0% 범위로 클램프
+        sweep_stop = sweep_low * 0.995
+        max_sl = current * (1.0 - StrategyPolicy.SHAKEOUT_SWEEP_MAX_STOP_PCT)
+        min_sl = current * (1.0 - StrategyPolicy.SHAKEOUT_SWEEP_MIN_STOP_PCT)
+        stop_loss = max(sweep_stop, max_sl)
+        stop_loss = min(stop_loss, min_sl)
+        stop_offset = current - stop_loss
+        target_offset = max(current * StrategyPolicy.SHAKEOUT_SWEEP_TARGET_PCT, stop_offset * 2.0)
+        target_price = current + target_offset
+    elif is_major:
         min_tgt_pct = StrategyPolicy.MAJOR_MIN_TARGET_PCT
         min_stp_pct = StrategyPolicy.MAJOR_MIN_STOP_PCT
+        target_offset = max(current * min_tgt_pct, volatility * StrategyPolicy.ATR_TARGET_MULTIPLIER)
+        target_price = current + target_offset
+        stop_offset = max(current * min_stp_pct, volatility * StrategyPolicy.ATR_STOP_MULTIPLIER)
+        stop_loss = current - stop_offset
     elif is_bull:
         min_tgt_pct = StrategyPolicy.BULL_PARTIAL_TP_1_PCT
         min_stp_pct = StrategyPolicy.BULL_STOP_LOSS_PCT
+        target_offset = max(current * min_tgt_pct, volatility * StrategyPolicy.ATR_TARGET_MULTIPLIER)
+        target_price = current + target_offset
+        stop_offset = max(current * min_stp_pct, volatility * StrategyPolicy.ATR_STOP_MULTIPLIER)
+        stop_loss = current - stop_offset
     else:
         min_tgt_pct = StrategyPolicy.MIN_TARGET_PCT
         min_stp_pct = StrategyPolicy.MIN_STOP_PCT
-
-    target_offset = max(current * min_tgt_pct, volatility * StrategyPolicy.ATR_TARGET_MULTIPLIER)
-    target_price = current + target_offset
-
-    stop_offset = max(current * min_stp_pct, volatility * StrategyPolicy.ATR_STOP_MULTIPLIER)
-    stop_loss = current - stop_offset
+        target_offset = max(current * min_tgt_pct, volatility * StrategyPolicy.ATR_TARGET_MULTIPLIER)
+        target_price = current + target_offset
+        stop_offset = max(current * min_stp_pct, volatility * StrategyPolicy.ATR_STOP_MULTIPLIER)
+        stop_loss = current - stop_offset
 
     checklist_details = {
         "alpha_score": alpha_res["total_score"],
@@ -1562,6 +1737,12 @@ def entry_signal(
             "mtf_pass": momentum_mtf_allowed,
             "mtf_detail": momentum_mtf_reason,
         },
+        "shakeout_sweep": {
+            "pass": shakeout_sweep_passed,
+            "detail": shakeout_sweep_reason,
+            "sweep_low": sweep_low,
+            "details": shakeout_sweep_details,
+        },
         "btc_regime": {"pass": regime_upper not in ("CRASH", "BEAR_VOLATILE"), "regime": btc_regime},
     }
 
@@ -1579,6 +1760,8 @@ def entry_signal(
     ]
     if normalized_entry_type == "MOMENTUM_BREAKOUT":
         reasons.append(f"모멘텀 돌파 {momentum_breakout_reason}")
+    elif normalized_entry_type == "SHAKEOUT_SWEEP":
+        reasons.append(f"개미털기 스윕 {shakeout_sweep_reason}")
 
     final_target_price = round(target_price, 4 if current < 1.0 else 2)
     final_stop_loss = round(stop_loss, 4 if current < 1.0 else 2)
@@ -1600,6 +1783,13 @@ def entry_signal(
             "pass": momentum_breakout_passed,
             "detail": momentum_breakout_reason,
         },
+        "shakeout_sweep_passed": shakeout_sweep_passed,
+        "shakeout_sweep": {
+            "pass": shakeout_sweep_passed,
+            "detail": shakeout_sweep_reason,
+            "sweep_low": sweep_low,
+            "details": shakeout_sweep_details,
+        },
         # 주문 원장에 그대로 보관할 수 있는 진입 시점의 결정론적 지표 스냅샷이다.
         "strategy_snapshot": {
             "entry_btc_regime": btc_regime,
@@ -1607,6 +1797,12 @@ def entry_signal(
             "momentum_breakout": {
                 "pass": momentum_breakout_passed,
                 "detail": momentum_breakout_reason,
+            },
+            "shakeout_sweep": {
+                "pass": shakeout_sweep_passed,
+                "detail": shakeout_sweep_reason,
+                "sweep_low": sweep_low,
+                "details": shakeout_sweep_details,
             },
             "alpha_score": alpha_res["total_score"],
             "factor_breakdown": dict(alpha_res["factor_breakdown"]),

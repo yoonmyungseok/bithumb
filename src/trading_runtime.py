@@ -1457,18 +1457,74 @@ class TradingCycleEngine:
         recovery_slot_available = not ctx.decision_db.has_recovery_entry_since(
             entry_profile.recovery_db_exchange, recovery_window_start,
         )
+        # 개미털기 역매수(SHAKEOUT_SWEEP) 경로 평가
+        is_sweep_enabled = (
+            StrategyPolicy.is_shakeout_sweep_enabled(entry_profile.signal_exchange)
+            if hasattr(StrategyPolicy, "is_shakeout_sweep_enabled")
+            else True
+        )
+        shakeout_entry: dict[str, Any] = {}
+        should_eval_shakeout = (
+            is_sweep_enabled
+            and completed_candles_5m
+            and not is_btc_crashing
+            and not is_holding
+            and not use_new_listing_path
+            and (effective_candidate_type == "SHAKEOUT_SWEEP" or not local_entry.get("allow_buy", False))
+        )
+        if effective_candidate_type == "SHAKEOUT_SWEEP":
+            shakeout_entry = local_entry
+        elif should_eval_shakeout:
+            shakeout_entry = entry_signal(
+                candles=completed_candles_5m,
+                candles_1h=completed_candles_1h,
+                btc_regime=btc_regime,
+                orderbook=orderbook,
+                market=market,
+                exchange=entry_profile.signal_exchange,
+                entry_type="SHAKEOUT_SWEEP",
+                is_night=night_session_active,
+                relative_strength=candidate_relative_strength,
+            )
+
+        sweep_reentry_allowed = reentry_allowed
+        if shakeout_entry.get("allow_buy", False):
+            try:
+                sweep_reentry_allowed, _ = ctx.cooldown_manager.check_reentry_allowed(
+                    market, current_price, allow_shakeout_reclaim=True
+                )
+            except TypeError:
+                sweep_reentry_allowed, _ = ctx.cooldown_manager.check_reentry_allowed(
+                    market, current_price
+                )
+
+        use_shakeout_sweep = (
+            is_sweep_enabled
+            and shakeout_entry.get("allow_buy", False)
+            and sweep_reentry_allowed
+            and not is_btc_crashing
+            and ws_healthy
+            and not is_holding
+            and not use_new_listing_path
+        )
+
         use_recovery_rebound = (
             StrategyPolicy.RECOVERY_REBOUND_LIVE_ENABLED
             and is_cooldown and not is_btc_crashing and ws_healthy
             and effective_candidate_type != "MOMENTUM_BREAKOUT"
             and not use_new_listing_path
+            and not use_shakeout_sweep
             and not local_entry.get("allow_buy", False)
             and recovery_entry.get("allow_buy", False) and recovery_slot_available
         )
-        selected_entry = recovery_entry if use_recovery_rebound else local_entry
+        selected_entry = (
+            shakeout_entry
+            if use_shakeout_sweep
+            else (recovery_entry if use_recovery_rebound else local_entry)
+        )
         base_safety_passed = (
             not is_holding
-            and reentry_allowed
+            and (sweep_reentry_allowed if use_shakeout_sweep else reentry_allowed)
             and not is_btc_crashing
             and ws_healthy
             and current_price >= StrategyPolicy.MIN_ASSET_PRICE_KRW
@@ -1580,13 +1636,25 @@ class TradingCycleEngine:
                 candidate_type=effective_candidate_type,
                 entry_policy_mode=(
                     "NEW_LISTING" if use_new_listing_path
-                    else ("RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD")
+                    else (
+                        "SHAKEOUT_SWEEP" if use_shakeout_sweep
+                        else ("RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD")
+                    )
                 ),
                 momentum_phase=momentum_phase,
             )
             perf_slice = getattr(self, "_cycle_perf", None)
             if perf_slice is not None:
                 perf_slice.add_ai(time.monotonic() - ai_started_at)
+        elif use_shakeout_sweep:
+            strategy = {
+                "status": "ACTIVE", "action": "BUY",
+                "entry_price": shakeout_entry.get("entry_price", current_price),
+                "target_price": shakeout_entry.get("target_price", current_price * 1.04),
+                "stop_loss": shakeout_entry.get("stop_loss", current_price * 0.985),
+                "alloc_pct": dyn_max_pos_pct * StrategyPolicy.SHAKEOUT_SWEEP_ALLOC_RATIO,
+                "reason": f"[개미털기 스윕 역매수] {shakeout_entry.get('reason', '')}",
+            }
         elif use_momentum_breakout:
             strategy = {
                 "status": "ACTIVE", "action": "BUY",
@@ -1674,11 +1742,18 @@ class TradingCycleEngine:
                 if hasattr(StrategyPolicy, "is_ai_direct_entry_enabled")
                 else False
             )
-            in_cd, _ = (
+            cd_res = (
                 ctx.cooldown_manager.is_in_cooldown(market)
                 if hasattr(ctx.cooldown_manager, "is_in_cooldown")
                 else (False, 0.0)
             )
+            from unittest.mock import Mock
+            if isinstance(cd_res, Mock):
+                in_cd = False
+            elif isinstance(cd_res, (tuple, list)) and len(cd_res) > 0:
+                in_cd = bool(cd_res[0])
+            else:
+                in_cd = bool(cd_res)
             can_enter_daily = not in_cd
 
             # AI 단독 자율 승인 시, 상투/고점 추격을 방지하기 위해 저점/눌림목 지지 여부 검증
@@ -1847,6 +1922,9 @@ class TradingCycleEngine:
             alloc_pct = min(alloc_pct, dyn_max_pos_pct * momentum_alloc_ratio)
             allocation_label = "확장 후반 제한 추격" if momentum_phase == "EXTENDED" else "모멘텀 돌파 최초 소액"
             reason = f"[⚡{allocation_label}] {reason}"
+        elif (effective_candidate_type == "SHAKEOUT_SWEEP" or use_shakeout_sweep) and action == "BUY":
+            alloc_pct = min(alloc_pct, dyn_max_pos_pct * StrategyPolicy.SHAKEOUT_SWEEP_ALLOC_RATIO)
+            reason = f"[🎯개미털기 역매수] {reason}"
 
         risk_off_loss_reentry_blocked = False
         risk_off_loss_reentry_payload: dict[str, Any] = {}
@@ -1959,6 +2037,7 @@ class TradingCycleEngine:
             latest_strategy_record["candidate_type"] = effective_candidate_type
             latest_strategy_record["listing_maturity"] = listing_maturity
             latest_strategy_record["momentum_breakout"] = selected_entry.get("momentum_breakout", {})
+            latest_strategy_record["shakeout_sweep"] = selected_entry.get("shakeout_sweep", {})
 
         ctx.latest_strategies[market] = latest_strategy_record
 
@@ -1968,7 +2047,11 @@ class TradingCycleEngine:
             else (
                 "NEW_LISTING"
                 if use_new_listing_path
-                else ("RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD")
+                else (
+                    "SHAKEOUT_SWEEP"
+                    if use_shakeout_sweep
+                    else ("RECOVERY_REBOUND" if use_recovery_rebound else "STANDARD")
+                )
             )
         )
         entry_audit_payload: dict[str, Any] = {

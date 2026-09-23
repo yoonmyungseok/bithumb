@@ -2,6 +2,49 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.08 (2026-09-23)
+
+- **개미털기(SHAKEOUT_SWEEP) 유동성 스윕 역매수 및 휩쏘 방어·스마트 재진입 구현**:
+  - `src/strategy_engine.py`:
+    - `StrategyPolicy`에 `SHAKEOUT_SWEEP` 전용 파라미터 신설 (`SHAKEOUT_SWEEP_ENABLED`, `SHAKEOUT_SWEEP_LOOKBACK_BARS: 12`, `SHAKEOUT_SWEEP_MIN_LOWER_SHADOW_RATIO: 0.50`, `SHAKEOUT_SWEEP_MAX_UPPER_SHADOW_RATIO: 0.25`, `SHAKEOUT_SWEEP_VOLUME_RATIO_MIN: 1.3`, `SHAKEOUT_SWEEP_RECLAIM_BUFFER_RATIO: 1.001`, `SHAKEOUT_SWEEP_ALLOC_RATIO: 0.70`, `SHAKEOUT_SWEEP_TARGET_PCT: 0.040`, `SHAKEOUT_SWEEP_TIME_STOP_SECONDS: 2700`).
+    - `evaluate_shakeout_sweep_setup()` 구현: 전저점 스윕(스탑 헌팅) 이탈 여부, 종가 전저점 재탈환(Reclaim), 아랫꼬리 50% 이상, 윗꼬리 25% 이하, 거래량 1.3배 이상 폭증, RSI 30.0 이상, %B 0.10 이상 정량 검증.
+    - `evaluate_entry_rules()` 연동: `entry_type="SHAKEOUT_SWEEP"` 경로 지원 및 스윕 저점 기준 초타이트 손절가(-1.0%~-2.0%) 및 목표가(+4.0% 이상, 손익비 1:2.0 이상) 산출.
+    - `get_shakeout_sweep_alpha_threshold()`: 레짐별 알파 기준(BULL 50점, NORMAL 55점, RISK_OFF 60점, 심야 +5점) SSOT 함수 제공.
+  - `src/market_screener.py`:
+    - 스크리너에서 당일 변동률 -5.0% ~ +0.5% 내외에서 급락 후 반등 셋업을 보이는 유망 알트코인을 탐지하여 `candidate_type="SHAKEOUT_SWEEP"`으로 분류 및 사이클 우선 배정.
+  - `src/order_safety/cooldown.py`:
+    - `CooldownManager.check_reentry_allowed()`에 `allow_shakeout_reclaim` 옵션 추가: 손절 1회 후 쿨다운 중이더라도 현재가가 직전 손절가 이상으로 복귀하여 스윕 신호가 확인되면 쿨다운을 유예하고 즉시 본전 회복 재진입 허용 (당일 손절 2회 누적 시에는 일일 한도 엄격 차단 유지).
+  - `src/trading_runtime.py`:
+    - `SHAKEOUT_SWEEP` 진입 타입 처리: 비중(70% 캡), 45분 타임스탑, 대시보드 상태 표시에 `SHAKEOUT_SWEEP` 경로 정보 노출.
+    - `is_in_cooldown` Mock 객체 및 튜플 언패킹 방어 코드 적용.
+  - `src/gemini_analyzer.py` & `src/ai_provider.py`:
+    - Gemini AI 매수 분석 시스템 프롬프트 및 정책 지침에 `SHAKEOUT_SWEEP` 경로 규정 동기화.
+  - `tests/test_shakeout_sweep.py`:
+    - 스윕 캔들 통과, 장대 음봉(떨어지는 칼날) 차단, BTC CRASH 차단, 스마트 재진입 쿨다운 바이패스 단위 테스트 작성 및 전원 통과 검증.
+  - `docs/project-design/strategy-and-risk.md`:
+    - 개미털기 유동성 스윕 역매수 및 스마트 재진입 설계 정책 문서 갱신.
+
+## v9.07 (2026-09-23)
+
+- **강세장(BULL_TREND) 손익비 정상화 및 알트코인 휩쏘(Whipsaw) 조기 손절 방지 체계 개편**:
+  - `src/strategy_engine.py`:
+    - `StrategyPolicy.BULL_STOP_LOSS_PCT`: `0.020` (-2.0%) $\rightarrow$ `0.035` (-3.5%)로 완화하여 강세장 특유의 일시적 -2~3% 눌림목(롱 스퀴즈) 조기 털림 방지.
+    - `StrategyPolicy.BULL_PARTIAL_TP_1_PCT`: `0.030` (+3.0%) $\rightarrow$ `0.050` (+5.0%)로 상향.
+    - `StrategyPolicy.BULL_PARTIAL_TP_2_PCT`: `0.060` (+6.0%) $\rightarrow$ `0.100` (+10.0%)로 상향하여 대세 상승 추세 수익 극대화.
+    - `StrategyPolicy.BULL_TRAILING_START_PCT`: `0.030` (+3.0%) $\rightarrow$ `0.050` (+5.0%), `StrategyPolicy.BULL_TRAILING_DROP_PCT`: `0.015` $\rightarrow$ `0.025` (2.5%)로 버퍼 확장.
+    - `StrategyPolicy.BULL_TIME_STOP_SECONDS`: 7,200초 (2시간) $\rightarrow$ `14,400초` (4시간), `StrategyPolicy.BULL_TIME_STOP_MAX_HOLD_SECONDS`: 10,800초 $\rightarrow$ `21,600초` (6시간)로 연장.
+    - `StrategyPolicy.AUTO_BREAKEVEN_TRIGGER_PCT`: `0.018` (+1.8%) $\rightarrow$ `0.030` (+3.0%)로 상향하여 미세한 잔파동에 본전 스탑이 켜져 조기 청산되는 현상 원천 차단.
+  - `src/risk_manager.py`:
+    - `TrailingStopTracker.check_position`: `is_bull` 레짐 트레일링 드롭 계산 시 하드코딩된 `0.015` 대신 `StrategyPolicy.BULL_TRAILING_DROP_PCT`(2.5%)를 직접 참조하도록 수정하여 SSOT 단일 기준 준수.
+  - `src/realtime_engine.py`:
+    - 실시간 0.1초 웹소켓 손절 감시에서 `is_bull_regime` 시 급락 즉시 손절 기준(`severe_drop_threshold`)을 기존 0.965에서 `0.950`(-5.0%)으로 동기화하여 2회 틱 휩쏘 방어 로직 정상 작동 보장.
+  - `src/market_screener.py`:
+    - `BULL_TREND` 레짐에서 비트코인 대비 상대강도(RS)가 -1.0% 이상 뒤처지는 역행 약세 알트코인에 감점(-25점)을 적용하여 상승장 주도주 위주로 후보 선별.
+  - `tests/test_strategy_policy_ssot.py`, `tests/test_bull_trend_strategy.py`:
+    - 신규 BULL_TREND 파라미터 및 손익비(1.42~2.85), 타임스탑 봉 수(48봉/72봉), 트레일링 2.5% 동작 단위 테스트 갱신 및 전원 통과 검증.
+  - `docs/project-design/strategy-and-risk.md`:
+    - 강세장 손익비 정상화 및 휩쏘 방어 설계 문서 반영.
+
 ## v9.06 (2026-09-23)
 
 - **Gemini AI 일일 쿼터(RPD) 안전 가드 임계치 95% 상향 및 쿨다운 자동 복구 개선**:

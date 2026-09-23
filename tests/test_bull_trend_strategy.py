@@ -112,45 +112,45 @@ class TestBullTrendStrategy(unittest.TestCase):
         self.assertIn("KRW-SOL", bull_markets)
 
     def test_trailing_stop_tracker_bull_trend(self):
-        """BULL_TREND 레짐에서 트레일링 스탑과 분할 익절이 정상화된 타겟(+3.0%, +6.0%, 1.5% 드롭)으로 동작하는지 검증"""
+        """BULL_TREND 레짐에서 트레일링 스탑과 분할 익절이 정상화된 타겟(+5.0%, +10.0%, 2.5% 드롭)으로 동작하는지 검증"""
         tracker = TrailingStopTracker(data_dir="data/test_scratch")
         market = "KRW-TESTBULL"
         tracker.clear(market)
 
         buy_p = 100.0
 
-        # +2.5% 상승 시: BULL_TREND 1차 익절(+3.0%) 미달로 홀딩
-        action, _, _, _, _ = tracker.check_position(market, 102.5, buy_p, btc_regime="BULL_TREND")
+        # +4.5% 상승 시: BULL_TREND 1차 익절(+5.0%) 미달로 홀딩
+        action, _, _, _, _ = tracker.check_position(market, 104.5, buy_p, btc_regime="BULL_TREND")
         self.assertEqual(action, "NONE")
 
-        # +3.1% 상승 시: BULL_TREND 1차 분할 익절 (+3.0% 통과)
-        action, _, _, _, _ = tracker.check_position(market, 103.1, buy_p, btc_regime="BULL_TREND")
+        # +5.1% 상승 시: BULL_TREND 1차 분할 익절 (+5.0% 통과)
+        action, _, _, _, _ = tracker.check_position(market, 105.1, buy_p, btc_regime="BULL_TREND")
         self.assertEqual(action, "PARTIAL_TP_1")
         self.assertTrue(tracker.mark_partial_take_profit_filled(market, 1, 0.5))
 
-        # +6.1% 상승 시: BULL_TREND 2차 분할 익절 (+6.0% 통과)
-        action, _, _, _, _ = tracker.check_position(market, 106.1, buy_p, btc_regime="BULL_TREND")
+        # +10.1% 상승 시: BULL_TREND 2차 분할 익절 (+10.0% 통과)
+        action, _, _, _, _ = tracker.check_position(market, 110.1, buy_p, btc_regime="BULL_TREND")
         self.assertEqual(action, "PARTIAL_TP_2")
         self.assertTrue(tracker.mark_partial_take_profit_filled(market, 2, 0.25))
 
-        # 최고점 110.0원 찍고 1.0% 하락(108.9원): BULL_TREND(1.5% 드롭)에서는 홀딩
-        tracker.check_position(market, 110.0, buy_p, btc_regime="BULL_TREND")
-        action, _, _, _, _ = tracker.check_position(market, 108.9, buy_p, btc_regime="BULL_TREND")
+        # 최고점 120.0원 찍고 2.0% 하락(117.6원): BULL_TREND(2.5% 드롭)에서는 홀딩
+        tracker.check_position(market, 120.0, buy_p, btc_regime="BULL_TREND")
+        action, _, _, _, _ = tracker.check_position(market, 117.6, buy_p, btc_regime="BULL_TREND")
         self.assertEqual(action, "NONE")
 
-        # 최고점 110.0원에서 1.6% 하락(108.2원): BULL_TREND 1.5% 드롭 초과로 트레일링 스탑 청산
-        action, _, _, _, _ = tracker.check_position(market, 108.2, buy_p, btc_regime="BULL_TREND")
+        # 최고점 120.0원에서 2.6% 하락(116.8원): BULL_TREND 2.5% 드롭 초과로 트레일링 스탑 청산
+        action, _, _, _, _ = tracker.check_position(market, 116.8, buy_p, btc_regime="BULL_TREND")
         self.assertEqual(action, "TRAILING_STOP")
 
         tracker.clear(market)
 
     def test_time_stop_bull_trend_policy(self):
-        """BULL_TREND 시 타임스탑이 2시간(7,200초) 및 최대 3시간(10,800초)으로 정상화되었는지 검증"""
-        self.assertEqual(StrategyPolicy.BULL_TIME_STOP_SECONDS, 7200)
-        self.assertEqual(StrategyPolicy.BULL_TIME_STOP_MAX_HOLD_SECONDS, 10800)
-        self.assertEqual(StrategyPolicy.BULL_STOP_LOSS_PCT, 0.020)
-        self.assertEqual(StrategyPolicy.BULL_PARTIAL_TP_1_PCT, 0.030)
-        self.assertEqual(StrategyPolicy.BULL_PARTIAL_TP_2_PCT, 0.060)
+        """BULL_TREND 시 타임스탑이 4시간(14,400초) 및 최대 6시간(21,600초)으로 정상화되었는지 검증"""
+        self.assertEqual(StrategyPolicy.BULL_TIME_STOP_SECONDS, 14400)
+        self.assertEqual(StrategyPolicy.BULL_TIME_STOP_MAX_HOLD_SECONDS, 21600)
+        self.assertEqual(StrategyPolicy.BULL_STOP_LOSS_PCT, 0.035)
+        self.assertEqual(StrategyPolicy.BULL_PARTIAL_TP_1_PCT, 0.050)
+        self.assertEqual(StrategyPolicy.BULL_PARTIAL_TP_2_PCT, 0.100)
 
 
 if __name__ == "__main__":

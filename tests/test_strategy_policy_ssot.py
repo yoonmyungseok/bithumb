@@ -336,6 +336,28 @@ class StrategyPolicySSOTTests(unittest.TestCase):
         self.assertEqual(len(completed), len(window_desc) - 1)
         self.assertNotEqual(completed[0]["trade_price"], window_desc[0]["trade_price"])
 
+    def test_bull_trend_policy_risk_reward_parameters(self):
+        """BULL_TREND 레짐에서 손익비(Risk/Reward)가 1.0을 초과하고 휩소 방어 손절선이 유지되는지 검증"""
+        self.assertEqual(StrategyPolicy.BULL_STOP_LOSS_PCT, 0.035)
+        self.assertEqual(StrategyPolicy.BULL_PARTIAL_TP_1_PCT, 0.050)
+        self.assertEqual(StrategyPolicy.BULL_PARTIAL_TP_2_PCT, 0.100)
+        self.assertEqual(StrategyPolicy.BULL_TRAILING_START_PCT, 0.050)
+        self.assertEqual(StrategyPolicy.BULL_TRAILING_DROP_PCT, 0.025)
+        self.assertEqual(StrategyPolicy.BULL_TIME_STOP_SECONDS, 14400)
+        self.assertEqual(StrategyPolicy.BULL_TIME_STOP_MAX_HOLD_SECONDS, 21600)
+        self.assertEqual(StrategyPolicy.AUTO_BREAKEVEN_TRIGGER_PCT, 0.030)
+
+        # 손익비(Risk/Reward) 검증: 1차 분할익절 기준 1.42 이상, 2차 분할익절 기준 2.85 이상
+        rr_stage1 = StrategyPolicy.BULL_PARTIAL_TP_1_PCT / StrategyPolicy.BULL_STOP_LOSS_PCT
+        rr_stage2 = StrategyPolicy.BULL_PARTIAL_TP_2_PCT / StrategyPolicy.BULL_STOP_LOSS_PCT
+        self.assertGreater(rr_stage1, 1.40)
+        self.assertGreater(rr_stage2, 2.80)
+
+        # 백테스트 타임스탑 봉 수 연동 검증
+        bull_profit_bars, bull_max_bars = get_time_stop_bars_5m("BULL_TREND")
+        self.assertEqual(bull_profit_bars, 48)  # 14400 // 300 = 48봉 (4시간)
+        self.assertEqual(bull_max_bars, 72)     # 21600 // 300 = 72봉 (6시간)
+
 
 if __name__ == "__main__":
     unittest.main()

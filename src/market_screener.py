@@ -267,6 +267,7 @@ class MarketScreener:
 
             qualified_candidates: list[dict[str, Any]] = []
             early_breakout_candidates: list[dict[str, Any]] = []
+            shakeout_candidates: list[dict[str, Any]] = []
             held_candidates: list[dict[str, Any]] = []
             excluded_manual = get_excluded_manual_holdings()
 
@@ -351,6 +352,8 @@ class MarketScreener:
                         momentum_phase = "EXTENDED"
 
                     rs_bonus = max(0.0, relative_strength * 60.0)
+                    if is_bull_trend and relative_strength < -0.010:
+                        rs_bonus -= 25.0  # 상승장 BTC 대비 역행 약세 알트코인 감점 (흡성대법 손절 방어)
                     # 거래대금의 로그 스케일과 초입 모멘텀 가중치를 결합
                     effective_rate = min(change_rate, 0.08)  # 지나치게 높은 상승률이 점수를 과도하게 왜곡하지 않도록 상한 8% 캡 적용
                     score = ((effective_rate * 100.0) * momentum_multiplier * math.log10(max(1.0, acc_price_24h))) + rs_bonus
@@ -380,13 +383,34 @@ class MarketScreener:
                     ticker_info["momentum_phase"] = "EARLY"
                     ticker_info["is_held"] = False
                     early_breakout_candidates.append(ticker_info)
+                    continue
+
+                # 개미털기 역이용(SHAKEOUT_SWEEP) 후보: 당일 -5.0% ~ +0.5% 내외에서 급락 후 저점 반등 셋업 탐색
+                is_sweep_enabled = (
+                    StrategyPolicy.is_shakeout_sweep_enabled()
+                    if hasattr(StrategyPolicy, "is_shakeout_sweep_enabled")
+                    else True
+                )
+                if (
+                    is_sweep_enabled
+                    and -0.050 <= change_rate < eff_min_change_rate
+                    and relative_strength >= -0.030
+                ):
+                    sweep_score = (math.log10(max(1.0, acc_price_24h)) * 10.0) + max(0.0, (relative_strength + 0.030) * 50.0)
+                    ticker_info["score"] = sweep_score
+                    ticker_info["candidate_type"] = "SHAKEOUT_SWEEP"
+                    ticker_info["momentum_phase"] = "SHAKEOUT_SWEEP"
+                    ticker_info["is_held"] = False
+                    shakeout_candidates.append(ticker_info)
 
             qualified_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
             early_breakout_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+            shakeout_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)
 
             top_candidates = qualified_candidates[: max(top_count * 4, 20)]
             early_scan_limit = max(4, self.early_breakout_max_candidates * 3)
             top_candidates.extend(early_breakout_candidates[:early_scan_limit])
+            top_candidates.extend(shakeout_candidates[:2])
             markets_to_check = [c["market"] for c in top_candidates if "market" in c]
             ob_map: dict[str, dict[str, Any]] = {}
 

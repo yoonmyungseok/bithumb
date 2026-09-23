@@ -14,6 +14,7 @@ from strategy_engine import (
     get_alpha_buy_threshold,
     get_momentum_breakout_alpha_threshold,
     get_new_listing_alpha_threshold,
+    get_shakeout_sweep_alpha_threshold,
     is_night_session,
 )
 from strategy_engine import (
@@ -1209,6 +1210,16 @@ class GeminiAnalyzer:
                 f"{StrategyPolicy.NEW_LISTING_EARLY_EXIT_SECONDS // 60}분 조기탈출, "
                 f"{StrategyPolicy.NEW_LISTING_TIME_STOP_SECONDS // 60}분 타임스탑을 적용합니다. "
                 "MOMENTUM_BREAKOUT/RECOVERY_REBOUND/CONFIRMED 근거로 NEW_LISTING 조건을 대체하지 마세요."
+            )
+        elif normalized_candidate_type == "SHAKEOUT_SWEEP" or normalized_policy_mode == "SHAKEOUT_SWEEP":
+            current_alpha_threshold = get_shakeout_sweep_alpha_threshold(regime_upper, night_active)
+            policy_details = (
+                "개미털기 유동성 스윕(SHAKEOUT_SWEEP) 역이용 전용 경로입니다. 세력의 스탑 헌팅(전저점·지지선 일시 이탈) 후 "
+                f"긴 아랫꼬리(캔들 진폭의 {StrategyPolicy.SHAKEOUT_SWEEP_MIN_LOWER_SHADOW_RATIO * 100:.0f}% 이상)를 달고 "
+                f"전저점을 강력히 재탈환(Reclaim, {StrategyPolicy.SHAKEOUT_SWEEP_RECLAIM_BUFFER_RATIO:.3f}배 이상 복귀)한 저점 반등 셋업을 평가합니다. "
+                f"손절선은 스윕 최저점 바로 아래(최대 -{StrategyPolicy.SHAKEOUT_SWEEP_MAX_STOP_PCT * 100:.1f}%), 목표가는 최소 +{StrategyPolicy.SHAKEOUT_SWEEP_TARGET_PCT * 100:.1f}% 이상이며 "
+                f"초기 주문 비중은 최대 종목 비중의 {StrategyPolicy.SHAKEOUT_SWEEP_ALLOC_RATIO * 100:.0f}%입니다. "
+                "BTC CRASH 또는 장대 음봉 추가 폭락 중에는 절대 진입하지 않으며, 스윕 저점 지지선을 엄격히 확인하세요."
             )
         elif normalized_policy_mode == "RECOVERY_REBOUND":
             current_alpha_threshold = max(

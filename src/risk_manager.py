@@ -612,8 +612,8 @@ class TrailingStopTracker:
                 effective_start_pct = StrategyPolicy.MAJOR_TRAILING_START_PCT  # +1.5%
                 base_drop_pct = StrategyPolicy.MAJOR_TRAILING_DROP_PCT        # 1.0%
             elif is_bull:
-                effective_start_pct = StrategyPolicy.BULL_TRAILING_START_PCT  # +3.0%
-                base_drop_pct = StrategyPolicy.BULL_TRAILING_DROP_PCT        # 1.5%
+                effective_start_pct = StrategyPolicy.BULL_TRAILING_START_PCT  # +5.0%
+                base_drop_pct = StrategyPolicy.BULL_TRAILING_DROP_PCT        # 2.5%
             else:
                 effective_start_pct = self.start_profit_pct                    # +3.0%
                 base_drop_pct = self.trailing_drop_pct                        # 2.0%
@@ -641,7 +641,7 @@ class TrailingStopTracker:
                 elif is_major:
                     active_drop_pct = min(base_drop_pct, 0.010)  # 메이저: 1.0% 밀착
                 elif is_bull:
-                    active_drop_pct = min(base_drop_pct, 0.015)  # 상승장: 1.5% 고점 반락 선제 익절
+                    active_drop_pct = StrategyPolicy.BULL_TRAILING_DROP_PCT  # 상승장 트레일링 드롭 (2.5% 버퍼)
                 elif peak_profit_pct >= 20.0:
                     active_drop_pct = 0.012  # +20% 이상 폭등 구간: 1.2% 고점 추적
                 elif peak_profit_pct >= 10.0:
