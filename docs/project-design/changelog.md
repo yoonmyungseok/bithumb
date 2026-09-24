@@ -2,6 +2,23 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.12 (2026-09-24)
+
+- **적극적 매수 공격성 복원 및 매매 기회 극대화 (소극적 매매 방지)**:
+  - `src/strategy_engine.py`:
+    - `StrategyPolicy.LOCAL_AUTONOMOUS_BUY_MIN_ALPHA`: 70점에서 시스템 공식 매수 기준선인 **60점**으로 전격 하향 조정. 퀀트 신호(`allow_buy=True`)가 뜬 모든 우량 종목이 AI 순번이나 쿼터 제한에 구애받지 않고 100% 매수 집행되도록 보장.
+    - `StrategyPolicy.LOCAL_AUTONOMOUS_BUY_ALLOC_RATIO`: 0.80에서 **1.00**(정규 100% 비중)으로 정상화하여 비중 축소 없이 정상 규모로 공격적 진입.
+    - `StrategyPolicy.AI_DIRECT_ENTRY_MIN_ALPHA`: 65점에서 **60점**으로 조정하여 로컬 관망 종목 중 60점 이상 유망 종목의 AI 역발상 저점 매수 기회 확대.
+  - `src/trading_runtime.py`:
+    - `max_ai_candidates`: 2개 하드코딩 클램프(`min(2, ...)`)를 해제하고 `max(1, min(4, default_max_ai))`로 유연화하여, 한 사이클에 여러 종목이 동시 돌파할 때 최대 3~4개까지 AI가 심층 분석하고 직접 승인하도록 지원.
+    - `TradingCycleEngine.process_entry_gating`: 자율 매수 기본 fallback 임계치(60점) 및 진입 비중(1.00) 동기화.
+  - `tests/test_local_autonomous_buy.py`:
+    - 기본 최소 알파 60점 및 100% 비중 반영, 65점/75점 자율 매수 정상 발동, 55점 미만 HOLD 관망 검증 단위 테스트 갱신 및 100% 통과.
+  - `tests/test_gemini_call_reduction.py`:
+    - `AI_DIRECT_ENTRY_MIN_ALPHA` 기본값 60점 검증 동기화 완료.
+  - `docs/project-design/strategy-and-risk.md`:
+    - 적극적 매수 보장 정책 및 파라미터 문서 동기화.
+
 ## v9.11 (2026-09-24)
 
 - **Gemini 모델 쿨다운 중복 등록 및 반복 경고 로깅 억제**:

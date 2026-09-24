@@ -1677,7 +1677,7 @@ class TradingCycleEngine:
             and selected_entry.get("allow_buy", False)
             and base_safety_passed
             and not is_holding
-            and local_alpha_score >= (StrategyPolicy.get_local_autonomous_buy_min_alpha() if hasattr(StrategyPolicy, "get_local_autonomous_buy_min_alpha") else 70)
+            and local_alpha_score >= (StrategyPolicy.get_local_autonomous_buy_min_alpha() if hasattr(StrategyPolicy, "get_local_autonomous_buy_min_alpha") else 60)
             and is_macro_valid
             and is_candle_valid
             and is_1h_trend_valid
@@ -1685,7 +1685,7 @@ class TradingCycleEngine:
             auto_alloc_ratio = (
                 StrategyPolicy.get_local_autonomous_buy_alloc_ratio()
                 if hasattr(StrategyPolicy, "get_local_autonomous_buy_alloc_ratio")
-                else 0.80
+                else 1.00
             )
             strategy = {
                 "status": "ACTIVE",
@@ -2688,8 +2688,8 @@ class TradingCycleEngine:
             logger.info("⚠️ [AI 쿼터 가드] 일일 호출 주의선(70%) 도달 ➜ 사이클당 AI 심층 분석 상위 1개 종목으로 압축")
         else:
             default_max_ai = int(os.getenv("MAX_AI_CANDIDATES_PER_CYCLE", os.getenv("MAX_AI_CALLS_PER_CYCLE", "2")))
-            # 로컬 게이트 상위 2개만 AI 심층 분석해 5분 주기 다종목 반복 호출을 제한한다.
-            max_ai_candidates = min(2, max(1, default_max_ai))
+            # 유망 종목의 적극적 AI 검토를 위해 기본 2~3개 및 최대 4개까지 환경변수 허용
+            max_ai_candidates = max(1, min(4, default_max_ai))
             if pacing_budget.get("is_pacing_restricted"):
                 p_allowed = int(pacing_budget.get("allowed_candidates", max_ai_candidates))
                 if p_allowed < max_ai_candidates:

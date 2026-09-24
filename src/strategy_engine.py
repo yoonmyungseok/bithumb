@@ -403,18 +403,18 @@ class StrategyPolicy:
 
 
     # 4-0. AI 단독 자율 승인 (AI Direct Entry) 활성화
-    # 로컬 퀀트 관망(allow_buy=False) 상태여도 품질 게이트(알파 65점 이상, 음봉 폭락 아님)를 통과한
+    # 로컬 퀀트 관망(allow_buy=False) 상태여도 품질 게이트(알파 60점 이상, 음봉 폭락 아님)를 통과한
     # 유망 종목에 대해 Gemini AI의 자율 매수 승인을 허용하며, 리스크 방어를 위해 초기 비중을 50% 축소한다.
     ENABLE_AI_DIRECT_ENTRY: bool = True
     AI_DIRECT_ENTRY_ALLOC_RATIO: float = 0.50
-    AI_DIRECT_ENTRY_MIN_ALPHA: int = 65
+    AI_DIRECT_ENTRY_MIN_ALPHA: int = 60
 
     # 4-0-1. 로컬 퀀트 고알파 자율 매수 (Local Autonomous Buy)
     # AI 예산이 소진되었거나(일일 쿼터 페이싱/사이클 상한 초과), AI 분석기가 비활성/에러일 때,
-    # 로컬 퀀트 룰이 매수를 승인(allow_buy=True)하고 알파 점수 임계값(기본 70점)을 넘으면 AI 없이 자율 매수를 집행한다.
+    # 로컬 퀀트 룰이 매수를 승인(allow_buy=True)하고 시스템 정규 알파 기준(60점)을 넘으면 AI 없이 100% 정상 비중으로 자율 매수를 집행한다.
     LOCAL_AUTONOMOUS_BUY_ENABLED: bool = True
-    LOCAL_AUTONOMOUS_BUY_MIN_ALPHA: int = 70
-    LOCAL_AUTONOMOUS_BUY_ALLOC_RATIO: float = 0.80
+    LOCAL_AUTONOMOUS_BUY_MIN_ALPHA: int = 60
+    LOCAL_AUTONOMOUS_BUY_ALLOC_RATIO: float = 1.00
 
     @classmethod
     def is_local_autonomous_buy_enabled(cls) -> bool:
@@ -428,7 +428,7 @@ class StrategyPolicy:
 
     @classmethod
     def get_local_autonomous_buy_min_alpha(cls) -> int:
-        """로컬 퀀트 자율 매수를 위한 최소 알파 점수 (기본 70점)"""
+        """로컬 퀀트 자율 매수를 위한 최소 알파 점수 (시스템 정규 매수 기준 60점과 일치)"""
         env_val = os.getenv("LOCAL_AUTONOMOUS_BUY_MIN_ALPHA", "").strip()
         if env_val.isdigit():
             return max(50, min(100, int(env_val)))
@@ -436,7 +436,7 @@ class StrategyPolicy:
 
     @classmethod
     def get_local_autonomous_buy_alloc_ratio(cls) -> float:
-        """로컬 퀀트 자율 매수 시 진입 비중 배수 (기본 0.80)"""
+        """로컬 퀀트 자율 매수 시 진입 비중 배수 (기본 1.00, 정규 비중 100% 집행)"""
         env_val = os.getenv("LOCAL_AUTONOMOUS_BUY_ALLOC_RATIO", "").strip()
         if env_val:
             try:
@@ -459,7 +459,7 @@ class StrategyPolicy:
 
     @classmethod
     def get_ai_direct_entry_min_alpha(cls) -> int:
-        """AI 단독 진입 허용을 위한 최소 알파 점수 (기본 65점)"""
+        """AI 단독 진입 허용을 위한 최소 알파 점수 (기본 60점)"""
         env_val = os.getenv("AI_DIRECT_ENTRY_MIN_ALPHA", "").strip()
         if env_val.isdigit():
             return max(50, min(100, int(env_val)))

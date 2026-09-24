@@ -20,8 +20,8 @@ from trading_runtime import MarketEntryInputs, TradingCycleEngine
 def test_strategy_policy_local_autonomous_buy_defaults_and_env():
     """StrategyPolicy 자율 매수 기본값 및 환경변수 오버라이드 동작 검증."""
     assert StrategyPolicy.is_local_autonomous_buy_enabled() is True
-    assert StrategyPolicy.get_local_autonomous_buy_min_alpha() == 70
-    assert StrategyPolicy.get_local_autonomous_buy_alloc_ratio() == 0.80
+    assert StrategyPolicy.get_local_autonomous_buy_min_alpha() == 60
+    assert StrategyPolicy.get_local_autonomous_buy_alloc_ratio() == 1.00
 
     with patch.dict(os.environ, {"LOCAL_AUTONOMOUS_BUY_ENABLED": "false"}):
         assert StrategyPolicy.is_local_autonomous_buy_enabled() is False
@@ -165,7 +165,7 @@ def _build_dummy_runtime_and_inputs(
 @patch("trading_runtime.has_confirmed_swing_trend_candles", return_value=True)
 @patch("trading_runtime.select_completed_candles", side_effect=lambda c, minimum_count=20: c or [])
 def test_local_autonomous_buy_triggers_when_ai_disabled_and_high_alpha(mock_select, mock_has_swing):
-    """AI 예산이 없더라도(allow_ai=False) 퀀트 allow_buy=True 및 고알파(75점)이면 자율 매수가 발동하는지 검증."""
+    """AI 예산이 없더라도(allow_ai=False) 퀀트 allow_buy=True 및 알파(75점 >= 60점)이면 자율 매수가 발동하는지 검증."""
     runtime, market_inputs, dummy_signal = _build_dummy_runtime_and_inputs(
         allow_ai=False, local_allow_buy=True, alpha_score=75
     )
@@ -177,17 +177,26 @@ def test_local_autonomous_buy_triggers_when_ai_disabled_and_high_alpha(mock_sele
     assert result.action == "BUY"
     assert "[로컬 퀀트 고알파 자율 매수·AI예산보존]" in result.reason
     assert "(알파:75점)" in result.reason
-    # 기본 비중 0.20 * 0.80 = 0.16
-    assert pytest.approx(result.alloc_pct, 0.001) == 0.16
+    # 알파 75점 이상: 기본 비중 0.20 * 1.00 = 0.20 (100% 전액 정상 비중 집행)
+    assert pytest.approx(result.alloc_pct, 0.001) == 0.20
     assert result.called_ai is False
+
+    # 알파 65점(60점 이상 75점 미만): 전역 알파 비중 규칙(0.70)에 따라 0.14로 자율 BUY 발동
+    runtime2, market_inputs2, dummy_signal2 = _build_dummy_runtime_and_inputs(
+        allow_ai=False, local_allow_buy=True, alpha_score=65
+    )
+    with patch("trading_runtime.entry_signal", return_value=dummy_signal2):
+        result2 = runtime2.process_entry_gating(market_inputs2)
+    assert result2.action == "BUY"
+    assert pytest.approx(result2.alloc_pct, 0.001) == 0.14
 
 
 @patch("trading_runtime.has_confirmed_swing_trend_candles", return_value=True)
 @patch("trading_runtime.select_completed_candles", side_effect=lambda c, minimum_count=20: c or [])
 def test_local_autonomous_buy_blocked_when_alpha_below_threshold(mock_select, mock_has_swing):
-    """알파 점수가 65점(기준 70점 미만)인 경우 AI가 없을 때 HOLD로 관망 유지되는지 검증."""
+    """알파 점수가 55점(기준 60점 미만)인 경우 AI가 없을 때 HOLD로 관망 유지되는지 검증."""
     runtime, market_inputs, dummy_signal = _build_dummy_runtime_and_inputs(
-        allow_ai=False, local_allow_buy=True, alpha_score=65
+        allow_ai=False, local_allow_buy=True, alpha_score=55
     )
 
     with patch("trading_runtime.entry_signal", return_value=dummy_signal):
