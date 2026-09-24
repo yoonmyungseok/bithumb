@@ -61,6 +61,7 @@ class RealtimeRiskEngine:
         self._lock = threading.Lock()
         self._last_trigger: dict[str, float] = {}
         self._sl_hit_count: dict[str, int] = {}
+        self._sl_first_hit_time: dict[str, float] = {}
         self._cached_balances: dict[str, Any] = {}
         self._last_balance_ts: float = 0.0
         self._balance_lock = threading.Lock()
@@ -428,20 +429,29 @@ class RealtimeRiskEngine:
             hard_stop_price = avg_buy_price * (1.0 - hard_stop_pct)
             is_hard_stop = current_price <= hard_stop_price
 
-            # 1. 실시간 손절 검사 (단일 틱 휩소 방지: 2회 연속 하회 또는 급락 시 즉시 실행)
+            # 1. 실시간 손절 검사 (단일 틱 휩소 및 호가 긁힘 순간 털림 방지)
             if (effective_stop_loss > 0 and current_price <= effective_stop_loss) or is_hard_stop:
                 with self._lock:
+                    first_hit = self._sl_first_hit_time.setdefault(market, now_ts)
                     self._sl_hit_count[market] = self._sl_hit_count.get(market, 0) + 1
                     severe_drop_threshold = 0.950 if is_bull_regime else 0.975
                     is_severe_drop = current_price <= (avg_buy_price * severe_drop_threshold)
-                    if not is_hard_stop and not is_severe_drop and self._sl_hit_count[market] < 2:
-                        logger.debug(f"⚠️ [{market}] 1차 손절선 터치 ({current_price:,.2f}원 <= {effective_stop_loss:,.2f}원) - 휩소 확인 중")
-                        return
+                    hit_duration = now_ts - first_hit
+
+                    # 급락/하드스탑이 아닌 일반 손절선 터치: 3초 지속 또는 5회 이상 틱 누적 시에만 통과
+                    if not is_hard_stop and not is_severe_drop:
+                        if hit_duration < 3.0 and self._sl_hit_count[market] < 5:
+                            logger.debug(
+                                f"⚠️ [{market}] 손절선 터치 ({current_price:,.2f}원 <= {effective_stop_loss:,.2f}원, "
+                                f"{self._sl_hit_count[market]}회, {hit_duration:.1f}초) - 순간 틱 휩소 방어 대기 중"
+                            )
+                            return
 
                     if now_ts - self._last_trigger.get(market, 0.0) < 5.0:
                         return
                     self._last_trigger[market] = now_ts
                     self._sl_hit_count[market] = 0
+                    self._sl_first_hit_time.pop(market, None)
 
                 # P0-2: 원자적 청산 락 획득
                 if not self.trailing_tracker.acquire_exit_lock(market):
@@ -488,10 +498,12 @@ class RealtimeRiskEngine:
                     self.trailing_tracker.release_exit_lock(market)
                 return
             else:
-                # 손절선 위로 복귀 시 틱 카운터 리셋
+                # 손절선 위로 복귀 시 틱 카운터 및 터치 시각 리셋
                 with self._lock:
                     if market in self._sl_hit_count:
                         self._sl_hit_count[market] = 0
+                    if market in self._sl_first_hit_time:
+                        self._sl_first_hit_time.pop(market, None)
 
             # 2. 실시간 3단계 분할 익절 & 가속 트레일링 스탑 검사
             action_type, peak_p, _trigger_p, peak_profit_pct, realized_profit_pct = (

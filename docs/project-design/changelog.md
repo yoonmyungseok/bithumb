@@ -2,6 +2,24 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.13 (2026-09-24)
+
+- **고점 추격 매수 차단, 손익비 정상화(대탐소실) 및 실시간 틱 휩쏘 방어 완충**:
+  - `src/strategy_engine.py`:
+    - `StrategyPolicy.PULLBACK_MIN_DISTANCE_BELOW_HIGH`: 직전 12봉(60분) 최고점 대비 최소 0.8% 이상 눌림 검증 게이트 신설. 0.0%~0.8% 전고점 턱밑 저항선 꼭대기에서의 뇌동 추격 매수(FOMO)를 원천 차단.
+    - 볼린저 밴드 과열 상한 축소: `PCT_B_MAX`(0.72 -> 0.65), `PCT_B_MAX_RISK_OFF`(0.80 -> 0.68)로 상단 과열권 진입을 배제하고 중심선(EMA20) 지지/하단 반등에서만 진입하도록 강제.
+    - `StrategyPolicy.STOP_LOSS_PCT`: 기본 손절선을 -2.2%에서 **-1.8%**로 축소하여 눌림목 바닥 지지 이탈 시 손실을 최소화.
+    - `StrategyPolicy.PARTIAL_TP_1_PCT`: 1차 익절을 +3.5%에서 **+4.0%**(수량 40% 실현)로 상향하고, 잔여 60% 물량으로 2차(+8.0%) 및 트레일링(+3.5% 개시) 추세 추종을 극대화하여 손익비(Risk/Reward)를 1:2.2 이상으로 대폭 개선.
+    - `StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF`: 약세장 알트 단타 기준을 60점에서 **65점**으로 엄선.
+    - `StrategyPolicy.MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN`: 1.1에서 **1.15**로 상향하여 거래량 없는 가짜 돌파(Bull Trap) 방어 강화.
+    - `signal_5m`, `checklist_details`, `pullback_passed`에 `not_near_recent_high` 검증 결합.
+  - `src/realtime_engine.py`:
+    - `RealtimeEngine._sl_first_hit_time`: 알트코인 호가창 순간 긁힘(Spike)에 의한 0.05초 바닥 털림을 방어하기 위해 3초 하회 지속(`hit_duration >= 3.0초`) 또는 5회 이상 틱 누적 검증 완충 장치 구현. 반등 시 즉시 리셋.
+  - `tests/test_strategy_policy_ssot.py`:
+    - %B 상한(0.65/0.68) 및 전고점 안전 마진 정책 검증 동기화 완료 (18/18 PASS).
+  - `docs/project-design/strategy-and-risk.md`:
+    - 전고점 저항선 안전 마진 및 손익비 정상화 정책 문서 갱신.
+
 ## v9.12 (2026-09-24)
 
 - **적극적 매수 공격성 복원 및 매매 기회 극대화 (소극적 매매 방지)**:

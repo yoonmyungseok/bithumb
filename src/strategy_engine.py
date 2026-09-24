@@ -30,12 +30,13 @@ class StrategyPolicy:
     - 진입 목표가, 손절가, 부분익절, 트레일링, 타임스탑, 쿨다운, 알파 하드게이트 일원화
     """
     # 1. 목표가 / 손절가 / 손익비 (ATR 기반 동적 산출)
-    ATR_TARGET_MULTIPLIER: float = 2.2   # ATR 기반 목표가 배수 (상향)
-    ATR_STOP_MULTIPLIER: float = 1.6     # ATR 기반 손절가 배수 (노이즈 방어)
-    MIN_TARGET_PCT: float = 0.035        # 최소 목표 수익률 +3.5%
-    PROFIT_TARGET_PCT: float = 0.035     # 기본 목표 수익률 호환 별칭 (+3.5%)
-    MIN_STOP_PCT: float = 0.018          # 기본 최소 손절선 -1.8%
-    STOP_LOSS_PCT: float = 0.022         # 기본 손절 -2.2% (단기 노이즈 휩소 방어)
+    ATR_TARGET_MULTIPLIER: float = 2.4   # ATR 기반 목표가 배수 (상향)
+    ATR_STOP_MULTIPLIER: float = 1.4     # ATR 기반 손절가 배수 (타이트화)
+    MIN_TARGET_PCT: float = 0.040        # 최소 목표 수익률 +4.0%
+    PROFIT_TARGET_PCT: float = 0.040     # 기본 목표 수익률 호환 별칭 (+4.0%)
+    MIN_STOP_PCT: float = 0.015          # 기본 최소 손절선 -1.5%
+    STOP_LOSS_PCT: float = 0.018         # 기본 손절 -1.8% (눌림목 바닥 진입으로 손실폭 제한)
+    PULLBACK_MIN_DISTANCE_BELOW_HIGH: float = 0.008 # 전고점 대비 최소 이격 거리 0.8% (0.0%~0.8% 저항선 꼭대기 추격 매수 원천 차단)
 
     # 1-1. 메이저 코인(BTC/ETH/SOL) 전용 목표가/익절/타임스탑 (낮은 변동성 적응 및 자금 잠김 방어)
     MAJOR_MIN_TARGET_PCT: float = 0.015          # 메이저 최소 목표 수익률 +1.5%
@@ -278,14 +279,14 @@ class StrategyPolicy:
         return cls.NEW_LISTING_MIN_TRADE_VALUE_24H
 
     # 2. 익절 및 트레일링 스탑 (2~3단계 분할 익절 & 2차 러너 추세 추종)
-    PARTIAL_TP_PCT: float = 0.035        # 기본 1차 익절 기준 +3.5%
-    PARTIAL_TP_1_PCT: float = 0.035      # 1차 +3.5% 도달 시 분할 익절
-    PARTIAL_TP_1_RATIO: float = 0.50     # 1차 익절 비중 (50% 선제 수익 실현하여 손익비 대폭 개선)
-    PARTIAL_TP_2_PCT: float = 0.070      # 2차 +7.0% 도달 시 분할 익절
-    PARTIAL_TP_2_RATIO: float = 0.25     # 2차 익절 비중 (원금의 25% = 잔여 50% 중 50%)
-    BREAKEVEN_STOP_PCT: float = 0.003    # 1차 익절 완료 후 본전 보장 스탑 (+0.3% 수수료 보장)
+    PARTIAL_TP_PCT: float = 0.035        # 기본 1차 익절 기준 호환 별칭 (+3.5%)
+    PARTIAL_TP_1_PCT: float = 0.040      # 1차 +4.0% 도달 시 분할 익절 (손익비 개선)
+    PARTIAL_TP_1_RATIO: float = 0.40     # 1차 익절 비중 40% (잔여 60%로 큰 추세 추종)
+    PARTIAL_TP_2_PCT: float = 0.080      # 2차 +8.0% 도달 시 분할 익절
+    PARTIAL_TP_2_RATIO: float = 0.30     # 2차 익절 비중 (원금의 30%)
+    BREAKEVEN_STOP_PCT: float = 0.005    # 1차 익절 완료 후 본전 보장 스탑 (+0.5% 안전 마진)
     BREAKEVEN_MIN_PROFIT_PCT: float = 0.020 # 본전/상향 스탑(TIGHTEN_STOP) 발동에 필요한 최소 수익률 (+2.0%)
-    TRAILING_START_PCT: float = 0.030    # +3.0% 트레일링 스탑 활성화
+    TRAILING_START_PCT: float = 0.035    # +3.5% 트레일링 스탑 활성화
     TRAILING_DROP_PCT: float = 0.020     # 최고점 대비 2.0% 하락 시 시장가 청산 (알트 숨고르기 허용)
     TRAILING_ATR_MULTIPLIER: float = 1.5 # 트레일링 스탑 노이즈 방어용 ATR 승수 (1.5배)
     MIN_TRAILING_GAP_PCT: float = 0.015  # 트레일링/상향 손절가 최소 여유 마진 (+1.5%)
@@ -363,26 +364,24 @@ class StrategyPolicy:
     # 4. 하드 안전 게이트 (Hard Safety Gates) & 상대 강도(RS) 임계값
     ALPHA_BUY_THRESHOLD: int = 60        # 7대 팩터 복합 알파 승인 점수 (100점 만점)
     ALPHA_BUY_THRESHOLD_NORMAL: int = 60 # 정상장 7대 팩터 복합 알파 승인 점수
-    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 60 # 알트코인 독립 매수: RISK_OFF 약세장에서도 정상장과 동일한 60점 기준 적용
-    RS_MIN_RISK_OFF: float = 0.008       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+0.8% 초과 상승)
+    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 65 # 약세장(RISK_OFF) 무분별 단타 차단: 알파 65점 이상 엄선
+    RS_MIN_RISK_OFF: float = 0.008       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+0.8% 초과 주도주)
     MIN_TRADE_VALUE_RISK_OFF: float = 1_000_000_000.0  # 약세장 최소 24시간 거래대금 10억 원 (기존 20억 -> 10억 하향)
     MIN_ASSET_PRICE_KRW: float = float(os.getenv("MIN_ASSET_PRICE_KRW", "0.0001"))  # 초저가 코인 제한 전면 해제 (기본 0.0001원, 0원 이하만 차단)
     RSI_MIN_NORMAL: float = 42.0         # 정상장 저점 반등 확인용 RSI 최소치
-    RSI_MAX_NORMAL: float = 70.0         # 알트코인 독자 탄력 수용을 위해 RSI 상한을 70.0으로 현실화
+    RSI_MAX_NORMAL: float = 68.0         # 정상장 과열 추격 방지용 RSI 최대치 (68.0 이하)
     RSI_MIN_RISK_OFF: float = 42.0       # RISK_OFF 저점 반등 확인용 RSI 최소치
-    RSI_MAX_RISK_OFF: float = 70.0       # RISK_OFF 고점 추격 방지용 RSI 최대치 (약세장 독자 수급 수용을 위해 70.0으로 현실화)
+    RSI_MAX_RISK_OFF: float = 68.0       # RISK_OFF 고점 추격 방지용 RSI 최대치
     PCT_B_MIN: float = 0.20              # 볼린저 밴드 %B 최소치
-    PCT_B_MAX: float = 0.72              # NORMAL/BULL_TREND 상단권 모멘텀 추격을 차단하는 상한
-    # RISK_OFF에서는 하드 안전 조건을 모두 만족한 반등의 0.73~0.80 구간만 추가 수용한다.
-    # 이 값은 눌림목 상한과 동일하게 유지해 두 게이트 간 정책 불일치를 막는다.
-    PCT_B_MAX_RISK_OFF: float = 0.80
+    PCT_B_MAX: float = 0.65              # NORMAL/BULL_TREND 상단권 모멘텀 과열 추격을 차단하는 상한 (0.72 -> 0.65)
+    PCT_B_MAX_RISK_OFF: float = 0.68     # RISK_OFF 상단 과열 추격 차단 상한 (0.80 -> 0.68)
     PULLBACK_PCT_B_MIN_NORMAL: float = 0.25  # 정상장 저점권 반등 후보 하한
-    PULLBACK_PCT_B_MAX_NORMAL: float = 0.68  # 정상장 저점권 반등 후보 상한 (0.60 -> 0.68)
+    PULLBACK_PCT_B_MAX_NORMAL: float = 0.65  # 정상장 저점권 반등 후보 상한 (0.68 -> 0.65)
     PULLBACK_PCT_B_MIN_RISK_OFF: float = 0.28  # RISK_OFF 반등 후보 하한
-    PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.80  # RISK_OFF 반등 후보 상한: 하드 상한과 같게 유지
+    PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.68  # RISK_OFF 반등 후보 상한 (0.80 -> 0.68)
     PULLBACK_LOOKBACK_BARS: int = 12      # 최근 지지 저점 산정에 사용하는 5분봉 수
-    PULLBACK_MAX_DISTANCE_NORMAL: float = 0.035  # 정상장 최근 저점 대비 최대 허용 거리
-    PULLBACK_MAX_DISTANCE_RISK_OFF: float = 0.065  # RISK_OFF 최근 저점 대비 최대 허용 거리 (기존 4.5% -> 6.5%로 현실화)
+    PULLBACK_MAX_DISTANCE_NORMAL: float = 0.035  # 정상장 최근 저점 대비 최대 허용 거리 (+3.5% 이내 눌림)
+    PULLBACK_MAX_DISTANCE_RISK_OFF: float = 0.045  # RISK_OFF 최근 저점 대비 최대 허용 거리 (+4.5% 이내 눌림, 6.5% 과열 차단)
     MAX_MA20_DISPARITY: float = 1.035    # MA20 대비 최대 이격도 +3.5% (기본 눌림목/반등형)
     MAX_MA20_DISPARITY_MOMENTUM: float = 1.050 # MA20 대비 모멘텀 돌파 최대 이격도 +5.0% (급등 돌파 캔들 수용)
     MAX_UPPER_SHADOW_RATIO: float = 0.60 # 캔들 윗꼬리 최대 허용 비율 (50% -> 60%로 완화하여 단기 수급 수용)
@@ -479,7 +478,7 @@ class StrategyPolicy:
     MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF: int = 55 # 알트코인 독립 매수: RISK_OFF 시에도 정상장과 동일한 55점 적용
     MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT: int = 65
     MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF: int = 65 # 알트코인 독립 매수: 심야 65점 일원화
-    MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN: float = 1.1
+    MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN: float = 1.15  # 가짜 돌파 방어: 거래량 1.15배 이상 증가 시에만 돌파 매수 허용
     MOMENTUM_BREAKOUT_LOOKBACK_BARS: int = 4
     MOMENTUM_BREAKOUT_RSI_MIN: float = 52.0
     MOMENTUM_BREAKOUT_RSI_MAX: float = 78.0
@@ -1636,11 +1635,14 @@ def entry_signal(
     )
     pullback_zone = pct_b_min <= pct_b <= pct_b_max
     near_recent_low = 0.0 <= distance_from_recent_low <= pullback_max_distance
+    # 전고점 안전 마진 버퍼: 전고점 대비 최소 1.5% 이상 눌려 있어야 함 (저항선 바로 밑 꼭대기 추격 매수 원천 차단)
+    not_near_recent_high = distance_below_recent_high >= StrategyPolicy.PULLBACK_MIN_DISTANCE_BELOW_HIGH
     signal_5m = (
         ma5 >= ma20 * StrategyPolicy.PULLBACK_MA_ALIGNMENT_RATIO
         and rsi_min <= rsi <= rsi_max
         and pullback_zone
         and near_recent_low
+        and not_near_recent_high
         and rebound_confirmed
     )
     normalized_entry_type = (entry_type or "CONFIRMED").upper()
@@ -1772,6 +1774,7 @@ def entry_signal(
             "shadow_guard": {"pass": hard_gate_shadow, "ratio": round(upper_shadow_ratio, 3), "max": StrategyPolicy.MAX_UPPER_SHADOW_RATIO},
             "pullback_zone": {"pass": pullback_zone, "value": round(pct_b, 3), "min": pct_b_min, "max": pct_b_max},
             "near_recent_low": {"pass": near_recent_low, "recent_low": round(recent_low, 2), "distance_pct": round(distance_from_recent_low * 100, 2), "max_distance_pct": round(pullback_max_distance * 100, 2)},
+            "not_near_recent_high": {"pass": not_near_recent_high, "distance_pct": round(distance_below_recent_high * 100, 2), "min_distance_pct": round(StrategyPolicy.PULLBACK_MIN_DISTANCE_BELOW_HIGH * 100, 2)},
             "rebound_confirmation": {"pass": rebound_confirmed, "current": round(current, 2), "previous_close": round(previous_close, 2), "open": round(open_0, 2)},
         },
         "ma_alignment": {"pass": hard_gate_ma, "ma5": round(ma5, 2), "ma20": round(ma20, 2)},
@@ -1927,7 +1930,10 @@ def recovery_rebound_signal(
     # 기존 하드게이트 중 MTF만 반등용 허용 폭으로 대체한다. 나머지 안전 조건은 동일하다.
     core_gate_names = ("btc_regime", "rsi_guard", "bb_guard", "ma_alignment", "disparity_guard", "shadow_guard")
     core_gates_passed = all(bool(hard_gates.get(name, {}).get("pass", False)) for name in core_gate_names)
-    pullback_passed = all(bool(hard_gates.get(name, {}).get("pass", False)) for name in ("pullback_zone", "near_recent_low", "rebound_confirmation"))
+    pullback_gate_names = ["pullback_zone", "near_recent_low", "rebound_confirmation"]
+    if "not_near_recent_high" in hard_gates:
+        pullback_gate_names.append("not_near_recent_high")
+    pullback_passed = all(bool(hard_gates.get(name, {}).get("pass", False)) for name in pullback_gate_names)
     alpha_score = int(base.get("alpha_score", 0) or 0)
     rs_passed = float(relative_strength) >= StrategyPolicy.RECOVERY_REBOUND_RS_MIN
     liquidity_passed = float(candidate_trade_value) >= StrategyPolicy.MIN_TRADE_VALUE_RISK_OFF
