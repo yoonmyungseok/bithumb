@@ -181,6 +181,57 @@ class TestGeminiModelCooldown(unittest.TestCase):
         time.sleep(0.1)
         self.assertFalse(provider.is_model_cooling_down("gemini-3.5-flash-lite"))
 
+    @patch("ai_provider.logger.warning")
+    def test_duplicate_cooldown_registration_suppresses_redundant_logging(self, mock_warning):
+        """이미 쿨다운 중인 모델에 대해 반복적인 쿨다운 등록 및 can_call_model_safety 호출 시 중복 로깅 억제 검증"""
+        provider = GeminiProvider(api_key="test-key")
+
+        # 1. set_model_cooldown 자체의 중복 억제 검증 (일반 429 사유)
+        provider.set_model_cooldown("gemini-3.5-flash-lite", duration_sec=300.0, reason="429 Rate Limit")
+        self.assertEqual(mock_warning.call_count, 1)
+
+        # 동일 사유 및 유효한 만료시간으로 재호출: 로깅 억제 (call_count 증가 안 함)
+        provider.set_model_cooldown("gemini-3.5-flash-lite", duration_sec=300.0, reason="429 Rate Limit")
+        self.assertEqual(mock_warning.call_count, 1)
+
+        # 쿨다운 초기화 후 업비트 쿼터 소진 시나리오 검증
+        BaseGeminiProvider.clear_cooldowns()
+        mock_warning.reset_mock()
+
+        # 업비트 쿼터 소진(475회) 설정
+        for _ in range(475):
+            GeminiTelemetry.record_api_success("gemini-3.5-flash-lite", "trading")
+
+        # 첫 번째 can_call_model_safety -> 최초 1회 쿨다운 등록 및 경고 로깅
+        res_upbit_first = provider.can_call_model_safety("gemini-3.5-flash-lite")
+        self.assertFalse(res_upbit_first)
+        self.assertEqual(mock_warning.call_count, 1)
+
+        # can_call_model_safety를 반복 호출해도 추가 로깅 없이 안전하게 False 반환
+        for _ in range(5):
+            res = provider.can_call_model_safety("gemini-3.5-flash-lite")
+            self.assertFalse(res)
+        self.assertEqual(mock_warning.call_count, 1)
+
+        # 2. 빗썸 Provider에서도 동일하게 중복 로깅 억제 검증
+        bithumb_provider = BithumbGeminiProvider(api_key="test-bithumb-key")
+        AIProviderTelemetry.record("gemini", "bithumb", "gemini-3.5-flash-lite", "trading", 200, 100.0)
+        # 빗썸 호출 횟수를 임계치(500 * 0.95 = 475) 이상으로 설정
+        with AIProviderTelemetry._lock:
+            AIProviderTelemetry._stats[("gemini", "bithumb", "gemini-3.5-flash-lite")]["calls"] = 480
+
+        # 첫 번째 can_call_model_safety -> 최초 1회 쿨다운 등록 및 경고 로깅
+        res_bithumb_first = bithumb_provider.can_call_model_safety("gemini-3.5-flash-lite")
+        self.assertFalse(res_bithumb_first)
+        self.assertEqual(mock_warning.call_count, 2)
+
+        # 이후 연속 호출 시 추가 로깅 없이 즉시 False 반환
+        for _ in range(10):
+            res_repeat = bithumb_provider.can_call_model_safety("gemini-3.5-flash-lite")
+            self.assertFalse(res_repeat)
+        self.assertEqual(mock_warning.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
+

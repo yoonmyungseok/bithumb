@@ -2,6 +2,17 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.11 (2026-09-24)
+
+- **Gemini 모델 쿨다운 중복 등록 및 반복 경고 로깅 억제**:
+  - `src/ai_provider.py`:
+    - `set_model_cooldown`: 이미 유효한 쿨다운이 활성화되어 있고 동일한 사유이거나, 더 긴 한도 도달 쿨다운이 걸려 있는 경우 중복 등록 및 `logger.warning` 출력을 스킵하도록 개선.
+    - `can_call_model_safety`: 업비트/빗썸 일일 쿼터(RPD) 한도 도달 검증 시 이미 쿨다운 상태(`is_cooling`)이고 한도 도달 사유(`is_quota_guard_cooldown`)인 경우 중복 `set_model_cooldown` 호출을 방지하고 즉시 차단(False 반환).
+  - `tests/test_gemini_model_cooldown.py`:
+    - `test_duplicate_cooldown_registration_suppresses_redundant_logging` 단위 테스트 추가: 중복 쿨다운 호출 시 경고 로그가 1회만 발생하고 추가 로깅이 안전하게 억제되는지 검증 완료.
+  - `docs/project-design/strategy-and-risk.md`:
+    - 모델 쿨다운 중복 등록 및 반복 경고 로깅 억제 정책 문서 동기화.
+
 ## v9.10 (2026-09-24)
 
 - **로컬 퀀트 고알파 자율 매수(Local Autonomous Buy·옵션 B) 경로 신설**:
