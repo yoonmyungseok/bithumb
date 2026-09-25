@@ -1661,7 +1661,7 @@ class UnifiedDashboardServer:
         }
 
         function switchConfigTab(tabName) {
-            ['risk', 'screening', 'portfolio'].forEach(t => {
+            ['risk', 'screening', 'portfolio', 'ai'].forEach(t => {
                 const btn = document.getElementById('cfg-tab-' + t);
                 const panel = document.getElementById('cfg-panel-' + t);
                 if (t === tabName) {
@@ -1780,10 +1780,11 @@ class UnifiedDashboardServer:
                 </div>
                 <button onclick="closeConfigModal()" class="text-slate-400 hover:text-white p-1 rounded">✕</button>
             </div>
-            <div class="flex border-b border-slate-800 px-5 pt-3 bg-slate-950/30 gap-2">
+            <div class="flex border-b border-slate-800 px-5 pt-3 bg-slate-950/30 gap-2 overflow-x-auto">
                 <button onclick="switchConfigTab('risk')" id="cfg-tab-risk" class="cfg-tab-btn active px-3.5 py-2 rounded-t-lg text-xs font-bold border-b-2 border-indigo-500 text-indigo-400 bg-slate-800/60">🛡️ 리스크 & 손익</button>
                 <button onclick="switchConfigTab('screening')" id="cfg-tab-screening" class="cfg-tab-btn px-3.5 py-2 rounded-t-lg text-xs font-bold text-slate-400 hover:text-slate-200">🔍 스크리닝 & 전략</button>
                 <button onclick="switchConfigTab('portfolio')" id="cfg-tab-portfolio" class="cfg-tab-btn px-3.5 py-2 rounded-t-lg text-xs font-bold text-slate-400 hover:text-slate-200">💼 포트폴리오 한도</button>
+                <button onclick="switchConfigTab('ai')" id="cfg-tab-ai" class="cfg-tab-btn px-3.5 py-2 rounded-t-lg text-xs font-bold text-slate-400 hover:text-slate-200">🤖 AI 자율권 & 캐시</button>
             </div>
             <div class="p-5 overflow-y-auto flex-1 space-y-4">
                 <div id="cfg-status-banner" class="hidden p-3 rounded-xl text-xs font-medium border"></div>
@@ -1920,6 +1921,48 @@ class UnifiedDashboardServer:
                         <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800 sm:col-span-2">
                             <label class="text-xs font-semibold block mb-1">단일 주문 최대 금액 (원)</label>
                             <input type="number" id="cfg_MAX_ORDER_KRW" step="1000000" min="100000" max="500000000" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                        </div>
+                    </div>
+                </div>
+                <div id="cfg-panel-ai" class="cfg-panel hidden space-y-4">
+                    <div class="bg-gradient-to-r from-purple-950/40 via-indigo-950/30 to-blue-950/40 p-4 rounded-xl border border-purple-500/40 space-y-2">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-2">
+                                <span class="text-sm">🧠</span>
+                                <span class="text-xs font-bold text-purple-300">Gemini AI 자율 분석 및 쿼터 제어</span>
+                            </div>
+                            <span class="text-[10px] text-purple-300 bg-purple-900/60 px-2 py-0.5 rounded border border-purple-500/30">Hot-Reload</span>
+                        </div>
+                        <p class="text-[11px] text-slate-300 leading-relaxed">
+                            AI에게 로컬 퀀트 규칙을 넘어선 단독 매수 승인 자율권을 부여하고, 실시간 분석 빈도(캐시 주기)를 정밀 제어합니다.
+                        </p>
+                    </div>
+                    <div class="space-y-3">
+                        <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                            <label class="flex items-center justify-between cursor-pointer text-xs font-semibold">
+                                <div>
+                                    <span class="text-slate-100">AI 단독 자율 진입 허용 (ENABLE_AI_DIRECT_ENTRY)</span>
+                                    <p class="text-[11px] text-slate-400 font-normal mt-0.5">로컬 퀀트가 관망이더라도, Gemini가 차트·수급 심층 분석으로 매수를 승인하면 자율 진입합니다.</p>
+                                </div>
+                                <input type="checkbox" id="cfg_ENABLE_AI_DIRECT_ENTRY" class="accent-indigo-500 w-4 h-4 ml-3">
+                            </label>
+                        </div>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                                <label class="text-xs font-semibold block mb-1">AI 분석 요청 최소 알파 점수 (점)</label>
+                                <input type="number" id="cfg_AI_DIRECT_ENTRY_MIN_ALPHA" step="1" min="50" max="100" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                                <p class="text-[11px] text-slate-400 mt-1">로컬 알파 점수가 이 기준 이상인 후보만 AI에게 질의합니다. (낮출수록 AI 호출 증가, 권장: 55점)</p>
+                            </div>
+                            <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                                <label class="text-xs font-semibold block mb-1">AI 진입 판단 캐시 주기 (초)</label>
+                                <input type="number" id="cfg_GEMINI_ENTRY_CACHE_SEC" step="60" min="60" max="3600" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                                <p class="text-[11px] text-slate-400 mt-1">안정 구간(HOLD/가격변동 1.5% 미만)에서 이전 분석 결과를 유지하는 시간입니다. (권장: 300~900초)</p>
+                            </div>
+                            <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800 sm:col-span-2">
+                                <label class="text-xs font-semibold block mb-1">스크리너 AI 랭킹 캐시 주기 (초)</label>
+                                <input type="number" id="cfg_GEMINI_RANK_CACHE_SEC" step="60" min="300" max="7200" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                                <p class="text-[11px] text-slate-400 mt-1">전체 마켓 스크리닝 시 AI 유망 순위 캐시를 유지하는 시간입니다. (권장: 900~3600초)</p>
+                            </div>
                         </div>
                     </div>
                 </div>

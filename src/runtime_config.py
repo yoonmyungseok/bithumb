@@ -372,6 +372,50 @@ COMMON_CONFIG_SCHEMA: dict[str, ConfigFieldDef] = {
         description="알트코인 진입 시 수수료 대비 실익을 확보하기 위한 최소 비중 하한선입니다.",
         unit="%",
     ),
+
+    # 4. AI 모델 & 자율 판단 설정
+    "ENABLE_AI_DIRECT_ENTRY": ConfigFieldDef(
+        key="ENABLE_AI_DIRECT_ENTRY",
+        type_name="bool",
+        default=True,
+        category="ai",
+        label="AI 단독 자율 진입 허용",
+        description="로컬 퀀트 규칙이 관망이더라도, AI가 차트·수급 심층 분석 후 매수를 승인하면 단독 진입합니다.",
+        unit="",
+    ),
+    "AI_DIRECT_ENTRY_MIN_ALPHA": ConfigFieldDef(
+        key="AI_DIRECT_ENTRY_MIN_ALPHA",
+        type_name="int",
+        default=55,
+        min_val=50,
+        max_val=100,
+        category="ai",
+        label="AI 분석 요청 최소 알파 점수",
+        description="로컬 퀀트 알파 점수가 이 기준 이상일 때만 AI 심층 분석을 호출합니다. (낮출수록 AI 호출 증가)",
+        unit="점",
+    ),
+    "GEMINI_ENTRY_CACHE_SEC": ConfigFieldDef(
+        key="GEMINI_ENTRY_CACHE_SEC",
+        type_name="int",
+        default=600,
+        min_val=60,
+        max_val=3600,
+        category="ai",
+        label="AI 진입 판단 캐시 주기",
+        description="안정 구간(HOLD 및 가격 변동 1.5% 이내)에서 이전 AI 판단을 재사용하는 시간입니다. (권장: 300~900초)",
+        unit="초",
+    ),
+    "GEMINI_RANK_CACHE_SEC": ConfigFieldDef(
+        key="GEMINI_RANK_CACHE_SEC",
+        type_name="int",
+        default=1800,
+        min_val=300,
+        max_val=7200,
+        category="ai",
+        label="스크리너 AI 랭킹 캐시 주기",
+        description="유망 종목 선별을 위한 AI 랭킹 분석 캐시 유지 시간입니다. (권장: 900~3600초)",
+        unit="초",
+    ),
 }
 
 

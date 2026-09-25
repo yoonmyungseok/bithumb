@@ -35,7 +35,8 @@ class TestCommonConfigManager(unittest.TestCase):
             "MAX_CHANGE_RATE", "MOMENTUM_BREAKOUT_ENABLED", "NEW_LISTING_ENABLED", "NEW_LISTING_ENFORCEMENT",
             "MAX_OPEN_POSITIONS", "MAX_POSITION_PCT", "MAX_TOTAL_EXPOSURE_PCT", "MAX_ORDER_KRW",
             "MAX_SWING_POSITIONS", "MAX_NEW_LISTING_POSITIONS", "MAX_SCALP_POSITIONS",
-            "MAX_ALT_ALLOC_PCT"
+            "MAX_ALT_ALLOC_PCT", "ENABLE_AI_DIRECT_ENTRY", "AI_DIRECT_ENTRY_MIN_ALPHA",
+            "GEMINI_ENTRY_CACHE_SEC", "GEMINI_RANK_CACHE_SEC"
         ]
         settings = self.manager.get_all_settings()
         for k in expected_keys:
@@ -212,6 +213,10 @@ class TestBotControllerRuntimeConfig(unittest.TestCase):
             "MAX_POSITION_PCT": 40.0,
             "MAX_ORDER_KRW": 30_000_000,
             "MAX_ALT_ALLOC_PCT": 20.0,
+            "ENABLE_AI_DIRECT_ENTRY": True,
+            "AI_DIRECT_ENTRY_MIN_ALPHA": 58,
+            "GEMINI_ENTRY_CACHE_SEC": 450,
+            "GEMINI_RANK_CACHE_SEC": 1500,
         }
         res = self.controller.update_runtime_config(updates)
         self.assertTrue(res["success"])
@@ -222,6 +227,10 @@ class TestBotControllerRuntimeConfig(unittest.TestCase):
         # StrategyPolicy.MAX_ALT_ALLOC_PCT 핫리로드 검증
         from strategy_engine import StrategyPolicy
         self.assertAlmostEqual(StrategyPolicy.MAX_ALT_ALLOC_PCT, 0.20)
+        self.assertTrue(StrategyPolicy.ENABLE_AI_DIRECT_ENTRY)
+        self.assertEqual(StrategyPolicy.AI_DIRECT_ENTRY_MIN_ALPHA, 58)
+        self.assertEqual(os.environ.get("GEMINI_ENTRY_CACHE_SEC"), "450")
+        self.assertEqual(os.environ.get("GEMINI_RANK_CACHE_SEC"), "1500")
         # 단타 3 + 스윙 1 + 신규 1 = 총 포지션 5 자동 갱신 검증
         self.assertEqual(self.risk_guard.max_open_positions, 5)
         self.assertEqual(self.risk_guard.max_scalp_positions, 3)

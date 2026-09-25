@@ -723,6 +723,10 @@ class BotController:
             StrategyPolicy.MAX_ALT_ALLOC_PCT = normalized_updates["MAX_ALT_ALLOC_PCT"]
         if "MIN_ALT_ALLOC_PCT" in normalized_updates:
             StrategyPolicy.MIN_ALT_ALLOC_PCT = normalized_updates["MIN_ALT_ALLOC_PCT"]
+        if "ENABLE_AI_DIRECT_ENTRY" in normalized_updates:
+            StrategyPolicy.ENABLE_AI_DIRECT_ENTRY = bool(normalized_updates["ENABLE_AI_DIRECT_ENTRY"])
+        if "AI_DIRECT_ENTRY_MIN_ALPHA" in normalized_updates:
+            StrategyPolicy.AI_DIRECT_ENTRY_MIN_ALPHA = int(normalized_updates["AI_DIRECT_ENTRY_MIN_ALPHA"])
 
         if self.trailing_tracker:
             if "TRAILING_START_PCT" in normalized_updates:

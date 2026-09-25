@@ -2,6 +2,28 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.16 (2026-09-25)
+
+- **Gemini AI 자율 매수(Direct Entry) 활성화 및 실시간 캐시 튜닝 대시보드 Hot-Reload 통합**:
+  - `src/runtime_config.py`:
+    - `COMMON_CONFIG_SCHEMA`에 AI 카테고리(`ai`) 4대 핵심 설정 항목 신설:
+      - `ENABLE_AI_DIRECT_ENTRY`: 로컬 퀀트 규칙 관망 시에도 Gemini의 심층 분석 판단으로 단독 매수를 승인하는 자율 진입 플래그 (기본값: `True`).
+      - `AI_DIRECT_ENTRY_MIN_ALPHA`: AI 분석 호출 대상 최소 알파 점수 (기본값: `55점`, 50~100점).
+      - `GEMINI_ENTRY_CACHE_SEC`: 안정 구간(HOLD 및 가격 변동 1.5% 이내) AI 판단 재사용 캐시 주기 (기본값: `600초(10분)`, 60~3600초).
+      - `GEMINI_RANK_CACHE_SEC`: 스크리너 AI 유망 랭킹 캐시 주기 (기본값: `1800초(30분)`, 300~7200초).
+  - `src/bot_controller.py`:
+    - 런타임 설정 갱신 핸들러(`update_runtime_config`)에 `StrategyPolicy.ENABLE_AI_DIRECT_ENTRY` 및 `StrategyPolicy.AI_DIRECT_ENTRY_MIN_ALPHA` 실시간 인메모리 주입 로직 추가.
+  - `src/gemini_analyzer.py`:
+    - `entry_cache_ttl`: 하한 클램프를 540초에서 60초로 완화하고 기본값을 600초로 설정하여 유연한 캐시 단축 지원.
+    - `rank_cache_ttl`: 하한 클램프를 1800초에서 300초로 완화하고 기본값을 1800초로 최적화.
+  - `src/dashboard_server.py`:
+    - 공통 설정 모달에 `🤖 AI 자율권 & 캐시` 탭(`cfg-tab-ai`, `cfg-panel-ai`) 신설 및 4대 설정 폼 연동.
+    - 변경 즉시 `.env`에 영구 저장되고 빗썸·업비트 활성 봇에 무중단 실시간 반영(`Hot-Reload`).
+  - `.env`:
+    - `ENABLE_AI_DIRECT_ENTRY=true`, `AI_DIRECT_ENTRY_MIN_ALPHA=55`, `GEMINI_ENTRY_CACHE_SEC=600`, `GEMINI_RANK_CACHE_SEC=1800` 영구 반영.
+  - `tests/test_runtime_config_manager.py`:
+    - 스키마 커버리지 및 AI 설정 핫 리로드 단위 테스트 추가 및 100% 통과 검증.
+
 ## v9.15 (2026-09-25)
 
 - **적극적 매매 전환 및 볼린저 밴드·전고점 마진·자율 매수 기준 전면 완화**:
