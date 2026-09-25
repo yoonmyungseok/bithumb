@@ -782,6 +782,9 @@
         <button onclick="window.switchConfigTab('portfolio')" id="cfg-tab-portfolio" class="cfg-tab-btn px-3 sm:px-3.5 py-2 rounded-t-lg text-xs font-bold transition border-b-2 border-transparent text-slate-400 hover:text-slate-200 shrink-0">
           💼 포트폴리오 한도
         </button>
+        <button onclick="window.switchConfigTab('ai')" id="cfg-tab-ai" class="cfg-tab-btn px-3 sm:px-3.5 py-2 rounded-t-lg text-xs font-bold transition border-b-2 border-transparent text-slate-400 hover:text-slate-200 shrink-0">
+          🤖 AI 자율권 & 캐시
+        </button>
       </div>
 
       <!-- Config Body Form (Scrollable) -->
@@ -1023,6 +1026,72 @@
                 <span class="text-xs text-slate-400 font-bold">원</span>
               </div>
               <p class="text-[11px] text-slate-400 mt-1">1회 매수 주문의 절대 최대 상한</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. AI 모델 & 자율 판단 탭 -->
+        <div id="cfg-panel-ai" class="cfg-panel hidden space-y-4">
+          <div class="bg-gradient-to-r from-purple-950/40 via-indigo-950/30 to-blue-950/40 p-4 rounded-xl border border-purple-500/40 space-y-2">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="text-sm">🧠</span>
+                <span class="text-xs font-bold text-purple-300">Gemini AI 자율 분석 및 쿼터 제어</span>
+              </div>
+              <span class="text-[10px] text-purple-300 bg-purple-900/60 px-2 py-0.5 rounded border border-purple-500/30">Hot-Reload</span>
+            </div>
+            <p class="text-[11px] text-slate-300 leading-relaxed">
+              AI에게 로컬 퀀트 규칙을 넘어선 단독 매수 승인 자율권을 부여하고, 실시간 분석 빈도(캐시 주기)를 정밀 제어합니다.
+            </p>
+          </div>
+
+          <div class="space-y-3">
+            <div class="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
+              <label class="flex items-center justify-between cursor-pointer">
+                <div>
+                  <div class="text-xs font-semibold text-slate-200">AI 단독 자율 진입 허용 (ENABLE_AI_DIRECT_ENTRY)</div>
+                  <div class="text-[11px] text-slate-400">로컬 퀀트가 관망이더라도, Gemini가 차트·수급 심층 분석으로 매수를 승인하면 자율 진입합니다.</div>
+                </div>
+                <input type="checkbox" id="cfg_ENABLE_AI_DIRECT_ENTRY" class="w-4 h-4 accent-indigo-500 rounded cursor-pointer">
+              </label>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div class="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
+                <div class="flex justify-between items-center mb-1.5">
+                  <label class="text-xs font-semibold text-slate-200">AI 분석 요청 최소 알파 점수</label>
+                  <span class="text-[10px] text-indigo-400">50 ~ 100점</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <input type="number" id="cfg_AI_DIRECT_ENTRY_MIN_ALPHA" step="1" min="50" max="100" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-indigo-500">
+                  <span class="text-xs text-slate-400 font-bold">점</span>
+                </div>
+                <p class="text-[11px] text-slate-400 mt-1">로컬 알파 점수가 이 기준 이상인 후보만 AI에게 질의합니다. (낮출수록 AI 호출 증가, 권장: 55점)</p>
+              </div>
+
+              <div class="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
+                <div class="flex justify-between items-center mb-1.5">
+                  <label class="text-xs font-semibold text-slate-200">AI 진입 판단 캐시 주기</label>
+                  <span class="text-[10px] text-indigo-400">60 ~ 3600초</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <input type="number" id="cfg_GEMINI_ENTRY_CACHE_SEC" step="60" min="60" max="3600" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-indigo-500">
+                  <span class="text-xs text-slate-400 font-bold">초</span>
+                </div>
+                <p class="text-[11px] text-slate-400 mt-1">안정 구간(HOLD/가격변동 1.5% 미만)에서 이전 분석 결과를 유지하는 시간입니다. (권장: 300~900초)</p>
+              </div>
+
+              <div class="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80 sm:col-span-2">
+                <div class="flex justify-between items-center mb-1.5">
+                  <label class="text-xs font-semibold text-slate-200">스크리너 AI 랭킹 캐시 주기</label>
+                  <span class="text-[10px] text-indigo-400">300 ~ 7200초</span>
+                </div>
+                <div class="flex items-center gap-2">
+                  <input type="number" id="cfg_GEMINI_RANK_CACHE_SEC" step="60" min="300" max="7200" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-indigo-500">
+                  <span class="text-xs text-slate-400 font-bold">초</span>
+                </div>
+                <p class="text-[11px] text-slate-400 mt-1">전체 마켓 스크리닝 시 AI 유망 순위 캐시를 유지하는 시간입니다. (권장: 900~3600초)</p>
+              </div>
             </div>
           </div>
         </div>

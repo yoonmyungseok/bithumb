@@ -2411,7 +2411,7 @@
   };
 
   window.switchConfigTab = function (tabName) {
-    const tabs = ['risk', 'screening', 'portfolio'];
+    const tabs = ['risk', 'screening', 'portfolio', 'ai'];
     tabs.forEach(t => {
       const btn = document.getElementById(`cfg-tab-${t}`);
       const panel = document.getElementById(`cfg-panel-${t}`);
