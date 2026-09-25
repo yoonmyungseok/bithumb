@@ -484,11 +484,11 @@ class StrategyPolicy:
     MOMENTUM_BREAKOUT_RSI_MAX: float = 78.0
     MOMENTUM_BREAKOUT_RS_MIN: float = 0.008
     MOMENTUM_BREAKOUT_MTF_EMA20_RATIO: float = 0.970
-    MOMENTUM_BREAKOUT_ALLOC_RATIO: float = 0.25
+    MOMENTUM_BREAKOUT_ALLOC_RATIO: float = 0.50  # 모멘텀 돌파 기본 진입 비중 상향 (기존 0.25 -> 0.50, 슬롯의 50% 투입)
     # 확장 후반 추격은 수익 기회를 열되, 초입보다 작은 금액으로만 첫 주문을 허용한다.
     MOMENTUM_EXTENDED_ALPHA_THRESHOLD_RISK_OFF: int = 70
     MOMENTUM_EXTENDED_ALPHA_THRESHOLD_NIGHT_RISK_OFF: int = 75
-    MOMENTUM_EXTENDED_ALLOC_RATIO: float = 0.15
+    MOMENTUM_EXTENDED_ALLOC_RATIO: float = 0.30  # 확장 후반 진입 비중 상향 (기존 0.15 -> 0.30)
     # 모멘텀은 초입에서만 첫 주문을 허용한다. 확장 구간은 관찰·보유 관리용으로 남긴다.
     MOMENTUM_EARLY_MAX_CHANGE_RATE: float = 0.080
 
@@ -497,6 +497,32 @@ class StrategyPolicy:
     RS_LEADER_EARLY_MAX_CHANGE_RATE: float = 0.120  # 주도주 모멘텀 초입(+12.0% 이하) 확장 허용
     RS_LEADER_BREAKOUT_TOLERANCE: float = 0.992     # 직전 고점 99.2% 이상 근접 지지 양봉 허용
     RS_LEADER_ALPHA_THRESHOLD_RISK_OFF: int = 55    # 알트코인 독립 매수: RISK_OFF 시 RS 주도주 임계값 55점 일원화
+
+    @classmethod
+    def get_momentum_breakout_alloc_ratio(cls) -> float:
+        """모멘텀 돌파 진입 비중 반환 (환경 변수 MOMENTUM_BREAKOUT_ALLOC_RATIO 지원)"""
+        raw = os.getenv("MOMENTUM_BREAKOUT_ALLOC_RATIO", "").strip()
+        if raw:
+            try:
+                val = float(raw)
+                if 0.0 < val <= 1.0:
+                    return val
+            except ValueError:
+                pass
+        return cls.MOMENTUM_BREAKOUT_ALLOC_RATIO
+
+    @classmethod
+    def get_momentum_extended_alloc_ratio(cls) -> float:
+        """모멘텀 확장 후반 진입 비중 반환 (환경 변수 MOMENTUM_EXTENDED_ALLOC_RATIO 지원)"""
+        raw = os.getenv("MOMENTUM_EXTENDED_ALLOC_RATIO", "").strip()
+        if raw:
+            try:
+                val = float(raw)
+                if 0.0 < val <= 1.0:
+                    return val
+            except ValueError:
+                pass
+        return cls.MOMENTUM_EXTENDED_ALLOC_RATIO
 
     @classmethod
     def get_momentum_early_max_change_rate(cls, relative_strength: float = 0.0) -> float:

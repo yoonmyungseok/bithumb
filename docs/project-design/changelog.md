@@ -4,6 +4,17 @@
 
 ## v9.14 (2026-09-25)
 
+- **모멘텀 돌파(MOMENTUM_BREAKOUT) 진입 비중 상향 (25% ➜ 50%) 및 동적 제어**:
+  - `src/strategy_engine.py`:
+    - `StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO`: 기존 0.25에서 **0.50 (50%)**으로 전격 상향. 1슬롯 예산(약 24만원 기준) 투입 금액을 약 6만원에서 **약 12만원**으로 2배 확대하여 급등 돌파 성공 시의 실질적 이익 극대화.
+    - `StrategyPolicy.MOMENTUM_EXTENDED_ALLOC_RATIO`: 기존 0.15에서 **0.30 (30%)**으로 비례 상향.
+    - `get_momentum_breakout_alloc_ratio()`, `get_momentum_extended_alloc_ratio()` 신설: 환경변수 `MOMENTUM_BREAKOUT_ALLOC_RATIO` 및 `MOMENTUM_EXTENDED_ALLOC_RATIO`를 통한 동적 오버라이드 지원.
+  - `src/trading_runtime.py`:
+    - 동적 getter 연동 및 주문 근거 라벨을 `[⚡모멘텀 돌파]`로 명확화.
+  - `tests/test_strategy_policy_ssot.py`:
+    - 모멘텀 돌파 비중(50%/30%) 및 환경변수 오버라이드 단위 테스트 추가 (19/19 PASS).
+  - `docs/project-design/strategy-and-risk.md`:
+    - 모멘텀 돌파 비중 현실화 정책 문서화.
 - **Gemini API 구글 콘솔(Google AI Studio) RPD 기준 대시보드 표시 정밀화**:
   - `dashboard/src/app.js`:
     - 구글 콘솔의 RPD(Requests Per Day) 집계 기준에 맞춰 성공한 유효 호출량(`api_success`)을 대시보드 메인 쿼터 사용량의 주 지표로 표기(`성공 / 한도 (성공, 총 N회)`).

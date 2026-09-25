@@ -193,6 +193,17 @@ class StrategyPolicySSOTTests(unittest.TestCase):
         # 정상장 확장 구간은 이번 RISK_OFF 완화 범위에 포함하지 않는다.
         self.assertEqual(get_momentum_extended_alpha_threshold("NORMAL", is_night=False), 80)
 
+    def test_momentum_breakout_alloc_ratio_and_env_override(self):
+        """모멘텀 돌파 기본 비중이 0.50(50%)이며 환경 변수 오버라이드가 정상 작동하는지 검증."""
+        self.assertEqual(StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO, 0.50)
+        self.assertEqual(StrategyPolicy.MOMENTUM_EXTENDED_ALLOC_RATIO, 0.30)
+        self.assertEqual(StrategyPolicy.get_momentum_breakout_alloc_ratio(), 0.50)
+        self.assertEqual(StrategyPolicy.get_momentum_extended_alloc_ratio(), 0.30)
+
+        with patch.dict(os.environ, {"MOMENTUM_BREAKOUT_ALLOC_RATIO": "0.75", "MOMENTUM_EXTENDED_ALLOC_RATIO": "0.40"}):
+            self.assertEqual(StrategyPolicy.get_momentum_breakout_alloc_ratio(), 0.75)
+            self.assertEqual(StrategyPolicy.get_momentum_extended_alloc_ratio(), 0.40)
+
     def test_orderbook_flow_tracker_rolling_smoothing(self):
         """OrderbookFlowTracker가 단일 스냅샷 왜곡을 완충하고 롤링 평균을 정상 계산하는지 검증 (과제 E)"""
         tracker = OrderbookFlowTracker(max_history=3)

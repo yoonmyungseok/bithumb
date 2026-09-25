@@ -1669,8 +1669,12 @@ class TradingCycleEngine:
                 "entry_price": local_entry.get("entry_price", current_price),
                 "target_price": local_entry.get("target_price", current_price * 1.03),
                 "stop_loss": local_entry.get("stop_loss", current_price * 0.98),
-                "alloc_pct": dyn_max_pos_pct * StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO,
-                "reason": f"[확정봉 모멘텀 돌파·최초 소액] {local_entry.get('reason', '')}",
+                "alloc_pct": dyn_max_pos_pct * (
+                    StrategyPolicy.get_momentum_breakout_alloc_ratio()
+                    if hasattr(StrategyPolicy, "get_momentum_breakout_alloc_ratio")
+                    else StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO
+                ),
+                "reason": f"[확정봉 모멘텀 돌파 진입] {local_entry.get('reason', '')}",
             }
         elif (
             (StrategyPolicy.is_local_autonomous_buy_enabled() if hasattr(StrategyPolicy, "is_local_autonomous_buy_enabled") else True)
@@ -1946,13 +1950,20 @@ class TradingCycleEngine:
                 reason = f"동일 5분 사이클 신규상장/모멘텀 신규 주문 1건 제한 | {reason}"
 
         if effective_candidate_type == "MOMENTUM_BREAKOUT" and action == "BUY":
-            momentum_alloc_ratio = (
-                StrategyPolicy.MOMENTUM_EXTENDED_ALLOC_RATIO
-                if momentum_phase == "EXTENDED"
-                else StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO
-            )
+            if momentum_phase == "EXTENDED":
+                momentum_alloc_ratio = (
+                    StrategyPolicy.get_momentum_extended_alloc_ratio()
+                    if hasattr(StrategyPolicy, "get_momentum_extended_alloc_ratio")
+                    else StrategyPolicy.MOMENTUM_EXTENDED_ALLOC_RATIO
+                )
+            else:
+                momentum_alloc_ratio = (
+                    StrategyPolicy.get_momentum_breakout_alloc_ratio()
+                    if hasattr(StrategyPolicy, "get_momentum_breakout_alloc_ratio")
+                    else StrategyPolicy.MOMENTUM_BREAKOUT_ALLOC_RATIO
+                )
             alloc_pct = min(alloc_pct, dyn_max_pos_pct * momentum_alloc_ratio)
-            allocation_label = "확장 후반 제한 추격" if momentum_phase == "EXTENDED" else "모멘텀 돌파 최초 소액"
+            allocation_label = "확장 후반 제한 추격" if momentum_phase == "EXTENDED" else "모멘텀 돌파"
             reason = f"[⚡{allocation_label}] {reason}"
         elif (effective_candidate_type == "SHAKEOUT_SWEEP" or use_shakeout_sweep) and action == "BUY":
             alloc_pct = min(alloc_pct, dyn_max_pos_pct * StrategyPolicy.SHAKEOUT_SWEEP_ALLOC_RATIO)
