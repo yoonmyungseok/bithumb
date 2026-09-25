@@ -294,8 +294,8 @@ class TestGeminiEntryPromptContract(unittest.TestCase):
 
         sent_prompt = mock_post.call_args.kwargs["json"]["contents"][0]["parts"][0]["text"]
         self.assertIn("저점 눌림목 지정가", sent_prompt)
-        self.assertIn("엄격한 상투 추격 매수 금지", sent_prompt)
-        self.assertIn("%B <= 0.72 (약세장 RISK_OFF 시 %B <= 0.65)", sent_prompt)
+        self.assertIn("상투 추격 방지", sent_prompt)
+        self.assertIn("%B <= 0.85 (약세장 RISK_OFF 시 %B <= 0.80)", sent_prompt)
 
         # 현재가보다 높은 1050원으로 제시된 entry_price는 현재가(1000.0) 이하로 안전 클램핑되어야 함
         self.assertEqual(res["action"], "BUY")

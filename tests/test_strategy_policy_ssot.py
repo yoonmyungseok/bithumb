@@ -110,7 +110,7 @@ class StrategyPolicySSOTTests(unittest.TestCase):
         self.assertFalse(signal["checklist_details"]["hard_gates"]["bb_guard"]["pass"])
 
     def test_risk_off_accepts_only_the_new_narrow_upper_band_range(self):
-        """RISK_OFF에서는 0.68 이하만 허용하고 일반장 0.65 상한은 그대로 유지한다."""
+        """RISK_OFF에서는 0.85 이하를 허용하고 일반장은 0.80 상한을 유지한다."""
         candles = [
             {"trade_price": 100.0, "opening_price": 99.0, "high_price": 102.0,
              "low_price": 98.0, "candle_acc_trade_volume": 1000.0}
@@ -119,7 +119,7 @@ class StrategyPolicySSOTTests(unittest.TestCase):
         approved_alpha = {"total_score": 70, "allow_buy": True, "factor_breakdown": {"orderflow_score": 10}}
 
         with patch("strategy_engine.calculate_composite_alpha_score", return_value=approved_alpha), \
-             patch("strategy_engine.calculate_bollinger_bands", return_value={"middle": 100.0, "upper": 110.0, "lower": 90.0, "width_pct": 0.2, "pct_b": 0.66}), \
+             patch("strategy_engine.calculate_bollinger_bands", return_value={"middle": 100.0, "upper": 110.0, "lower": 90.0, "width_pct": 0.2, "pct_b": 0.82}), \
              patch("strategy_engine.calculate_rsi", return_value=55.0):
             risk_off = entry_signal(candles, btc_regime="RISK_OFF", is_night=False)
             normal = entry_signal(candles, btc_regime="NORMAL", is_night=False)
@@ -130,7 +130,7 @@ class StrategyPolicySSOTTests(unittest.TestCase):
         self.assertFalse(normal["checklist_details"]["hard_gates"]["bb_guard"]["pass"])
 
     def test_risk_off_still_blocks_upper_band_chase_above_080(self):
-        """약세장에서도 %B 0.70 이상은 상투 추격으로 차단한다."""
+        """약세장에서도 %B 0.86 이상은 상투 추격으로 차단한다."""
         candles = [
             {"trade_price": 100.0, "opening_price": 99.0, "high_price": 101.0,
              "low_price": 98.0, "candle_acc_trade_volume": 1000.0}
@@ -139,7 +139,7 @@ class StrategyPolicySSOTTests(unittest.TestCase):
         approved_alpha = {"total_score": 90, "allow_buy": True, "factor_breakdown": {"orderflow_score": 10}}
 
         with patch("strategy_engine.calculate_composite_alpha_score", return_value=approved_alpha), \
-             patch("strategy_engine.calculate_bollinger_bands", return_value={"middle": 100.0, "upper": 110.0, "lower": 90.0, "width_pct": 0.2, "pct_b": 0.70}), \
+             patch("strategy_engine.calculate_bollinger_bands", return_value={"middle": 100.0, "upper": 110.0, "lower": 90.0, "width_pct": 0.2, "pct_b": 0.88}), \
              patch("strategy_engine.calculate_rsi", return_value=55.0):
             signal = entry_signal(candles, btc_regime="RISK_OFF", is_night=False)
 

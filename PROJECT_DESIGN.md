@@ -1,4 +1,4 @@
-# Bithumb & Upbit AI Pro Quant Trading Bot (v9.14)
+# Bithumb & Upbit AI Pro Quant Trading Bot (v9.15)
 
 빗썸과 업비트를 엄격히 분리해 운영하는 AI 퀀트 트레이딩 시스템의 설계 문서 진입점입니다. 기존 참조 호환성을 위해 이 경로는 유지하며, 실제 설계의 단일 원본은 아래 하위 문서입니다.
 

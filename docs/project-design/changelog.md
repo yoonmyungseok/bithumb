@@ -2,6 +2,31 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.15 (2026-09-25)
+
+- **적극적 매매 전환 및 볼린저 밴드·전고점 마진·자율 매수 기준 전면 완화**:
+  - `src/strategy_engine.py`:
+    - `StrategyPolicy.PCT_B_MAX`: 기존 0.65에서 **0.80**으로 상향.
+    - `StrategyPolicy.PCT_B_MAX_RISK_OFF`: 기존 0.68에서 **0.85**로 상향.
+    - `is_rs_leader` 특례: BTC 대비 상대강도가 우수한 독자 주도주는 %B를 최대 **0.90**까지 허용하여 강력한 상승 랠리 코인을 기계적 하드 차단 없이 즉시 포착.
+    - `StrategyPolicy.PULLBACK_MIN_DISTANCE_BELOW_HIGH`: 직전 12봉 최고점 대비 최소 눌림 거리 요구치를 0.8%에서 **0.3%**(`0.003`)로 완화하고, RS 주도주 또는 알파 55점 이상 우량 코인은 전고점 턱밑 돌파 시점(0.0%~0.3%)에서도 즉시 진입을 허용.
+    - `StrategyPolicy.LOCAL_AUTONOMOUS_BUY_MIN_ALPHA`: 기존 60점에서 **55점**으로 완화하여 55~59점 구간의 우량 종목(ONDO, BLAST, WAXP 등)을 AI 호출 대기 없이 즉시 100% 정상 비중으로 자율 매수.
+    - `StrategyPolicy.AI_DIRECT_ENTRY_MIN_ALPHA`: 기존 60점에서 **55점**으로 완화.
+    - `StrategyPolicy.ALPHA_BUY_THRESHOLD`: 기존 60점에서 **55점**으로 완화.
+    - `StrategyPolicy.ALPHA_BUY_THRESHOLD_NORMAL`: 55점, `ALPHA_BUY_THRESHOLD_BULL`: 55점, `ALPHA_BUY_THRESHOLD_RISK_OFF`: 60점으로 완화.
+    - `StrategyPolicy.RSI_MAX_NORMAL` / `RSI_MAX_RISK_OFF`: 기존 68.0에서 **72.0**으로 상향.
+    - `StrategyPolicy.RS_LEADER_ALPHA_THRESHOLD_RISK_OFF`: 기존 55점에서 **50점**으로 완화.
+  - `src/market_screener.py`:
+    - `is_momentum_leader` 판정 조건: 당일 변동률 `+2.0%` 이상 및 상대강도(RS) `+1.0%` 이상으로 완화하여 상승 탄력이 붙은 알트코인을 `MOMENTUM_BREAKOUT` 경로로 조기 편입.
+    - 초입 우대 가중치 구간을 `+1.0% ~ +6.0%`로 확대.
+  - `src/gemini_analyzer.py`:
+    - AI 매수 분석 프롬프트의 볼린저 밴드 기준을 `%B <= 0.85 (약세장 RISK_OFF 시 %B <= 0.80)`로 완화하고, 지침 문구를 상투 추격 방지와 적극적 추세 돌파 BUY 승인 병행으로 개선.
+    - 로컬 과열 가드레일: 일반 RSI 한도 72.0, %B 한도 0.85~0.88, MA20 이격도 한도 103.5%~104.5%로 상향하여 AI의 BUY 판정이 임의로 HOLD 전환되는 결함 해소.
+  - `tests/`:
+    - `test_strategy_policy_ssot.py`, `test_trade_improvement_guards.py`, `test_local_autonomous_buy.py`, `test_gemini_call_reduction.py`, `test_gemini_prompt_contract.py`, `test_relative_strength.py`, `test_market_screener.py` 전 단위 테스트 52개 100% PASS 확인.
+  - `docs/project-design/`:
+    - `PROJECT_DESIGN.md` 및 `docs/project-design/strategy-and-risk.md`에 완화된 적극 매매 정책 명시.
+
 ## v9.14 (2026-09-25)
 
 - **모멘텀 돌파(MOMENTUM_BREAKOUT) 진입 비중 상향 (25% ➜ 50%) 및 동적 제어**:

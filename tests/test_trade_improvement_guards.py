@@ -22,8 +22,8 @@ class TestTradeImprovementGuards(unittest.TestCase):
         self.assertEqual(StrategyPolicy.COOLDOWN_STOP_LOSS_SEC, 1800.0)
         self.assertEqual(StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF, 60)
         self.assertEqual(StrategyPolicy.RISK_OFF_ALLOC_RATIO, 1.0)
-        self.assertEqual(StrategyPolicy.PCT_B_MAX_RISK_OFF, 0.80)
-        self.assertEqual(StrategyPolicy.PULLBACK_PCT_B_MAX_RISK_OFF, 0.80)
+        self.assertEqual(StrategyPolicy.PCT_B_MAX_RISK_OFF, 0.85)
+        self.assertEqual(StrategyPolicy.PULLBACK_PCT_B_MAX_RISK_OFF, 0.85)
         self.assertEqual(StrategyPolicy.TIME_STOP_BREAKEVEN_MIN_PNL_PCT, 0.003)
         self.assertEqual(StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MAX, 78.0)
 
@@ -177,7 +177,7 @@ class TestTradeImprovementGuards(unittest.TestCase):
         self.assertIn("후보 유형: MOMENTUM_BREAKOUT", momentum_prompt)
         self.assertIn("현재 알파 승인 기준: 55점 이상", momentum_prompt)
         self.assertIn("모멘텀 단계: EXTENDED", momentum_prompt)
-        self.assertIn("최대 종목 비중의 15% 제한 추격 진입", momentum_prompt)
+        self.assertIn("최대 종목 비중의 30% 제한 추격 진입", momentum_prompt)
 
         analyzer.analyze(
             market="KRW-TEST",
@@ -201,8 +201,8 @@ class TestTradeImprovementGuards(unittest.TestCase):
         """전일 매매 분석 기반 개선 상수 설정 검증"""
         self.assertEqual(StrategyPolicy.SWING_ENTRY_EMA20_BUFFER_RATIO, 1.005)
         self.assertEqual(StrategyPolicy.SWING_TREND_EXIT_BUFFER_RATIO, 0.985)
-        self.assertEqual(StrategyPolicy.RISK_OFF_MAX_ALT_ALLOC_PCT, 0.06)
-        self.assertEqual(StrategyPolicy.RISK_OFF_MAX_ALT_BUDGET_KRW, 75000.0)
+        self.assertEqual(StrategyPolicy.RISK_OFF_MAX_ALT_ALLOC_PCT, 0.12)
+        self.assertEqual(StrategyPolicy.RISK_OFF_MAX_ALT_BUDGET_KRW, 200000.0)
         self.assertEqual(StrategyPolicy.RISK_OFF_MIN_ORDERBOOK_RATIO, 1.00)
 
     def test_swing_entry_ema20_buffer_and_exit_margin(self):
@@ -238,20 +238,20 @@ class TestTradeImprovementGuards(unittest.TestCase):
         self.assertEqual(res["factor_breakdown"]["orderbook_raw_ratio"], 0.7)
 
     def test_alt_position_sizing_risk_off_cap(self):
-        """RISK_OFF 약세장에서 알트코인 매수 예산이 6% 및 75,000원 이하로 캡핑되는지 검증"""
+        """RISK_OFF 약세장에서 알트코인 매수 예산이 12% 및 200,000원 이하로 캡핑되는지 검증"""
         total_equity = 1_200_000.0  # 시드 120만 원
         krw_available = 1_000_000.0
         requested_budget = 167_000.0  # 비중 확대 요청 금액
 
         # 1. RISK_OFF 레짐 시:
-        max_alt_alloc = StrategyPolicy.RISK_OFF_MAX_ALT_ALLOC_PCT  # 0.06
+        max_alt_alloc = StrategyPolicy.RISK_OFF_MAX_ALT_ALLOC_PCT  # 0.12
         max_alt_budget = min(
             total_equity * max_alt_alloc,
-            StrategyPolicy.RISK_OFF_MAX_ALT_BUDGET_KRW,  # 75,000원
+            StrategyPolicy.RISK_OFF_MAX_ALT_BUDGET_KRW,  # 200,000원
         )
-        self.assertEqual(max_alt_budget, 72000.0)  # 120만 * 0.06 = 72,000원
+        self.assertEqual(max_alt_budget, 144000.0)  # 120만 * 0.12 = 144,000원
         clamped_risk_off = min(krw_available, max(5000.0, min(requested_budget, max_alt_budget)))
-        self.assertEqual(clamped_risk_off, 72000.0)
+        self.assertEqual(clamped_risk_off, 144000.0)
 
         # 2. NORMAL 레짐 시:
         max_alt_alloc_normal = StrategyPolicy.MAX_ALT_ALLOC_PCT  # 0.15

@@ -318,11 +318,11 @@ class MarketScreener:
 
                 # 확인형 후보는 변동률 조건을 검사한다 (리셋 완충 세션 반영).
                 if eff_min_change_rate <= change_rate <= self.max_change_rate:
-                    # 모멘텀 주도주는 당일 변동률 3% 이상 및 상대강도(RS) 1.5% 이상인 종목으로 판정한다.
+                    # 모멘텀 주도주는 당일 변동률 2% 이상 및 상대강도(RS) 1.0% 이상인 종목으로 판정하여 적극적 기회 포착
                     is_momentum_leader = (
                         self.enable_early_breakout
-                        and change_rate >= 0.030
-                        and relative_strength >= 0.015
+                        and change_rate >= 0.020
+                        and relative_strength >= 0.010
                     )
                     early_max_change_rate = (
                         StrategyPolicy.get_momentum_early_max_change_rate(relative_strength)
@@ -335,9 +335,9 @@ class MarketScreener:
                         else "EXTENDED"
                     )
 
-                    # 상승 초입(+1.5% ~ +6.0%, RS 주도주는 최대 12.0%) 종목에 우대 가중치를 부여
-                    is_rs_leader_flag = relative_strength >= getattr(StrategyPolicy, "RS_LEADER_MIN_RS", 0.030)
-                    if 0.015 <= change_rate <= 0.060 or (is_rs_leader_flag and change_rate <= 0.120):
+                    # 상승 초입(+1.0% ~ +6.0%, RS 주도주는 최대 12.0%) 종목에 우대 가중치를 부여
+                    is_rs_leader_flag = relative_strength >= getattr(StrategyPolicy, "RS_LEADER_MIN_RS", 0.020)
+                    if 0.010 <= change_rate <= 0.060 or (is_rs_leader_flag and change_rate <= 0.120):
                         momentum_multiplier = 2.0   # 상승 초입 골든존 최고 가중치
                     elif eff_min_change_rate <= change_rate < 0.015:
                         momentum_multiplier = 1.3   # 바닥 탈출 초기 구간

@@ -36,7 +36,7 @@ class StrategyPolicy:
     PROFIT_TARGET_PCT: float = 0.040     # 기본 목표 수익률 호환 별칭 (+4.0%)
     MIN_STOP_PCT: float = 0.015          # 기본 최소 손절선 -1.5%
     STOP_LOSS_PCT: float = 0.018         # 기본 손절 -1.8% (눌림목 바닥 진입으로 손실폭 제한)
-    PULLBACK_MIN_DISTANCE_BELOW_HIGH: float = 0.008 # 전고점 대비 최소 이격 거리 0.8% (0.0%~0.8% 저항선 꼭대기 추격 매수 원천 차단)
+    PULLBACK_MIN_DISTANCE_BELOW_HIGH: float = 0.003 # 전고점 대비 최소 이격 거리 0.3% (돌파 직전 탄력 종목 조기 진입 허용)
 
     # 1-1. 메이저 코인(BTC/ETH/SOL) 전용 목표가/익절/타임스탑 (낮은 변동성 적응 및 자금 잠김 방어)
     MAJOR_MIN_TARGET_PCT: float = 0.015          # 메이저 최소 목표 수익률 +1.5%
@@ -56,8 +56,8 @@ class StrategyPolicy:
     BULL_TRAILING_DROP_PCT: float = 0.025        # 최고점 대비 2.5% 하락 시 청산 (상승장 눌림목 허용)
     BULL_TIME_STOP_SECONDS: int = 14400          # 상승장 240분 (4시간) 타임스탑 (자금 잠김 방어 및 충분한 추세 형성 대기)
     BULL_TIME_STOP_MAX_HOLD_SECONDS: int = 21600 # 지지선 유지 시 최대 360분 (6시간) 홀딩 유예
-    ALPHA_BUY_THRESHOLD_BULL: int = 65           # 상승장 알파 승인 점수 (65점으로 엄선하여 고점 상투 차단)
-    ALPHA_BUY_THRESHOLD_NIGHT_BULL: int = 70     # 상승장 심야 알파 승인 점수 (70점)
+    ALPHA_BUY_THRESHOLD_BULL: int = 55           # 상승장 알파 승인 점수 (55점)
+    ALPHA_BUY_THRESHOLD_NIGHT_BULL: int = 65     # 상승장 심야 알파 승인 점수 (65점)
     MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_BULL: int = 60       # 상승장 모멘텀 돌파 알파 (60점)
     MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_BULL: int = 65 # 상승장 심야 모멘텀 돌파 알파 (65점)
 
@@ -362,23 +362,23 @@ class StrategyPolicy:
 
 
     # 4. 하드 안전 게이트 (Hard Safety Gates) & 상대 강도(RS) 임계값
-    ALPHA_BUY_THRESHOLD: int = 60        # 7대 팩터 복합 알파 승인 점수 (100점 만점)
-    ALPHA_BUY_THRESHOLD_NORMAL: int = 60 # 정상장 7대 팩터 복합 알파 승인 점수
-    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 65 # 약세장(RISK_OFF) 무분별 단타 차단: 알파 65점 이상 엄선
+    ALPHA_BUY_THRESHOLD: int = 55        # 7대 팩터 복합 알파 승인 점수 (100점 만점, 적극적 매매 기준 55점)
+    ALPHA_BUY_THRESHOLD_NORMAL: int = 55 # 정상장 7대 팩터 복합 알파 승인 점수 (55점)
+    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 60 # 약세장(RISK_OFF) 단타 승인 점수 (65 -> 60점 완화)
     RS_MIN_RISK_OFF: float = 0.008       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+0.8% 초과 주도주)
     MIN_TRADE_VALUE_RISK_OFF: float = 1_000_000_000.0  # 약세장 최소 24시간 거래대금 10억 원 (기존 20억 -> 10억 하향)
     MIN_ASSET_PRICE_KRW: float = float(os.getenv("MIN_ASSET_PRICE_KRW", "0.0001"))  # 초저가 코인 제한 전면 해제 (기본 0.0001원, 0원 이하만 차단)
     RSI_MIN_NORMAL: float = 42.0         # 정상장 저점 반등 확인용 RSI 최소치
-    RSI_MAX_NORMAL: float = 68.0         # 정상장 과열 추격 방지용 RSI 최대치 (68.0 이하)
+    RSI_MAX_NORMAL: float = 72.0         # 정상장 과열 추격 방지용 RSI 최대치 (68.0 -> 72.0 완화)
     RSI_MIN_RISK_OFF: float = 42.0       # RISK_OFF 저점 반등 확인용 RSI 최소치
-    RSI_MAX_RISK_OFF: float = 68.0       # RISK_OFF 고점 추격 방지용 RSI 최대치
+    RSI_MAX_RISK_OFF: float = 72.0       # RISK_OFF 고점 추격 방지용 RSI 최대치 (68.0 -> 72.0 완화)
     PCT_B_MIN: float = 0.20              # 볼린저 밴드 %B 최소치
-    PCT_B_MAX: float = 0.65              # NORMAL/BULL_TREND 상단권 모멘텀 과열 추격을 차단하는 상한 (0.72 -> 0.65)
-    PCT_B_MAX_RISK_OFF: float = 0.68     # RISK_OFF 상단 과열 추격 차단 상한 (0.80 -> 0.68)
+    PCT_B_MAX: float = 0.80              # NORMAL/BULL_TREND 상단권 과열 차단 상한 (0.65 -> 0.80 완화)
+    PCT_B_MAX_RISK_OFF: float = 0.85     # RISK_OFF 상단 과열 차단 상한 (0.68 -> 0.85 완화)
     PULLBACK_PCT_B_MIN_NORMAL: float = 0.25  # 정상장 저점권 반등 후보 하한
-    PULLBACK_PCT_B_MAX_NORMAL: float = 0.65  # 정상장 저점권 반등 후보 상한 (0.68 -> 0.65)
+    PULLBACK_PCT_B_MAX_NORMAL: float = 0.80  # 정상장 저점권 반등 후보 상한 (0.65 -> 0.80 완화)
     PULLBACK_PCT_B_MIN_RISK_OFF: float = 0.28  # RISK_OFF 반등 후보 하한
-    PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.68  # RISK_OFF 반등 후보 상한 (0.80 -> 0.68)
+    PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.85  # RISK_OFF 반등 후보 상한 (0.68 -> 0.85 완화)
     PULLBACK_LOOKBACK_BARS: int = 12      # 최근 지지 저점 산정에 사용하는 5분봉 수
     PULLBACK_MAX_DISTANCE_NORMAL: float = 0.035  # 정상장 최근 저점 대비 최대 허용 거리 (+3.5% 이내 눌림)
     PULLBACK_MAX_DISTANCE_RISK_OFF: float = 0.045  # RISK_OFF 최근 저점 대비 최대 허용 거리 (+4.5% 이내 눌림, 6.5% 과열 차단)
@@ -406,13 +406,13 @@ class StrategyPolicy:
     # 유망 종목에 대해 Gemini AI의 자율 매수 승인을 허용하며, 리스크 방어를 위해 초기 비중을 50% 축소한다.
     ENABLE_AI_DIRECT_ENTRY: bool = True
     AI_DIRECT_ENTRY_ALLOC_RATIO: float = 0.50
-    AI_DIRECT_ENTRY_MIN_ALPHA: int = 60
+    AI_DIRECT_ENTRY_MIN_ALPHA: int = 55
 
     # 4-0-1. 로컬 퀀트 고알파 자율 매수 (Local Autonomous Buy)
     # AI 예산이 소진되었거나(일일 쿼터 페이싱/사이클 상한 초과), AI 분석기가 비활성/에러일 때,
-    # 로컬 퀀트 룰이 매수를 승인(allow_buy=True)하고 시스템 정규 알파 기준(60점)을 넘으면 AI 없이 100% 정상 비중으로 자율 매수를 집행한다.
+    # 로컬 퀀트 룰이 매수를 승인(allow_buy=True)하고 시스템 정규 알파 기준(55점)을 넘으면 AI 없이 100% 정상 비중으로 자율 매수를 집행한다.
     LOCAL_AUTONOMOUS_BUY_ENABLED: bool = True
-    LOCAL_AUTONOMOUS_BUY_MIN_ALPHA: int = 60
+    LOCAL_AUTONOMOUS_BUY_MIN_ALPHA: int = 55
     LOCAL_AUTONOMOUS_BUY_ALLOC_RATIO: float = 1.00
 
     @classmethod
@@ -427,7 +427,7 @@ class StrategyPolicy:
 
     @classmethod
     def get_local_autonomous_buy_min_alpha(cls) -> int:
-        """로컬 퀀트 자율 매수를 위한 최소 알파 점수 (시스템 정규 매수 기준 60점과 일치)"""
+        """로컬 퀀트 자율 매수를 위한 최소 알파 점수 (시스템 정규 매수 기준 55점과 일치)"""
         env_val = os.getenv("LOCAL_AUTONOMOUS_BUY_MIN_ALPHA", "").strip()
         if env_val.isdigit():
             return max(50, min(100, int(env_val)))
@@ -458,7 +458,7 @@ class StrategyPolicy:
 
     @classmethod
     def get_ai_direct_entry_min_alpha(cls) -> int:
-        """AI 단독 진입 허용을 위한 최소 알파 점수 (기본 60점)"""
+        """AI 단독 진입 허용을 위한 최소 알파 점수 (기본 55점)"""
         env_val = os.getenv("AI_DIRECT_ENTRY_MIN_ALPHA", "").strip()
         if env_val.isdigit():
             return max(50, min(100, int(env_val)))
@@ -496,7 +496,7 @@ class StrategyPolicy:
     RS_LEADER_MIN_RS: float = 0.020                 # BTC 대비 상대강도 +2.0% 이상 (기존 +3.0% 완화)
     RS_LEADER_EARLY_MAX_CHANGE_RATE: float = 0.120  # 주도주 모멘텀 초입(+12.0% 이하) 확장 허용
     RS_LEADER_BREAKOUT_TOLERANCE: float = 0.992     # 직전 고점 99.2% 이상 근접 지지 양봉 허용
-    RS_LEADER_ALPHA_THRESHOLD_RISK_OFF: int = 55    # 알트코인 독립 매수: RISK_OFF 시 RS 주도주 임계값 55점 일원화
+    RS_LEADER_ALPHA_THRESHOLD_RISK_OFF: int = 50    # 알트코인 독립 매수: RISK_OFF 시 RS 주도주 임계값 50점 일원화 (적극 매수)
 
     @classmethod
     def get_momentum_breakout_alloc_ratio(cls) -> float:
@@ -1597,12 +1597,15 @@ def entry_signal(
     rsi_hard_min = StrategyPolicy.RSI_MIN_NORMAL
     rsi_hard_max = StrategyPolicy.RSI_MAX_NORMAL
     hard_gate_rsi = (rsi_hard_min <= rsi <= rsi_hard_max)
-    # 볼린저 밴드 %B 상한: 일반장은 0.72 추격 차단, RISK_OFF는 독자 수급 반등 0.80 수용
+    is_leader = is_rs_leader(relative_strength, regime_upper)
+    # 볼린저 밴드 %B 상한: 일반장 0.80, RISK_OFF 0.85 (RS 주도주는 0.90까지 허용)
     pct_b_hard_max = (
         StrategyPolicy.PCT_B_MAX_RISK_OFF
         if regime_upper == "RISK_OFF"
         else StrategyPolicy.PCT_B_MAX
     )
+    if is_leader:
+        pct_b_hard_max = max(pct_b_hard_max, 0.90)
     hard_gate_bb = (StrategyPolicy.PCT_B_MIN <= pct_b <= pct_b_hard_max)
     # 저점 반등은 단기 이평이 중심선에 완전히 복귀하기 전의 회복 구간도 허용한다.
     hard_gate_ma = ma5 >= ma20 * StrategyPolicy.PULLBACK_MA_ALIGNMENT_RATIO
@@ -1635,6 +1638,8 @@ def entry_signal(
         if regime_upper == "RISK_OFF"
         else (StrategyPolicy.PULLBACK_PCT_B_MIN_NORMAL, StrategyPolicy.PULLBACK_PCT_B_MAX_NORMAL)
     )
+    if is_leader:
+        pct_b_max = max(pct_b_max, 0.90)
     pullback_max_distance = (
         StrategyPolicy.PULLBACK_MAX_DISTANCE_RISK_OFF
         if regime_upper == "RISK_OFF"
@@ -1654,15 +1659,19 @@ def entry_signal(
     previous_close = float(candles[1].get("trade_price", current) or current)
     total_score = int(alpha_res.get("total_score", 0) or 0)
     # 확정봉의 양봉 전환(current >= open_0)은 필수 유지하여 하락 중 무계획 물타기를 막는다.
-    # 직전 종가 회복은 0.2% 미세 버퍼를 허용하거나, 알파 점수가 우수한 종목(>= 60)은 양봉 전환만으로도 인정한다.
+    # 직전 종가 회복은 0.2% 미세 버퍼를 허용하거나, 알파 점수가 우수한 종목(>= 55)은 양봉 전환만으로도 인정한다.
     rebound_confirmed = current >= open_0 and (
         current >= previous_close * 0.998
         or total_score >= StrategyPolicy.ALPHA_BUY_THRESHOLD
     )
     pullback_zone = pct_b_min <= pct_b <= pct_b_max
     near_recent_low = 0.0 <= distance_from_recent_low <= pullback_max_distance
-    # 전고점 안전 마진 버퍼: 전고점 대비 최소 1.5% 이상 눌려 있어야 함 (저항선 바로 밑 꼭대기 추격 매수 원천 차단)
-    not_near_recent_high = distance_below_recent_high >= StrategyPolicy.PULLBACK_MIN_DISTANCE_BELOW_HIGH
+    # 전고점 안전 마진 버퍼: 전고점 대비 최소 눌림 거리 (단, RS 주도주 또는 알파 스코어 우수 종목은 돌파 탄력을 인정하여 저항선 턱밑 매수 허용)
+    not_near_recent_high = (
+        distance_below_recent_high >= StrategyPolicy.PULLBACK_MIN_DISTANCE_BELOW_HIGH
+        or is_leader
+        or total_score >= StrategyPolicy.ALPHA_BUY_THRESHOLD
+    )
     signal_5m = (
         ma5 >= ma20 * StrategyPolicy.PULLBACK_MA_ALIGNMENT_RATIO
         and rsi_min <= rsi <= rsi_max
@@ -1682,7 +1691,6 @@ def entry_signal(
     shakeout_sweep_reason = "확인형 후보"
     shakeout_sweep_details: dict[str, Any] = {}
     sweep_low = current
-    is_leader = is_rs_leader(relative_strength, regime_upper)
     if normalized_entry_type == "MOMENTUM_BREAKOUT":
         lookback = StrategyPolicy.MOMENTUM_BREAKOUT_LOOKBACK_BARS
         previous_candles = candles[1:lookback + 1]

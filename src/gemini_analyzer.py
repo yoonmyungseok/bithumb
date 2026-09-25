@@ -1333,11 +1333,11 @@ class GeminiAnalyzer:
 2. [VWAP 기관 수급] 현재가가 VWAP 상단에 안착 지지 또는 돌파할 것.
 3. [MACD 가속도] 히스토그램 기울기가 양의 방향으로 가속 확장 중이거나, 음의 모멘텀이 둔화되어 반등 전환 조짐일 것.
 4. [RSI 골든존] 5분봉 RSI가 35 ~ 72 사이일 것 (RSI 40~65 최적).
-5. [볼린저 밴드 & 이격] MA20 이격도 97.5%~102.5% 및 %B <= 0.72 (약세장 RISK_OFF 시 %B <= 0.65).
+5. [볼린저 밴드 & 이격] MA20 이격도 97.0%~103.5% 및 %B <= 0.85 (약세장 RISK_OFF 시 %B <= 0.80).
 6. [수급 & 호가창] 호가 갭 <= 0.50%, 체결강도 75% 이상 또는 고래 유입.
 7. [기대 손익비 & 수수료 완충] (목표가 - 진입가) >= 1.3 * (진입가 - 손절가) 수학적 보장. 특히 단가 10원 미만 초저가 코인은 수수료·슬리피지 방어를 위해 최소 +0.55% 이상의 완충 마진을 확보할 것.
 
-※ [엄격한 상투 추격 매수 금지] 이미 최근 캔들이 급등하여 볼린저 밴드 상단(%B >= 0.72)에 도달했거나 거래량이 터진 뒤 윗꼬리가 달린 종목의 추격 매수(Chasing the Top)는 절대 금지(HOLD)합니다. 5분봉 MA20 또는 VWAP 지지선에서 안정적인 저점 눌림목 안착이 확인되고 손익비가 1:1.3 이상 확보된 경우에만 BUY를 승인하세요.
+※ [상투 추격 방지] 이미 최근 캔들이 급등하여 볼린저 밴드 상단 이탈(%B >= 0.85) 및 윗꼬리(50% 이상)가 길게 달린 상투 추격(Chasing the Top)은 주의(HOLD)하되, 5분봉 VWAP/MA20 지지 또는 거래량이 실린 강력한 추세 돌파/반등 파동은 손익비 1:1.3 이상 확보 시 적극적으로 BUY를 승인하세요.
 
 ### [5. 목표가/손절가 수학적 유효성 규칙]
 - BUY 시: 반드시 '손절가 < 진입가 <= 현재가 < 목표가' 관계를 만족해야 하며, 진입가(ENTRY_PRICE)는 시장가 추격을 지양하고 현재가 이하의 5분봉 VWAP, MA20, 또는 전저점 지지선 부근의 **저점 눌림목 지정가**로 산출하여 안전마진과 손익비 1:1.5 이상을 유지하세요.
@@ -1382,13 +1382,13 @@ class GeminiAnalyzer:
                 elif normalized_candidate_type == "NEW_LISTING":
                     rsi_overheat_limit = StrategyPolicy.NEW_LISTING_RSI_MAX
                 else:
-                    rsi_overheat_limit = 65.0
+                    rsi_overheat_limit = 72.0
                 if rsi_val > rsi_overheat_limit:
                     overheat_reasons.append(f"RSI과열({rsi_val:.1f}>{rsi_overheat_limit:.1f})")
-                pct_b_overheat_limit = 0.72 if btc_regime == "RISK_OFF" else 0.78
+                pct_b_overheat_limit = 0.85 if btc_regime == "RISK_OFF" else 0.88
                 if float(bb.get("pct_b", 0.5)) > pct_b_overheat_limit:
                     overheat_reasons.append(f"볼린저상단이탈(%B {float(bb.get('pct_b', 0.5)):.2f}>{pct_b_overheat_limit:.2f})")
-                disp_overheat_limit = 101.5 if btc_regime == "RISK_OFF" else 102.5
+                disp_overheat_limit = 103.5 if btc_regime == "RISK_OFF" else 104.5
                 if disparity_ma20 > disp_overheat_limit:
                     overheat_reasons.append(f"MA20이격과열({disparity_ma20:.1f}%>{disp_overheat_limit:.1f}%)")
                 if float(trade_strength.get("trade_power_pct", 100.0)) > 350.0:

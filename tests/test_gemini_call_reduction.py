@@ -114,8 +114,8 @@ def test_server_error_and_timeout_cooldown():
 
 
 def test_ai_direct_entry_min_alpha():
-    """AI Direct Entry 최소 알파 점수(기본 60점) 및 환경변수 오버라이드 검증."""
-    assert StrategyPolicy.get_ai_direct_entry_min_alpha() == 60
+    """AI Direct Entry 최소 알파 점수(기본 55점) 및 환경변수 오버라이드 검증."""
+    assert StrategyPolicy.get_ai_direct_entry_min_alpha() == 55
 
     with patch.dict("os.environ", {"AI_DIRECT_ENTRY_MIN_ALPHA": "70"}):
         assert StrategyPolicy.get_ai_direct_entry_min_alpha() == 70
