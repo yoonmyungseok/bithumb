@@ -923,11 +923,20 @@
     function renderAiProviderCard(prefix, gData, gradientClass) {
       gData = gData || {};
       const calls = gData.api_calls || 0;
+      const success = gData.api_success !== undefined ? gData.api_success : calls;
+      const errors = gData.http_errors || 0;
       const limit = gData.quota_limit || 1000;
-      const pct = gData.quota_used_pct !== undefined ? gData.quota_used_pct : (limit > 0 ? Math.round((calls / limit) * 1000) / 10 : 0);
+      // 구글 콘솔(Google AI Studio) RPD와 정확히 맞추기 위해 성공한 유효 호출량을 기준으로 소진율 계산
+      const pct = limit > 0 ? Math.round((success / limit) * 1000) / 10 : 0;
 
       const ratioEl = document.getElementById(`${prefix}_api_calls_ratio`);
-      if (ratioEl) ratioEl.innerText = `${calls.toLocaleString()} / ${limit.toLocaleString()}회`;
+      if (ratioEl) {
+        if (errors > 0) {
+          ratioEl.innerText = `${success.toLocaleString()} / ${limit.toLocaleString()}회 (성공, 총 ${calls.toLocaleString()}회)`;
+        } else {
+          ratioEl.innerText = `${success.toLocaleString()} / ${limit.toLocaleString()}회`;
+        }
+      }
 
       const barEl = document.getElementById(`${prefix}_quota_bar`);
       if (barEl) {
@@ -1011,6 +1020,8 @@
           const barWrap = document.createElement('div');
           const bar = document.createElement('div');
           const modelCalls = Number(stat.calls || 0);
+          const modelSuccess = Number(stat.success !== undefined ? stat.success : stat.calls || 0);
+          const modelErrors = Number(stat.errors || 0);
           let quotaLimit = Number(stat.quota_limit !== undefined ? stat.quota_limit : 0);
           if (!quotaLimit && model !== 'list_models') {
             if (model.includes('flash-lite') || model.includes('flash_lite')) {
@@ -1019,7 +1030,8 @@
               quotaLimit = 20;
             }
           }
-          const quotaPct = quotaLimit > 0 ? Math.min(100, Math.max(0, (modelCalls / quotaLimit) * 100)) : 0;
+          // 구글 콘솔 RPD와 일치하도록 성공 건수를 주 지표로 소진율 계산
+          const quotaPct = quotaLimit > 0 ? Math.min(100, Math.max(0, (modelSuccess / quotaLimit) * 100)) : 0;
 
           row.className = 'space-y-1';
           label.className = 'flex justify-between gap-2 text-slate-400';
@@ -1030,9 +1042,15 @@
           const textSpan = document.createElement('span');
           textSpan.textContent = model === 'list_models' ? '모델 목록 조회' : (model === 'unclassified' ? '기타 API 요청' : (model === 'empty' ? '모델 호출 기록 없음' : model));
           name.append(iconSpan, textSpan);
-          ratio.textContent = quotaLimit > 0
-            ? `${modelCalls.toLocaleString()} / ${quotaLimit.toLocaleString()}회 (${quotaPct.toFixed(1)}%)`
-            : `${modelCalls.toLocaleString()}회`;
+          if (quotaLimit > 0) {
+            ratio.textContent = modelErrors > 0
+              ? `${modelSuccess.toLocaleString()} / ${quotaLimit.toLocaleString()}회 (${quotaPct.toFixed(1)}%, 오류 ${modelErrors.toLocaleString()}회)`
+              : `${modelSuccess.toLocaleString()} / ${quotaLimit.toLocaleString()}회 (${quotaPct.toFixed(1)}%)`;
+          } else {
+            ratio.textContent = modelErrors > 0
+              ? `${modelSuccess.toLocaleString()}회 (오류 ${modelErrors.toLocaleString()}회)`
+              : `${modelSuccess.toLocaleString()}회`;
+          }
           barWrap.className = 'w-full bg-slate-800 h-1 rounded-full overflow-hidden';
           bar.className = quotaPct >= 90 ? 'bg-rose-500 h-1 rounded-full transition-all duration-500' : 'bg-amber-400 h-1 rounded-full transition-all duration-500';
           bar.style.width = `${quotaPct}%`;
