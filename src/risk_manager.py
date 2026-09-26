@@ -731,13 +731,22 @@ class TrailingStopTracker:
                 return True
             if avg_buy_price > 0:
                 peak = float(self.peaks.get(market, self.peaks.get(m_upper, 0.0)) or 0.0)
-                trigger_pct = getattr(StrategyPolicy, "AUTO_BREAKEVEN_TRIGGER_PCT", 0.018)
+                is_major_m = is_major_market(market) if "is_major_market" in globals() else market.upper() in ("KRW-BTC", "KRW-ETH", "KRW-SOL")
+                trigger_pct = 0.018 if (is_major_m and self.is_swing_position(market)) else getattr(StrategyPolicy, "AUTO_BREAKEVEN_TRIGGER_PCT", 0.018)
                 if peak >= avg_buy_price * (1.0 + trigger_pct):
                     self.auto_breakeven_active[m_upper] = True
                     self.auto_breakeven_active[market] = True
                     self._save_state(force=True)
                     return True
             return False
+
+    def activate_breakeven(self, market: str) -> None:
+        """수동 또는 타임스탑 유예 시 본전 보장(Auto Break-Even) 스탑 강제 활성화"""
+        with self._lock:
+            m_upper = market.upper()
+            self.auto_breakeven_active[m_upper] = True
+            self.auto_breakeven_active[market] = True
+            self._save_state(force=True)
 
     def clear(self, market: str):
         with self._lock:

@@ -36,7 +36,7 @@ class StrategyPolicy:
     PROFIT_TARGET_PCT: float = 0.040     # 기본 목표 수익률 호환 별칭 (+4.0%)
     MIN_STOP_PCT: float = 0.015          # 기본 최소 손절선 -1.5%
     STOP_LOSS_PCT: float = 0.018         # 기본 손절 -1.8% (눌림목 바닥 진입으로 손실폭 제한)
-    PULLBACK_MIN_DISTANCE_BELOW_HIGH: float = 0.003 # 전고점 대비 최소 이격 거리 0.3% (돌파 직전 탄력 종목 조기 진입 허용)
+    PULLBACK_MIN_DISTANCE_BELOW_HIGH: float = 0.006 # 전고점 대비 최소 눌림 마진 0.6% (상투 꼭지 매수 차단)
 
     # 1-1. 메이저 코인(BTC/ETH/SOL) 전용 목표가/익절/타임스탑 (낮은 변동성 적응 및 자금 잠김 방어)
     MAJOR_MIN_TARGET_PCT: float = 0.015          # 메이저 최소 목표 수익률 +1.5%
@@ -281,7 +281,7 @@ class StrategyPolicy:
     # 2. 익절 및 트레일링 스탑 (2~3단계 분할 익절 & 2차 러너 추세 추종)
     PARTIAL_TP_PCT: float = 0.035        # 기본 1차 익절 기준 호환 별칭 (+3.5%)
     PARTIAL_TP_1_PCT: float = 0.040      # 1차 +4.0% 도달 시 분할 익절 (손익비 개선)
-    PARTIAL_TP_1_RATIO: float = 0.40     # 1차 익절 비중 40% (잔여 60%로 큰 추세 추종)
+    PARTIAL_TP_1_RATIO: float = 0.60     # 1차 익절 비중 60% (확실한 수익 실현 및 푼돈 익절 방지)
     PARTIAL_TP_2_PCT: float = 0.080      # 2차 +8.0% 도달 시 분할 익절
     PARTIAL_TP_2_RATIO: float = 0.30     # 2차 익절 비중 (원금의 30%)
     BREAKEVEN_STOP_PCT: float = 0.005    # 1차 익절 완료 후 본전 보장 스탑 (+0.5% 안전 마진)
@@ -369,16 +369,16 @@ class StrategyPolicy:
     MIN_TRADE_VALUE_RISK_OFF: float = 1_000_000_000.0  # 약세장 최소 24시간 거래대금 10억 원 (기존 20억 -> 10억 하향)
     MIN_ASSET_PRICE_KRW: float = float(os.getenv("MIN_ASSET_PRICE_KRW", "0.0001"))  # 초저가 코인 제한 전면 해제 (기본 0.0001원, 0원 이하만 차단)
     RSI_MIN_NORMAL: float = 42.0         # 정상장 저점 반등 확인용 RSI 최소치
-    RSI_MAX_NORMAL: float = 72.0         # 정상장 과열 추격 방지용 RSI 최대치 (68.0 -> 72.0 완화)
+    RSI_MAX_NORMAL: float = 68.0         # 정상장 과열 추격 방지용 RSI 최대치 (상투 매수 방지)
     RSI_MIN_RISK_OFF: float = 42.0       # RISK_OFF 저점 반등 확인용 RSI 최소치
-    RSI_MAX_RISK_OFF: float = 72.0       # RISK_OFF 고점 추격 방지용 RSI 최대치 (68.0 -> 72.0 완화)
+    RSI_MAX_RISK_OFF: float = 62.0       # RISK_OFF 고점 추격 방지용 RSI 최대치 (약세장 상투 방지 62.0)
     PCT_B_MIN: float = 0.20              # 볼린저 밴드 %B 최소치
-    PCT_B_MAX: float = 0.80              # NORMAL/BULL_TREND 상단권 과열 차단 상한 (0.65 -> 0.80 완화)
-    PCT_B_MAX_RISK_OFF: float = 0.85     # RISK_OFF 상단 과열 차단 상한 (0.68 -> 0.85 완화)
+    PCT_B_MAX: float = 0.70              # NORMAL/BULL_TREND 상단권 과열 차단 상한 (0.70으로 상투 차단)
+    PCT_B_MAX_RISK_OFF: float = 0.65     # RISK_OFF 상단 과열 차단 상한 (0.65로 하향하여 상투 차단)
     PULLBACK_PCT_B_MIN_NORMAL: float = 0.25  # 정상장 저점권 반등 후보 하한
-    PULLBACK_PCT_B_MAX_NORMAL: float = 0.80  # 정상장 저점권 반등 후보 상한 (0.65 -> 0.80 완화)
+    PULLBACK_PCT_B_MAX_NORMAL: float = 0.70  # 정상장 저점권 반등 후보 상한
     PULLBACK_PCT_B_MIN_RISK_OFF: float = 0.28  # RISK_OFF 반등 후보 하한
-    PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.85  # RISK_OFF 반등 후보 상한 (0.68 -> 0.85 완화)
+    PULLBACK_PCT_B_MAX_RISK_OFF: float = 0.65  # RISK_OFF 반등 후보 상한
     PULLBACK_LOOKBACK_BARS: int = 12      # 최근 지지 저점 산정에 사용하는 5분봉 수
     PULLBACK_MAX_DISTANCE_NORMAL: float = 0.035  # 정상장 최근 저점 대비 최대 허용 거리 (+3.5% 이내 눌림)
     PULLBACK_MAX_DISTANCE_RISK_OFF: float = 0.045  # RISK_OFF 최근 저점 대비 최대 허용 거리 (+4.5% 이내 눌림, 6.5% 과열 차단)
@@ -1622,9 +1622,19 @@ def entry_signal(
     upper_shadow_ratio = (upper_shadow / candle_range) if candle_range > 0 else 0.0
     hard_gate_shadow = (upper_shadow_ratio <= StrategyPolicy.MAX_UPPER_SHADOW_RATIO)
 
+    # 2-3. 호가 잔량비(Orderbook Ratio) 매도벽 압박 차단 (실시간 호가 데이터 존재 시)
+    hard_gate_orderbook = True
+    ob_reason = "호가 미제공"
+    if orderbook is not None:
+        fb = alpha_res.get("factor_breakdown", {})
+        ob_ratio = float(fb.get("orderbook_smoothed_ratio") or fb.get("orderbook_raw_ratio") or 1.0)
+        min_ob_required = StrategyPolicy.RISK_OFF_MIN_ORDERBOOK_RATIO if regime_upper == "RISK_OFF" else 0.80
+        hard_gate_orderbook = (ob_ratio >= min_ob_required)
+        ob_reason = f"오더북 비율 {ob_ratio:.2f} {'>=' if hard_gate_orderbook else '<'} 기준 {min_ob_required:.2f}"
+
     hard_gates_passed = (
         hard_gate_btc and hard_gate_mtf and hard_gate_rsi and hard_gate_bb
-        and hard_gate_ma and hard_gate_disparity and hard_gate_shadow
+        and hard_gate_ma and hard_gate_disparity and hard_gate_shadow and hard_gate_orderbook
     )
 
     # 3. 저점권 반등 정량 게이트: 점수가 높아도 상단권 추격을 허용하지 않는다.
@@ -1666,12 +1676,14 @@ def entry_signal(
     )
     pullback_zone = pct_b_min <= pct_b <= pct_b_max
     near_recent_low = 0.0 <= distance_from_recent_low <= pullback_max_distance
-    # 전고점 안전 마진 버퍼: 전고점 대비 최소 눌림 거리 (단, RS 주도주 또는 알파 스코어 우수 종목은 돌파 탄력을 인정하여 저항선 턱밑 매수 허용)
-    not_near_recent_high = (
-        distance_below_recent_high >= StrategyPolicy.PULLBACK_MIN_DISTANCE_BELOW_HIGH
-        or is_leader
-        or total_score >= StrategyPolicy.ALPHA_BUY_THRESHOLD
+    # 전고점 안전 마진 버퍼: 전고점(직전 12개봉 최고가) 턱밑 상투 매수 원천 차단
+    # 알파 점수가 아무리 높아도 전고점 정수리(0.0%) 추격매수는 절대 불허 (RS 주도주도 최소 0.3% 마진 필요)
+    min_dist_high = (
+        StrategyPolicy.PULLBACK_MIN_DISTANCE_BELOW_HIGH * 0.5
+        if is_leader
+        else StrategyPolicy.PULLBACK_MIN_DISTANCE_BELOW_HIGH
     )
+    not_near_recent_high = distance_below_recent_high >= min_dist_high
     signal_5m = (
         ma5 >= ma20 * StrategyPolicy.PULLBACK_MA_ALIGNMENT_RATIO
         and rsi_min <= rsi <= rsi_max
@@ -1735,14 +1747,20 @@ def entry_signal(
         )
 
     if normalized_entry_type == "MOMENTUM_BREAKOUT":
-        # 반등형의 저점 근접 조건은 적용하지 않되, 급락·상위 추세·이격·윗꼬리 안전 게이트는 유지한다.
-        entry_alpha_threshold = get_momentum_breakout_alpha_threshold(
-            btc_regime, night_active, relative_strength=relative_strength
-        )
-        # 모멘텀 돌파는 급등 캔들의 탄력을 감안하여 모멘텀 전용 이격도(최대 +5.0%)를 적용한다.
-        hard_gate_disparity_momentum = current <= (ma20 * StrategyPolicy.MAX_MA20_DISPARITY_MOMENTUM)
-        momentum_safety_passed = hard_gate_btc and momentum_mtf_allowed and hard_gate_disparity_momentum and hard_gate_shadow
-        allowed = momentum_safety_passed and momentum_breakout_passed and total_score >= entry_alpha_threshold
+        # 약세장(RISK_OFF)에서는 알트코인 돌파의 대부분이 페이크 돌파(Bull Trap) 후 급락하므로 돌파 매수 차단
+        if regime_upper == "RISK_OFF":
+            allowed = False
+            momentum_breakout_passed = False
+            momentum_breakout_reason = "RISK_OFF 약세장에서는 페이크 돌파 윗꼬리 급락 방지를 위해 모멘텀 돌파 진입 차단"
+            entry_alpha_threshold = 999
+        else:
+            entry_alpha_threshold = get_momentum_breakout_alpha_threshold(
+                btc_regime, night_active, relative_strength=relative_strength
+            )
+            # 모멘텀 돌파는 급등 캔들의 탄력을 감안하여 모멘텀 전용 이격도(최대 +5.0%)를 적용한다.
+            hard_gate_disparity_momentum = current <= (ma20 * StrategyPolicy.MAX_MA20_DISPARITY_MOMENTUM)
+            momentum_safety_passed = hard_gate_btc and momentum_mtf_allowed and hard_gate_disparity_momentum and hard_gate_shadow and hard_gate_orderbook
+            allowed = momentum_safety_passed and momentum_breakout_passed and total_score >= entry_alpha_threshold
     elif normalized_entry_type == "SHAKEOUT_SWEEP":
         entry_alpha_threshold = get_shakeout_sweep_alpha_threshold(btc_regime, night_active)
         allowed = hard_gate_btc and shakeout_sweep_passed and total_score >= entry_alpha_threshold

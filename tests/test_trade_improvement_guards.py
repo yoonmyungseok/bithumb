@@ -22,8 +22,8 @@ class TestTradeImprovementGuards(unittest.TestCase):
         self.assertEqual(StrategyPolicy.COOLDOWN_STOP_LOSS_SEC, 1800.0)
         self.assertEqual(StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF, 60)
         self.assertEqual(StrategyPolicy.RISK_OFF_ALLOC_RATIO, 1.0)
-        self.assertEqual(StrategyPolicy.PCT_B_MAX_RISK_OFF, 0.85)
-        self.assertEqual(StrategyPolicy.PULLBACK_PCT_B_MAX_RISK_OFF, 0.85)
+        self.assertEqual(StrategyPolicy.PCT_B_MAX_RISK_OFF, 0.65)
+        self.assertEqual(StrategyPolicy.PULLBACK_PCT_B_MAX_RISK_OFF, 0.65)
         self.assertEqual(StrategyPolicy.TIME_STOP_BREAKEVEN_MIN_PNL_PCT, 0.003)
         self.assertEqual(StrategyPolicy.MOMENTUM_BREAKOUT_RSI_MAX, 78.0)
 

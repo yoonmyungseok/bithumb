@@ -264,21 +264,21 @@ def generate_report(start_dt: datetime.datetime, end_dt: datetime.datetime) -> s
     if upbit_data and bithumb_data:
         lines.append("| 지표 | 업비트 (Upbit) | 빗썸 (Bithumb) | 격차 / 비교 요약 |")
         lines.append("| :--- | :---: | :---: | :--- |")
-        lines.append(f"| **총 거래 횟수** | {upbit_data['total_trades']}회 | {bithumb_data['total_trades']}회 | 빗썸 거래 빈도 3.0배 (오버트레이딩 성향) |")
-        lines.append(f"| **승률 (Win Rate)** | **{upbit_data['win_rate']:.1f}%** (2승 0패) | **{bithumb_data['win_rate']:.1f}%** (1승 5패) | 업비트 +83.3%p 우위 |")
-        lines.append(f"| **실현 손익금** | **{upbit_data['total_pnl']:+,.1f} KRW** | **{bithumb_data['total_pnl']:+,.1f} KRW** | 업비트 흑자(+0.16%), 빗썸 적자(-0.12%) |")
-        lines.append(f"| **손익비 (R/R Ratio)** | **N/A (손실 0)** | **{bithumb_data['rr_ratio']:.2f}** | 업비트 무손실 완승, 빗썸 손익비 1.46 |")
-        lines.append(f"| **평균 수익률 / 손실률** | +{upbit_data['avg_win_pct']:.2f}% / 0.00% | +{bithumb_data['avg_win_pct']:.2f}% / {bithumb_data['avg_loss_pct']:.2f}% | 업비트 익절 폭(+3.33%)이 빗썸(+1.28%) 대비 2.6배 |")
-        lines.append(f"| **총 차감 수수료** | {upbit_data['total_fee']:,.1f} KRW | {bithumb_data['total_fee']:,.1f} KRW | 빗썸 수수료 발생액 58배 |")
+        lines.append(f"| **총 거래 횟수** | {upbit_data['total_trades']}회 | {bithumb_data['total_trades']}회 | 업비트 {upbit_data['total_trades']}회 / 빗썸 {bithumb_data['total_trades']}회 |")
+        lines.append(f"| **승률 (Win Rate)** | **{upbit_data['win_rate']:.1f}%** ({upbit_data['win_trades']}승 {upbit_data['loss_trades']}패) | **{bithumb_data['win_rate']:.1f}%** ({bithumb_data['win_trades']}승 {bithumb_data['loss_trades']}패) | 승률 격차: {abs(upbit_data['win_rate'] - bithumb_data['win_rate']):.1f}%p |")
+        lines.append(f"| **실현 손익금** | **{upbit_data['total_pnl']:+,.1f} KRW** | **{bithumb_data['total_pnl']:+,.1f} KRW** | 업비트 {upbit_data['pnl_pct_on_equity']:+.2f}% / 빗썸 {bithumb_data['pnl_pct_on_equity']:+.2f}% |")
+        lines.append(f"| **손익비 (R/R Ratio)** | **{upbit_data['rr_ratio']:.2f}** | **{bithumb_data['rr_ratio']:.2f}** | 업비트 {upbit_data['rr_ratio']:.2f} / 빗썸 {bithumb_data['rr_ratio']:.2f} |")
+        lines.append(f"| **평균 수익률 / 손실률** | +{upbit_data['avg_win_pct']:.2f}% / {upbit_data['avg_loss_pct']:.2f}% | +{bithumb_data['avg_win_pct']:.2f}% / {bithumb_data['avg_loss_pct']:.2f}% | 익절 및 손절 평균폭 비교 |")
+        lines.append(f"| **총 차감 수수료** | {upbit_data['total_fee']:,.1f} KRW | {bithumb_data['total_fee']:,.1f} KRW | 총 발생 수수료 합산: {upbit_data['total_fee'] + bithumb_data['total_fee']:,.1f} KRW |")
         
         gross_upbit = upbit_data['total_pnl'] + upbit_data['total_fee']
-        fee_erosion_upbit = (upbit_data['total_fee'] / gross_upbit * 100) if gross_upbit > 0 else 0.0
+        fee_erosion_upbit = (upbit_data['total_fee'] / gross_upbit * 100) if gross_upbit > 0 else (999.0 if upbit_data['total_fee'] > 0 else 0.0)
         
         gross_bithumb = bithumb_data['total_pnl'] + bithumb_data['total_fee']
-        fee_erosion_bithumb = (bithumb_data['total_fee'] / gross_bithumb * 100) if gross_bithumb > 0 else 999.0
+        fee_erosion_bithumb = (bithumb_data['total_fee'] / gross_bithumb * 100) if gross_bithumb > 0 else (999.0 if bithumb_data['total_fee'] > 0 else 0.0)
         
-        lines.append(f"| **수수료 잠식률** | **{fee_erosion_upbit:.1f}%** | **{fee_erosion_bithumb:.1f}%** | 빗썸: 총 매매차익(+281원)을 수수료(1,816원)가 완전 잠식하여 적자 전락 |")
-        lines.append(f"| **최대 낙폭 (MDD)** | **{upbit_data['mdd_pct']:.2f}%** (0 KRW) | **{bithumb_data['mdd_pct']:.2f}%** ({bithumb_data['mdd_krw']:,.0f} KRW) | 업비트 완벽한 자본 보존, 빗썸 0.18% 낙폭 |")
+        lines.append(f"| **수수료 잠식률** | **{fee_erosion_upbit:.1f}%** | **{fee_erosion_bithumb:.1f}%** | 총 매매차익 대비 수수료 비용 비중 |")
+        lines.append(f"| **최대 낙폭 (MDD)** | **{upbit_data['mdd_pct']:.2f}%** ({upbit_data['mdd_krw']:,.0f} KRW) | **{bithumb_data['mdd_pct']:.2f}%** ({bithumb_data['mdd_krw']:,.0f} KRW) | 당일 자본 대비 최대 하락폭 |")
     lines.append("")
 
     # 2. 잘한 점

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
+from strategy_engine import StrategyPolicy
 from bot_controller import BotController
 from order_safety import OrderJournal, SafeOrderExecutor
 from risk_manager import DailyRiskManager, TrailingStopTracker, build_candidates_data, build_positions_data
@@ -216,8 +217,7 @@ class TestCandidateStrategiesDashboard(unittest.TestCase):
     def test_build_policy_data_ssot_fields(self):
         policy = BotController._build_policy_data()
         self.assertIn("breakeven_stop_pct", policy)
-        self.assertIn("min_profit_buffer_pct", policy)
-        self.assertEqual(policy["breakeven_stop_pct"], 0.003)
+        self.assertEqual(policy["breakeven_stop_pct"], StrategyPolicy.BREAKEVEN_STOP_PCT)
         self.assertEqual(policy["min_profit_buffer_pct"], 0.015)
 
     def test_dashboard_index_dynamic_policy_elements(self):

@@ -318,11 +318,11 @@ class MarketScreener:
 
                 # 확인형 후보는 변동률 조건을 검사한다 (리셋 완충 세션 반영).
                 if eff_min_change_rate <= change_rate <= self.max_change_rate:
-                    # 모멘텀 주도주는 당일 변동률 2% 이상 및 상대강도(RS) 1.0% 이상인 종목으로 판정하여 적극적 기회 포착
+                    # 모멘텀 주도주는 당일 변동률 3.0% 이상 및 상대강도(RS) 1.5% 이상인 주도주로 엄선하여 페이크 돌파 방어
                     is_momentum_leader = (
                         self.enable_early_breakout
-                        and change_rate >= 0.020
-                        and relative_strength >= 0.010
+                        and change_rate >= 0.030
+                        and relative_strength >= 0.015
                     )
                     early_max_change_rate = (
                         StrategyPolicy.get_momentum_early_max_change_rate(relative_strength)

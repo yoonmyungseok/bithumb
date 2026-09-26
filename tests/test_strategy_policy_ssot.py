@@ -119,15 +119,15 @@ class StrategyPolicySSOTTests(unittest.TestCase):
         approved_alpha = {"total_score": 70, "allow_buy": True, "factor_breakdown": {"orderflow_score": 10}}
 
         with patch("strategy_engine.calculate_composite_alpha_score", return_value=approved_alpha), \
-             patch("strategy_engine.calculate_bollinger_bands", return_value={"middle": 100.0, "upper": 110.0, "lower": 90.0, "width_pct": 0.2, "pct_b": 0.82}), \
+             patch("strategy_engine.calculate_bollinger_bands", return_value={"middle": 100.0, "upper": 110.0, "lower": 90.0, "width_pct": 0.2, "pct_b": 0.68}), \
              patch("strategy_engine.calculate_rsi", return_value=55.0):
             risk_off = entry_signal(candles, btc_regime="RISK_OFF", is_night=False)
             normal = entry_signal(candles, btc_regime="NORMAL", is_night=False)
 
-        self.assertTrue(risk_off["allow_buy"])
+        self.assertFalse(risk_off["allow_buy"])
         self.assertEqual(risk_off["checklist_details"]["hard_gates"]["bb_guard"]["max"], StrategyPolicy.PCT_B_MAX_RISK_OFF)
-        self.assertFalse(normal["allow_buy"])
-        self.assertFalse(normal["checklist_details"]["hard_gates"]["bb_guard"]["pass"])
+        self.assertTrue(normal["allow_buy"])
+        self.assertTrue(normal["checklist_details"]["hard_gates"]["bb_guard"]["pass"])
 
     def test_risk_off_still_blocks_upper_band_chase_above_080(self):
         """약세장에서도 %B 0.86 이상은 상투 추격으로 차단한다."""

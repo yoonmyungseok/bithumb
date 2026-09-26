@@ -1207,6 +1207,17 @@ class TradingCycleEngine:
             and is_breakeven_or_profit
             and (not is_holding_support or hold_duration_sec >= effective_max_hold)
         )
+        # 수익권(+0.3% 이상) 횡보 시 푼돈 조기 청산 대신 본전 보장(Auto Break-Even) 스탑 락인 후 목표가까지 홀딩 유지
+        if hold_duration_sec >= effective_time_stop and is_breakeven_or_profit:
+            if hasattr(ctx.trailing_tracker, "activate_breakeven") and not ctx.trailing_tracker.is_breakeven_active(market, avg_buy_price=avg_buy_price):
+                ctx.trailing_tracker.activate_breakeven(market)
+                logger.info(
+                    f"🛡️ [{korean_name} / {market}] 횡보 시간 경과({hold_duration_sec / 60:.0f}분) + 수익권({pnl_pct_current:+.2f}%) ➜ "
+                    f"푼돈 조기 청산 대신 [본전 보장 스탑(Auto Break-Even)] 활성화 후 목표가까지 홀딩 유지!"
+                )
+            if hold_duration_sec < effective_max_hold:
+                is_time_stop_profit_trigger = False
+
         is_time_stop_loss_trigger = (
             (hold_duration_sec >= effective_max_hold or (hold_duration_sec >= effective_time_stop and is_trend_broken))
             and (pnl_pct_current < be_threshold_pct)
@@ -1770,6 +1781,38 @@ class TradingCycleEngine:
         ai_alpha = int(strategy.get("alpha_score", 0) or selected_entry.get("alpha_score", 0) or 0)
         is_ai_direct_adopted = False
 
+        # 상투/과열 차단 (%B 상한 검증)
+        sel_pct_b = float(selected_entry.get("pct_b", 0.5))
+        pct_b_cap = 0.65 if btc_regime == "RISK_OFF" else 0.70
+        is_dip_support = sel_pct_b <= pct_b_cap
+
+        # RISK_OFF 약세장에서는 떨어지는 칼날 잡기 및 매도벽 압박 진입을 차단하기 위한 하드 가드
+        entry_indicators = selected_entry.get("strategy_snapshot", {}).get("indicators", {})
+        rebound_ok = True
+        orderbook_ok = True
+        risk_off_guard_reason = ""
+        if btc_regime == "RISK_OFF":
+            rebound_val = entry_indicators.get("rebound_confirmed", selected_entry.get("rebound_confirmed", True))
+            if not rebound_val:
+                rebound_ok = False
+                risk_off_guard_reason = "RISK_OFF 약세장 반등 미확정(rebound_confirmed=False) 매수 차단"
+            ob_ratio = float(entry_indicators.get("orderbook_smoothed_ratio") or entry_indicators.get("orderbook_raw_ratio") or 1.0)
+            min_ob_ratio = getattr(StrategyPolicy, "RISK_OFF_MIN_ORDERBOOK_RATIO", 1.00)
+            if ob_ratio < min_ob_ratio:
+                orderbook_ok = False
+                risk_off_guard_reason = f"RISK_OFF 호가 잔량비 미달({ob_ratio:.2f} < {min_ob_ratio:.2f}) 매수 차단"
+
+        is_swing_candidate = (
+            effective_candidate_type == "SWING"
+            or str(candidate_metadata.get("strategy_mode", "")).upper() == "SWING"
+        )
+        swing_entry_passed = True
+        swing_fail_reason = ""
+        if is_swing_candidate:
+            swing_entry_passed, swing_fail_reason = evaluate_swing_trend_entry(
+                candles_4h, current_price,
+            )
+
         if action == "BUY" and not selected_entry.get("allow_buy", False):
             # AI Direct Entry: 로컬 하드게이트는 관망이지만 기본 안전망을 통과하고 AI가 심층 분석으로 BUY를 승인한 경우
             # 승률 저조(20~30%) 방지를 위해 ENABLE_AI_DIRECT_ENTRY 기본 비활성화 정책을 준수한다.
@@ -1791,39 +1834,6 @@ class TradingCycleEngine:
             else:
                 in_cd = bool(cd_res)
             can_enter_daily = not in_cd
-
-            # AI 단독 자율 승인 시, 상투/고점 추격을 방지하기 위해 저점/눌림목 지지 여부 검증
-            # 로컬 룰이 관망인 종목이므로 볼린저 밴드 %B가 0.70 이하(약세장 RISK_OFF 시 0.65 이하)여야 함
-            sel_pct_b = float(selected_entry.get("pct_b", 0.5))
-            pct_b_cap = 0.65 if btc_regime == "RISK_OFF" else 0.70
-            is_dip_support = sel_pct_b <= pct_b_cap
-
-            # RISK_OFF 약세장에서는 떨어지는 칼날 잡기 및 매도벽 압박 진입을 차단하기 위한 하드 가드
-            entry_indicators = selected_entry.get("strategy_snapshot", {}).get("indicators", {})
-            rebound_ok = True
-            orderbook_ok = True
-            risk_off_guard_reason = ""
-            if btc_regime == "RISK_OFF":
-                rebound_val = entry_indicators.get("rebound_confirmed", selected_entry.get("rebound_confirmed", True))
-                if not rebound_val:
-                    rebound_ok = False
-                    risk_off_guard_reason = "RISK_OFF 약세장 반등 미확정(rebound_confirmed=False) 매수 차단"
-                ob_ratio = float(entry_indicators.get("orderbook_smoothed_ratio") or entry_indicators.get("orderbook_raw_ratio") or 1.0)
-                min_ob_ratio = getattr(StrategyPolicy, "RISK_OFF_MIN_ORDERBOOK_RATIO", 1.00)
-                if ob_ratio < min_ob_ratio:
-                    orderbook_ok = False
-                    risk_off_guard_reason = f"RISK_OFF 호가 잔량비 미달({ob_ratio:.2f} < {min_ob_ratio:.2f}) 매수 차단"
-
-            is_swing_candidate = (
-                effective_candidate_type == "SWING"
-                or str(candidate_metadata.get("strategy_mode", "")).upper() == "SWING"
-            )
-            swing_entry_passed = True
-            swing_fail_reason = ""
-            if is_swing_candidate:
-                swing_entry_passed, swing_fail_reason = evaluate_swing_trend_entry(
-                    candles_4h, current_price,
-                )
 
             if (
                 allow_ai_direct
@@ -1861,12 +1871,25 @@ class TradingCycleEngine:
                 else:
                     reason = f"정량 공통 진입 게이트 차단: {selected_entry.get('reason', '')} | {reason}"
         elif action == "BUY" and selected_entry.get("allow_buy", False):
-            if entry_profile.use_hold_price_fallbacks:
-                target_price = strategy.get("target_price") or selected_entry.get("target_price", target_price)
-                stop_loss = strategy.get("stop_loss") or selected_entry.get("stop_loss", stop_loss)
+            if not is_dip_support:
+                action = "HOLD"
+                reason = f"로컬 매수 상투/과열 차단(%B {sel_pct_b:.2f} > 한도 {pct_b_cap:.2f}): 눌림목 지지 대기 | {reason}"
+            elif not rebound_ok:
+                action = "HOLD"
+                reason = f"로컬 매수 약세장 반등 미확정 차단: {risk_off_guard_reason} | {reason}"
+            elif not orderbook_ok:
+                action = "HOLD"
+                reason = f"로컬 매수 약세장 호가 매도벽 우세 차단: {risk_off_guard_reason} | {reason}"
+            elif not swing_entry_passed:
+                action = "HOLD"
+                reason = f"로컬 매수 스윙 추세 지지 미달 차단: {swing_fail_reason} | {reason}"
             else:
-                target_price = strategy.get("target_price") or selected_entry["target_price"]
-                stop_loss = strategy.get("stop_loss") or selected_entry["stop_loss"]
+                if entry_profile.use_hold_price_fallbacks:
+                    target_price = strategy.get("target_price") or selected_entry.get("target_price", target_price)
+                    stop_loss = strategy.get("stop_loss") or selected_entry.get("stop_loss", stop_loss)
+                else:
+                    target_price = strategy.get("target_price") or selected_entry["target_price"]
+                    stop_loss = strategy.get("stop_loss") or selected_entry["stop_loss"]
 
         if effective_candidate_type == "MOMENTUM_BREAKOUT" and not is_holding:
             # EXTENDED는 확정봉 하드 게이트를 통과한 뒤에도 AI 확인을 요구하는 제한 추격 경로다.

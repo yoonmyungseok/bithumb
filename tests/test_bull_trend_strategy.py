@@ -42,11 +42,11 @@ class TestBullTrendStrategy(unittest.TestCase):
     def test_alpha_thresholds_bull_trend(self):
         """BULL_TREND 레짐에서 알파 진입 점수가 65점(심야 70점)으로 엄선 적용되는지 검증"""
         # 주간 BULL_TREND
-        self.assertEqual(get_alpha_buy_threshold("BULL_TREND", is_night=False), 65)
+        self.assertEqual(get_alpha_buy_threshold("BULL_TREND", is_night=False), 55)
         self.assertEqual(get_momentum_breakout_alpha_threshold("BULL_TREND", is_night=False), 60)
 
         # 심야 BULL_TREND
-        self.assertEqual(get_alpha_buy_threshold("BULL_TREND", is_night=True), 70)
+        self.assertEqual(get_alpha_buy_threshold("BULL_TREND", is_night=True), 65)
         self.assertEqual(get_momentum_breakout_alpha_threshold("BULL_TREND", is_night=True), 65)
 
     def test_entry_signal_bull_trend_dynamic_stops(self):
