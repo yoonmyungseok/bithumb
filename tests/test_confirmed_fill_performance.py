@@ -207,6 +207,79 @@ class ConfirmedFillPerformanceTests(unittest.TestCase):
         self.assertTrue(comparison["explanations"])
         self.assertIn("일일 통계", comparison["explanations"][0])
 
+    def test_exhausted_buy_order_not_reused_and_avg_buy_price_respected(self):
+        # 1. 과거 매수 1.0개 (단가 100) -> 과거 매도 1.0개 (단가 110)로 전량 소진
+        # 2. 신규 매도 0.5개 (단가 120, avg_buy_price 115, 별도 매수주문 없음)
+        orders = [
+            _buy_order(
+                client_order_id="b1",
+                avg_price=100.0,
+                processed_executed_volume=1.0,
+                processed_fee=0.05,
+                created_at=1_700_000_000.0,
+                updated_at=1_700_000_100.0,
+            ),
+            _sell_order(
+                client_order_id="s1",
+                avg_price=110.0,
+                avg_buy_price=100.0,
+                processed_executed_volume=1.0,
+                processed_fee=0.055,
+                created_at=1_700_000_200.0,
+                updated_at=1_700_000_300.0,
+                last_event_at=1_700_000_300.0,
+            ),
+            _sell_order(
+                client_order_id="s2",
+                avg_price=120.0,
+                avg_buy_price=115.0,  # 계좌 잔고 실제 평단가
+                processed_executed_volume=0.5,
+                processed_fee=0.03,
+                created_at=1_700_001_000.0,
+                updated_at=1_700_001_100.0,
+                last_event_at=1_700_001_100.0,
+            ),
+        ]
+        legs = build_trade_legs_from_journal(orders, exchange="bithumb")
+        self.assertEqual(len(legs), 2)
+        # 첫 번째 레그: 과거 매수 b1과 매칭 (진입가 100)
+        self.assertEqual(legs[0]["entry_price"], 100.0)
+        self.assertEqual(legs[0]["exit_price"], 110.0)
+
+        # 두 번째 레그: b1은 소진되었으므로 매칭되지 않고, s2의 avg_buy_price(115) 사용
+        self.assertEqual(legs[1]["entry_price"], 115.0)
+        self.assertEqual(legs[1]["exit_price"], 120.0)
+        expected_proceeds = 120.0 * 0.5 - 0.03
+        expected_cost = 115.0 * 0.5
+        self.assertAlmostEqual(legs[1]["gross_pnl_krw"], expected_proceeds - expected_cost, places=2)
+        self.assertAlmostEqual(legs[1]["net_pnl_krw"], expected_proceeds - expected_cost, places=2)
+
+    def test_future_buy_order_not_matched(self):
+        # 매도 주문보다 나중에 체결된 미래 매수 주문은 매칭되지 않아야 함
+        orders = [
+            _sell_order(
+                client_order_id="s1",
+                avg_price=120.0,
+                avg_buy_price=115.0,
+                processed_executed_volume=0.5,
+                processed_fee=0.03,
+                created_at=1_700_000_100.0,
+                updated_at=1_700_000_200.0,
+                last_event_at=1_700_000_200.0,
+            ),
+            _buy_order(
+                client_order_id="b_future",
+                avg_price=100.0,
+                processed_executed_volume=1.0,
+                processed_fee=0.05,
+                created_at=1_700_000_500.0,
+                updated_at=1_700_000_600.0,
+            ),
+        ]
+        legs = build_trade_legs_from_journal(orders, exchange="bithumb")
+        self.assertEqual(len(legs), 1)
+        self.assertEqual(legs[0]["entry_price"], 115.0)
+
 
 def datetime_ts(year: int, month: int, day: int, hour: int, minute: int) -> float:
     import datetime

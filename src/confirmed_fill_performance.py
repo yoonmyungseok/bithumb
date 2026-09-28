@@ -91,17 +91,41 @@ def _confirmed_fee(order: dict[str, Any]) -> float:
     return max(0.0, float(order.get("processed_fee", 0.0) or 0.0))
 
 
-def _find_entry_order(orders: list[dict[str, Any]], exit_order: dict[str, Any]) -> dict[str, Any] | None:
+def _find_entry_order(
+    orders: list[dict[str, Any]],
+    exit_order: dict[str, Any],
+    available_volumes: dict[str, float] | None = None,
+) -> dict[str, Any] | None:
     position_id = exit_order.get("position_id")
     market = exit_order.get("market")
+    exit_ts = _order_event_ts(exit_order)
+
+    # 1단계: position_id가 명시적이고 유효한 경우 우선 매칭 (단, 청산 시각 이전 및 가용 수량 존재)
+    if position_id:
+        for candidate in reversed(orders):
+            if not _is_buy_side(str(candidate.get("side", ""))):
+                continue
+            if _order_event_ts(candidate) > exit_ts:
+                continue
+            cand_id = candidate.get("client_order_id", "")
+            if available_volumes is not None and available_volumes.get(cand_id, 0.0) <= 1e-8:
+                continue
+            if candidate.get("position_id") == position_id or cand_id == position_id:
+                if _confirmed_volume(candidate) > 0:
+                    return candidate
+
+    # 2단계: 동일 market에서 청산 시각 이전이면서 가용 체결 수량이 남아있는 가장 최근 매수 주문 매칭
     for candidate in reversed(orders):
         if not _is_buy_side(str(candidate.get("side", ""))):
             continue
-        if position_id and candidate.get("position_id") == position_id:
-            if _confirmed_volume(candidate) > 0:
-                return candidate
-        elif candidate.get("market") == market and _confirmed_volume(candidate) > 0:
+        if _order_event_ts(candidate) > exit_ts:
+            continue
+        cand_id = candidate.get("client_order_id", "")
+        if available_volumes is not None and available_volumes.get(cand_id, 0.0) <= 1e-8:
+            continue
+        if candidate.get("market") == market and _confirmed_volume(candidate) > 0:
             return candidate
+
     return None
 
 
@@ -147,6 +171,14 @@ def build_trade_legs_from_journal(
     # KST 거래일·종목별 이전 청산 횟수 → 재진입 여부
     closed_count_by_day_market: dict[tuple[str, str], int] = {}
 
+    # 매수 주문 가용 체결 수량 추적 (이미 이전 청산에 매칭되어 소진된 매수 주문의 중복 매칭 방지)
+    buy_available_vol: dict[str, float] = {}
+    for o in orders:
+        if _is_buy_side(str(o.get("side", ""))) and _confirmed_volume(o) > 0:
+            cid = str(o.get("client_order_id") or "")
+            if cid:
+                buy_available_vol[cid] = _confirmed_volume(o)
+
     sell_orders = [
         o for o in orders
         if _is_sell_side(str(o.get("side", ""))) and _confirmed_volume(o) > 0
@@ -159,7 +191,7 @@ def build_trade_legs_from_journal(
         if exit_price <= 0:
             continue
 
-        entry_order = _find_entry_order(orders, exit_order)
+        entry_order = _find_entry_order(orders, exit_order, available_volumes=buy_available_vol)
         entry_price = float(exit_order.get("avg_buy_price", 0.0) or 0.0)
         entry_vol = 0.0
         entry_fee_total = 0.0
@@ -174,6 +206,11 @@ def build_trade_legs_from_journal(
             entry_slippage_bps = float(entry_order.get("slippage_bps", 0.0) or 0.0)
             snapshot = dict(entry_order.get("entry_strategy_snapshot") or {})
             entry_ts = _order_event_ts(entry_order)
+
+            # 매칭된 매수 주문의 가용 수량 차감
+            cand_id = str(entry_order.get("client_order_id") or "")
+            if cand_id in buy_available_vol:
+                buy_available_vol[cand_id] = max(0.0, buy_available_vol[cand_id] - exit_vol)
 
         if entry_price <= 0:
             continue

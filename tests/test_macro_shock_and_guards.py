@@ -109,6 +109,46 @@ class TestMacroShockAndAIGuards(unittest.TestCase):
         )
         self.assertTrue(eligible_pass)
 
+    def test_macro_shock_suppresses_duplicate_warning_and_rolling_extension(self):
+        """매크로 쇼크가 이미 활성화 중이면 매 5분 사이클마다 중복 경고를 발생시키지 않고 만료 시각을 롤링 연장하지 않음"""
+        from trading_orchestrator import TradingOrchestrator
+        logger = MagicMock()
+        orchestrator = TradingOrchestrator(logger)
+
+        candles_5m = [
+            {"trade_price": 99.5},
+            {"trade_price": 99.8},
+            {"trade_price": 100.0},
+            {"trade_price": 100.0},
+            {"trade_price": 100.0},
+        ]
+        candles_1h = [{"trade_price": 100.0} for _ in range(25)]
+
+        mock_ex = MagicMock()
+        mock_ex.exchange_name = "bithumb"
+        mock_ex.get_candles.side_effect = [candles_5m, candles_1h]
+
+        # 1회차 호출: 최초 발동
+        orchestrator.classify_market_regime(mock_ex, interval_minutes=5, crash_threshold_pct=0.015)
+        self.assertEqual(logger.warning.call_count, 1)
+        self.assertIn("BTC 매크로 쇼크 발동", logger.warning.call_args[0][0])
+        is_active, until_1, _ = StrategyPolicy.is_macro_shock_active("bithumb")
+        self.assertTrue(is_active)
+
+        # 2회차 호출: 5분 후 동일 쇼크 조건 시뮬레이션
+        mock_ex.get_candles.side_effect = [candles_5m, candles_1h]
+        orchestrator.classify_market_regime(mock_ex, interval_minutes=5, crash_threshold_pct=0.015)
+
+        # warning은 1회로 유지되어야 함 (중복 경고 방지)
+        self.assertEqual(logger.warning.call_count, 1)
+        # info 로그로 쿨다운 유지 안내가 출력되어야 함
+        self.assertTrue(any("쿨다운 유지 중" in str(arg) for call in logger.info.call_args_list for arg in call[0]))
+        # 쿨다운 만료 시각이 롤링 연장되지 않고 기존 시각 유지
+        is_active_2, until_2, _ = StrategyPolicy.is_macro_shock_active("bithumb")
+        self.assertTrue(is_active_2)
+        self.assertEqual(until_1, until_2)
+
 
 if __name__ == "__main__":
     unittest.main()
+

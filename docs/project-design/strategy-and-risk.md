@@ -102,6 +102,7 @@
 - **BTC 매크로 쇼크 필터(Macro Shock Filter) 및 30분 신규 BUY 쿨다운 정책**:
   - 15분 캔들 기준 BTC 변동률 `recent_drop <= -0.4%`(`MACRO_SHOCK_RECENT_DROP_PCT`) 또는 1시간봉 `drop_1h <= -0.4%`(`MACRO_SHOCK_1H_DROP_PCT`) 감지 시 `MACRO_SHOCK` 플래그가 발동된다.
   - 쇼크 발동 시 해당 거래소 스코프에 30분(`StrategyPolicy.MACRO_SHOCK_COOLDOWN_SEC = 1800초`) 신규 BUY 쿨다운이 즉시 등록되며, 쿨다운 만료 시까지 모든 알트코인의 신규 BUY를 일시 차단(HOLD)하고 보유 포지션 관리만 수행한다.
+  - 쿨다운이 이미 활성화된 상태에서는 5분 사이클마다 종료 시각을 뒤로 계속 연장(Rolling Extension)하지 않고 최초 발동 시점의 30분 만료 시각을 유지하며, 중복 경고 로그 대신 잔여 시간 안내 로그(`INFO`)로 기록한다.
   - 12시간 정배열 상태여도 최근 1시간 내 급락이 발생한 경우 `BULL_TREND` 판정을 즉시 취소하고 `RISK_OFF`로 격하하여, BTC 단기 급락 직후 기술적 반등(Dead-cat bounce) 구간에서의 휩소 진입을 원천 차단한다.
 - **AI 단독 자율 승인(AI Direct Entry) 오버라이드 가드레일 강화 정책 (옵션 A)**:
   - **약세장(RISK_OFF / CRASH / BEAR_VOLATILE) 전면 차단 (옵션 A 정책)**: 비트코인이 약세/조정 국면일 때는 로컬 퀀트 룰이 관망(HOLD)으로 판정한 종목에 대해 AI가 단독으로 매수를 승인(AI Direct Entry)하는 경로를 원천 차단한다. AI 분석 후보 큐 등록 단계(`should_call_ai`)에서도 사전 스킵하여 불필요한 API 호출을 방지하고 약세장 역추세 뇌동 매매를 차단한다.
