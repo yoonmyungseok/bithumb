@@ -1,6 +1,7 @@
 import math
 import os
 import threading
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Any, Literal
 
@@ -402,11 +403,46 @@ class StrategyPolicy:
 
 
     # 4-0. AI 단독 자율 승인 (AI Direct Entry) 활성화
-    # 로컬 퀀트 관망(allow_buy=False) 상태여도 품질 게이트(알파 60점 이상, 음봉 폭락 아님)를 통과한
-    # 유망 종목에 대해 Gemini AI의 자율 매수 승인을 허용하며, 리스크 방어를 위해 초기 비중을 50% 축소한다.
+    # 로컬 퀀트 관망(allow_buy=False) 상태여도 품질 게이트(알파 80점 이상, 당일 상승률 +8.0% 이내, 음봉 폭락 아님)를
+    # 통과한 유망 종목에 대해 Gemini AI의 자율 매수 승인을 허용하며, 리스크 방어를 위해 초기 비중을 50% 축소한다.
     ENABLE_AI_DIRECT_ENTRY: bool = True
     AI_DIRECT_ENTRY_ALLOC_RATIO: float = 0.50
-    AI_DIRECT_ENTRY_MIN_ALPHA: int = 55
+    AI_DIRECT_ENTRY_MIN_ALPHA: int = 50  # 로컬 관망 종목이 AI 분석 대상이 되기 위한 최소 싹수 점수 (기본 50점)
+    AI_DIRECT_OVERRIDE_MIN_SCORE: int = 75  # AI가 로컬 룰을 뒤집고 단독 승인하기 위한 최소 AI 스코어 (75점)
+    AI_DIRECT_ENTRY_MAX_24H_GAIN_PCT: float = 0.08  # 당일 상승률 +8.0% 초과 종목은 고점 과열 추격 매수 원천 차단
+
+    # 4-0-2. BTC 매크로 쇼크 필터 (Macro Shock Filter)
+    # BTC 15분 -0.4% 급락 또는 1시간 -0.5% 급락 발생 시 알트코인 휩소 진입을 차단하는 30분 쿨다운
+    MACRO_SHOCK_RECENT_DROP_PCT: float = 0.004   # 15분 기준 -0.4%
+    MACRO_SHOCK_1H_DROP_PCT: float = 0.004       # 1시간 기준 -0.4% (23:00형 -0.49% 급락 포착)
+    MACRO_SHOCK_COOLDOWN_SEC: float = 1800.0     # 30분 쿨다운
+    _MACRO_SHOCK_STATE: dict[str, dict[str, Any]] = {}
+
+    @classmethod
+    def set_macro_shock(cls, scope: str, until_ts: float, reason: str = "") -> None:
+        """거래소 스코프별 매크로 쇼크 쿨다운 상태를 등록한다."""
+        sc = str(scope or "global").strip().lower()
+        cls._MACRO_SHOCK_STATE[sc] = {
+            "until_ts": float(until_ts),
+            "reason": str(reason),
+            "updated_at": time.time(),
+        }
+
+    @classmethod
+    def is_macro_shock_active(cls, scope: str = "") -> tuple[bool, float, str]:
+        """거래소 스코프별 매크로 쇼크 쿨다운 활성 여부와 남은 시간, 사유를 반환한다."""
+        sc = str(scope or "global").strip().lower()
+        now = time.time()
+        entry = cls._MACRO_SHOCK_STATE.get(sc) or cls._MACRO_SHOCK_STATE.get("global")
+        if entry:
+            until_ts = float(entry.get("until_ts", 0.0))
+            if now < until_ts:
+                return True, until_ts, str(entry.get("reason", ""))
+        return False, 0.0, ""
+
+    # 4-0-3. 박스권/횡보 레짐 가변 타이트 손절 (Dynamic Regime Tight Stop)
+    STOP_LOSS_PCT_SIDEWAYS: float = 0.015       # 박스권/횡보 기본 손절선 -1.5% (기존 -2.2% 대비 축소)
+    TIME_STOP_SECONDS_SIDEWAYS: int = 1800      # 박스권/횡보 타임스탑 30분 (기존 45분 대비 단축)
 
     # 4-0-1. 로컬 퀀트 고알파 자율 매수 (Local Autonomous Buy)
     # AI 예산이 소진되었거나(일일 쿼터 페이싱/사이클 상한 초과), AI 분석기가 비활성/에러일 때,
@@ -458,7 +494,7 @@ class StrategyPolicy:
 
     @classmethod
     def get_ai_direct_entry_min_alpha(cls) -> int:
-        """AI 단독 진입 허용을 위한 최소 알파 점수 (기본 55점)"""
+        """AI 단독 진입 허용을 위한 최소 알파 점수 (기본 80점)"""
         env_val = os.getenv("AI_DIRECT_ENTRY_MIN_ALPHA", "").strip()
         if env_val.isdigit():
             return max(50, min(100, int(env_val)))
@@ -595,14 +631,24 @@ def is_ai_direct_entry_eligible(
     alpha_score: Any,
     btc_regime: str = "NORMAL",
     is_night: bool | None = None,
+    change_rate_24h: float = 0.0,
 ) -> bool:
-    """AI 단독 진입은 누락 없는 알파 점수와 공통 세션 정책을 모두 충족할 때만 허용한다."""
+    """AI 단독 진입은 누락 없는 고품질 알파 점수, 당일 변동률 캡(+8.0% 이내), 레짐 정책을 모두 충족할 때만 허용한다."""
     try:
         normalized_score = int(alpha_score)
     except (TypeError, ValueError):
         # 점수 누락·형식 오류는 AI 단독 매수의 근거가 될 수 없으므로 fail-closed 처리한다.
         return False
-    return normalized_score >= get_alpha_buy_threshold(btc_regime, is_night)
+
+    # 당일 상승률 +8.0% 초과 종목은 고점 과열 추격 매수 차단
+    if float(change_rate_24h or 0.0) > StrategyPolicy.AI_DIRECT_ENTRY_MAX_24H_GAIN_PCT:
+        return False
+
+    min_required = max(
+        getattr(StrategyPolicy, "AI_DIRECT_OVERRIDE_MIN_SCORE", 75),
+        get_alpha_buy_threshold(btc_regime, is_night),
+    )
+    return normalized_score >= min_required
 
 
 def get_new_listing_alpha_threshold(btc_regime: str = "NORMAL", is_night: bool | None = None) -> int:
@@ -1026,12 +1072,13 @@ def classify_btc_regime(
     """Classify BTC market regime into BULL_TREND, NORMAL, RISK_OFF, or CRASH.
 
     - CRASH: Recent 5m/15m drop >= crash_threshold_pct (1.5%) -> Stop all new buys
-    - RISK_OFF: 1H Close < 1H EMA50 or 1H drop >= 1.0% -> Stricter gates & 50% sizing
-    - BULL_TREND: 1H Close >= EMA20 >= EMA50 (정배열) & 상승세 유지 -> 휩소 방어 확장 & 대세 추세 추종
+    - MACRO_SHOCK: Recent 15m drop >= 0.4% or 1H drop >= 0.5% -> Activate 30m cooldown, force RISK_OFF
+    - RISK_OFF: 1H Close < 1H EMA50 or 1H drop >= 0.5% or Macro Shock -> Stricter gates & 50% sizing
+    - BULL_TREND: 1H Close >= EMA20 >= EMA50 (정배열) & 최근 하락 없음(drop_1h > -0.3%) & 12H 상승 유지
     - NORMAL: Healthy uptrend/stable state
     """
     if not candles_5m or len(candles_5m) < 3:
-        return {"regime": "NORMAL", "reason": "BTC 데이터 부족"}
+        return {"regime": "NORMAL", "reason": "BTC 데이터 부족", "macro_shock": False}
 
     cur_p = float(candles_5m[0].get("trade_price", 0.0))
     p_3 = float(candles_5m[min(len(candles_5m) - 1, 3)].get("trade_price", cur_p))
@@ -1042,7 +1089,15 @@ def classify_btc_regime(
             "regime": "CRASH",
             "drop_pct": round(recent_drop * 100.0, 2),
             "reason": f"BTC 15분 급락 경보 ({recent_drop*100.0:.2f}%)",
+            "macro_shock": True,
+            "shock_reason": f"BTC 15분 급락 ({recent_drop*100.0:.2f}%)",
         }
+
+    is_macro_shock = False
+    shock_reason = ""
+    if recent_drop <= -StrategyPolicy.MACRO_SHOCK_RECENT_DROP_PCT:
+        is_macro_shock = True
+        shock_reason = f"BTC 15분 단기 급락 ({recent_drop*100.0:.2f}%)"
 
     # 1H Check
     if candles_1h and len(candles_1h) >= 20:
@@ -1053,27 +1108,51 @@ def classify_btc_regime(
         p_1h_prev = prices_1h[min(len(prices_1h) - 1, 3)]
         drop_1h = (cur_1h - p_1h_prev) / p_1h_prev if p_1h_prev > 0 else 0.0
 
-        if cur_1h < ema50_1h or drop_1h <= -0.010:
+        if drop_1h <= -StrategyPolicy.MACRO_SHOCK_1H_DROP_PCT:
+            is_macro_shock = True
+            shock_reason = f"BTC 1H 급락 ({drop_1h*100.0:.2f}%)"
+
+        if is_macro_shock:
+            return {
+                "regime": "RISK_OFF",
+                "drop_pct": round(min(recent_drop, drop_1h) * 100.0, 2),
+                "reason": f"BTC 매크로 쇼크 ({shock_reason})",
+                "macro_shock": True,
+                "shock_reason": shock_reason,
+            }
+
+        if cur_1h < ema50_1h or drop_1h <= -0.005:
             sub_reason = "1H EMA50 하회" if cur_1h < ema50_1h else f"1H {drop_1h*100.0:.1f}% 하락"
             return {
                 "regime": "RISK_OFF",
                 "drop_pct": round(drop_1h * 100.0, 2),
                 "reason": f"BTC 약세/조정 ({sub_reason})",
+                "macro_shock": False,
             }
 
-        # BULL_TREND: 1H 종가가 EMA20 및 EMA50 상단에 위치하고 정배열이며 최근 조정이 없거나 상승세
+        # BULL_TREND: 1H 종가가 EMA20 및 EMA50 상단에 위치하고 정배열이며, 최근 1H 하락이 없고(-0.3% 이내), 12H 상승세 유지 시에만 허용
         lookback_12 = min(len(prices_1h) - 1, 12)
         p_1h_12 = prices_1h[lookback_12]
         gain_12h = (cur_1h - p_1h_12) / p_1h_12 if p_1h_12 > 0 else 0.0
-        if cur_1h >= ema20_1h and ema20_1h >= ema50_1h and (drop_1h > -0.003 or gain_12h > 0.005):
+        if cur_1h >= ema20_1h and ema20_1h >= ema50_1h and drop_1h > -0.003 and gain_12h > 0.005:
             return {
                 "regime": "BULL_TREND",
                 "drop_pct": round(recent_drop * 100.0, 2),
                 "gain_12h_pct": round(gain_12h * 100.0, 2),
                 "reason": f"BTC 강력 상승 추세 (1H EMA20/50 정배열, 12H {gain_12h*100.0:+.2f}%)",
+                "macro_shock": False,
             }
 
-    return {"regime": "NORMAL", "drop_pct": round(recent_drop * 100.0, 2), "reason": "BTC 정상 안정세"}
+    if is_macro_shock:
+        return {
+            "regime": "RISK_OFF",
+            "drop_pct": round(recent_drop * 100.0, 2),
+            "reason": f"BTC 매크로 쇼크 ({shock_reason})",
+            "macro_shock": True,
+            "shock_reason": shock_reason,
+        }
+
+    return {"regime": "NORMAL", "drop_pct": round(recent_drop * 100.0, 2), "reason": "BTC 정상 안정세", "macro_shock": False}
 
 
 def calculate_relative_strength(

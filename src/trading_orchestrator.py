@@ -739,19 +739,29 @@ class TradingOrchestrator:
             regime = str(result.get("regime", "CRASH"))
             reason = str(result.get("reason", "BTC 정상 안정세"))
 
+            scope = (
+                getattr(exchange, "exchange_name", None)
+                or getattr(getattr(exchange, "client", None), "exchange_name", None)
+                or getattr(exchange, "key", None)
+                or "bithumb"
+            )
+            scope = str(scope).lower()
+
+            # BTC 매크로 쇼크 발생 시 30분 신규 BUY 쿨다운 등록
+            if result.get("macro_shock", False):
+                shock_reason = str(result.get("shock_reason") or reason)
+                shock_until = time.time() + StrategyPolicy.MACRO_SHOCK_COOLDOWN_SEC
+                StrategyPolicy.set_macro_shock(scope, shock_until, shock_reason)
+                self.logger.warning(
+                    f"🚨 [{scope.upper()}] BTC 매크로 쇼크 발동! 향후 30분간 신규 매수 차단 등록 (사유: {shock_reason})"
+                )
+
             # 1차 로컬 판별에서 이미 급락이면 즉시 차단
             if regime == "CRASH":
                 return True, "CRASH", reason
 
             # [2순위] Groq 실시간 거시 시장 분석(15분 주기 유효 캐시) 선제 반영
             try:
-                scope = (
-                    getattr(exchange, "exchange_name", None)
-                    or getattr(getattr(exchange, "client", None), "exchange_name", None)
-                    or getattr(exchange, "key", None)
-                    or "bithumb"
-                )
-                scope = str(scope).lower()
                 mi_service = MarketIntelligenceService.get_instance(exchange_scope=scope)
                 groq_intel = mi_service.get_latest_intelligence(max_age_sec=1200.0)
                 if groq_intel:

@@ -2,6 +2,29 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.20 (2026-09-28)
+
+- **BTC 매크로 쇼크 필터(Macro Shock Filter) 구축 및 급락 직후 휩소 방지**:
+  - `src/strategy_engine.py`:
+    - `classify_btc_regime()`: 15분 캔들 -0.4%(`MACRO_SHOCK_RECENT_DROP_PCT`) 또는 1시간봉 -0.4%(`MACRO_SHOCK_1H_DROP_PCT`) 급락 감지 시 `MACRO_SHOCK` 플래그 발동 및 `RISK_OFF`로 강제 격하.
+    - 12시간 정배열 상태이더라도 최근 1시간 급락(`drop_1h <= -0.003`) 발생 시 `BULL_TREND` 판정을 즉시 취소하여 기술적 반등 휩소 원천 차단.
+    - `StrategyPolicy`: 거래소별 격리된 매크로 쇼크 상태 관리(`set_macro_shock`, `is_macro_shock_active`) 및 30분(`MACRO_SHOCK_COOLDOWN_SEC = 1800초`) 쿨다운 지원.
+  - `src/trading_orchestrator.py`:
+    - 쇼크 발생 감지 시 거래소 스코프별로 30분 쿨다운 등록 및 경고 로깅 연동.
+  - `src/trading_runtime.py`:
+    - `is_macro_valid`에 매크로 쇼크 쿨다운 검사를 추가하여 쇼크 활성 중 모든 알트코인 신규 BUY 일시 중단(HOLD).
+- **AI 단독 자율 승인(AI Direct Entry) 오버라이드 가드레일 강화**:
+  - `src/strategy_engine.py`:
+    - 당일 변동률 `+8.0%`(`AI_DIRECT_ENTRY_MAX_24H_GAIN_PCT`) 초과 종목은 AI 단독 자율 승인을 원천 불허하여 고점 과열 추격 매수 방지.
+    - AI 단독 승인을 위한 최소 스코어 75점(`AI_DIRECT_OVERRIDE_MIN_SCORE`) 의무화.
+  - `src/trading_runtime.py`:
+    - 로컬 퀀트 룰이 스윙을 승인하지 않은 종목은 AI가 자율 승인하더라도 넓은 스윙 손절(-5.5%) 허용을 금지하고, 레짐별 타이트 손절선(박스권 -1.5%, 일반 -1.8%)을 강제 적용하여 단일 종목 대형 손실 방어.
+- **박스권/횡보(NORMAL/SIDEWAYS) 레짐 가변 타이트 손절 적용**:
+  - `src/strategy_engine.py`:
+    - 박스권 레짐 기본 손절폭을 -2.2%에서 **-1.5%**(`STOP_LOSS_PCT_SIDEWAYS`)로 타이트하게 축소 적용.
+    - 횡보 타임스탑 대기 시간을 기존 45분에서 **30분**(`TIME_STOP_SECONDS_SIDEWAYS`)으로 단축하여 불필요한 장기 노출 및 손실 심화 조기 차단.
+- `tests/test_macro_shock_and_guards.py`: 매크로 쇼크 감지, 30분 쿨다운, 8% 상승률 캡, 스코어 검증 단위 테스트 추가 (5개 테스트 100% PASS).
+
 ## v9.19 (2026-09-27)
 
 - **매매 사이클 주기 지연 해소 및 SQLite 판단 이력 조회 병목 최적화**:

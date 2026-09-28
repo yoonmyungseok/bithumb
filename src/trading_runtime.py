@@ -1565,7 +1565,8 @@ class TradingCycleEngine:
         # 1차 유효성 게이팅: 로컬 룰이 관망인 종목이 AI 검토를 받으려면 최소한의 싹수가 있어야 함
         curr_open = float(candles_5m[-1].get("opening_price", current_price)) if candles_5m else current_price
         is_candle_valid = current_price >= (curr_open * 0.996)  # 5분봉이 -0.4% 초과 장대음봉 추락 중이 아닐 것
-        is_macro_valid = not is_btc_crashing and btc_regime != "PANIC_SELL"
+        is_macro_shock, shock_until, shock_reason = StrategyPolicy.is_macro_shock_active(getattr(self, "exchange_scope", ""))
+        is_macro_valid = not is_btc_crashing and btc_regime != "PANIC_SELL" and not is_macro_shock
 
         rsi_valid = True
         if candles_5m and len(candles_5m) >= 15:
@@ -1848,6 +1849,12 @@ class TradingCycleEngine:
             else:
                 in_cd = bool(cd_res)
             can_enter_daily = not in_cd
+            market_change_rate = float(
+                candidate_metadata.get("change_rate")
+                or getattr(market_inputs, "change_rate", 0.0)
+                or selected_entry.get("change_rate", 0.0)
+                or 0.0
+            )
 
             if (
                 allow_ai_direct
@@ -1858,10 +1865,10 @@ class TradingCycleEngine:
                 and rebound_ok
                 and orderbook_ok
                 and swing_entry_passed
-                and is_ai_direct_entry_eligible(ai_alpha, btc_regime, is_night_session())
+                and is_ai_direct_entry_eligible(ai_alpha, btc_regime, is_night_session(), change_rate_24h=market_change_rate)
             ):
                 logger.info(
-                    f"✨ [{market}] AI 단독 자율 승인 진입 (로컬 룰 관망 ➜ AI 적극 승인, 알파스코어: {ai_alpha}점, 레짐: {btc_regime}, %B: {sel_pct_b:.2f})"
+                    f"✨ [{market}] AI 단독 자율 승인 진입 (로컬 룰 관망 ➜ AI 적극 승인, 알파스코어: {ai_alpha}점, 레짐: {btc_regime}, %B: {sel_pct_b:.2f}, 24h변동: {market_change_rate*100.0:+.2f}%)"
                 )
                 action = "BUY"
                 reason = f"[AI 단독 자율 승인] {reason}"
@@ -1870,10 +1877,24 @@ class TradingCycleEngine:
                     target_price = strategy["target_price"]
                 if 0 < strategy.get("stop_loss", 0) < current_price:
                     stop_loss = strategy["stop_loss"]
+
+                # 로컬 룰이 스윙을 공식 승인하지 않은 AI 단독 매수 종목은 스윙 하드 손절(-5.5%) 허용을 금지하고
+                # 레짐별 타이트 손절선(박스권 -1.5%, 일반 -1.8%)으로 강제 제한하여 대형 손실을 방어함
+                if not is_swing_candidate or not swing_entry_passed:
+                    max_allowed_sl_pct = (
+                        StrategyPolicy.STOP_LOSS_PCT_SIDEWAYS
+                        if btc_regime in ("NORMAL", "SIDEWAYS")
+                        else StrategyPolicy.STOP_LOSS_PCT
+                    )
+                    cap_stop = round(current_price * (1.0 - max_allowed_sl_pct), 4 if current_price < 1.0 else 2)
+                    if stop_loss < cap_stop:
+                        stop_loss = cap_stop
             else:
                 action = "HOLD"
                 if not allow_ai_direct and is_ai_buy_signal:
                     reason = f"로컬 퀀트 관망 종목 AI 단독 매수 차단(안전 정책): {selected_entry.get('reason', '')} | {reason}"
+                elif market_change_rate > StrategyPolicy.AI_DIRECT_ENTRY_MAX_24H_GAIN_PCT and is_ai_buy_signal:
+                    reason = f"AI 단독 매수 고점 과열 차단(당일 {market_change_rate*100.0:+.1f}% > +8.0%): 상투 추격 방지 | {reason}"
                 elif not swing_entry_passed and is_ai_buy_signal:
                     reason = f"AI 단독 매수 스윙 추세 지지 미달 차단: {swing_fail_reason} | {reason}"
                 elif not is_dip_support and is_ai_buy_signal:
@@ -1885,6 +1906,11 @@ class TradingCycleEngine:
                 else:
                     reason = f"정량 공통 진입 게이트 차단: {selected_entry.get('reason', '')} | {reason}"
         elif action == "BUY" and selected_entry.get("allow_buy", False):
+            # 로컬 룰 승인 종목도 박스권/횡보 레짐에서는 손절폭을 -1.5%로 타이트하게 제한
+            if btc_regime in ("NORMAL", "SIDEWAYS"):
+                sideways_sl = round(current_price * (1.0 - StrategyPolicy.STOP_LOSS_PCT_SIDEWAYS), 4 if current_price < 1.0 else 2)
+                if stop_loss < sideways_sl:
+                    stop_loss = sideways_sl
             if not is_dip_support:
                 action = "HOLD"
                 reason = f"로컬 매수 상투/과열 차단(%B {sel_pct_b:.2f} > 한도 {pct_b_cap:.2f}): 눌림목 지지 대기 | {reason}"
