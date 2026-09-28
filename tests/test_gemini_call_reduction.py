@@ -140,11 +140,16 @@ def test_pacing_budget_calculation():
     from gemini_telemetry import GeminiTelemetry
 
     with patch("gemini_telemetry.get_pt_reset_info", return_value={"remaining_sec": 36000}):  # 10시간 = 120 사이클
-        with patch.object(GeminiTelemetry, "_api_calls", 200):  # 950 - 200 = 750 / 120 = 6.25회 -> 2개 허용
+        with patch.object(GeminiTelemetry, "_api_calls", 200):  # 950 - 200 = 750 / 120 = 6.25회 -> 4개 허용
             pacing = GeminiTelemetry.get_pacing_budget()
             assert pacing["remaining_cycles"] == 120
-            assert pacing["allowed_candidates"] == 2
+            assert pacing["allowed_candidates"] == 4
             assert pacing["is_pacing_restricted"] is False
+
+        with patch.object(GeminiTelemetry, "_api_calls", 750):  # 950 - 750 = 200 / 120 = 1.67회 -> 2개로 제한
+            pacing = GeminiTelemetry.get_pacing_budget()
+            assert pacing["allowed_candidates"] == 2
+            assert pacing["is_pacing_restricted"] is True
 
         with patch.object(GeminiTelemetry, "_api_calls", 850):  # 950 - 850 = 100 / 120 = 0.83회 -> 1개로 제한
             pacing = GeminiTelemetry.get_pacing_budget()

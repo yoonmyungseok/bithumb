@@ -397,24 +397,35 @@ COMMON_CONFIG_SCHEMA: dict[str, ConfigFieldDef] = {
     "GEMINI_ENTRY_CACHE_SEC": ConfigFieldDef(
         key="GEMINI_ENTRY_CACHE_SEC",
         type_name="int",
-        default=600,
+        default=300,
         min_val=60,
         max_val=3600,
         category="ai",
         label="AI 진입 판단 캐시 주기",
-        description="안정 구간(HOLD 및 가격 변동 1.5% 이내)에서 이전 AI 판단을 재사용하는 시간입니다. (권장: 300~900초)",
+        description="안정 구간(HOLD 및 가격 변동 1.5% 이내)에서 이전 AI 판단을 재사용하는 시간입니다. (기본: 300초/5분, 권장: 180~600초)",
         unit="초",
     ),
     "GEMINI_RANK_CACHE_SEC": ConfigFieldDef(
         key="GEMINI_RANK_CACHE_SEC",
         type_name="int",
-        default=1800,
+        default=900,
         min_val=300,
         max_val=7200,
         category="ai",
         label="스크리너 AI 랭킹 캐시 주기",
-        description="유망 종목 선별을 위한 AI 랭킹 분석 캐시 유지 시간입니다. (권장: 900~3600초)",
+        description="유망 종목 선별을 위한 AI 랭킹 분석 캐시 유지 시간입니다. (기본: 900초/15분, 권장: 600~1800초)",
         unit="초",
+    ),
+    "MAX_AI_CANDIDATES_PER_CYCLE": ConfigFieldDef(
+        key="MAX_AI_CANDIDATES_PER_CYCLE",
+        type_name="int",
+        default=3,
+        min_val=1,
+        max_val=4,
+        category="ai",
+        label="사이클당 최대 AI 분석 후보 수",
+        description="1회 5분 매매 사이클에서 AI 심층 분석을 동시 수행할 유망 종목 최대 개수입니다. (기본: 3개, 최대: 4개)",
+        unit="개",
     ),
 }
 
@@ -557,9 +568,9 @@ class CommonConfigManager:
         if not normalized_updates:
             return True, {}, []
 
-        # 2. .env 파일에 주석을 보존하며 안전하게 기록
+        # 2. .env 파일에 주석을 보존하며 일괄 안전하게 기록
         try:
-            import dotenv
+            str_updates: dict[str, str] = {}
             for key, val in normalized_updates.items():
                 field_def = COMMON_CONFIG_SCHEMA[key]
                 if field_def.type_name == "bool":
@@ -571,15 +582,97 @@ class CommonConfigManager:
                 else:
                     str_val = str(val)
 
-                if os.path.exists(self.env_path):
-                    dotenv.set_key(self.env_path, key, str_val, quote_mode="never")
+                str_updates[key] = str_val
                 # 현재 프로세스의 os.environ 동기화
                 os.environ[key] = str_val
+
+            self._save_to_env_batch(str_updates)
 
         except Exception as exc:
             return False, {}, [f".env 파일 저장 중 예외가 발생했습니다: {exc}"]
 
         return True, normalized_updates, []
+
+    def _save_to_env_batch(self, updates: dict[str, str], encoding: str = "utf-8") -> None:
+        """기존 주석 및 구성을 보존하며 여러 키-값을 단 1회의 디스크 I/O 및 원자적 교체로 .env에 기록한다.
+
+        Windows 환경에서의 일시적 파일 잠금(WinError 5 / 32)을 방지하기 위한 재시도 및 fallback을 포함한다.
+        """
+        import io
+        import tempfile
+        import time
+        from dotenv.main import parse_stream, with_warn_for_invalid_lines
+
+        if not os.path.exists(self.env_path):
+            with open(self.env_path, "w", encoding=encoding) as f:
+                for k, v in updates.items():
+                    f.write(f"{k}={v}\n")
+            return
+
+        with open(self.env_path, "r", encoding=encoding) as f:
+            source_content = f.read()
+
+        source_stream = io.StringIO(source_content)
+        output_lines: list[str] = []
+        seen_keys: set[str] = set()
+
+        for mapping in with_warn_for_invalid_lines(parse_stream(source_stream)):
+            if mapping.key is not None and mapping.key in updates:
+                output_lines.append(f"{mapping.key}={updates[mapping.key]}\n")
+                seen_keys.add(mapping.key)
+            else:
+                output_lines.append(mapping.original.string)
+
+        # 기존 파일에 없던 새로운 설정 키가 있으면 파일 끝에 추가
+        unseen_keys = [k for k in updates if k not in seen_keys]
+        if unseen_keys:
+            if output_lines and not output_lines[-1].endswith("\n"):
+                output_lines.append("\n")
+            for k in unseen_keys:
+                output_lines.append(f"{k}={updates[k]}\n")
+
+        final_content = "".join(output_lines)
+
+        env_dir = os.path.dirname(os.path.abspath(self.env_path))
+        temp_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding=encoding,
+            delete=False,
+            prefix=".tmp_",
+            dir=env_dir,
+        )
+        temp_path = temp_file.name
+        try:
+            temp_file.write(final_content)
+            temp_file.flush()
+            temp_file.close()
+
+            # Windows의 일시적 파일 핸들 잠금(백신/인덱서/타 프로세스)에 대비한 재시도 로직
+            replaced = False
+            last_err: Exception | None = None
+            for attempt in range(5):
+                try:
+                    os.replace(temp_path, self.env_path)
+                    replaced = True
+                    break
+                except (PermissionError, OSError) as e:
+                    last_err = e
+                    time.sleep(0.05 * (attempt + 1))
+
+            if not replaced:
+                # fallback: 원본 파일 직접 열어 덮어쓰기
+                try:
+                    with open(self.env_path, "w", encoding=encoding) as f:
+                        f.write(final_content)
+                    replaced = True
+                except Exception as e:
+                    raise last_err or e
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
 
     def _parse_env_value(self, field_def: ConfigFieldDef, raw_val: str | None) -> Any:
         """환경 변수 원본 문자열을 타입에 맞게 안전 변환"""

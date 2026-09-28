@@ -756,9 +756,13 @@ class AIProviderTelemetry:
 
         if remaining_budget <= 0 or calls >= safety_limit:
             allowed_candidates = 0
-        elif ideal_per_cycle >= 1.5:
+        elif ideal_per_cycle >= 2.5:
+            allowed_candidates = 4
+        elif ideal_per_cycle >= 1.8:
+            allowed_candidates = 3
+        elif ideal_per_cycle >= 1.0:
             allowed_candidates = 2
-        elif ideal_per_cycle >= 0.5:
+        elif ideal_per_cycle >= 0.4:
             allowed_candidates = 1
         else:
             allowed_candidates = 0
@@ -768,7 +772,7 @@ class AIProviderTelemetry:
             "remaining_cycles": remaining_cycles,
             "remaining_budget": remaining_budget,
             "ideal_per_cycle": round(ideal_per_cycle, 2),
-            "is_pacing_restricted": allowed_candidates < 2,
+            "is_pacing_restricted": allowed_candidates < 3,
         }
 
 

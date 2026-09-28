@@ -1058,7 +1058,7 @@ class GeminiAnalyzer:
             cached_entry = self._analysis_cache[stable_cache_key]
             cached_price = float(cached_entry.get("price", 0.0) or 0.0)
             price_change = abs(current_price - cached_price) / cached_price if cached_price > 0 else float("inf")
-            entry_cache_ttl = max(60.0, float(os.getenv("GEMINI_ENTRY_CACHE_SEC", "600")))
+            entry_cache_ttl = max(60.0, float(os.getenv("GEMINI_ENTRY_CACHE_SEC", "300")))
             cached_action = str(cached_entry.get("result", {}).get("action", "HOLD")).upper()
             # 이전 BUY 판단은 다음 확정봉에서 항상 다시 검증한다. 안정적인 HOLD만 장기 재사용한다.
             if (
@@ -1643,7 +1643,7 @@ class GeminiAnalyzer:
         exchange_scope = str(getattr(self.provider, "exchange", "default")).lower()
         cand_keys = ",".join(sorted(str(c.get("market", "")).upper() for c in candidates[:8]))
         cache_key = f"RANK:{exchange_scope}:{cand_keys}"
-        rank_cache_ttl = max(300.0, float(os.getenv("GEMINI_RANK_CACHE_SEC", "1800")))
+        rank_cache_ttl = max(300.0, float(os.getenv("GEMINI_RANK_CACHE_SEC", "900")))
         now_ts = time.time()
         if hasattr(self, "_screener_rank_cache") and cache_key in self._screener_rank_cache:
             cached = self._screener_rank_cache[cache_key]

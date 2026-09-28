@@ -262,6 +262,7 @@ class DatabaseManager:
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_sd_ex_ts ON strategy_decisions(exchange, decision_ts DESC);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_sd_ex_mkt_ts ON strategy_decisions(exchange, market, decision_ts DESC);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_sd_recovery ON strategy_decisions(exchange, policy_mode, action, decision_ts DESC);")
 
             conn.commit()
 
@@ -543,6 +544,8 @@ class DatabaseManager:
 
     def has_recovery_entry_since(self, exchange: str, since_ts: float) -> bool:
         """같은 연속손실 회복 구간에서 반등 전용 주문을 하나로 제한한다."""
+        if since_ts <= 0.0:
+            return False
         with _DB_LOCK, self._get_connection() as conn:
             row = conn.execute(
                 """

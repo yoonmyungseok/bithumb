@@ -129,6 +129,25 @@ class TestCommonConfigManager(unittest.TestCase):
         self.assertIn("TOP_COUNT=5", content)
         self.assertIn("ORDERBOOK_SLIPPAGE_ENFORCEMENT=true", content)
 
+    def test_save_to_env_batch_preserves_comments_and_adds_new(self):
+        """배치 저장 시 기존 파일의 주석이 온전히 보존되고 신규 키도 정상 추가되는지 검증"""
+        # 기존 파일에 주석과 함께 특정 값 작성
+        with open(self.env_path, "w", encoding="utf-8") as f:
+            f.write("# 중요한 주석 1\nEXISTING_KEY=old_val\n# 중요한 주석 2\n")
+
+        self.manager._save_to_env_batch({
+            "EXISTING_KEY": "new_val",
+            "BRAND_NEW_KEY": "added_val",
+        })
+
+        with open(self.env_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("# 중요한 주석 1\n", content)
+        self.assertIn("EXISTING_KEY=new_val\n", content)
+        self.assertIn("# 중요한 주석 2\n", content)
+        self.assertIn("BRAND_NEW_KEY=added_val\n", content)
+
     def test_auto_sum_slots_into_max_open_positions(self):
         """단타, 스윙, 신규상장 슬롯 변경 시 MAX_OPEN_POSITIONS 자동 합산 및 MAX_POSITION_PCT 자동 계산 검증"""
         updates = {

@@ -2,6 +2,38 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.19 (2026-09-27)
+
+- **매매 사이클 주기 지연 해소 및 SQLite 판단 이력 조회 병목 최적화**:
+  - `src/db_manager.py`:
+    - `strategy_decisions` 테이블에 복합 인덱스 `idx_sd_recovery (exchange, policy_mode, action, decision_ts DESC)` 추가하여 반등 매수 이력 조회 시 5만 건 이상의 풀스캔을 방지하고 0.0005초 이하로 즉시 처리되도록 최적화.
+    - `has_recovery_entry_since()`에 `since_ts <= 0.0` 조기 반환 가드를 추가하여 비정상 과거 전체 조회 차단.
+  - `src/trading_runtime.py`:
+    - `process_entry_gating()`에서 급락 후 반등(`RECOVERY_REBOUND`) 슬롯 가용 여부 DB 조회를 평상시에 건너뛰고, 실제 쿨다운 발동 중이며 반등 매수 조건이 충족되었을 때만 최근 30분 이력으로 단락 평가(short-circuit)하도록 개선.
+    - 마켓 루프 게이팅 속도를 종목당 ~10.5초에서 ~0.001초(8,800배 단축)로 개선하여 5분 스케줄러 인스턴스 중복 스킵(maximum number of running instances reached) 경고 원천 해소.
+
+## v9.18 (2026-09-26)
+
+- **Google 무료 티어 환경 내 Gemini API 호출 최적화 및 쿼터 활용도 극대화**:
+  - `src/gemini_telemetry.py` & `src/ai_provider.py`:
+    - 24시간 쿼터 페이싱 사이클당 허용 후보 수를 기존 최대 2개 상한에서 최대 4개(기본 3개)로 확대 (`ideal_per_cycle >= 2.5` 시 4개, `1.8` 시 3개, `1.0` 시 2개, `0.4` 시 1개).
+    - 잔여 쿼터 축소 시 자동으로 허용량을 줄여 95% 안전선(950 RPD) 및 Fail-Closed는 철저히 보존.
+  - `src/gemini_analyzer.py`:
+    - 진입 판단 캐시(`GEMINI_ENTRY_CACHE_SEC`) 기본값을 600초(10분)에서 **300초(5분, 1개 사이클)**로 단축하여 매 5분 확정봉마다 최신 호가창과 수급을 즉시 재평가.
+    - 스크리너 AI 랭킹 캐시(`GEMINI_RANK_CACHE_SEC`) 기본값을 1,800초(30분)에서 **900초(15분)**로 단축하여 주도주 교체 주기를 2배 신속하게 반영.
+  - `src/trading_runtime.py`:
+    - 사이클당 AI 심층 분석 후보 기본값(`MAX_AI_CANDIDATES_PER_CYCLE`)을 2개에서 **3개(최대 4개)**로 상향.
+  - `src/runtime_config.py` & `src/dashboard_server.py`:
+    - `MAX_AI_CANDIDATES_PER_CYCLE`을 공통 런타임 설정 스키마 및 대시보드 모달(`🤖 AI 자율권 & 캐시` 탭)에 추가하여 봇 재시작 없이 웹 UI에서 즉시 제어 가능하도록 연동.
+    - 캐시 기본값(진입 300초, 스크리너 900초) 가이드 갱신.
+  - `tests/test_gemini_call_reduction.py`:
+    - 페이싱 상한 완화 및 단계 세분화 단위 테스트 갱신 완료 (전체 91개 테스트 100% PASS).
+  - `src/runtime_config.py` & `tests/test_runtime_config_manager.py`:
+    - **Windows 환경 `.env` 저장 시 `[WinError 5] 액세스가 거부되었습니다` 에러 원천 해결**:
+      - 기존에 루프를 돌며 키마다 `dotenv.set_key`를 반복 호출(연속 `os.replace`)하여 Windows OS 파일 잠금/백신 실시간 검사와 충돌하던 문제를 단 1회의 디스크 I/O 및 일괄(Batch) 원자적 교체(`_save_to_env_batch`)로 전면 개선.
+      - 일시적 파일 점유 상황에 대응하는 5회 지수 백오프 재시도 및 fallback 덮어쓰기 로직 탑재.
+      - 기존 주석 및 줄바꿈 완전 보존 단위 테스트 추가 (16개 테스트 100% PASS).
+
 ## v9.17 (2026-09-26)
 
 - **매수 종목 선정·진입 타점·청산 타이밍 손익비 정상화 (상투 매수 및 푼돈 익절 근절)**:

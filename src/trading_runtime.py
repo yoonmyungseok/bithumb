@@ -1464,10 +1464,24 @@ class TradingCycleEngine:
             candidate_trade_value=float(candidate_metadata.get("acc_trade_price_24h", 0.0) or 0.0),
             is_night=night_session_active,
         )
-        recovery_window_start = max(0.0, float(ctx.risk_manager.cooldown_until_ts) - 1800.0)
-        recovery_slot_available = not ctx.decision_db.has_recovery_entry_since(
-            entry_profile.recovery_db_exchange, recovery_window_start,
+        recovery_slot_available = True
+        should_check_recovery_slot = (
+            getattr(StrategyPolicy, "RECOVERY_REBOUND_LIVE_ENABLED", False)
+            and is_cooldown
+            and not is_btc_crashing
+            and ws_healthy
+            and effective_candidate_type != "MOMENTUM_BREAKOUT"
+            and not use_new_listing_path
+            and not is_holding
+            and not local_entry.get("allow_buy", False)
+            and recovery_entry.get("allow_buy", False)
         )
+        if should_check_recovery_slot:
+            cooldown_ts = float(getattr(ctx.risk_manager, "cooldown_until_ts", 0.0) or 0.0)
+            recovery_window_start = max(time.time() - 1800.0, cooldown_ts - 1800.0) if cooldown_ts > 0 else (time.time() - 1800.0)
+            recovery_slot_available = not ctx.decision_db.has_recovery_entry_since(
+                entry_profile.recovery_db_exchange, recovery_window_start,
+            )
         # 개미털기 역매수(SHAKEOUT_SWEEP) 경로 평가
         is_sweep_enabled = (
             StrategyPolicy.is_shakeout_sweep_enabled(entry_profile.signal_exchange)
@@ -2721,8 +2735,8 @@ class TradingCycleEngine:
             max_ai_candidates = 1
             logger.info("⚠️ [AI 쿼터 가드] 일일 호출 주의선(70%) 도달 ➜ 사이클당 AI 심층 분석 상위 1개 종목으로 압축")
         else:
-            default_max_ai = int(os.getenv("MAX_AI_CANDIDATES_PER_CYCLE", os.getenv("MAX_AI_CALLS_PER_CYCLE", "2")))
-            # 유망 종목의 적극적 AI 검토를 위해 기본 2~3개 및 최대 4개까지 환경변수 허용
+            default_max_ai = int(os.getenv("MAX_AI_CANDIDATES_PER_CYCLE", os.getenv("MAX_AI_CALLS_PER_CYCLE", "3")))
+            # 유망 종목의 적극적 AI 검토를 위해 기본 3개 및 최대 4개까지 환경변수 허용
             max_ai_candidates = max(1, min(4, default_max_ai))
             if pacing_budget.get("is_pacing_restricted"):
                 p_allowed = int(pacing_budget.get("allowed_candidates", max_ai_candidates))

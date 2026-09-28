@@ -1954,14 +1954,19 @@ class UnifiedDashboardServer:
                                 <p class="text-[11px] text-slate-400 mt-1">로컬 알파 점수가 이 기준 이상인 후보만 AI에게 질의합니다. (낮출수록 AI 호출 증가, 권장: 55점)</p>
                             </div>
                             <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
+                                <label class="text-xs font-semibold block mb-1">사이클당 최대 AI 분석 후보 수 (개)</label>
+                                <input type="number" id="cfg_MAX_AI_CANDIDATES_PER_CYCLE" step="1" min="1" max="4" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
+                                <p class="text-[11px] text-slate-400 mt-1">1회 5분 매매 사이클에서 AI가 동시 심층 분석할 최대 유망 종목 수입니다. (기본: 3개, 최대: 4개)</p>
+                            </div>
+                            <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
                                 <label class="text-xs font-semibold block mb-1">AI 진입 판단 캐시 주기 (초)</label>
                                 <input type="number" id="cfg_GEMINI_ENTRY_CACHE_SEC" step="60" min="60" max="3600" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
-                                <p class="text-[11px] text-slate-400 mt-1">안정 구간(HOLD/가격변동 1.5% 미만)에서 이전 분석 결과를 유지하는 시간입니다. (권장: 300~900초)</p>
+                                <p class="text-[11px] text-slate-400 mt-1">안정 구간(HOLD/가격변동 1.5% 미만)에서 이전 분석 결과를 유지하는 시간입니다. (기본: 300초/5분, 권장: 180~600초)</p>
                             </div>
-                            <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800 sm:col-span-2">
+                            <div class="bg-slate-950/60 p-3 rounded-xl border border-slate-800">
                                 <label class="text-xs font-semibold block mb-1">스크리너 AI 랭킹 캐시 주기 (초)</label>
                                 <input type="number" id="cfg_GEMINI_RANK_CACHE_SEC" step="60" min="300" max="7200" class="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-slate-100">
-                                <p class="text-[11px] text-slate-400 mt-1">전체 마켓 스크리닝 시 AI 유망 순위 캐시를 유지하는 시간입니다. (권장: 900~3600초)</p>
+                                <p class="text-[11px] text-slate-400 mt-1">전체 마켓 스크리닝 시 AI 유망 순위 캐시를 유지하는 시간입니다. (기본: 900초/15분, 권장: 600~1800초)</p>
                             </div>
                         </div>
                     </div>
