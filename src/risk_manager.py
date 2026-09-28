@@ -802,8 +802,11 @@ class TrailingStopTracker:
             return self.dynamic_targets.get(market.upper())
 
     def reconcile_markets(self, held_markets: list[str]) -> int:
-        """Drop stale trailing state after a restart; exchange balances are authoritative."""
+        """Drop stale trailing state after a restart and auto-adopt orphan held positions."""
         with self._lock:
+            # 1. 디스크/DB의 최신 상태 파일 동기화
+            self._load_state()
+
             held_set = {m.upper() for m in held_markets}
             stale_markets = (
                 set(self.peaks)
@@ -824,7 +827,29 @@ class TrailingStopTracker:
                 self.dynamic_stop_losses.pop(m_upper, None)
                 self.dynamic_targets.pop(m_upper, None)
                 self.runner_markets.discard(m_upper)
-            if stale_markets:
+
+            # 2. 거래소 잔고에 존재하나 추적 정보가 누락된 고아 포지션 자동 입양 및 복구
+            from market_policy import is_protected_market
+            adopted_count = 0
+            for market in held_markets:
+                m_upper = market.upper()
+                if is_protected_market(m_upper):
+                    continue
+                current_entry_t = float(self.entry_times.get(market, self.entry_times.get(m_upper, 0.0)) or 0.0)
+                current_mode = self.strategy_modes.get(m_upper, self.strategy_modes.get(market, ""))
+                if current_entry_t <= 0.0 or not current_mode:
+                    is_major = m_upper in ("KRW-BTC", "KRW-ETH", "KRW-SOL")
+                    mode = current_mode or ("SWING" if is_major else "SCALP")
+                    self.entry_times[m_upper] = time.time()
+                    self.entry_times[market] = self.entry_times[m_upper]
+                    self.strategy_modes[m_upper] = mode
+                    self.strategy_modes[market] = mode
+                    adopted_count += 1
+                    logger.info(
+                        f"🔄 [{market}] 고아 보유 포지션 감지 ➜ 봇 자동 추적 포지션(전략={mode})으로 자동 복구 및 편입 완료"
+                    )
+
+            if stale_markets or adopted_count > 0:
                 self._save_state(force=True)
             return len(stale_markets)
 

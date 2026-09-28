@@ -2,6 +2,19 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.22 (2026-09-28)
+
+- **고아 포지션 자동 입양(Auto-Adopt) 및 봇 관리 포지션 판정 강화**:
+  - `src/position_guard.py`:
+    - `is_bot_managed_position()`: 트레일링 추적기(`trailing_tracker`)에 유효한 진입 시각 또는 전략 모드가 등록된 종목을 최우선 봇 관리 포지션으로 승인하여, 과거 주문 저널의 `ask FILLED`로 인해 활성 포지션이 수동 관리로 방치되던 구조적 결함 해결.
+    - 주문 저널 내에 과거 봇 매수 체결(`bid FILLED`) 이력이 존재하는 경우에도 계좌 잔여 포지션으로 정상 관리하도록 판정 로직 보강.
+  - `src/risk_manager.py`:
+    - `TrailingStopTracker.reconcile_markets()`: 매 사이클마다 디스크/DB의 상태를 재동기화(`_load_state()`)하고, 거래소 잔고에 코인이 존재하나 추적 정보가 누락된 고아 포지션 발견 시 메이저(`SWING`), 알트(`SCALP`)로 즉시 자동 입양(Auto-Adopt) 및 영속 저장.
+  - `data/position_state.json` & `data/trading.db`:
+    - 빗썸에서 9월 21일 백업 마이그레이션 누락으로 방치되어 있던 `KRW-BTC`, `KRW-ETH` 중기 스윙(SWING) 포지션 상태 및 매수 저널을 정상 복원 완료.
+  - `tests/test_position_guard.py` & `tests/test_risk_manager.py`:
+    - 트레일링 추적기 우선권, 과거 매수 이력 잔여분 인정, 고아 포지션 자동 입양 단위 테스트 추가 (12개 테스트 100% PASS).
+
 ## v9.21 (2026-09-28)
 
 - **약세장(RISK_OFF) AI 단독 자율 승인(AI Direct Entry) 전면 차단 (옵션 A 정책)**:

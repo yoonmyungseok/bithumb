@@ -6,10 +6,31 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from risk_manager import (
+    TrailingStopTracker,
     build_positions_data,
     calculate_total_equity,
     get_held_markets,
 )
+
+
+class TrailingStopTrackerReconcileTests(unittest.TestCase):
+    def test_reconcile_markets_adopts_orphan_positions(self):
+        """거래소 잔고에 있으나 추적 정보가 없는 고아 포지션을 자동으로 입양/복구."""
+        tracker = TrailingStopTracker(data_dir=".test-tmp-current")
+        # 초기화: 추적 정보 없음
+        tracker.entry_times.clear()
+        tracker.strategy_modes.clear()
+
+        held_markets = ["KRW-BTC", "KRW-SOLV"]
+        tracker.reconcile_markets(held_markets)
+
+        # 메이저인 BTC는 SWING으로, 알트인 SOLV는 SCALP로 자동 입양되었는지 검증
+        self.assertGreater(tracker.get_entry_time("KRW-BTC"), 0.0)
+        self.assertEqual(tracker.get_strategy_mode("KRW-BTC"), "SWING")
+        self.assertTrue(tracker.is_swing_position("KRW-BTC"))
+
+        self.assertGreater(tracker.get_entry_time("KRW-SOLV"), 0.0)
+        self.assertEqual(tracker.get_strategy_mode("KRW-SOLV"), "SCALP")
 
 
 class RiskManagerPortfolioBatchTests(unittest.TestCase):

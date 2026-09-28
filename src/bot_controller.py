@@ -366,20 +366,32 @@ class BotController:
                                 break
                 except Exception:
                     pass
-            if not entry_snapshot:
-                continue
+            # 진입 전략 스냅샷이 없더라도 트레일링 추적기의 모드 또는 메이저 여부로 전략 복원
+            strat_mode = ""
+            if entry_snapshot:
+                strat_mode = entry_snapshot.get("strategy_mode", "")
+            if not strat_mode and hasattr(self, "trailing_tracker"):
+                strat_mode = getattr(self.trailing_tracker, "get_strategy_mode", lambda m: "")(market)
+            if not strat_mode:
+                strat_mode = "SWING" if market.upper() in ("KRW-BTC", "KRW-ETH", "KRW-SOL") else "SCALP"
+
+            target_p = float(entry_snapshot.get("target_price", 0.0) or 0.0) if entry_snapshot else 0.0
+            stop_l = float(entry_snapshot.get("stop_loss", 0.0) or 0.0) if entry_snapshot else 0.0
+            reason_txt = entry_snapshot.get("entry_reason", "기보유 포지션 퀀트 감시") if entry_snapshot else f"[{strat_mode}] 보유 포지션 실시간 퀀트 감시"
+
             self.latest_strategies[market] = {
                 "action": "HOLD",
-                "target_price": float(entry_snapshot.get("target_price", 0.0) or 0.0),
-                "stop_loss": float(entry_snapshot.get("stop_loss", 0.0) or 0.0),
-                "reason": entry_snapshot.get("entry_reason", "기보유 포지션 퀀트 감시"),
-                "alpha_score": int(entry_snapshot.get("alpha_score", 70) or 70),
-                "indicators": entry_snapshot.get("indicators", {}),
+                "target_price": target_p,
+                "stop_loss": stop_l,
+                "reason": reason_txt,
+                "alpha_score": int(entry_snapshot.get("alpha_score", 70) or 70) if entry_snapshot else 70,
+                "indicators": entry_snapshot.get("indicators", {}) if entry_snapshot else {},
+                "strategy_mode": strat_mode,
                 "allow_buy": False,
                 "restored_from_order_journal": True,
             }
             restored += 1
-            logger.info("[%s] 재시작 후 주문 저널의 진입 전략을 대시보드에 복원했습니다.", market)
+            logger.info("[%s] 재시작 후 주문 저널의 진입 전략(%s)을 대시보드에 복원했습니다.", market, strat_mode)
         return restored
 
     def get_dashboard_data(self) -> dict[str, Any]:
@@ -417,6 +429,11 @@ class BotController:
 
             # 1. 포지션 및 후보군 데이터
             held_markets = get_held_markets(balances, bithumb, price_map=held_price_map)
+            if hasattr(self.trailing_tracker, "_load_state"):
+                try:
+                    self.trailing_tracker._load_state()
+                except Exception:
+                    pass
             self.restore_missing_position_strategies(held_markets)
             positions_data = build_positions_data(balances, bithumb, self.latest_strategies, price_map=held_price_map)
             # 확정 체결 기반 보유 시간과 익절 단계를 덧붙인다. 수동 보유분에는 시간을 추정하지 않는다.
@@ -424,7 +441,20 @@ class BotController:
                 market_key = str(position.get("market", "") or "")
                 position["risk_state"] = self.trailing_tracker.get_position_dashboard_state(market_key, now=now)
                 risk_state = position.get("risk_state") or {}
-                position["strategy_mode"] = risk_state.get("strategy_mode") or position.get("strategy_mode") or "SCALP"
+                # 전략 모드 결정 우선순위: trailing_tracker -> latest_strategies -> 메이저 여부(SWING) -> 기본값 SCALP
+                mode_from_tracker = risk_state.get("strategy_mode")
+                mode_from_strat = self.latest_strategies.get(market_key, {}).get("strategy_mode")
+                if mode_from_tracker and mode_from_tracker != "SCALP":
+                    eff_mode = mode_from_tracker
+                elif mode_from_strat:
+                    eff_mode = mode_from_strat
+                elif market_key.upper() in ("KRW-BTC", "KRW-ETH", "KRW-SOL"):
+                    eff_mode = "SWING"
+                else:
+                    eff_mode = mode_from_tracker or "SCALP"
+                position["strategy_mode"] = eff_mode
+                if isinstance(position.get("risk_state"), dict):
+                    position["risk_state"]["strategy_mode"] = eff_mode
             candidates_data = build_candidates_data(balances, bithumb, self.latest_strategies)
 
             tracker = self.trailing_tracker
