@@ -363,6 +363,7 @@ def validate_emergency_exit_safety(
     is_btc_crashing: bool = False,
     is_bot_managed: bool = True,
     candles_1h: list[dict[str, Any]] | None = None,
+    is_swing: bool = False,
 ) -> tuple[bool, str, str]:
     """AI EMERGENCY_EXIT의 과민 반응 및 성급한 털림을 방지하는 확정적 6중 안전 가드.
 
@@ -377,6 +378,14 @@ def validate_emergency_exit_safety(
         return (
             False,
             "수동 관리 포지션 보호: 봇 매수 이력이 없는 외부/수동 잔고는 자동 긴급 매도 대상에서 제외됩니다.",
+            "HOLD",
+        )
+
+    # [가드 1-1] 스윙(SWING) 포지션 보호: 중기 추세 추종 종목은 5분봉 단기 AI 비상탈출을 차단하고 4H 추세/정규 스윙 손절선(-5.5%) 준수
+    if is_swing:
+        return (
+            False,
+            f"스윙 포지션 보호: 중기 추세추종 종목({korean_name})은 5분봉 단기 AI 비상탈출 대상에서 제외되며 정규 스윙 손절선(-5.5%) 및 4H EMA20 추세를 따릅니다.",
             "HOLD",
         )
 
@@ -956,6 +965,7 @@ class TradingCycleEngine:
                 ai_action = ai_eval.get("action", "HOLD")
                 if ai_action == "EMERGENCY_EXIT":
                     is_bot_pos = self._is_bot_managed_position(market)
+                    is_swing = getattr(ctx.trailing_tracker, "is_swing_position", lambda m: False)(market)
                     is_safe_to_exit, guard_reason, fallback_action = validate_emergency_exit_safety(
                         market=market,
                         korean_name=korean_name,
@@ -968,6 +978,7 @@ class TradingCycleEngine:
                         is_btc_crashing=market_inputs.is_btc_crashing,
                         is_bot_managed=is_bot_pos,
                         candles_1h=getattr(market_inputs, "candles_1h", None),
+                        is_swing=is_swing,
                     )
                     if is_safe_to_exit and ctx.trailing_tracker.acquire_exit_lock(market):
                         try:
@@ -1618,6 +1629,7 @@ class TradingCycleEngine:
                 )
                 or (
                     allow_ai_direct
+                    and btc_regime.upper() not in ("RISK_OFF", "CRASH", "BEAR_VOLATILE")
                     and pre_qualification_passed
                     and candidate_trade_value >= StrategyPolicy.MIN_TRADE_VALUE_RISK_OFF * 0.5
                     and is_quality_promising

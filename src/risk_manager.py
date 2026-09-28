@@ -541,7 +541,7 @@ class TrailingStopTracker:
                 self.peaks[m_upper] = current_peak
                 self._save_state()
 
-            auto_be_trigger = getattr(StrategyPolicy, "AUTO_BREAKEVEN_TRIGGER_PCT", 0.018)
+            auto_be_trigger = getattr(StrategyPolicy, "AUTO_BREAKEVEN_TRIGGER_PCT", 0.030)
             if (current_peak - avg_buy_price) / avg_buy_price >= auto_be_trigger:
                 if not (self.auto_breakeven_active.get(m_upper, False) or self.auto_breakeven_active.get(market, False)):
                     self.auto_breakeven_active[m_upper] = True

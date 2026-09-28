@@ -103,10 +103,20 @@
   - 15분 캔들 기준 BTC 변동률 `recent_drop <= -0.4%`(`MACRO_SHOCK_RECENT_DROP_PCT`) 또는 1시간봉 `drop_1h <= -0.4%`(`MACRO_SHOCK_1H_DROP_PCT`) 감지 시 `MACRO_SHOCK` 플래그가 발동된다.
   - 쇼크 발동 시 해당 거래소 스코프에 30분(`StrategyPolicy.MACRO_SHOCK_COOLDOWN_SEC = 1800초`) 신규 BUY 쿨다운이 즉시 등록되며, 쿨다운 만료 시까지 모든 알트코인의 신규 BUY를 일시 차단(HOLD)하고 보유 포지션 관리만 수행한다.
   - 12시간 정배열 상태여도 최근 1시간 내 급락이 발생한 경우 `BULL_TREND` 판정을 즉시 취소하고 `RISK_OFF`로 격하하여, BTC 단기 급락 직후 기술적 반등(Dead-cat bounce) 구간에서의 휩소 진입을 원천 차단한다.
-- **AI 단독 자율 승인(AI Direct Entry) 오버라이드 가드레일 강화 정책**:
+- **AI 단독 자율 승인(AI Direct Entry) 오버라이드 가드레일 강화 정책 (옵션 A)**:
+  - **약세장(RISK_OFF / CRASH / BEAR_VOLATILE) 전면 차단 (옵션 A 정책)**: 비트코인이 약세/조정 국면일 때는 로컬 퀀트 룰이 관망(HOLD)으로 판정한 종목에 대해 AI가 단독으로 매수를 승인(AI Direct Entry)하는 경로를 원천 차단한다. AI 분석 후보 큐 등록 단계(`should_call_ai`)에서도 사전 스킵하여 불필요한 API 호출을 방지하고 약세장 역추세 뇌동 매매를 차단한다.
   - **당일 상승률 상한 캡**: 로컬 룰이 관망(HOLD)인 종목에 대해 당일 전일대비 변동률이 `+8.0%`(`AI_DIRECT_ENTRY_MAX_24H_GAIN_PCT`)를 초과한 종목은 AI 단독 자율 승인을 원천 불허한다.
   - **최소 승인 알파 점수**: AI 단독 승인을 위한 최소 점수를 `75점`(`AI_DIRECT_OVERRIDE_MIN_SCORE`) 이상으로 의무화한다.
   - **임의 스윙 손절 전환 금지**: 로컬 퀀트 룰이 스윙을 승인하지 않은 종목은 AI가 자율 승인하더라도 넓은 스윙 손절(-5.5%) 허용을 금지하고, 레짐별 타이트 손절선(박스권 -1.5%, 일반 -1.8%)을 강제 적용하여 단일 종목 대형 손실을 방지한다.
+- **손익비 정상화 및 트레일링 스탑 기준 상향 (+3.5%)**:
+  - `runtime_config` 및 `.env`의 `TRAILING_START_PCT`를 기존 2.0%에서 **3.5%**(`0.035`)로 상향 조정하여, 1%대 잔파동 흔들림에 조기 컷되는 현상을 방지하고 손익비 1:1.5 이상을 구조적으로 확보한다.
+  - 자동 본전 보장(`AUTO_BREAKEVEN_TRIGGER_PCT`) 트리거도 고점 **+3.0%** 도달 시 활성화되도록 일원화하여, 잔파동에서 섣부르게 털리지 않고 최소 +2.5%~+3.0% 이상의 추세를 실현하도록 보장한다.
+- **스윙(SWING) 포지션 단기 5분봉 AI 비상탈출 차단 가드**:
+  - `validate_emergency_exit_safety()`에 `is_swing` 검증 가드를 신설하여, 중기 추세 추종 스윙 종목이 5분봉 단기 잔파동/음봉으로 인해 30분 만에 패닉 셀링되는 결함을 원천 차단한다.
+  - 스윙 포지션은 정규 스윙 손절선(`-5.5%`) 또는 4시간봉 추세 이탈(`SWING_TREND_STOP`, 4H EMA20의 98.5% 미달) 시에만 청산되도록 전략 독립성을 엄격히 보장한다.
+- **약세장(RISK_OFF) 개미털기 유동성 스윕(SHAKEOUT_SWEEP) 필터 강화**:
+  - 비트코인 약세장(`RISK_OFF`) 시 스윕 진입 요구 알파 스코어를 기존 60점에서 **70점**(`StrategyPolicy.SHAKEOUT_SWEEP_ALPHA_THRESHOLD_RISK_OFF`)으로 상향한다.
+  - 약세장 투매 소화 거래량 기준을 직전 20봉 평균 대비 1.3배에서 **1.8배**(`StrategyPolicy.SHAKEOUT_SWEEP_VOLUME_RATIO_MIN_RISK_OFF`)로, 아랫꼬리 최소 비율을 50%에서 **60% 이상**(`StrategyPolicy.SHAKEOUT_SWEEP_MIN_LOWER_SHADOW_RATIO_RISK_OFF`)으로 강화하여 약세장에서의 추가 급락 트랩을 원천 차단한다.
 - **박스권/횡보(NORMAL/SIDEWAYS) 레짐 가변 타이트 손절 정책**:
   - BTC 24시간 변동률이 ±1.0% 이내인 박스권 장세에서는 알트코인의 기본 손절폭을 -2.2%에서 **-1.5%**(`STOP_LOSS_PCT_SIDEWAYS`)로 타이트하게 축소 적용한다.
   - 횡보 타임스탑 대기 시간을 기존 45분에서 **30분**(`TIME_STOP_SECONDS_SIDEWAYS`)으로 단축하여 불필요한 장기 노출 및 손실 심화를 조기에 차단한다.

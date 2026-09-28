@@ -2,6 +2,28 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## v9.21 (2026-09-28)
+
+- **약세장(RISK_OFF) AI 단독 자율 승인(AI Direct Entry) 전면 차단 (옵션 A 정책)**:
+  - `src/strategy_engine.py`:
+    - `is_ai_direct_entry_eligible()`: 비트코인 레짐이 `RISK_OFF`, `CRASH`, `BEAR_VOLATILE`일 때 로컬 퀀트 관망 룰 바이패스(AI Direct Entry)를 즉시 차단(`return False`).
+  - `src/trading_runtime.py`:
+    - `should_call_ai`: 약세장 국면에서는 AI Direct Entry 후보에 대한 AI 분석 호출을 사전 차단하여 API 쿼터 낭비 및 역추세 뇌동 매수 원천 차단.
+- **손익비 정상화 및 트레일링 스탑 기준 상향 (+3.5%)**:
+  - `src/runtime_config.py` & `.env`:
+    - `TRAILING_START_PCT`를 기존 2.0%에서 **3.5%**(`0.035`)로 상향 조정하여, 1%대 잔파동 흔들림에 의한 조기 털림 방지 및 손익비 1:1.5 이상 확보.
+  - `src/risk_manager.py`:
+    - `AUTO_BREAKEVEN_TRIGGER_PCT` fallback을 3.0%로 정합화하여 실질 추세 발생 시에만 본전 스탑 활성화.
+- **스윙(SWING) 포지션 단기 5분봉 AI 비상탈출 차단 가드**:
+  - `src/trading_runtime.py`:
+    - `validate_emergency_exit_safety()`: `is_swing` 검증 가드를 신설하여, 중기 추세 추종 스윙 종목이 5분봉 단기 잔파동/음봉으로 인해 30분 만에 패닉 셀링되는 오류를 원천 차단(`HOLD` 유지).
+    - 스윙 포지션은 정규 스윙 손절선(`-5.5%`) 또는 4시간봉 추세 이탈(`SWING_TREND_STOP`, 4H EMA20의 98.5% 미달) 시에만 청산되도록 전략 독립성을 엄격히 보장.
+- **약세장(RISK_OFF) 개미털기 유동성 스윕(SHAKEOUT_SWEEP) 필터 강화**:
+  - `src/strategy_engine.py`:
+    - 약세장 알파 임계치를 60점에서 **70점**(`StrategyPolicy.SHAKEOUT_SWEEP_ALPHA_THRESHOLD_RISK_OFF`)으로 상향.
+    - 약세장 투매 소화 거래량 기준을 직전 20봉 평균 대비 1.3배에서 **1.8배**(`StrategyPolicy.SHAKEOUT_SWEEP_VOLUME_RATIO_MIN_RISK_OFF`)로, 아랫꼬리 최소 비율을 50%에서 **60% 이상**(`StrategyPolicy.SHAKEOUT_SWEEP_MIN_LOWER_SHADOW_RATIO_RISK_OFF`)으로 강화.
+- `tests/test_option_a_trading_improvements.py`: 옵션 A 정책, 트레일링 기준, 스윙 비상탈출 차단, 약세장 스윕 강화 전용 단위 테스트 추가 (4개 테스트 100% PASS).
+
 ## v9.20 (2026-09-28)
 
 - **BTC 매크로 쇼크 필터(Macro Shock Filter) 구축 및 급락 직후 휩소 방지**:

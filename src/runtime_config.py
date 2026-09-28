@@ -99,7 +99,7 @@ def load_runtime_risk_settings() -> RuntimeRiskSettings:
     return RuntimeRiskSettings(
         btc_crash_threshold_pct=get_fraction_setting("BTC_CRASH_THRESHOLD_PCT", 0.015),
         max_daily_loss_pct=get_fraction_setting("MAX_DAILY_LOSS_PCT", 0.05),
-        trailing_start_pct=get_fraction_setting("TRAILING_START_PCT", 0.02),
+        trailing_start_pct=get_fraction_setting("TRAILING_START_PCT", 0.035),
         trailing_stop_pct=get_fraction_setting("TRAILING_STOP_PCT", 0.020),
     )
 
@@ -128,7 +128,7 @@ COMMON_CONFIG_SCHEMA: dict[str, ConfigFieldDef] = {
     "TRAILING_START_PCT": ConfigFieldDef(
         key="TRAILING_START_PCT",
         type_name="percent",
-        default=0.02,
+        default=0.035,
         min_val=0.005,
         max_val=0.20,
         category="risk",

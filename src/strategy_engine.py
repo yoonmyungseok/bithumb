@@ -134,8 +134,10 @@ class StrategyPolicy:
     SHAKEOUT_SWEEP_ENABLED: bool = True
     SHAKEOUT_SWEEP_LOOKBACK_BARS: int = 12            # 직전 전저점 탐색 구간 (최근 12봉 = 60분)
     SHAKEOUT_SWEEP_MIN_LOWER_SHADOW_RATIO: float = 0.50 # 캔들 전체 진폭 대비 아랫꼬리 최소 비율 (50% 이상)
+    SHAKEOUT_SWEEP_MIN_LOWER_SHADOW_RATIO_RISK_OFF: float = 0.60 # 약세장 아랫꼬리 최소 비율 (60% 이상)
     SHAKEOUT_SWEEP_MAX_UPPER_SHADOW_RATIO: float = 0.25 # 캔들 전체 진폭 대비 윗꼬리 최대 허용 비율 (25% 이하)
     SHAKEOUT_SWEEP_VOLUME_RATIO_MIN: float = 1.3       # 직전 20봉 평균 대비 최소 거래량 배수 (1.3배 이상)
+    SHAKEOUT_SWEEP_VOLUME_RATIO_MIN_RISK_OFF: float = 1.8 # 약세장 고래 매수세 최소 거래량 배수 (1.8배 이상)
     SHAKEOUT_SWEEP_RECLAIM_BUFFER_RATIO: float = 1.001  # 전저점 재탈환(Reclaim) 기준 (전저점의 100.1% 이상 종가/현재가 형성)
     SHAKEOUT_SWEEP_ALLOC_RATIO: float = 0.70           # 기본 비중 대비 배분 비율 (70%로 안전 진입)
     SHAKEOUT_SWEEP_MIN_STOP_PCT: float = 0.010         # 최소 손절폭 (-1.0%)
@@ -146,7 +148,7 @@ class StrategyPolicy:
     SHAKEOUT_SWEEP_TIME_STOP_SECONDS: int = 2700       # 45분 타임스탑 (V자 반등 지연 시 조기 탈출)
     SHAKEOUT_SWEEP_ALPHA_THRESHOLD_NORMAL: int = 55    # 정상장 알파 승인 점수 (55점)
     SHAKEOUT_SWEEP_ALPHA_THRESHOLD_BULL: int = 50      # 상승장 알파 승인 점수 (50점)
-    SHAKEOUT_SWEEP_ALPHA_THRESHOLD_RISK_OFF: int = 60  # 약세장 알파 승인 점수 (60점)
+    SHAKEOUT_SWEEP_ALPHA_THRESHOLD_RISK_OFF: int = 70  # 약세장 알파 승인 점수 (기존 60점에서 70점으로 상향)
     SHAKEOUT_SWEEP_RSI_MIN: float = 30.0               # 과매도 탈출 수용 RSI 하한 (30.0 이상)
     SHAKEOUT_SWEEP_PCT_B_MIN: float = 0.10             # 볼린저밴드 하단권 수용 %B 하한 (0.10 이상)
 
@@ -634,6 +636,11 @@ def is_ai_direct_entry_eligible(
     change_rate_24h: float = 0.0,
 ) -> bool:
     """AI 단독 진입은 누락 없는 고품질 알파 점수, 당일 변동률 캡(+8.0% 이내), 레짐 정책을 모두 충족할 때만 허용한다."""
+    regime_upper = str(btc_regime or "NORMAL").upper()
+    # [옵션 A 정책] 약세장(RISK_OFF, CRASH, BEAR_VOLATILE)에서는 로컬 퀀트 룰 바이패스(AI Direct Entry) 전면 차단
+    if regime_upper in ("RISK_OFF", "CRASH", "BEAR_VOLATILE"):
+        return False
+
     try:
         normalized_score = int(alpha_score)
     except (TypeError, ValueError):
@@ -741,6 +748,7 @@ def evaluate_shakeout_sweep_setup(
     rsi: float,
     pct_b: float,
     lookback_bars: int = StrategyPolicy.SHAKEOUT_SWEEP_LOOKBACK_BARS,
+    btc_regime: str = "NORMAL",
 ) -> tuple[bool, str, float, dict[str, Any]]:
     """
     5분봉 캔들과 지표를 기반으로 개미털기(유동성 스윕 & 지지선 재탈환) 패턴을 정량 평가한다.
@@ -759,6 +767,19 @@ def evaluate_shakeout_sweep_setup(
     candle_range = high_0 - low_0
     if candle_range <= 0:
         return False, "캔들 진폭 0", low_0, {}
+
+    regime_upper = str(btc_regime or "NORMAL").upper()
+    is_risk_off = regime_upper in ("RISK_OFF", "CRASH", "BEAR_VOLATILE")
+    required_lower_shadow = (
+        StrategyPolicy.SHAKEOUT_SWEEP_MIN_LOWER_SHADOW_RATIO_RISK_OFF
+        if is_risk_off
+        else StrategyPolicy.SHAKEOUT_SWEEP_MIN_LOWER_SHADOW_RATIO
+    )
+    required_volume_mult = (
+        StrategyPolicy.SHAKEOUT_SWEEP_VOLUME_RATIO_MIN_RISK_OFF
+        if is_risk_off
+        else StrategyPolicy.SHAKEOUT_SWEEP_VOLUME_RATIO_MIN
+    )
 
     # 1. 직전 N봉 최저점 (직전 지지선)
     prev_candles = candles[1:lookback_bars + 1]
@@ -780,14 +801,14 @@ def evaluate_shakeout_sweep_setup(
     lower_shadow_ratio = (lower_shadow / candle_range) if candle_range > 0 else 0.0
     upper_shadow_ratio = (upper_shadow / candle_range) if candle_range > 0 else 0.0
 
-    lower_shadow_passed = lower_shadow_ratio >= StrategyPolicy.SHAKEOUT_SWEEP_MIN_LOWER_SHADOW_RATIO
+    lower_shadow_passed = lower_shadow_ratio >= required_lower_shadow
     upper_shadow_passed = upper_shadow_ratio <= StrategyPolicy.SHAKEOUT_SWEEP_MAX_UPPER_SHADOW_RATIO
 
     # 5. 투매 소화 거래량 (직전 20봉 평균 대비)
     prev_volumes = [float(c.get("candle_acc_trade_volume", 0.0) or 0.0) for c in candles[1:21]]
     avg_vol = (sum(prev_volumes) / len(prev_volumes)) if prev_volumes else 0.0
     vol_ratio = (vol_0 / avg_vol) if avg_vol > 0 else 0.0
-    volume_passed = avg_vol > 0 and vol_0 >= avg_vol * StrategyPolicy.SHAKEOUT_SWEEP_VOLUME_RATIO_MIN
+    volume_passed = avg_vol > 0 and vol_0 >= avg_vol * required_volume_mult
 
     # 6. 보조지표 과매도 탈출선 검증
     rsi_passed = rsi >= StrategyPolicy.SHAKEOUT_SWEEP_RSI_MIN
@@ -806,9 +827,9 @@ def evaluate_shakeout_sweep_setup(
     reason = (
         f"스윕이탈={'통과' if sweep_occurred else '미달'}(저점 {low_0:,.1f} < 전저 {prev_low:,.1f}), "
         f"재탈환={'통과' if reclaim_passed else '미달'}(종가 {effective_close:,.1f} >= 기준 {reclaim_threshold:,.1f}), "
-        f"아랫꼬리={lower_shadow_ratio:.1%}({'통과' if lower_shadow_passed else '미달'}), "
+        f"아랫꼬리={lower_shadow_ratio:.1%}({'통과' if lower_shadow_passed else '미달'}|기준 {required_lower_shadow:.0%}), "
         f"윗꼬리={upper_shadow_ratio:.1%}({'통과' if upper_shadow_passed else '미달'}), "
-        f"거래량배수={vol_ratio:.2f}배({'통과' if volume_passed else '미달'}), "
+        f"거래량배수={vol_ratio:.2f}배({'통과' if volume_passed else '미달'}|기준 {required_volume_mult:.2f}배), "
         f"RSI={rsi:.1f}({'통과' if rsi_passed else '미달'})"
     )
 
@@ -1823,6 +1844,7 @@ def entry_signal(
             current=current,
             rsi=rsi,
             pct_b=pct_b,
+            btc_regime=btc_regime,
         )
 
     if normalized_entry_type == "MOMENTUM_BREAKOUT":
