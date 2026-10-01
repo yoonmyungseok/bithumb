@@ -213,8 +213,8 @@ class AIAuthorityTests(unittest.TestCase):
             candles_1h=[{"trade_price": 1000.0} for _ in range(20)],
             candles_4h=[{"trade_price": 1000.0} for _ in range(25)],
             orderbook={"orderbook_units": []},
-            btc_regime="RISK_OFF",
-            btc_status_msg="약세장",
+            btc_regime="NORMAL",
+            btc_status_msg="정상장",
             is_btc_crashing=False,
             is_cooldown=False,
             is_extreme_fear=False,
@@ -228,6 +228,7 @@ class AIAuthorityTests(unittest.TestCase):
 
         with patch("trading_runtime.select_completed_candles", side_effect=lambda c, **kw: c), \
              patch("trading_runtime.entry_signal") as mock_entry_rules, \
+             patch("trading_runtime.is_ai_direct_entry_eligible", return_value=True), \
              patch.object(StrategyPolicy, "ENABLE_AI_DIRECT_ENTRY", True), \
              patch.dict(os.environ, {"ENABLE_AI_DIRECT_ENTRY": "true"}):
             mock_entry_rules.return_value = {
@@ -237,7 +238,7 @@ class AIAuthorityTests(unittest.TestCase):
                 "entry_price": 1000.0,
                 "target_price": 1035.0,
                 "stop_loss": 980.0,
-                "pct_b": 0.75,  # 0.65 한도 초과
+                "pct_b": 0.85,  # 0.80 한도 초과
             }
 
             self.mock_ctx.trade_memory.is_reentry_allowed.return_value = (True, "재진입 허용")
@@ -247,7 +248,7 @@ class AIAuthorityTests(unittest.TestCase):
             # When
             res = self.runtime.process_entry_gating(inputs)
 
-            # Then: %B 과열(0.75 > 0.65)로 인해 HOLD로 차단되어야 함
+            # Then: %B 과열(0.85 > 0.80)로 인해 HOLD로 차단되어야 함
             self.assertEqual(res.action, "HOLD")
             self.assertIn("AI 단독 매수 상투/과열 차단", res.reason)
 
@@ -497,6 +498,7 @@ class AIAuthorityTests(unittest.TestCase):
         self.mock_ctx.trailing_tracker.get_entry_time.return_value = entry_ts
         self.mock_ctx.trailing_tracker.acquire_exit_lock.return_value = True
         self.mock_ctx.trailing_tracker.get_dynamic_stop_loss.return_value = None
+        self.mock_ctx.trailing_tracker.is_swing_position.return_value = False
 
         # When
 

@@ -1391,8 +1391,9 @@ class GeminiAnalyzer:
                 disp_overheat_limit = 103.5 if btc_regime == "RISK_OFF" else 104.5
                 if disparity_ma20 > disp_overheat_limit:
                     overheat_reasons.append(f"MA20이격과열({disparity_ma20:.1f}%>{disp_overheat_limit:.1f}%)")
-                if float(trade_strength.get("trade_power_pct", 100.0)) > 350.0:
-                    overheat_reasons.append("체결강도비정상과열(>350%)")
+                tp_pct = float(trade_strength.get("trade_power_pct", 100.0))
+                if normalized_candidate_type != "MOMENTUM_BREAKOUT" and tp_pct > 2500.0:
+                    overheat_reasons.append(f"체결강도비정상과열({tp_pct:.0f}%>2500%)")
                 if overheat_reasons:
                     action, alloc_p = "HOLD", 0.0
                     reason_t = f"[과열 가드레일 작동: HOLD 강제 전환 ({', '.join(overheat_reasons)})] {reason_t}"

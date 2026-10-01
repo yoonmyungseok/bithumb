@@ -404,10 +404,9 @@ class StrategyPolicy:
         return cls.MTF_EMA20_RATIO_NORMAL
 
 
-    # 4-0. AI 단독 자율 승인 (AI Direct Entry) 활성화
-    # 로컬 퀀트 관망(allow_buy=False) 상태여도 품질 게이트(알파 80점 이상, 당일 상승률 +8.0% 이내, 음봉 폭락 아님)를
-    # 통과한 유망 종목에 대해 Gemini AI의 자율 매수 승인을 허용하며, 리스크 방어를 위해 초기 비중을 50% 축소한다.
-    ENABLE_AI_DIRECT_ENTRY: bool = True
+    # 4-0. AI 단독 자율 승인 (AI Direct Entry) 안전 비활성화
+    # 로컬 퀀트 관망(allow_buy=False) 상태의 힘 빠진 종목을 AI가 뇌피셜 매수하는 행위를 원천 차단하기 위해 기본 False 적용.
+    ENABLE_AI_DIRECT_ENTRY: bool = False
     AI_DIRECT_ENTRY_ALLOC_RATIO: float = 0.50
     AI_DIRECT_ENTRY_MIN_ALPHA: int = 50  # 로컬 관망 종목이 AI 분석 대상이 되기 위한 최소 싹수 점수 (기본 50점)
     AI_DIRECT_OVERRIDE_MIN_SCORE: int = 75  # AI가 로컬 룰을 뒤집고 단독 승인하기 위한 최소 AI 스코어 (75점)

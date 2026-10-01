@@ -377,7 +377,7 @@ COMMON_CONFIG_SCHEMA: dict[str, ConfigFieldDef] = {
     "ENABLE_AI_DIRECT_ENTRY": ConfigFieldDef(
         key="ENABLE_AI_DIRECT_ENTRY",
         type_name="bool",
-        default=True,
+        default=False,
         category="ai",
         label="AI 단독 자율 진입 허용",
         description="로컬 퀀트 규칙이 관망이더라도, AI가 차트·수급 심층 분석 후 매수를 승인하면 단독 진입합니다.",

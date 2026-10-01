@@ -335,16 +335,16 @@ class MarketScreener:
                         else "EXTENDED"
                     )
 
-                    # 상승 초입(+1.0% ~ +6.0%, RS 주도주는 최대 12.0%) 종목에 우대 가중치를 부여
+                    # 상승 초입(+1.0% ~ +6.0%, RS 주도주는 최대 15.0%) 종목에 우대 가중치를 부여
                     is_rs_leader_flag = relative_strength >= getattr(StrategyPolicy, "RS_LEADER_MIN_RS", 0.020)
-                    if 0.010 <= change_rate <= 0.060 or (is_rs_leader_flag and change_rate <= 0.120):
-                        momentum_multiplier = 2.0   # 상승 초입 골든존 최고 가중치
+                    if 0.010 <= change_rate <= 0.060 or (is_rs_leader_flag and change_rate <= 0.150):
+                        momentum_multiplier = 2.0   # 상승 초입 및 RS 주도주 최고 가중치
                     elif eff_min_change_rate <= change_rate < 0.015:
-                        momentum_multiplier = 1.3   # 바닥 탈출 초기 구간
-                    elif 0.060 < change_rate <= 0.090:
-                        momentum_multiplier = 1.0   # 진행 중인 상승세
+                        momentum_multiplier = 1.2   # 바닥 탈출 초기 구간
+                    elif 0.060 < change_rate <= 0.120:
+                        momentum_multiplier = 1.6   # 강력한 진행 중 상승세 우대
                     else:
-                        momentum_multiplier = 0.5   # 과열 급등 종목 (고점 피로도 감점)
+                        momentum_multiplier = 0.8   # 과열 급등 종목 (피로도 감점)
 
                     # 완충 세션 중 리셋 직후 비이성적 급등(+10% 이상)은 개장 펌핑 피로도로 추가 감점 및 EXTENDED 강화
                     if in_grace and change_rate >= 0.100:
@@ -354,8 +354,8 @@ class MarketScreener:
                     rs_bonus = max(0.0, relative_strength * 60.0)
                     if is_bull_trend and relative_strength < -0.010:
                         rs_bonus -= 25.0  # 상승장 BTC 대비 역행 약세 알트코인 감점 (흡성대법 손절 방어)
-                    # 거래대금의 로그 스케일과 초입 모멘텀 가중치를 결합
-                    effective_rate = min(change_rate, 0.08)  # 지나치게 높은 상승률이 점수를 과도하게 왜곡하지 않도록 상한 8% 캡 적용
+                    # 거래대금의 로그 스케일과 초입 모멘텀 가중치를 결합 (주도주 반영 위해 15%까지 수용)
+                    effective_rate = min(change_rate, 0.15)
                     score = ((effective_rate * 100.0) * momentum_multiplier * math.log10(max(1.0, acc_price_24h))) + rs_bonus
                     ticker_info["score"] = score
                     ticker_info["candidate_type"] = "MOMENTUM_BREAKOUT" if is_momentum_leader else "CONFIRMED"

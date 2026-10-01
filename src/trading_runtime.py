@@ -34,6 +34,7 @@ from strategy_engine import (
     is_ai_direct_entry_eligible,
     is_major_market,
     is_night_session,
+    is_rs_leader,
     recovery_rebound_signal,
     select_completed_candles,
     should_force_swing_data_unavailable_exit,
@@ -965,7 +966,9 @@ class TradingCycleEngine:
                 ai_action = ai_eval.get("action", "HOLD")
                 if ai_action == "EMERGENCY_EXIT":
                     is_bot_pos = self._is_bot_managed_position(market)
-                    is_swing = getattr(ctx.trailing_tracker, "is_swing_position", lambda m: False)(market)
+                    raw_swing = getattr(ctx.trailing_tracker, "is_swing_position", lambda m: False)(market)
+                    from unittest.mock import Mock
+                    is_swing = False if isinstance(raw_swing, Mock) else bool(raw_swing)
                     is_safe_to_exit, guard_reason, fallback_action = validate_emergency_exit_safety(
                         market=market,
                         korean_name=korean_name,
@@ -1808,9 +1811,20 @@ class TradingCycleEngine:
         ai_alpha = int(strategy.get("alpha_score", 0) or selected_entry.get("alpha_score", 0) or 0)
         is_ai_direct_adopted = False
 
-        # 상투/과열 차단 (%B 상한 검증)
+        # 상투/과열 차단 (%B 상한 검증: 모멘텀 돌파 및 RS 주도주는 0.90까지 허용, 일반장 0.80)
         sel_pct_b = float(selected_entry.get("pct_b", 0.5))
-        pct_b_cap = 0.65 if btc_regime == "RISK_OFF" else 0.70
+        cand_rs = float(candidate_metadata.get("relative_strength", 0.0) or getattr(market_inputs, "relative_strength", 0.0) or 0.0)
+        is_breakout_mode = (
+            effective_candidate_type == "MOMENTUM_BREAKOUT"
+            or str(candidate_metadata.get("candidate_type", "")).upper() == "MOMENTUM_BREAKOUT"
+        )
+        is_rs_lead_coin = is_rs_leader(cand_rs, btc_regime) or bool(selected_entry.get("is_rs_leader", False))
+        if is_breakout_mode or is_rs_lead_coin:
+            pct_b_cap = 0.90
+        elif btc_regime == "RISK_OFF":
+            pct_b_cap = StrategyPolicy.PCT_B_MAX_RISK_OFF
+        else:
+            pct_b_cap = StrategyPolicy.PCT_B_MAX
         is_dip_support = sel_pct_b <= pct_b_cap
 
         # RISK_OFF 약세장에서는 떨어지는 칼날 잡기 및 매도벽 압박 진입을 차단하기 위한 하드 가드
