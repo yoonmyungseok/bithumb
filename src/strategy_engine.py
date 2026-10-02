@@ -813,6 +813,13 @@ def evaluate_shakeout_sweep_setup(
     rsi_passed = rsi >= StrategyPolicy.SHAKEOUT_SWEEP_RSI_MIN
     pct_b_passed = pct_b >= StrategyPolicy.SHAKEOUT_SWEEP_PCT_B_MIN
 
+    # 7. 하락 진행 중 칼날 차단 및 반등 턴어라운드(기미) 검증
+    # 음봉 몸통이 큰 채로 밀리거나 저점 부근에 머무는 하락 칼날을 배제하고 양봉 또는 확실한 망치형 반등 확인
+    body_size = abs(close_0 - open_0)
+    is_bullish_or_hammer = (close_0 >= open_0) or (lower_shadow >= body_size * 1.0)
+    is_recovering = effective_close >= ((high_0 + low_0) / 2.0) or (current >= close_0)
+    turnaround_passed = is_bullish_or_hammer and is_recovering
+
     passed = (
         sweep_occurred
         and reclaim_passed
@@ -821,11 +828,13 @@ def evaluate_shakeout_sweep_setup(
         and volume_passed
         and rsi_passed
         and pct_b_passed
+        and turnaround_passed
     )
 
     reason = (
         f"스윕이탈={'통과' if sweep_occurred else '미달'}(저점 {low_0:,.1f} < 전저 {prev_low:,.1f}), "
         f"재탈환={'통과' if reclaim_passed else '미달'}(종가 {effective_close:,.1f} >= 기준 {reclaim_threshold:,.1f}), "
+        f"반등기미={'통과' if turnaround_passed else '미달'}, "
         f"아랫꼬리={lower_shadow_ratio:.1%}({'통과' if lower_shadow_passed else '미달'}|기준 {required_lower_shadow:.0%}), "
         f"윗꼬리={upper_shadow_ratio:.1%}({'통과' if upper_shadow_passed else '미달'}), "
         f"거래량배수={vol_ratio:.2f}배({'통과' if volume_passed else '미달'}|기준 {required_volume_mult:.2f}배), "
@@ -835,6 +844,7 @@ def evaluate_shakeout_sweep_setup(
     details = {
         "sweep_occurred": sweep_occurred,
         "reclaim_passed": reclaim_passed,
+        "turnaround_passed": turnaround_passed,
         "prev_low": prev_low,
         "sweep_low": low_0,
         "lower_shadow_ratio": round(lower_shadow_ratio, 3),

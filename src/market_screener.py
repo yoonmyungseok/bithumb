@@ -101,7 +101,7 @@ class MarketScreener:
         bithumb_api: BithumbAPI,
         min_trade_value_krw: float = 1_000_000_000.0,
         min_change_rate: float = 0.005,
-        max_change_rate: float = 0.12,
+        max_change_rate: float = 0.30,
         max_spread_pct: float = 0.0035,
         enable_early_breakout: bool = False,
         early_breakout_min_change_rate: float = 0.003,
@@ -265,6 +265,14 @@ class MarketScreener:
             btc_ticker = next((t for t in all_tickers if t.get("market") == "KRW-BTC"), None)
             btc_change_rate = _safe_float(btc_ticker.get("signed_change_rate", btc_ticker.get("change_rate", 0.0))) if btc_ticker else 0.0
 
+            # 24시간 거래대금 기준 순위 맵 (수급 집중 주도주 우대 & 소외주 감점)
+            sorted_by_val = sorted(
+                all_tickers,
+                key=lambda x: _safe_float(x.get("acc_trade_price_24h", x.get("acc_trade_value_24h", 0.0))),
+                reverse=True,
+            )
+            val_rank_map: dict[str, int] = {t.get("market", ""): idx + 1 for idx, t in enumerate(sorted_by_val) if t.get("market")}
+
             qualified_candidates: list[dict[str, Any]] = []
             early_breakout_candidates: list[dict[str, Any]] = []
             shakeout_candidates: list[dict[str, Any]] = []
@@ -281,7 +289,10 @@ class MarketScreener:
                 trade_price = _safe_float(t.get("trade_price"))
                 change_rate = _safe_float(t.get("signed_change_rate", t.get("change_rate")))
                 acc_price_24h = _safe_float(t.get("acc_trade_price_24h", t.get("acc_trade_value_24h", 0.0)))
+                low_price = _safe_float(t.get("low_price", trade_price), trade_price)
+                high_price = _safe_float(t.get("high_price", trade_price), trade_price)
                 relative_strength = change_rate - btc_change_rate
+                val_rank = val_rank_map.get(market, 999)
 
                 if not market or trade_price <= 0:
                     continue
@@ -295,6 +306,7 @@ class MarketScreener:
                     "change_rate": change_rate,
                     "acc_trade_price_24h": acc_price_24h,
                     "relative_strength": relative_strength,
+                    "val_rank": val_rank,
                 }
 
                 if market in held_set:
@@ -309,14 +321,30 @@ class MarketScreener:
                     if not (is_bull_trend and market in ("KRW-BTC", "KRW-ETH", "KRW-SOL")):
                         continue
 
-
                 if trade_price < StrategyPolicy.MIN_ASSET_PRICE_KRW:
                     continue
 
                 if acc_price_24h < min_trade_val:
                     continue
 
-                # 확인형 후보는 변동률 조건을 검사한다 (리셋 완충 세션 반영).
+                # 시장 전체 수급 순위(Liquidity Power) 및 절대 규모 가중치 계산
+                if val_rank <= 3:
+                    liquidity_rank_bonus = 80.0   # 시장 거래대금 TOP 3 초대형 주도주
+                    val_scale_mult = 1.30
+                elif val_rank <= 10:
+                    liquidity_rank_bonus = 50.0   # 시장 거래대금 TOP 10 주도주
+                    val_scale_mult = 1.15
+                elif val_rank <= 20:
+                    liquidity_rank_bonus = 25.0
+                    val_scale_mult = 1.05
+                elif val_rank <= 40:
+                    liquidity_rank_bonus = 10.0
+                    val_scale_mult = 1.00
+                else:
+                    liquidity_rank_bonus = -20.0  # 거래대금 하위 소외 코인 감점
+                    val_scale_mult = 0.85
+
+                # 확인형 후보는 변동률 조건을 검사한다 (리셋 완충 세션 반영, 최대 30%까지 수용).
                 if eff_min_change_rate <= change_rate <= self.max_change_rate:
                     # 모멘텀 주도주는 당일 변동률 3.0% 이상 및 상대강도(RS) 1.5% 이상인 주도주로 엄선하여 페이크 돌파 방어
                     is_momentum_leader = (
@@ -327,7 +355,7 @@ class MarketScreener:
                     early_max_change_rate = (
                         StrategyPolicy.get_momentum_early_max_change_rate(relative_strength)
                         if hasattr(StrategyPolicy, "get_momentum_early_max_change_rate")
-                        else getattr(StrategyPolicy, "MOMENTUM_EARLY_MAX_CHANGE_RATE", 0.060)
+                        else getattr(StrategyPolicy, "MOMENTUM_EARLY_MAX_CHANGE_RATE", 0.080)
                     )
                     momentum_phase = (
                         "EARLY"
@@ -335,16 +363,20 @@ class MarketScreener:
                         else "EXTENDED"
                     )
 
-                    # 상승 초입(+1.0% ~ +6.0%, RS 주도주는 최대 15.0%) 종목에 우대 가중치를 부여
+                    # 상승 초입(+1.0% ~ +6.0%) 및 강력한 랠리 주도주(+6.0% ~ +25.0%)에 우대 가중치 부여
                     is_rs_leader_flag = relative_strength >= getattr(StrategyPolicy, "RS_LEADER_MIN_RS", 0.020)
-                    if 0.010 <= change_rate <= 0.060 or (is_rs_leader_flag and change_rate <= 0.150):
-                        momentum_multiplier = 2.0   # 상승 초입 및 RS 주도주 최고 가중치
-                    elif eff_min_change_rate <= change_rate < 0.015:
+                    if 0.010 <= change_rate <= 0.060:
+                        momentum_multiplier = 2.0   # 상승 초입 최고 가중치
+                    elif 0.060 < change_rate <= 0.150 or (is_rs_leader_flag and change_rate <= 0.200):
+                        momentum_multiplier = 2.2   # 강력한 거래대금 폭발 랠리 주도주 최고 우대
+                    elif 0.150 < change_rate <= 0.250:
+                        momentum_multiplier = 1.8   # 고변동 랠리 주도주 우대
+                    elif 0.250 < change_rate <= 0.300:
+                        momentum_multiplier = 1.3   # 과열 주의 구간
+                    elif eff_min_change_rate <= change_rate < 0.010:
                         momentum_multiplier = 1.2   # 바닥 탈출 초기 구간
-                    elif 0.060 < change_rate <= 0.120:
-                        momentum_multiplier = 1.6   # 강력한 진행 중 상승세 우대
                     else:
-                        momentum_multiplier = 0.8   # 과열 급등 종목 (피로도 감점)
+                        momentum_multiplier = 0.6   # 30% 초과 초과열 상투 종목 (피로도 감점)
 
                     # 완충 세션 중 리셋 직후 비이성적 급등(+10% 이상)은 개장 펌핑 피로도로 추가 감점 및 EXTENDED 강화
                     if in_grace and change_rate >= 0.100:
@@ -354,13 +386,14 @@ class MarketScreener:
                     rs_bonus = max(0.0, relative_strength * 60.0)
                     if is_bull_trend and relative_strength < -0.010:
                         rs_bonus -= 25.0  # 상승장 BTC 대비 역행 약세 알트코인 감점 (흡성대법 손절 방어)
-                    # 거래대금의 로그 스케일과 초입 모멘텀 가중치를 결합 (주도주 반영 위해 15%까지 수용)
-                    effective_rate = min(change_rate, 0.15)
-                    score = ((effective_rate * 100.0) * momentum_multiplier * math.log10(max(1.0, acc_price_24h))) + rs_bonus
+
+                    # 거래대금의 로그 스케일과 수급 순위/배수를 결합 (주도주 반영 위해 30%까지 수용)
+                    effective_rate = min(change_rate, 0.30)
+                    base_score = ((effective_rate * 100.0) * momentum_multiplier * math.log10(max(1.0, acc_price_24h))) * val_scale_mult
+                    score = base_score + rs_bonus + liquidity_rank_bonus
                     ticker_info["score"] = score
                     ticker_info["candidate_type"] = "MOMENTUM_BREAKOUT" if is_momentum_leader else "CONFIRMED"
                     # 주문 엔진과 대시보드가 같은 진입 단계로 판단하도록 후보 메타데이터에만 추가한다.
-                    # 완충 세션 중 개장 펌핑(+10% 이상)은 추격 매수 차단을 위해 EXTENDED 단계를 보존한다.
                     ticker_info["momentum_phase"] = (
                         momentum_phase
                         if (is_momentum_leader or (in_grace and change_rate >= 0.100))
@@ -377,7 +410,7 @@ class MarketScreener:
                     and relative_strength >= StrategyPolicy.MOMENTUM_BREAKOUT_RS_MIN
                 ):
                     # 상대강도와 거래대금은 이미 위에서 검증했으므로, 초입 변동과 유동성을 함께 점수화한다.
-                    early_score = (change_rate * 100.0 * math.log10(max(1.0, acc_price_24h))) + max(0.0, relative_strength * 80.0)
+                    early_score = (change_rate * 100.0 * math.log10(max(1.0, acc_price_24h)) * val_scale_mult) + max(0.0, relative_strength * 80.0) + (liquidity_rank_bonus * 0.5)
                     ticker_info["score"] = early_score
                     ticker_info["candidate_type"] = "MOMENTUM_BREAKOUT"
                     ticker_info["momentum_phase"] = "EARLY"
@@ -385,22 +418,36 @@ class MarketScreener:
                     early_breakout_candidates.append(ticker_info)
                     continue
 
-                # 개미털기 역이용(SHAKEOUT_SWEEP) 후보: 당일 -5.0% ~ +0.5% 내외에서 급락 후 저점 반등 셋업 탐색
+                # 개미털기 역이용(SHAKEOUT_SWEEP) 후보: 당일 음봉(-5.0% ~ +0.5%) 중 저점 지지 후 반등 기미가 있는 종목 엄선
+                # [안전 원칙]: 하락 진행 중인 칼날(신저가 갱신 등)은 원천 배제하고, 저점 대비 확실한 반등 탄력(+1.2% 이상)이 확인된 종목만 선별
                 is_sweep_enabled = (
                     StrategyPolicy.is_shakeout_sweep_enabled()
                     if hasattr(StrategyPolicy, "is_shakeout_sweep_enabled")
                     else True
                 )
+                bounce_from_low = ((trade_price - low_price) / low_price) if low_price > 0 else 0.0
+                drop_from_high = ((trade_price - high_price) / high_price) if high_price > 0 else 0.0
+
                 if (
                     is_sweep_enabled
                     and -0.050 <= change_rate < eff_min_change_rate
                     and relative_strength >= -0.030
+                    and acc_price_24h >= 3_000_000_000.0  # 거래대금 최소 30억 이상 (수급 없는 죽은 종목 배제)
+                    and bounce_from_low >= 0.012          # 저점 대비 최소 +1.2% 이상 반등하여 바닥 지지 및 상승 기미 확인
+                    and drop_from_high >= -0.150         # 당일 고점 대비 -15% 초과 폭락 칼날 종목 배제
                 ):
-                    sweep_score = (math.log10(max(1.0, acc_price_24h)) * 10.0) + max(0.0, (relative_strength + 0.030) * 50.0)
+                    # 저점 대비 반등 탄력(bounce_from_low)과 수급 순위를 반영하여 유망 역매수 후보 점수화
+                    sweep_score = (
+                        (math.log10(max(1.0, acc_price_24h)) * 10.0)
+                        + (bounce_from_low * 500.0)
+                        + max(0.0, (relative_strength + 0.030) * 50.0)
+                        + (liquidity_rank_bonus * 0.5)
+                    )
                     ticker_info["score"] = sweep_score
                     ticker_info["candidate_type"] = "SHAKEOUT_SWEEP"
                     ticker_info["momentum_phase"] = "SHAKEOUT_SWEEP"
                     ticker_info["is_held"] = False
+                    ticker_info["bounce_from_low"] = bounce_from_low
                     shakeout_candidates.append(ticker_info)
 
             qualified_candidates.sort(key=lambda x: x.get("score", 0.0), reverse=True)

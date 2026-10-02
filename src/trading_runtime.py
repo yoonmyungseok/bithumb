@@ -495,7 +495,7 @@ class TradingCycleEngine:
         is_auto_mode = raw_markets.upper() == "AUTO"
         min_trade_val = float(os.getenv("MIN_TRADE_VALUE", "1000000000"))
         min_change = float(os.getenv("MIN_CHANGE_RATE", "0.005"))
-        max_change = float(os.getenv("MAX_CHANGE_RATE", "0.25"))
+        max_change = float(os.getenv("MAX_CHANGE_RATE", "0.30"))
         risk_settings = load_runtime_risk_settings()
         btc_crash_pct = risk_settings.btc_crash_threshold_pct
 

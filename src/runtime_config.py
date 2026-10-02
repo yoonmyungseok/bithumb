@@ -227,7 +227,7 @@ COMMON_CONFIG_SCHEMA: dict[str, ConfigFieldDef] = {
     "MAX_CHANGE_RATE": ConfigFieldDef(
         key="MAX_CHANGE_RATE",
         type_name="percent",
-        default=0.25,
+        default=0.30,
         min_val=0.05,
         max_val=1.00,
         category="screening",
