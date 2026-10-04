@@ -3,6 +3,8 @@
 import os
 import sqlite3
 import sys
+import tempfile
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -55,6 +57,7 @@ class DbConcurrencyResilienceTests(unittest.TestCase):
         manager._local.conn = None
         manager._conns_lock = MagicMock()
         manager._all_conns = set()
+        manager._conn_owners = {}
 
         real_conn = MagicMock()
         real_conn.execute.return_value.fetchone.return_value = ("wal",)
@@ -71,6 +74,103 @@ class DbConcurrencyResilienceTests(unittest.TestCase):
             conn = manager._get_connection()
             self.assertEqual(conn, real_conn)
             self.assertEqual(mock_connect.call_count, 4)
+
+    def test_finished_request_threads_do_not_accumulate_connections(self):
+        """반복 요청 스레드 종료 뒤 연결 수가 제한되고 커밋된 데이터가 보존된다."""
+        with tempfile.TemporaryDirectory() as folder:
+            manager = db_manager.DatabaseManager(os.path.join(folder, "trading.db"))
+            errors = []
+            try:
+                with manager._get_connection() as conn:
+                    conn.execute("CREATE TABLE probe (value INTEGER)")
+
+                def request():
+                    try:
+                        with manager._get_connection() as conn:
+                            conn.execute("INSERT INTO probe VALUES (1)")
+                    except Exception as exc:
+                        errors.append(exc)
+
+                for _ in range(150):
+                    worker = threading.Thread(target=request)
+                    worker.start()
+                    worker.join(timeout=5)
+                    self.assertFalse(worker.is_alive())
+                    self.assertLessEqual(len(manager._all_conns), 2)
+
+                conn = manager._get_connection()
+                self.assertEqual(errors, [])
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM probe").fetchone()[0], 150)
+                self.assertEqual(len(manager._all_conns), 1)
+                self.assertEqual(len(manager._conn_owners), 1)
+            finally:
+                manager.dispose()
+            self.assertEqual(manager._all_conns, set())
+            self.assertEqual(manager._conn_owners, {})
+
+    def test_live_thread_connection_survives_cleanup(self):
+        """다른 요청이 DB를 조회해도 실행 중인 스레드의 연결은 닫지 않는다."""
+        with tempfile.TemporaryDirectory() as folder:
+            manager = db_manager.DatabaseManager(os.path.join(folder, "trading.db"))
+            ready = threading.Event()
+            resume = threading.Event()
+            connections = []
+            errors = []
+
+            def request():
+                try:
+                    conn = manager._get_connection()
+                    connections.append(conn)
+                    ready.set()
+                    if not resume.wait(timeout=5):
+                        raise TimeoutError("검사 재개 신호 대기 시간 초과")
+                    conn.execute("SELECT 1").fetchone()
+                except Exception as exc:
+                    errors.append(exc)
+
+            worker = threading.Thread(target=request)
+            worker.start()
+            try:
+                self.assertTrue(ready.wait(timeout=5))
+                manager._get_connection()
+                self.assertIn(connections[0], manager._all_conns)
+                resume.set()
+                worker.join(timeout=5)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(errors, [])
+                manager._get_connection()
+                self.assertNotIn(connections[0], manager._all_conns)
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    connections[0].execute("SELECT 1")
+            finally:
+                resume.set()
+                worker.join(timeout=5)
+                manager.dispose()
+
+    def test_connection_cleanup_preserves_exchange_isolation(self):
+        """한 거래소의 연결 회수는 다른 거래소의 연결과 데이터에 영향을 주지 않는다."""
+        with tempfile.TemporaryDirectory() as folder:
+            managers = [
+                db_manager.DatabaseManager(os.path.join(folder, scope, "trading.db"))
+                for scope in ("bithumb", "upbit")
+            ]
+            try:
+                for value, manager in enumerate(managers):
+                    with manager._get_connection() as conn:
+                        conn.execute("CREATE TABLE probe (value INTEGER)")
+                        conn.execute("INSERT INTO probe VALUES (?)", (value,))
+                worker = threading.Thread(target=managers[0]._get_connection)
+                worker.start()
+                worker.join(timeout=5)
+                self.assertFalse(worker.is_alive())
+                managers[0]._get_connection()
+                for value, manager in enumerate(managers):
+                    conn = manager._get_connection()
+                    self.assertEqual(conn.execute("SELECT value FROM probe").fetchone()[0], value)
+                    self.assertEqual(len(manager._all_conns), 1)
+            finally:
+                for manager in managers:
+                    manager.dispose()
 
     def test_dispose_all_db_managers_and_reset_cache(self):
         """dispose_all_db_managers 및 reset_db_manager_cache가 모든 등록된 DB 매니저를 정리한다."""

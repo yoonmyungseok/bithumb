@@ -55,6 +55,7 @@ class DatabaseManager:
         self._local = threading.local()
         self._conns_lock = threading.Lock()
         self._all_conns: set[sqlite3.Connection] = set()
+        self._conn_owners: dict[sqlite3.Connection, threading.Thread] = {}
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._init_db()
 
@@ -63,6 +64,7 @@ class DatabaseManager:
         with self._conns_lock:
             conns = list(self._all_conns)
             self._all_conns.clear()
+            self._conn_owners.clear()
         for conn in conns:
             try:
                 conn.close()
@@ -83,8 +85,27 @@ class DatabaseManager:
         except Exception as exc:
             logger.debug("DatabaseManager dispose skipped for %s: %s", self.db_path, exc)
 
+    def _close_finished_thread_connections(self) -> None:
+        """종료된 요청 스레드의 연결을 회수해 DB·WAL 파일 핸들 누적을 막는다."""
+        with self._conns_lock:
+            for conn, owner in list(self._conn_owners.items()):
+                # 스레드 식별자는 재사용될 수 있어 실제 Thread 객체의 생존 여부로 판별한다.
+                # 사용 중인 연결은 다른 스레드에서 닫지 않는다.
+                if owner.is_alive():
+                    continue
+                try:
+                    conn.close()
+                except Exception as exc:
+                    logger.debug("종료된 스레드의 DB 연결 회수 실패: %s", exc)
+                    continue
+                self._all_conns.discard(conn)
+                del self._conn_owners[conn]
+
     def _get_connection(self) -> sqlite3.Connection:
         """Create or reuse a configured SQLite connection with row factory and WAL mode."""
+        # SQLite 연결의 with 문은 트랜잭션만 종료하며 연결 자체를 닫지 않는다.
+        # 새 연결 생성뿐 아니라 기존 연결 재사용 전에도 종료된 스레드의 자원을 회수한다.
+        self._close_finished_thread_connections()
         conn = getattr(self._local, "conn", None)
         if conn is not None:
             try:
@@ -93,6 +114,7 @@ class DatabaseManager:
             except Exception:
                 with self._conns_lock:
                     self._all_conns.discard(conn)
+                    self._conn_owners.pop(conn, None)
                 try:
                     conn.close()
                 except Exception:
@@ -126,6 +148,7 @@ class DatabaseManager:
                 self._local.conn = conn
                 with self._conns_lock:
                     self._all_conns.add(conn)
+                    self._conn_owners[conn] = threading.current_thread()
                 return conn
             except (sqlite3.OperationalError, OSError) as exc:
                 last_exc = exc

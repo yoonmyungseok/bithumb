@@ -673,7 +673,7 @@ def logs_action(exchange: str = "bithumb"):
         print(f"\n👋 {ex_name} 로그 모니터링을 종료합니다.")
 
 def _spawn_background_process(python_exe: str, script_path: str, cwd: str) -> int | None:
-    """Windows와 Unix 환경 모두에서 부모 창이 닫혀도 영구 유지되는 완전 무창 백그라운드 프로세스를 즉각 스폰한다."""
+    """표준 입출력을 분리하고 Unix에서는 새 세션으로 백그라운드 서비스를 시작한다."""
     base_name = os.path.splitext(os.path.basename(script_path))[0]
     log_dir = os.path.join(cwd, "logs")
     os.makedirs(log_dir, exist_ok=True)
@@ -685,16 +685,19 @@ def _spawn_background_process(python_exe: str, script_path: str, cwd: str) -> in
         flags = 0
 
     try:
-        f_log = open(spawn_log, "a", encoding="utf-8", errors="replace")
-        proc = subprocess.Popen(
-            [python_exe, script_path],
-            cwd=cwd,
-            creationflags=flags,
-            stdout=f_log,
-            stderr=f_log,
-            stdin=subprocess.DEVNULL,
-            close_fds=(sys.platform != "win32"),
-        )
+        # 자식이 상속한 로그 핸들은 유지하고 부모의 핸들은 시작 성공·실패 모두에서 닫는다.
+        with open(spawn_log, "a", encoding="utf-8", errors="replace") as f_log:
+            proc = subprocess.Popen(
+                [python_exe, script_path],
+                cwd=cwd,
+                creationflags=flags,
+                stdout=f_log,
+                stderr=f_log,
+                stdin=subprocess.DEVNULL,
+                close_fds=(sys.platform != "win32"),
+                # 터미널의 세션·프로세스 그룹에서 분리해 창 종료의 영향을 피한다.
+                start_new_session=(sys.platform != "win32"),
+            )
         return proc.pid
     except Exception as e:
         print(f"❌ 스폰 실패 ({script_path}): {e}")
