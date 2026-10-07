@@ -2,7 +2,20 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
-## 2026-10-05 과열 추격 매수(상투 잡기) 원천 차단 및 선취매 전략 전환
+## 2026-10-07 사용자 수동 매수 종목 보호 및 고아 포지션 자동 입양 차단
+
+- **배경 및 원인 분석**:
+  - 사용자가 거래소 앱/웹에서 직접 수동 매수한 종목(예: `KRW-CAP`)이 존재할 때, 봇이 포트폴리오 갱신(`refresh_portfolio` ➜ `reconcile_markets`) 시 잔고에 있다는 이유만으로 트래커(`TrailingStopTracker`)에 임의의 진입 시각과 전략 모드(`SCALP`)를 부여하여 자동 입양(Auto-Adopt)함.
+  - 이로 인해 `position_guard`가 해당 종목을 봇 관리 포지션으로 오판하여, 5분 사이클 및 실시간 웹소켓 틱에서 분할익절, 손절, 타임스탑 매도 주문을 실행해 사용자의 수동 매수 물량을 임의 매도해버리는 치명적 결함 발생.
+- **수정 및 개선 내용**:
+  - `src/order_safety/journal.py`: `has_active_bot_position(market)` 메서드 추가. 주문 저널의 가장 최근 체결 내역이 매수이거나 분할 익절(`PARTIAL`)인 경우에만 봇 활성 포지션으로 판별하고, 과거 전량 매도 완료 후 수동 매수한 종목은 `False`로 반환.
+  - `src/position_guard.py`: `is_bot_managed_position()`에서 `order_journal`을 최우선 단일 진실 공급원(SSOT)으로 승격. 저널 상에 유효한 봇 매수 체결 이력이 없는 종목은 트래커에 데이터가 남아있더라도 봇 관리 포지션에서 원천 배제하여 자동 매도/청산 차단.
+  - `src/risk_manager.py`: `TrailingStopTracker.reconcile_markets(held_markets, order_journal=None)`에 주문 저널 검증 로직 추가. 주문 저널 매수 이력이 없는 고아 포지션은 자동 입양하지 않고 수동 종목으로 완전 격리 보호.
+  - `src/trading_orchestrator.py` & `src/trading_runtime.py`: `refresh_portfolio()` 호출 체인에 `order_journal`을 전달하여 포트폴리오 동기화 시 저널 검증이 항상 적용되도록 연동.
+  - 기존 오작동으로 트래커 상태 파일(`data/position_state.json`, `data/upbit/position_state.json`)에 임의 입양되어 있던 `KRW-CAP` 추적 키 완전 제거.
+- **검증**:
+  - `tests/test_position_guard.py`, `tests/test_risk_manager.py` 단위 테스트 추가 및 검증 완료.
+
 
 - **배경 및 원인 분석**:
   - `MAX_CHANGE_RATE`가 30.0%로 과도하게 높아 이미 10% 이상 폭등한 과열 종목을 뒤늦게 추격 매수하여 손실을 내는 패턴이 지속됨.

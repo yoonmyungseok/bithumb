@@ -801,8 +801,8 @@ class TrailingStopTracker:
         with self._lock:
             return self.dynamic_targets.get(market.upper())
 
-    def reconcile_markets(self, held_markets: list[str]) -> int:
-        """Drop stale trailing state after a restart and auto-adopt orphan held positions."""
+    def reconcile_markets(self, held_markets: list[str], order_journal: Any = None) -> int:
+        """Drop stale trailing state after a restart and reconcile orphan held positions with order journal verification."""
         with self._lock:
             # 1. 디스크/DB의 최신 상태 파일 동기화
             self._load_state()
@@ -828,7 +828,9 @@ class TrailingStopTracker:
                 self.dynamic_targets.pop(m_upper, None)
                 self.runner_markets.discard(m_upper)
 
-            # 2. 거래소 잔고에 존재하나 추적 정보가 누락된 고아 포지션 자동 입양 및 복구
+            # 2. 거래소 잔고에 존재하나 추적 정보가 누락된 포지션 처리:
+            # 봇의 주문 저널(order_journal)에 유효한 매수 체결 이력이 뒷받침되는 경우에만 추적을 복구한다.
+            # 저널 매수 이력이 없는 고아 포지션(사용자 수동 매수 등)은 절대로 자동 입양하지 않고 수동 종목으로 완전 격리 보호한다.
             from market_policy import is_protected_market
             adopted_count = 0
             for market in held_markets:
@@ -838,6 +840,24 @@ class TrailingStopTracker:
                 current_entry_t = float(self.entry_times.get(market, self.entry_times.get(m_upper, 0.0)) or 0.0)
                 current_mode = self.strategy_modes.get(m_upper, self.strategy_modes.get(market, ""))
                 if current_entry_t <= 0.0 or not current_mode:
+                    has_journal_buy = False
+                    if order_journal is not None:
+                        if hasattr(order_journal, "has_active_bot_position"):
+                            has_journal_buy = bool(order_journal.has_active_bot_position(m_upper))
+                        elif hasattr(order_journal, "orders"):
+                            # fallback: orders 리스트 직접 순회 검증
+                            from position_guard import is_bot_managed_position
+                            has_journal_buy = is_bot_managed_position(order_journal, None, m_upper)
+                    else:
+                        # order_journal이 명시적으로 주어지지 않은 경우(단위 테스트 등 하위 호환)
+                        has_journal_buy = True
+
+                    if not has_journal_buy:
+                        logger.info(
+                            f"🛡️ [{market}] 주문 저널 매수 이력 없는 수동 매수/고아 포지션 감지 ➜ 자동 입양 차단 및 수동 종목으로 완전 격리 보호"
+                        )
+                        continue
+
                     is_major = m_upper in ("KRW-BTC", "KRW-ETH", "KRW-SOL")
                     mode = current_mode or ("SWING" if is_major else "SCALP")
                     self.entry_times[m_upper] = time.time()
@@ -846,7 +866,7 @@ class TrailingStopTracker:
                     self.strategy_modes[market] = mode
                     adopted_count += 1
                     logger.info(
-                        f"🔄 [{market}] 고아 보유 포지션 감지 ➜ 봇 자동 추적 포지션(전략={mode})으로 자동 복구 및 편입 완료"
+                        f"🔄 [{market}] 봇 매수 저널 확인된 잔고 포지션 ➜ 트래커 자동 복구 및 편입 완료(전략={mode})"
                     )
 
             if stale_markets or adopted_count > 0:

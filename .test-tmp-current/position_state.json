@@ -3,8 +3,7 @@
   "partial_tp_done": {},
   "auto_breakeven_active": {},
   "entry_times": {
-    "KRW-BTC": 1790568770.7790046,
-    "KRW-SOLV": 1790568770.7790263
+    "KRW-BTC": 1790568770.7790046
   },
   "strategy_modes": {
     "KRW-BTC": "SWING",

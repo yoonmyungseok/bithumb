@@ -14,23 +14,40 @@ from risk_manager import (
 
 
 class TrailingStopTrackerReconcileTests(unittest.TestCase):
-    def test_reconcile_markets_adopts_orphan_positions(self):
-        """거래소 잔고에 있으나 추적 정보가 없는 고아 포지션을 자동으로 입양/복구."""
+    def test_reconcile_markets_adopts_orphan_positions_without_journal_backward_compat(self):
+        """order_journal 매개변수가 없는 경우 하위 호환으로 자동 입양."""
         tracker = TrailingStopTracker(data_dir=".test-tmp-current")
-        # 초기화: 추적 정보 없음
         tracker.entry_times.clear()
         tracker.strategy_modes.clear()
 
         held_markets = ["KRW-BTC", "KRW-SOLV"]
         tracker.reconcile_markets(held_markets)
 
-        # 메이저인 BTC는 SWING으로, 알트인 SOLV는 SCALP로 자동 입양되었는지 검증
         self.assertGreater(tracker.get_entry_time("KRW-BTC"), 0.0)
         self.assertEqual(tracker.get_strategy_mode("KRW-BTC"), "SWING")
-        self.assertTrue(tracker.is_swing_position("KRW-BTC"))
-
         self.assertGreater(tracker.get_entry_time("KRW-SOLV"), 0.0)
         self.assertEqual(tracker.get_strategy_mode("KRW-SOLV"), "SCALP")
+
+    def test_reconcile_markets_protects_manual_positions_with_journal(self):
+        """주문 저널에 매수 이력이 없는 수동 포지션은 절대 입양하지 않고 격리 보호."""
+        tracker = TrailingStopTracker(data_dir=".test-tmp-current")
+        tracker.entry_times.clear()
+        tracker.strategy_modes.clear()
+
+        mock_journal = MagicMock()
+        # KRW-BTC는 봇 매수 활성 포지션, KRW-CAP은 수동 매수 종목(저널 이력 없음)
+        mock_journal.has_active_bot_position.side_effect = lambda m: m.upper() == "KRW-BTC"
+
+        held_markets = ["KRW-BTC", "KRW-CAP"]
+        tracker.reconcile_markets(held_markets, order_journal=mock_journal)
+
+        # 봇 매수 종목인 KRW-BTC는 복구되어 트래커에 등록됨
+        self.assertGreater(tracker.get_entry_time("KRW-BTC"), 0.0)
+        self.assertEqual(tracker.get_strategy_mode("KRW-BTC"), "SWING")
+
+        # 수동 매수 종목인 KRW-CAP은 절대 등록되지 않음 (수동 격리 보호)
+        self.assertEqual(tracker.get_entry_time("KRW-CAP"), 0.0)
+        self.assertNotIn("KRW-CAP", tracker.strategy_modes)
 
 
 class RiskManagerPortfolioBatchTests(unittest.TestCase):

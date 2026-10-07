@@ -250,13 +250,14 @@ class TradingOrchestrator:
         risk_guard: Any,
         get_portfolio_tiers: Callable[[float], tuple[int, float, int]],
         now: datetime.datetime,
+        order_journal: Any = None,
     ) -> "PortfolioSnapshot":
         """Refresh the shared account/risk snapshot without changing trade rules."""
         # 포트폴리오·킬스위치 계산은 매 사이클 첫 조회를 강제 최신 상태로 시작한다.
         balances = self.get_balance_snapshot(exchange, force_refresh=True)
         total_equity = calculate_total_equity(balances, exchange)
         held_markets = get_held_markets(balances, exchange)
-        stale_states = trailing_tracker.reconcile_markets(held_markets)
+        stale_states = trailing_tracker.reconcile_markets(held_markets, order_journal=order_journal)
 
         canceled_stale = realtime_engine.clean_stale_orders(max_age_seconds=180)
         requoted = realtime_engine.requote_pending_orders()

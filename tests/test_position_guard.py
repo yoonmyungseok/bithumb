@@ -83,29 +83,42 @@ class PositionGuardTests(unittest.TestCase):
         self.assertFalse(is_bot_managed_position(journal, tracker, "KRW-SOLV"))
         self.assertFalse(is_exit_allowed("KRW-SOLV", journal, tracker))
 
-    def test_trailing_tracker_active_mode_is_bot_managed(self):
-        """트레일링 추적기에 진입 시각 또는 전략 모드가 등록된 종목은 저널의 과거 매도와 무관하게 봇 관리 포지션으로 인정."""
-        journal = MagicMock()
-        journal.orders = [
-            {"market": "KRW-BTC", "side": "ask", "status": "FILLED", "executed_volume": 0.001},
-        ]
+    def test_trailing_tracker_standalone_is_bot_managed_when_no_journal(self):
+        """저널이 없는 환경에서 트레일링 추적기에 진입 시각 또는 전략 모드가 등록된 종목은 봇 관리 포지션으로 인정."""
         tracker = MagicMock()
         tracker.get_entry_time.return_value = 1789804245.0
         tracker.get_strategy_mode.return_value = "SWING"
 
-        self.assertTrue(is_bot_managed_position(journal, tracker, "KRW-BTC"))
-        self.assertTrue(is_exit_allowed("KRW-BTC", journal, tracker))
+        self.assertTrue(is_bot_managed_position(None, tracker, "KRW-BTC"))
+        self.assertTrue(is_exit_allowed("KRW-BTC", None, tracker))
 
-    def test_prior_bot_buy_with_recent_ask_is_bot_managed(self):
-        """최근 주문이 ask FILLED라도 저널 내에 과거 봇 매수 체결 이력이 있으면 잔여분으로 인정."""
+    def test_manual_position_with_full_exit_in_past_is_not_managed(self):
+        """과거에 전량 매도 완료(ask FILLED, non-partial)된 후 사용자가 재차 수동 매수한 종목은 봇 포지션이 아니므로 자동 청산 차단."""
         journal = MagicMock()
+        # 과거에 봇이 매수 후 전량 매도 완료한 이력만 존재
+        journal.has_active_bot_position = None
+        del journal.has_active_bot_position
         journal.orders = [
-            {"market": "KRW-ETH", "side": "bid", "status": "FILLED", "executed_volume": 0.05},
-            {"market": "KRW-ETH", "side": "ask", "status": "FILLED", "executed_volume": 0.02},
+            {"market": "KRW-CAP", "side": "bid", "status": "FILLED", "executed_volume": 1000.0},
+            {"market": "KRW-CAP", "side": "ask", "status": "FILLED", "executed_volume": 1000.0, "exit_reason": "STOP_LOSS"},
         ]
         tracker = MagicMock()
-        tracker.get_entry_time.return_value = 0.0
-        tracker.get_strategy_mode.return_value = ""
+        tracker.get_entry_time.return_value = 1789804245.0
+        tracker.get_strategy_mode.return_value = "SCALP"
+
+        self.assertFalse(is_bot_managed_position(journal, tracker, "KRW-CAP"))
+        self.assertFalse(is_exit_allowed("KRW-CAP", journal, tracker))
+
+    def test_partial_exit_is_still_bot_managed(self):
+        """최근 주문이 분할 익절(PARTIAL)인 경우 잔여 포지션은 봇 관리 대상."""
+        journal = MagicMock()
+        journal.has_active_bot_position = None
+        del journal.has_active_bot_position
+        journal.orders = [
+            {"market": "KRW-ETH", "side": "bid", "status": "FILLED", "executed_volume": 1.0},
+            {"market": "KRW-ETH", "side": "ask", "status": "FILLED", "executed_volume": 0.5, "exit_reason": "PARTIAL_TP_1"},
+        ]
+        tracker = MagicMock()
 
         self.assertTrue(is_bot_managed_position(journal, tracker, "KRW-ETH"))
         self.assertTrue(is_exit_allowed("KRW-ETH", journal, tracker))

@@ -371,6 +371,39 @@ class OrderJournal:
                 for order in self.orders
             )
 
+    def has_active_bot_position(self, market: str) -> bool:
+        """해당 종목이 봇이 매수하여 현재 활성 보유 중인 포지션인지 저널 기반으로 확인.
+        가장 최근 체결 주문이 매수이거나, 최근 매도가 부분 청산(PARTIAL)인 경우에만 True를 반환하며,
+        완전 매도(전량 청산) 후 수동 매수한 고아 포지션은 False를 반환한다.
+        """
+        m_upper = market.upper()
+        with self._lock:
+            for order in reversed(self.orders):
+                if order.get("market", "").upper() != m_upper:
+                    continue
+                side = str(order.get("side", "")).lower()
+                status = str(order.get("status", "")).upper()
+                executed = float(
+                    order.get("executed_volume")
+                    or order.get("filled_volume")
+                    or order.get("processed_executed_volume")
+                    or 0.0
+                )
+                if side in ("bid", "buy"):
+                    if status in ("FILLED", "PARTIALLY_FILLED", "OPEN", "ACKNOWLEDGED", "DONE") or executed > 0:
+                        return True
+                    if executed <= 0 and status in ("CANCELED", "CANCELLED", "REJECTED", "EXPIRED"):
+                        continue
+                    return False
+                if side in ("ask", "sell"):
+                    exit_reason = str(order.get("exit_reason", "")).upper()
+                    if "PARTIAL" in exit_reason:
+                        return True
+                    if status in ("FILLED", "DONE") or executed > 0:
+                        # 전량 매도 체결 완료된 경우 봇 포지션은 종료됨 (이후 잔고는 수동 매수 등)
+                        return False
+            return False
+
     def reconcile_exchange_statuses(
         self,
         get_order: Any,

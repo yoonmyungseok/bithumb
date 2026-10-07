@@ -552,6 +552,7 @@ class TradingCycleEngine:
             risk_guard=ctx.risk_guard,
             get_portfolio_tiers=ctx.get_portfolio_tiers,
             now=now_dt,
+            order_journal=ctx.order_journal,
         )
         timings["포트폴리오"] = time.monotonic() - portfolio_started_at
         ctx.orchestrator.record_latency("cycle_portfolio", timings["포트폴리오"])
