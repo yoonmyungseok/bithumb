@@ -227,9 +227,9 @@ COMMON_CONFIG_SCHEMA: dict[str, ConfigFieldDef] = {
     "MAX_CHANGE_RATE": ConfigFieldDef(
         key="MAX_CHANGE_RATE",
         type_name="percent",
-        default=0.30,
-        min_val=0.05,
-        max_val=1.00,
+        default=0.06,
+        min_val=0.02,
+        max_val=0.10,
         category="screening",
         label="후보 최대 등락률",
         description="이미 과열되어 상투 위험이 높은 종목을 배제하기 위한 상한선입니다.",

@@ -57,10 +57,10 @@ class StrategyPolicy:
     BULL_TRAILING_DROP_PCT: float = 0.025        # 최고점 대비 2.5% 하락 시 청산 (상승장 눌림목 허용)
     BULL_TIME_STOP_SECONDS: int = 14400          # 상승장 240분 (4시간) 타임스탑 (자금 잠김 방어 및 충분한 추세 형성 대기)
     BULL_TIME_STOP_MAX_HOLD_SECONDS: int = 21600 # 지지선 유지 시 최대 360분 (6시간) 홀딩 유예
-    ALPHA_BUY_THRESHOLD_BULL: int = 55           # 상승장 알파 승인 점수 (55점)
-    ALPHA_BUY_THRESHOLD_NIGHT_BULL: int = 65     # 상승장 심야 알파 승인 점수 (65점)
-    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_BULL: int = 60       # 상승장 모멘텀 돌파 알파 (60점)
-    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_BULL: int = 65 # 상승장 심야 모멘텀 돌파 알파 (65점)
+    ALPHA_BUY_THRESHOLD_BULL: int = 72           # 상승장 알파 승인 점수 (잡매매 방지 72점 대폭 상향)
+    ALPHA_BUY_THRESHOLD_NIGHT_BULL: int = 75     # 상승장 심야 알파 승인 점수 (75점 상향)
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_BULL: int = 75       # 상승장 모멘텀 돌파 알파 (75점 대폭 상향)
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_BULL: int = 78 # 상승장 심야 모멘텀 돌파 알파 (78점 상향)
 
     # 1-3. 중기/추세추종 스윙(SWING) 전용 파라미터 (Dual-Track)
     SWING_STOP_LOSS_PCT: float = 0.055           # 스윙 기본 손절 -5.5% (잔파동 노이즈 방어)
@@ -101,9 +101,9 @@ class StrategyPolicy:
     NEW_LISTING_MIN_TRADE_VALUE_24H: float = 2_000_000_000.0
     NEW_LISTING_MIN_TRADE_VALUE_24H_RISK_OFF: float = 3_000_000_000.0
     NEW_LISTING_MIN_CHANGE_RATE: float = 0.015
-    NEW_LISTING_MAX_CHANGE_RATE: float = 0.080
+    NEW_LISTING_MAX_CHANGE_RATE: float = 0.050
     NEW_LISTING_MIN_CHANGE_RATE_RISK_OFF: float = 0.020
-    NEW_LISTING_MAX_CHANGE_RATE_RISK_OFF: float = 0.060
+    NEW_LISTING_MAX_CHANGE_RATE_RISK_OFF: float = 0.040
     NEW_LISTING_MIN_RS: float = 0.010
     NEW_LISTING_MIN_RS_RISK_OFF: float = 0.015
     NEW_LISTING_ALPHA_THRESHOLD_NORMAL: int = 75
@@ -132,11 +132,11 @@ class StrategyPolicy:
 
     # 1-4-1. 개미털기 유동성 스윕(SHAKEOUT_SWEEP) 역이용 전용 파라미터 (Stop Hunt Reversal)
     SHAKEOUT_SWEEP_ENABLED: bool = True
-    SHAKEOUT_SWEEP_LOOKBACK_BARS: int = 12            # 직전 전저점 탐색 구간 (최근 12봉 = 60분)
+    SHAKEOUT_SWEEP_LOOKBACK_BARS: int = 24            # 직전 전저점 탐색 구간 (최근 24봉 = 120분 전저점 유의미한 스윕)
     SHAKEOUT_SWEEP_MIN_LOWER_SHADOW_RATIO: float = 0.50 # 캔들 전체 진폭 대비 아랫꼬리 최소 비율 (50% 이상)
     SHAKEOUT_SWEEP_MIN_LOWER_SHADOW_RATIO_RISK_OFF: float = 0.60 # 약세장 아랫꼬리 최소 비율 (60% 이상)
     SHAKEOUT_SWEEP_MAX_UPPER_SHADOW_RATIO: float = 0.25 # 캔들 전체 진폭 대비 윗꼬리 최대 허용 비율 (25% 이하)
-    SHAKEOUT_SWEEP_VOLUME_RATIO_MIN: float = 1.3       # 직전 20봉 평균 대비 최소 거래량 배수 (1.3배 이상)
+    SHAKEOUT_SWEEP_VOLUME_RATIO_MIN: float = 1.6       # 직전 20봉 평균 대비 최소 거래량 배수 (1.6배 이상)
     SHAKEOUT_SWEEP_VOLUME_RATIO_MIN_RISK_OFF: float = 1.8 # 약세장 고래 매수세 최소 거래량 배수 (1.8배 이상)
     SHAKEOUT_SWEEP_RECLAIM_BUFFER_RATIO: float = 1.001  # 전저점 재탈환(Reclaim) 기준 (전저점의 100.1% 이상 종가/현재가 형성)
     SHAKEOUT_SWEEP_ALLOC_RATIO: float = 0.70           # 기본 비중 대비 배분 비율 (70%로 안전 진입)
@@ -146,9 +146,9 @@ class StrategyPolicy:
     SHAKEOUT_SWEEP_PARTIAL_TP_1_PCT: float = 0.030     # 1차 익절 +3.0% (수량 50%)
     SHAKEOUT_SWEEP_PARTIAL_TP_2_PCT: float = 0.060     # 2차 익절 +6.0% (수량 25%)
     SHAKEOUT_SWEEP_TIME_STOP_SECONDS: int = 2700       # 45분 타임스탑 (V자 반등 지연 시 조기 탈출)
-    SHAKEOUT_SWEEP_ALPHA_THRESHOLD_NORMAL: int = 55    # 정상장 알파 승인 점수 (55점)
-    SHAKEOUT_SWEEP_ALPHA_THRESHOLD_BULL: int = 50      # 상승장 알파 승인 점수 (50점)
-    SHAKEOUT_SWEEP_ALPHA_THRESHOLD_RISK_OFF: int = 70  # 약세장 알파 승인 점수 (기존 60점에서 70점으로 상향)
+    SHAKEOUT_SWEEP_ALPHA_THRESHOLD_NORMAL: int = 70    # 정상장 알파 승인 점수 (70점으로 상향)
+    SHAKEOUT_SWEEP_ALPHA_THRESHOLD_BULL: int = 70      # 상승장 알파 승인 점수 (70점으로 상향)
+    SHAKEOUT_SWEEP_ALPHA_THRESHOLD_RISK_OFF: int = 75  # 약세장 알파 승인 점수 (75점으로 상향)
     SHAKEOUT_SWEEP_RSI_MIN: float = 30.0               # 과매도 탈출 수용 RSI 하한 (30.0 이상)
     SHAKEOUT_SWEEP_PCT_B_MIN: float = 0.10             # 볼린저밴드 하단권 수용 %B 하한 (0.10 이상)
 
@@ -336,10 +336,10 @@ class StrategyPolicy:
     TIME_STOP_SECONDS: int = 7200        # 120분 타임스탑 (기본 정상장, 실거래 초 단위)
     TIME_STOP_SECONDS_NORMAL: int = 7200 # 정상장 120분 타임스탑
     TIME_STOP_SECONDS_RISK_OFF: int = 7200 # 알트코인 독립 매수: RISK_OFF 약세장에서도 정상장과 동일한 120분 타임스탑 유지
-    TIME_STOP_MAX_HOLD_SECONDS: int = 10800 # 지지선 유지 시 최대 180분 반등 대기 유예
+    TIME_STOP_MAX_HOLD_SECONDS: int = 14400 # 지지선 유지 시 최대 240분(4시간) 반등 대기 유예 (조기 털림 방지)
     TIME_STOP_BARS_5M: int = 24          # 5분봉 24개 = 120분 (백테스트 캔들 단위)
     TIME_STOP_BARS_5M_RISK_OFF: int = 24 # 알트코인 독립 매수: RISK_OFF 백테스트 캔들 단위 정상장(24봉) 일원화
-    TIME_STOP_MAX_HOLD_BARS_5M: int = 36 # 최대 유예 36봉 (180분)
+    TIME_STOP_MAX_HOLD_BARS_5M: int = 48 # 최대 유예 48봉 (240분)
     TIME_STOP_BREAKEVEN_MIN_PNL_PCT: float = 0.003  # 타임스탑 실질 본전 기본 기준 (+0.30% 완충 마진 확보)
     PENNY_STOCK_PRICE_THRESHOLD: float = 10.0      # 단가 10원 미만 초저가 코인 기준
     PENNY_STOCK_BEP_MIN_PNL_PCT: float = 0.0055   # 초저가주 수수료/슬리피지 방어 실질 본전 (+0.55%)
@@ -365,9 +365,9 @@ class StrategyPolicy:
 
 
     # 4. 하드 안전 게이트 (Hard Safety Gates) & 상대 강도(RS) 임계값
-    ALPHA_BUY_THRESHOLD: int = 55        # 7대 팩터 복합 알파 승인 점수 (100점 만점, 적극적 매매 기준 55점)
-    ALPHA_BUY_THRESHOLD_NORMAL: int = 55 # 정상장 7대 팩터 복합 알파 승인 점수 (55점)
-    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 60 # 약세장(RISK_OFF) 단타 승인 점수 (65 -> 60점 완화)
+    ALPHA_BUY_THRESHOLD: int = 70        # 7대 팩터 복합 알파 승인 점수 (100점 만점, 잡매매 방지 70점 상향)
+    ALPHA_BUY_THRESHOLD_NORMAL: int = 70 # 정상장 7대 팩터 복합 알파 승인 점수 (70점)
+    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 72 # 약세장(RISK_OFF) 단타 승인 점수 (72점 엄선)
     RS_MIN_RISK_OFF: float = 0.008       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+0.8% 초과 주도주)
     MIN_TRADE_VALUE_RISK_OFF: float = 1_000_000_000.0  # 약세장 최소 24시간 거래대금 10억 원 (기존 20억 -> 10억 하향)
     MIN_ASSET_PRICE_KRW: float = float(os.getenv("MIN_ASSET_PRICE_KRW", "0.0001"))  # 초저가 코인 제한 전면 해제 (기본 0.0001원, 0원 이하만 차단)
@@ -387,7 +387,7 @@ class StrategyPolicy:
     PULLBACK_MAX_DISTANCE_RISK_OFF: float = 0.045  # RISK_OFF 최근 저점 대비 최대 허용 거리 (+4.5% 이내 눌림, 6.5% 과열 차단)
     MAX_MA20_DISPARITY: float = 1.035    # MA20 대비 최대 이격도 +3.5% (기본 눌림목/반등형)
     MAX_MA20_DISPARITY_MOMENTUM: float = 1.050 # MA20 대비 모멘텀 돌파 최대 이격도 +5.0% (급등 돌파 캔들 수용)
-    MAX_UPPER_SHADOW_RATIO: float = 0.60 # 캔들 윗꼬리 최대 허용 비율 (50% -> 60%로 완화하여 단기 수급 수용)
+    MAX_UPPER_SHADOW_RATIO: float = 0.35 # 캔들 윗꼬리 최대 허용 비율 (피뢰침 덤핑 차단 35%로 엄격화)
     MA_ALIGNMENT_RATIO: float = 0.995    # MA5 >= MA20 * 0.995
     PULLBACK_MA_ALIGNMENT_RATIO: float = 0.990  # 저점 반등은 MA20 아래 1% 이내 회복까지 허용
     RISK_OFF_ALLOC_RATIO: float = 1.0    # 알트코인 독립 매수: BTC 약세 레짐이어도 알트코인 진입 비중 100% 정상 유지
@@ -447,9 +447,9 @@ class StrategyPolicy:
 
     # 4-0-1. 로컬 퀀트 고알파 자율 매수 (Local Autonomous Buy)
     # AI 예산이 소진되었거나(일일 쿼터 페이싱/사이클 상한 초과), AI 분석기가 비활성/에러일 때,
-    # 로컬 퀀트 룰이 매수를 승인(allow_buy=True)하고 시스템 정규 알파 기준(55점)을 넘으면 AI 없이 100% 정상 비중으로 자율 매수를 집행한다.
+    # 로컬 퀀트 룰이 매수를 승인(allow_buy=True)하고 시스템 정규 알파 기준(70점)을 넘으면 AI 없이 100% 정상 비중으로 자율 매수를 집행한다.
     LOCAL_AUTONOMOUS_BUY_ENABLED: bool = True
-    LOCAL_AUTONOMOUS_BUY_MIN_ALPHA: int = 55
+    LOCAL_AUTONOMOUS_BUY_MIN_ALPHA: int = 75
     LOCAL_AUTONOMOUS_BUY_ALLOC_RATIO: float = 1.00
 
     @classmethod
@@ -464,7 +464,7 @@ class StrategyPolicy:
 
     @classmethod
     def get_local_autonomous_buy_min_alpha(cls) -> int:
-        """로컬 퀀트 자율 매수를 위한 최소 알파 점수 (시스템 정규 매수 기준 55점과 일치)"""
+        """로컬 퀀트 자율 매수를 위한 최소 알파 점수 (시스템 정규 매수 기준 75점으로 상향)"""
         env_val = os.getenv("LOCAL_AUTONOMOUS_BUY_MIN_ALPHA", "").strip()
         if env_val.isdigit():
             return max(50, min(100, int(env_val)))
@@ -511,12 +511,12 @@ class StrategyPolicy:
     RECOVERY_REBOUND_ALLOC_RATIO: float = 0.35
 
     # 4-1. 공격형 모멘텀 돌파는 미완성 봉이 아닌 최신 확정봉만으로 평가한다.
-    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NORMAL: int = 55
-    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF: int = 55 # 알트코인 독립 매수: RISK_OFF 시에도 정상장과 동일한 55점 적용
-    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT: int = 65
-    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF: int = 65 # 알트코인 독립 매수: 심야 65점 일원화
-    MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN: float = 1.15  # 가짜 돌파 방어: 거래량 1.15배 이상 증가 시에만 돌파 매수 허용
-    MOMENTUM_BREAKOUT_LOOKBACK_BARS: int = 4
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NORMAL: int = 72
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_RISK_OFF: int = 75 # 약세장 75점 엄선
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT: int = 78
+    MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_RISK_OFF: int = 78 # 심야 78점 일원화
+    MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN: float = 1.20  # 가짜 돌파 방어: 거래량 1.20배 이상 유의미한 증가 시에만 돌파 매수 허용
+    MOMENTUM_BREAKOUT_LOOKBACK_BARS: int = 12         # 직전 12봉(60분 = 1시간) 전고점 돌파 확인
     MOMENTUM_BREAKOUT_RSI_MIN: float = 52.0
     MOMENTUM_BREAKOUT_RSI_MAX: float = 78.0
     MOMENTUM_BREAKOUT_RS_MIN: float = 0.008
@@ -527,11 +527,11 @@ class StrategyPolicy:
     MOMENTUM_EXTENDED_ALPHA_THRESHOLD_NIGHT_RISK_OFF: int = 75
     MOMENTUM_EXTENDED_ALLOC_RATIO: float = 0.30  # 확장 후반 진입 비중 상향 (기존 0.15 -> 0.30)
     # 모멘텀은 초입에서만 첫 주문을 허용한다. 확장 구간은 관찰·보유 관리용으로 남긴다.
-    MOMENTUM_EARLY_MAX_CHANGE_RATE: float = 0.080
+    MOMENTUM_EARLY_MAX_CHANGE_RATE: float = 0.035
 
     # RS 주도주(독자 강세 종목) 특례 정책
     RS_LEADER_MIN_RS: float = 0.020                 # BTC 대비 상대강도 +2.0% 이상 (기존 +3.0% 완화)
-    RS_LEADER_EARLY_MAX_CHANGE_RATE: float = 0.120  # 주도주 모멘텀 초입(+12.0% 이하) 확장 허용
+    RS_LEADER_EARLY_MAX_CHANGE_RATE: float = 0.050  # 주도주 모멘텀 초입(+5.0% 이하) 확장 허용
     RS_LEADER_BREAKOUT_TOLERANCE: float = 0.992     # 직전 고점 99.2% 이상 근접 지지 양봉 허용
     RS_LEADER_ALPHA_THRESHOLD_RISK_OFF: int = 50    # 알트코인 독립 매수: RISK_OFF 시 RS 주도주 임계값 50점 일원화 (적극 매수)
 
@@ -1714,7 +1714,7 @@ def entry_signal(
         else StrategyPolicy.PCT_B_MAX
     )
     if is_leader:
-        pct_b_hard_max = max(pct_b_hard_max, 0.90)
+        pct_b_hard_max = max(pct_b_hard_max, 0.75)
     hard_gate_bb = (StrategyPolicy.PCT_B_MIN <= pct_b <= pct_b_hard_max)
     # 저점 반등은 단기 이평이 중심선에 완전히 복귀하기 전의 회복 구간도 허용한다.
     hard_gate_ma = ma5 >= ma20 * StrategyPolicy.PULLBACK_MA_ALIGNMENT_RATIO
@@ -1758,7 +1758,7 @@ def entry_signal(
         else (StrategyPolicy.PULLBACK_PCT_B_MIN_NORMAL, StrategyPolicy.PULLBACK_PCT_B_MAX_NORMAL)
     )
     if is_leader:
-        pct_b_max = max(pct_b_max, 0.90)
+        pct_b_max = max(pct_b_max, 0.75)
     pullback_max_distance = (
         StrategyPolicy.PULLBACK_MAX_DISTANCE_RISK_OFF
         if regime_upper == "RISK_OFF"

@@ -141,7 +141,7 @@ WEB_PORT = int(os.getenv("UPBIT_WEB_PORT") or os.getenv("WEB_PORT", "7980"))
 TOP_COUNT = int(os.getenv("TOP_COUNT", "3"))
 MIN_TRADE_VALUE = float(os.getenv("MIN_TRADE_VALUE", "1000000000"))  # 최소 10억 원
 MIN_CHANGE_RATE = float(os.getenv("MIN_CHANGE_RATE", "0.005"))        # 최소 +0.5%
-MAX_CHANGE_RATE = float(os.getenv("MAX_CHANGE_RATE", "0.30"))        # 최대 +30.0%
+MAX_CHANGE_RATE = float(os.getenv("MAX_CHANGE_RATE", "0.06"))        # 최대 +6.0%
 # 업비트도 빗썸과 같은 확정봉 모멘텀 돌파 정책을 사용하되, 기존 환경 변수는 호환한다.
 MOMENTUM_BREAKOUT_ENABLED = os.getenv("UPBIT_MOMENTUM_BREAKOUT_ENABLED", os.getenv("MOMENTUM_BREAKOUT_ENABLED", os.getenv("EARLY_BREAKOUT_ENABLED", "true"))).strip().lower() in {"1", "true", "yes", "on"}
 MOMENTUM_BREAKOUT_MIN_CHANGE_RATE = float(os.getenv("UPBIT_MOMENTUM_BREAKOUT_MIN_CHANGE_RATE", os.getenv("MOMENTUM_BREAKOUT_MIN_CHANGE_RATE", os.getenv("EARLY_BREAKOUT_MIN_CHANGE_RATE", "0.003"))))

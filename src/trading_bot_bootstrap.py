@@ -445,7 +445,7 @@ def create_exchange_screener_shared(
         exchange,
         min_trade_value_krw=float(get_env_setting(exchange_name, "MIN_TRADE_VALUE", 1000000000, type_cast=float)),
         min_change_rate=float(get_env_setting(exchange_name, "MIN_CHANGE_RATE", 0.005, type_cast=float)),
-        max_change_rate=float(get_env_setting(exchange_name, "MAX_CHANGE_RATE", 0.30, type_cast=float)),
+        max_change_rate=float(get_env_setting(exchange_name, "MAX_CHANGE_RATE", 0.06, type_cast=float)),
         enable_early_breakout=is_momentum_enabled,
         early_breakout_min_change_rate=min_change_rate_early,
         early_breakout_max_candidates=max_candidates_early,

@@ -495,7 +495,7 @@ class TradingCycleEngine:
         is_auto_mode = raw_markets.upper() == "AUTO"
         min_trade_val = float(os.getenv("MIN_TRADE_VALUE", "1000000000"))
         min_change = float(os.getenv("MIN_CHANGE_RATE", "0.005"))
-        max_change = float(os.getenv("MAX_CHANGE_RATE", "0.30"))
+        max_change = float(os.getenv("MAX_CHANGE_RATE", "0.06"))
         risk_settings = load_runtime_risk_settings()
         btc_crash_pct = risk_settings.btc_crash_threshold_pct
 
@@ -1229,7 +1229,8 @@ class TradingCycleEngine:
                     f"🛡️ [{korean_name} / {market}] 횡보 시간 경과({hold_duration_sec / 60:.0f}분) + 수익권({pnl_pct_current:+.2f}%) ➜ "
                     f"푼돈 조기 청산 대신 [본전 보장 스탑(Auto Break-Even)] 활성화 후 목표가까지 홀딩 유지!"
                 )
-            if hold_duration_sec < effective_max_hold:
+            # 지지선이 유지되거나 1H 추세가 살아있는 한, 푼돈 타임스탑 익절로 추세를 조기 차단하지 않고 트레일링/목표가까지 홀딩
+            if is_holding_support or hold_duration_sec < effective_max_hold:
                 is_time_stop_profit_trigger = False
 
         is_time_stop_loss_trigger = (
@@ -1246,9 +1247,19 @@ class TradingCycleEngine:
             and is_trend_broken
         )
 
-        # AI가 명시적으로 보유(HOLD 또는 RUNNER_HOLD)를 유지하는 경우, 단기 잔파동/횡보에 의한 타임스탑 조기 손절을 유예하여 털림 방지 (AI 권한 확대)
-        ai_holds_position = (ai_action in ("RUNNER_HOLD", "HOLD")) and (hold_duration_sec < effective_max_hold)
-        if ai_holds_position:
+        # 1H봉 MTF 추세 지지 확인
+        is_1h_trend_alive = True
+        candles_1h = getattr(market_inputs, "candles_1h", None)
+        if candles_1h and len(candles_1h) >= 20:
+            c1h_cur = float(candles_1h[0].get("trade_price", 0.0) or current_price)
+            p1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
+            ema20_1h = calculate_ema(p1h, 20)
+            is_1h_trend_alive = c1h_cur >= (ema20_1h * 0.985)
+
+        # AI가 명시적으로 보유(HOLD 또는 RUNNER_HOLD)를 유지하거나 1시간봉 대세 추세가 살아있는 경우,
+        # 정규 손절선에 닿지 않은 상태에서 단순 시간 경과에 의한 조기 손절을 방지하여 휩쏘 털림 차단
+        ai_holds_position = (ai_action in ("RUNNER_HOLD", "HOLD")) and (hold_duration_sec < effective_max_hold * 1.5)
+        if (ai_holds_position or (is_1h_trend_alive and is_holding_support)) and not is_trend_broken:
             is_time_stop_loss_trigger = False
             is_early_momentum_exit = False
 
