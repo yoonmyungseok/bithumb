@@ -33,8 +33,10 @@ def is_bot_managed_position(
 
         lock = getattr(order_journal, "_lock", threading.Lock())
         with lock:
-            for order in reversed(order_journal.orders):
-                if order.get("market", "").upper() != market.upper():
+            bot_bids: list[dict[str, Any]] = []
+            bot_asks: list[dict[str, Any]] = []
+            for order in order_journal.orders:
+                if str(order.get("market", "")).upper() != market.upper():
                     continue
                 side = str(order.get("side", "")).lower()
                 status = str(order.get("status", "")).upper()
@@ -46,19 +48,53 @@ def is_bot_managed_position(
                 )
                 if side in ("bid", "buy"):
                     if status in ("FILLED", "PARTIALLY_FILLED", "OPEN", "ACKNOWLEDGED", "DONE") or executed > 0:
-                        return True
-                    if executed <= 0 and status in ("CANCELED", "CANCELLED", "REJECTED", "EXPIRED"):
-                        continue
+                        bot_bids.append(order)
+                elif side in ("ask", "sell"):
+                    if status in ("FILLED", "PARTIALLY_FILLED", "DONE") or executed > 0:
+                        bot_asks.append(order)
+
+            if not bot_bids:
+                return False
+
+            last_bid = bot_bids[-1]
+            last_bid_time = float(last_bid.get("created_at") or 0.0)
+            bid_vol = float(
+                last_bid.get("executed_volume")
+                or last_bid.get("filled_volume")
+                or last_bid.get("processed_executed_volume")
+                or last_bid.get("volume")
+                or 0.0
+            )
+
+            asks_after_bid = [
+                a for a in bot_asks
+                if float(a.get("created_at") or 0.0) >= last_bid_time
+            ]
+
+            if not asks_after_bid:
+                return True
+
+            last_ask = asks_after_bid[-1]
+            last_ask_reason = str(last_ask.get("exit_reason", "")).upper()
+
+            if "PARTIAL" not in last_ask_reason:
+                return False
+
+            if bid_vol > 0:
+                sold_vol = sum(
+                    float(
+                        a.get("executed_volume")
+                        or a.get("filled_volume")
+                        or a.get("processed_executed_volume")
+                        or a.get("volume")
+                        or 0.0
+                    )
+                    for a in asks_after_bid
+                )
+                if sold_vol >= (bid_vol * 0.999):
                     return False
-                if side in ("ask", "sell"):
-                    exit_reason = str(order.get("exit_reason", "")).upper()
-                    if "PARTIAL" in exit_reason:
-                        return True
-                    if status in ("FILLED", "DONE") or executed > 0:
-                        # 전량 매도 완료된 후에는 봇 포지션이 아님 (수동 매수 종목 보호)
-                        return False
-            # 저널에 해당 종목 기록이 전혀 없는 경우 봇 관리 포지션이 아님
-            return False
+
+            return True
 
     # 2. order_journal이 없는 경우(트래커 단독 모드 또는 테스트 환경):
     if trailing_tracker:

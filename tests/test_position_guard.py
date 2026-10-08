@@ -109,19 +109,23 @@ class PositionGuardTests(unittest.TestCase):
         self.assertFalse(is_bot_managed_position(journal, tracker, "KRW-CAP"))
         self.assertFalse(is_exit_allowed("KRW-CAP", journal, tracker))
 
-    def test_partial_exit_is_still_bot_managed(self):
-        """최근 주문이 분할 익절(PARTIAL)인 경우 잔여 포지션은 봇 관리 대상."""
+    def test_partial_exit_when_sold_volume_exceeds_bot_buy_is_not_managed(self):
+        """수동 매수 물량이 섞여서 분할 매도 수량이 이전 봇 매수 수량을 초과한 경우 더 이상 봇 포지션이 아님."""
         journal = MagicMock()
         journal.has_active_bot_position = None
         del journal.has_active_bot_position
         journal.orders = [
-            {"market": "KRW-ETH", "side": "bid", "status": "FILLED", "executed_volume": 1.0},
-            {"market": "KRW-ETH", "side": "ask", "status": "FILLED", "executed_volume": 0.5, "exit_reason": "PARTIAL_TP_1"},
+            {"market": "KRW-CAP", "side": "bid", "status": "FILLED", "executed_volume": 1886.0, "created_at": 1000.0},
+            {"market": "KRW-CAP", "side": "ask", "status": "FILLED", "executed_volume": 1886.0, "exit_reason": "STOP_LOSS", "created_at": 2000.0},
+            # 이후 사용자가 수동 매수한 상태에서 오작동으로 PARTIAL 매도가 나간 경우
+            {"market": "KRW-CAP", "side": "ask", "status": "FILLED", "executed_volume": 7629.0, "exit_reason": "PARTIAL_TP_1", "created_at": 3000.0},
         ]
         tracker = MagicMock()
+        tracker.get_entry_time.return_value = 1789804245.0
+        tracker.get_strategy_mode.return_value = "SCALP"
 
-        self.assertTrue(is_bot_managed_position(journal, tracker, "KRW-ETH"))
-        self.assertTrue(is_exit_allowed("KRW-ETH", journal, tracker))
+        self.assertFalse(is_bot_managed_position(journal, tracker, "KRW-CAP"))
+        self.assertFalse(is_exit_allowed("KRW-CAP", journal, tracker))
 
 
 if __name__ == "__main__":
