@@ -35,7 +35,7 @@ def is_stop_loss_exit(exit_type: str) -> bool:
     """주어진 청산 사유가 손절(Stop Loss / Hard Stop / 손절 방어 / 비상탈출) 계열인지 판별한다."""
     raw = str(exit_type).strip()
     raw_upper = raw.upper()
-    if "TIME" in raw_upper or "TRAILING" in raw_upper or "TP" in raw_upper or "익절" in raw:
+    if "TIME" in raw_upper or "TRAILING" in raw_upper or "TP" in raw_upper or "PROFIT" in raw_upper or "익절" in raw:
         return False
     return "STOP" in raw_upper or "손절" in raw or "탈출" in raw or "EMERGENCY" in raw_upper or "DAILY_LOSS" in raw_upper
 

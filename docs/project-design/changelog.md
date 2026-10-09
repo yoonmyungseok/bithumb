@@ -2,6 +2,24 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## 2026-10-09 실현 손익 양수 시 청산 명칭 분리 및 쿨다운 왜곡 방지
+
+- **배경 및 원인 분석**:
+  - `Auto Break-Even` 또는 `AI Tightened Stop`에 의해 손절선이 매수가 위로 상향된 상태에서 스탑 주문(`STOP_LOSS`)이 체결되어 순이익(흑자)으로 청산된 거래(예: `KRW-APT` +0.29%, `KRW-WLD` +0.42%)가 `fill_processor.py`에서 단일하게 `"손절 방어"`로 기록되어 데이터 통계 및 리포트 해석에 혼선을 초래함.
+  - 확정 순이익 거래임에도 `cooldown_manager`에 `STOP_LOSS` 코드가 그대로 전달되어 `_daily_loss_counts`(당일 손절 누적 횟수)가 증가하고 30분 손절 쿨다운이 적용되는 불필요한 페널티 왜곡 발생.
+- **수정 및 개선 내용**:
+  - `src/order_safety/fill_processor.py`:
+    - `STOP_LOSS` / `HARD_STOP` / `손절` 계열 청산 시 `pnl_krw > 0`인 경우 `"본전 보장 익절"`, `pnl_pct >= -0.5%`인 경우 `"본전 방어"`, 그 이하 손실인 경우 `"손절 방어"`로 레이블을 3단계로 명확히 분리.
+    - `SWING_TREND_STOP` 계열 청산 시 `pnl_krw > 0`인 경우 `"스윙 추세 익절"`, `pnl_pct >= -0.5%`인 경우 `"스윙 추세 본전방어"`, 손실인 경우 `"스윙 추세 이탈"`로 분리.
+    - `cooldown_manager.record_exit()` 호출 시 `is_win = True`인 순익 거래는 `BREAKEVEN_PROFIT_STOP` 코드로 매핑하여 전달.
+  - `src/order_safety/cooldown.py`:
+    - `is_stop_loss_exit()` 분류기에 `"PROFIT" in raw_upper` 조건을 추가하여 `BREAKEVEN_PROFIT_STOP`이 손절로 분류되지 않고 익절 쿨다운(5분) 및 손절 카운트 미반영으로 정상 처리되도록 보강.
+  - `src/web_server.py`:
+    - 대시보드 UI 포맷 함수(`formatAction`, `formatTradeSide`)에 `BREAKEVEN_PROFIT_STOP`, `BREAKEVEN_STOP`, `"본전 보장 익절"` 매핑 추가.
+- **검증**:
+  - `tests/test_storage_and_fill_boundaries.py`에 손실 체결(-10%), 본전 부근 미세 손실(-0.2%), 이익 체결(+5%) 각각에 대한 사유 라벨 및 쿨다운 코드 매핑 검증 테스트(`test_stop_loss_exit_reason_refined_on_profit_and_loss`) 추가 및 전체 통과.
+  - `tests/test_order_safety.py` 등 연관 회귀 테스트 39건 전원 통과.
+
 ## 2026-10-07 사용자 수동 매수 종목 보호 및 고아 포지션 자동 입양 차단
 
 - **배경 및 원인 분석**:

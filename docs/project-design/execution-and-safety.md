@@ -27,4 +27,10 @@ WebSocket은 상태머신, bounded queue, ping timeout, 지수 백오프를 사�
 - **소수점 8자리 지원 및 내림(Floor/ROUND_DOWN) 강제**: 빗썸 API v2 및 업비트 API는 가상자산 주문 수량(`volume`)을 소수점 8자리까지 지원한다.
 - **올림(Round Up) 원천 차단**: 분할 익절, 수수료 차감 등으로 발생하는 부동소수점 오차나 8자리 초과 수량을 반올림(`round()`)할 경우, 계좌 가용 잔고보다 주문 수량이 커져 거래소에서 `insufficient_funds (주문가능한 금액이 부족합니다)` 400 에러를 반환한다. 이를 방지하기 위해 빗썸(`BithumbAPI.round_volume`)과 업비트(`UpbitAPI.round_volume`) 모두 `Decimal` 기반의 소수점 8자리 무조건 내림(`ROUND_DOWN`) 처리를 단일 원칙으로 적용한다.
 
+## 실현 손익 기반 청산 사유 레이블 직관화 및 양수 손익 분리
+
+- **손익률 양수 시 청산 명칭 분리**: `OrderFillProcessor`는 주문에 지정된 원본 청산 코드(`STOP_LOSS`, `HARD_STOP`, `SWING_TREND_STOP`)에 관계없이, REST 대사로 확정된 순실현손익(`pnl_krw > 0`)이 발생한 경우 "손절 방어"가 아닌 `"본전 보장 익절"` 또는 `"스윙 추세 익절"`로 라벨을 분리하여 `trade_memory`와 주문 저널에 기록한다.
+- **미세 손익 구간 본전 방어 표기**: `pnl_krw <= 0`이더라도 손익률이 `-0.5%` 이상으로 본전 근처에서 방어된 경우 `"본전 방어"`로 기록하여 통계 왜곡을 방지한다.
+- **쿨다운 및 당일 손절 카운트 왜곡 방지**: 확정 순익(`is_win = True`)으로 청산된 거래는 쿨다운 매니저(`CooldownManager`)에 `BREAKEVEN_PROFIT_STOP` 코드를 전달하여 당일 손절 누적 횟수(`_daily_loss_counts`)가 불필요하게 증가하거나 30분 손절 쿨다운이 걸리지 않도록 방지하고, 통상 익절 쿨다운(5분)을 적용한다.
+
 상세 작업 규칙은 [주문·체결 안전 규칙](../agent-rules/trading-safety.md)을 따른다.

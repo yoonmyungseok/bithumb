@@ -60,19 +60,52 @@ class StorageAndFillBoundaryTests(unittest.TestCase):
     def test_exit_cooldown_is_recorded_only_after_confirmed_fill_delta(self):
         """ACK가 아닌 REST 확정 매도 체결 증가분만 쿨다운과 실현손익을 갱신한다."""
         journal = _InMemoryJournal()
+        journal.orders[0]["avg_buy_price"] = 100.0
+        journal.orders[0]["expected_price"] = 90.0
         cooldown = MagicMock()
         risk = MagicMock()
         processor = OrderFillProcessor(journal, risk_manager=risk, cooldown_manager=cooldown)
 
         # 체결량이 0이면 어떤 청산 부수상태도 갱신하지 않는다.
-        processor.process_order_fill("sell-1", OrderStatus.ACKNOWLEDGED, 0.0, avg_price=110.0)
+        processor.process_order_fill("sell-1", OrderStatus.ACKNOWLEDGED, 0.0, avg_price=90.0)
         cooldown.record_exit.assert_not_called()
         risk.add_realized_trade.assert_not_called()
 
-        # REST 대사가 확인한 체결 증가분에서만 상태를 갱신한다.
-        processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=110.0, remaining_volume=0.0)
-        cooldown.record_exit.assert_called_once_with("KRW-BTC", "STOP_LOSS", exit_price=110.0)
+        # REST 대사가 확인한 체결 증가분에서만 상태를 갱신한다 (손실 체결).
+        processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=90.0, remaining_volume=0.0)
+        cooldown.record_exit.assert_called_once_with("KRW-BTC", "STOP_LOSS", exit_price=90.0)
         risk.add_realized_trade.assert_called_once()
+
+    def test_stop_loss_exit_reason_refined_on_profit_and_loss(self):
+        """STOP_LOSS 사유가 손익률 양수 시 '본전 보장 익절'로 분리되고 쿨다운 왜곡을 방지한다."""
+        journal = _InMemoryJournal()
+        journal.orders[0]["exit_reason"] = "STOP_LOSS"
+        journal.orders[0]["avg_buy_price"] = 100.0
+        cooldown = MagicMock()
+        risk = MagicMock()
+        trade_mem = MagicMock()
+        processor = OrderFillProcessor(journal, risk_manager=risk, cooldown_manager=cooldown, trade_memory=trade_mem)
+
+        # 1. 손실 상태 손절 (90원에 체결, -10%)
+        processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=90.0, remaining_volume=0.0)
+        cooldown.record_exit.assert_called_once_with("KRW-BTC", "STOP_LOSS", exit_price=90.0)
+        self.assertEqual(trade_mem.record_completed_trade.call_args.kwargs["reason"], "손절 방어")
+
+        # 2. 본전 부근 미세 손실 (99.8원에 체결, -0.2%)
+        cooldown.reset_mock()
+        trade_mem.reset_mock()
+        journal.orders[0]["processed_executed_volume"] = 0.0
+        processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=99.8, remaining_volume=0.0)
+        cooldown.record_exit.assert_called_once_with("KRW-BTC", "STOP_LOSS", exit_price=99.8)
+        self.assertEqual(trade_mem.record_completed_trade.call_args.kwargs["reason"], "본전 방어")
+
+        # 3. 이익 상태 본전보장스탑 (105원에 체결, +5%)
+        cooldown.reset_mock()
+        trade_mem.reset_mock()
+        journal.orders[0]["processed_executed_volume"] = 0.0
+        processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=105.0, remaining_volume=0.0)
+        cooldown.record_exit.assert_called_once_with("KRW-BTC", "BREAKEVEN_PROFIT_STOP", exit_price=105.0)
+        self.assertEqual(trade_mem.record_completed_trade.call_args.kwargs["reason"], "본전 보장 익절")
 
     def test_ai_emergency_exit_reason_refined_to_korean(self):
         """AI_EMERGENCY_EXIT 사유가 확정 체결 시 쿨다운에는 원본 코드로, 거래 메모리에는 한글 레이블로 반영된다."""

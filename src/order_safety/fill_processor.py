@@ -238,7 +238,19 @@ class OrderFillProcessor:
                     elif "PARTIAL_TP" in stored_upper or "분할익절" in str(stored_exit_reason):
                         refined_exit_reason = "1차 분할익절"
                     elif "STOP_LOSS" in stored_upper or "HARD_STOP" in stored_upper or "손절" in str(stored_exit_reason):
-                        refined_exit_reason = "손절 방어"
+                        if pnl_krw > 0:
+                            refined_exit_reason = "본전 보장 익절"
+                        elif pnl_pct >= -0.5:
+                            refined_exit_reason = "본전 방어"
+                        else:
+                            refined_exit_reason = "손절 방어"
+                    elif "SWING_TREND" in stored_upper or "스윙" in str(stored_exit_reason):
+                        if pnl_krw > 0:
+                            refined_exit_reason = "스윙 추세 익절"
+                        elif pnl_pct >= -0.5:
+                            refined_exit_reason = "스윙 추세 본전방어"
+                        else:
+                            refined_exit_reason = "스윙 추세 이탈"
                     elif "AI_EMERGENCY" in stored_upper or "EMERGENCY_EXIT" in stored_upper:
                         if pnl_krw > 0:
                             refined_exit_reason = "AI 긴급 익절탈출"
@@ -259,9 +271,18 @@ class OrderFillProcessor:
                         self.risk_manager.add_realized_trade(pnl_krw, is_win=is_win)
 
                     if self.cooldown_manager:
-                        # 쿨다운은 원본 청산 사유 코드를 사용해 신규상장·타임스탑 분기를 보존한다.
+                        # 쿨다운은 원본 청산 사유 코드를 사용하되, 실현 손익이 양수인 익절 건은
+                        # 손절 누적 카운트나 손절 쿨다운이 걸리지 않도록 익절 사유 코드로 매핑하여 전달한다.
+                        cooldown_exit_reason = stored_exit_reason
+                        if is_win:
+                            if "STOP_LOSS" in stored_upper or "HARD_STOP" in stored_upper or "손절" in str(stored_exit_reason):
+                                cooldown_exit_reason = "BREAKEVEN_PROFIT_STOP"
+                            elif "AI_TIGHTENED" in stored_upper or "TIGHTENED_STOP" in stored_upper:
+                                cooldown_exit_reason = "AI_TIGHTENED_PROFIT"
+                            elif "SWING_TREND" in stored_upper:
+                                cooldown_exit_reason = "SWING_TREND_PROFIT"
                         self.cooldown_manager.record_exit(
-                            market, stored_exit_reason, exit_price=effective_price,
+                            market, cooldown_exit_reason, exit_price=effective_price,
                         )
 
                     if self.risk_off_loss_reentry_guard:
