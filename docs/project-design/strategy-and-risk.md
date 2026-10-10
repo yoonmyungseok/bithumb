@@ -22,8 +22,15 @@
   - 스윙 포지션은 중기 추세 추종을 전제로 하므로, 진입 시점에 4시간봉 확정 20지수이동평균선(4H EMA20) 상단 지지(`현재가 >= 4H EMA20 * SWING_ENTRY_EMA20_BUFFER_RATIO`, 1.005, 즉 +0.5% 이상 지지 안착)가 필수 하드 게이트로 검증된다.
   - 진입 시 4H EMA20 +0.5% 미달(하향 이탈/역배열)인 종목은 로컬 및 AI 승인과 무관하게 신규 BUY를 원천 차단하여, 진입 직후 `SWING_TREND_STOP`(4H EMA20의 98.5% 미달 시 시장가 청산)과 최소 2.0%의 안전 마진을 유지하며 수 분 내 조기 청산되는 자가당착을 방지한다. 스크리너 단계에서도 4H EMA20 미달 후보를 사전 탈락시킨다.
   - 4H 확정봉이 20개 미만인 경우 스윙 진입은 Fail-Closed로 차단된다.
-- **약세장(RISK_OFF) AI 단독 승인 안전 가드 강화**:
-  - `RISK_OFF` 레짐에서는 로컬 룰 관망 후 AI가 단독 자율 승인하더라도, 5분봉 상 반등 확정(`rebound_confirmed == True`) 및 호가 잔량비(`orderbook_ratio >= StrategyPolicy.RISK_OFF_MIN_ORDERBOOK_RATIO`, 1.00 이상)를 필수로 충족해야만 진입이 허용된다. 떨어지는 칼날 잡기와 매도벽 압박 구간에서의 진입을 원천 차단한다.
+- **약세장(RISK_OFF) 진입 안전 가드 강화**:
+  - `RISK_OFF` 레짐에서는 로컬 룰 및 AI 단독 승인 모두 5분봉 상 반등 확정(`rebound_confirmed == True`), 호가 잔량비(`orderbook_ratio >= StrategyPolicy.RISK_OFF_MIN_ORDERBOOK_RATIO`, 1.00 이상), 최소 알파 점수 80점 이상(`StrategyPolicy.ALPHA_BUY_THRESHOLD_RISK_OFF = 80`), 그리고 MACD 가속도 양수(`slope > 0` 또는 `is_accelerating == True`)를 필수로 충족해야만 진입이 허용된다. 떨어지는 칼날 잡기, 매도벽 압박, 모멘텀 미완성 역추세 진입을 원천 차단한다.
+- **타임스탑 청산 라벨링 세분화**:
+  - 타임스탑(`TIME_STOP`) 청산 시 실현 손익률에 따라 사유를 명확히 분리 기록한다:
+    * `+1.5% 이상`: `타임스탑 고수익익절 (PROFIT_TIMESTOP)`
+    * `+0.2% ~ +1.5%`: `타임스탑 본전익절 (BREAKEVEN_TIMESTOP)`
+    * `-0.5% ~ +0.2%`: `타임스탑 횡보청산`
+    * `-0.5% 미만`: `타임스탑 추세이탈청산`
+  - 확정 순이익 타임스탑 건은 쿨다운 매니저에 `PROFIT_TIMESTOP` / `BREAKEVEN_TIMESTOP`으로 전달되어 손절 카운트 증가 및 손절 쿨다운 페널티를 방지한다.
 - **시장 국면(Regime) 연동 동적 유동 슬롯(Dynamic Slots) 및 자본 노출도(Exposure) 관리**:
   - 기존의 고정 슬롯 수량 칸막이(`max_open_positions`, `max_swing_positions`)의 비효율성을 해소하기 위해, 시장 레짐과 자본 노출도 중심의 동적 유동 슬롯 모드(`DYNAMIC_SLOTS_ENABLED`)를 지원한다.
   - **물리적 안전 상한선(Safety Ceiling)**: 아무리 강세장이라도 웹소켓/API 부하 및 동시 체결 지연을 방어하기 위해 최대 동시 보유 종목 수를 `StrategyPolicy.DYNAMIC_SLOT_SAFETY_MAX_POSITIONS`(기본 8개)로 엄격히 제한한다.

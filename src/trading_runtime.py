@@ -1839,10 +1839,12 @@ class TradingCycleEngine:
             pct_b_cap = StrategyPolicy.PCT_B_MAX
         is_dip_support = sel_pct_b <= pct_b_cap
 
-        # RISK_OFF 약세장에서는 떨어지는 칼날 잡기 및 매도벽 압박 진입을 차단하기 위한 하드 가드
+        # RISK_OFF 약세장에서는 떨어지는 칼날 잡기, 매도벽 압박, 저품질 알파 및 역추세 진입을 차단하기 위한 하드 가드
         entry_indicators = selected_entry.get("strategy_snapshot", {}).get("indicators", {})
         rebound_ok = True
         orderbook_ok = True
+        risk_off_alpha_ok = True
+        risk_off_macd_ok = True
         risk_off_guard_reason = ""
         if btc_regime == "RISK_OFF":
             rebound_val = entry_indicators.get("rebound_confirmed", selected_entry.get("rebound_confirmed", True))
@@ -1854,6 +1856,21 @@ class TradingCycleEngine:
             if ob_ratio < min_ob_ratio:
                 orderbook_ok = False
                 risk_off_guard_reason = f"RISK_OFF 호가 잔량비 미달({ob_ratio:.2f} < {min_ob_ratio:.2f}) 매수 차단"
+
+            # 1. 최소 알파 점수 80점 허들 검증 (MET 78점형 진입 차단)
+            cand_alpha = max(ai_alpha, local_alpha_score, int(selected_entry.get("alpha_score", 0) or 0))
+            min_risk_off_alpha = getattr(StrategyPolicy, "ALPHA_BUY_THRESHOLD_RISK_OFF", 80)
+            if cand_alpha < min_risk_off_alpha:
+                risk_off_alpha_ok = False
+                risk_off_guard_reason = f"RISK_OFF 알파 점수 미달({cand_alpha}점 < {min_risk_off_alpha}점) 매수 차단"
+
+            # 2. MACD 가속도 양수(POSITIVE: slope > 0) 필수 검증 (NEUTRAL / NEGATIVE 차단)
+            macd_slope = float(entry_indicators.get("macd_slope", 0.0) or 0.0)
+            macd_is_acc = bool(entry_indicators.get("macd_is_accelerating", False))
+            if not (macd_slope > 0 or macd_is_acc):
+                risk_off_macd_ok = False
+                macd_state = str(entry_indicators.get("macd_momentum_state", "") or entry_indicators.get("macd_state", "NEUTRAL"))
+                risk_off_guard_reason = f"RISK_OFF MACD 가속도 비양수({macd_state}, slope={macd_slope:+.4f}) 매수 차단"
 
         is_swing_candidate = (
             effective_candidate_type == "SWING"
@@ -1902,6 +1919,8 @@ class TradingCycleEngine:
                 and is_dip_support
                 and rebound_ok
                 and orderbook_ok
+                and risk_off_alpha_ok
+                and risk_off_macd_ok
                 and swing_entry_passed
                 and is_ai_direct_entry_eligible(ai_alpha, btc_regime, is_night_session(), change_rate_24h=market_change_rate)
             ):
@@ -1941,6 +1960,10 @@ class TradingCycleEngine:
                     reason = f"AI 단독 매수 약세장 반등 미확정 차단: {risk_off_guard_reason} | {reason}"
                 elif not orderbook_ok and is_ai_buy_signal:
                     reason = f"AI 단독 매수 약세장 호가 매도벽 우세 차단: {risk_off_guard_reason} | {reason}"
+                elif not risk_off_alpha_ok and is_ai_buy_signal:
+                    reason = f"AI 단독 매수 약세장 알파 점수 미달 차단: {risk_off_guard_reason} | {reason}"
+                elif not risk_off_macd_ok and is_ai_buy_signal:
+                    reason = f"AI 단독 매수 약세장 MACD 가속도 비양수 차단: {risk_off_guard_reason} | {reason}"
                 else:
                     reason = f"정량 공통 진입 게이트 차단: {selected_entry.get('reason', '')} | {reason}"
         elif action == "BUY" and selected_entry.get("allow_buy", False):
@@ -1958,6 +1981,12 @@ class TradingCycleEngine:
             elif not orderbook_ok:
                 action = "HOLD"
                 reason = f"로컬 매수 약세장 호가 매도벽 우세 차단: {risk_off_guard_reason} | {reason}"
+            elif not risk_off_alpha_ok:
+                action = "HOLD"
+                reason = f"로컬 매수 약세장 알파 점수 미달 차단: {risk_off_guard_reason} | {reason}"
+            elif not risk_off_macd_ok:
+                action = "HOLD"
+                reason = f"로컬 매수 약세장 MACD 가속도 비양수 차단: {risk_off_guard_reason} | {reason}"
             elif not swing_entry_passed:
                 action = "HOLD"
                 reason = f"로컬 매수 스윙 추세 지지 미달 차단: {swing_fail_reason} | {reason}"

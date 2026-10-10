@@ -229,8 +229,10 @@ class OrderFillProcessor:
                         else:
                             refined_exit_reason = "모멘텀 소멸 방어탈출"
                     elif "TIME_STOP" in stored_upper or "타임스탑" in str(stored_exit_reason):
-                        if pnl_krw > 0:
-                            refined_exit_reason = "타임스탑 본전익절"
+                        if pnl_pct >= 1.5:
+                            refined_exit_reason = "타임스탑 고수익익절 (PROFIT_TIMESTOP)"
+                        elif pnl_pct >= 0.2:
+                            refined_exit_reason = "타임스탑 본전익절 (BREAKEVEN_TIMESTOP)"
                         elif pnl_pct >= -0.5:
                             refined_exit_reason = "타임스탑 횡보청산"
                         else:
@@ -281,6 +283,11 @@ class OrderFillProcessor:
                                 cooldown_exit_reason = "AI_TIGHTENED_PROFIT"
                             elif "SWING_TREND" in stored_upper:
                                 cooldown_exit_reason = "SWING_TREND_PROFIT"
+                            elif "TIME_STOP" in stored_upper or "타임스탑" in str(stored_exit_reason):
+                                if pnl_pct >= 1.5:
+                                    cooldown_exit_reason = "PROFIT_TIMESTOP"
+                                elif pnl_pct >= 0.2:
+                                    cooldown_exit_reason = "BREAKEVEN_TIMESTOP"
                         self.cooldown_manager.record_exit(
                             market, cooldown_exit_reason, exit_price=effective_price,
                         )

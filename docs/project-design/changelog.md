@@ -2,6 +2,34 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## 2026-10-10 타임스탑 청산 라벨링 세분화 및 RISK_OFF 약세장 진입 게이트 강화
+
+- **배경 및 원인 분석**:
+  - **타임스탑 라벨링 한계**: 보유 시간 경과 후 높은 수익률(예: `KRW-STX` +4.07%)에서 타임스탑으로 청산된 거래임에도 단일하게 `"타임스탑 본전익절"`로 표기되어, 실제 성격(고수익 익절 vs 미세 본전익절)이 모호하고 분석 통계에 혼선을 초래함.
+  - **약세장(RISK_OFF) 불완전 모멘텀 진입 손실**: 비트코인 약세장(`RISK_OFF`) 국면에서 알파 점수가 78점 수준이거나 MACD 가속도가 NEUTRAL/NEGATIVE 상태인 미완성 반등 종목(예: `KRW-MET` 78점, MACD NEUTRAL)에 진입하여 모멘텀 지속 부재로 단기 손절(-1.99%)이 발생하는 문제 확인.
+- **수정 및 개선 내용**:
+  - `src/order_safety/fill_processor.py`:
+    - `TIME_STOP` 계열 청산 시 손익률(`pnl_pct`)에 따라 4단계로 세분화:
+      * `pnl_pct >= +1.5%`: `"타임스탑 고수익익절 (PROFIT_TIMESTOP)"`
+      * `+0.2% <= pnl_pct < +1.5%`: `"타임스탑 본전익절 (BREAKEVEN_TIMESTOP)"`
+      * `-0.5% <= pnl_pct < +0.2%`: `"타임스탑 횡보청산"`
+      * `pnl_pct < -0.5%`: `"타임스탑 추세이탈청산"`
+    - `cooldown_manager` 연동 시 `is_win = True`인 건에 대해 `PROFIT_TIMESTOP` 및 `BREAKEVEN_TIMESTOP` 코드를 매핑하여 손절 페널티 쿨다운 왜곡 방지.
+  - `src/web_server.py`:
+    - 대시보드 UI 포맷 함수(`formatTradeAction`, `formatTradeSide`)에 `PROFIT_TIMESTOP`("타임스탑 고수익익절") 및 `BREAKEVEN_TIMESTOP`("타임스탑 본전익절") 매핑 추가.
+  - `src/strategy_engine.py`:
+    - 약세장 알파 승인 점수 상향: `ALPHA_BUY_THRESHOLD_RISK_OFF`를 기존 72점에서 **80점 이상**으로 대폭 상향, `ALPHA_BUY_THRESHOLD_NIGHT_RISK_OFF`도 75점에서 **80점**으로 상향.
+    - `calculate_composite_alpha_score` 및 `entry_signal`: `regime_upper == "RISK_OFF"`일 때 MACD 가속도(`slope > 0` 또는 `is_accelerating`) 양수(POSITIVE)를 필수 하드게이트(`hard_gate_macd_risk_off`)로 강제하고, NEUTRAL / NEGATIVE 종목의 매수 승인을 원천 차단.
+    - `indicators` 및 `strategy_snapshot`에 `macd_slope`, `macd_is_accelerating`, `macd_momentum_state`, `hard_gate_macd_risk_off` 스냅샷 기록.
+  - `src/trading_runtime.py`:
+    - `btc_regime == "RISK_OFF"` 진입 가드에 최소 알파 80점 허들 검증(`risk_off_alpha_ok`) 및 MACD 가속도 양수 검증(`risk_off_macd_ok`)을 추가하여 로컬 및 AI 단독 매수 양쪽 모두에서 2중 하드 방어.
+  - `src/gemini_analyzer.py`:
+    - AI 프롬프트의 7대 팩터 검증 규칙 중 3번(MACD 가속도)에 `약세장 RISK_OFF 시 히스토그램 기울기(Slope) > 0 양수(POSITIVE) 필수, NEUTRAL/NEGATIVE는 매수 승인 절대 금지` 명시.
+- **검증**:
+  - `tests/test_storage_and_fill_boundaries.py`에 타임스탑 세분화 검증 테스트(`test_time_stop_exit_reason_refined_to_breakeven_and_profit`) 추가 및 통과.
+  - `tests/test_risk_off_enhanced_gates.py`에 알파 80점 허들, MACD 비양수 차단, 동시 충족 통과 테스트 4건 작성 및 전원 통과.
+  - `tests/test_trading_runtime_risk_off_guards.py` 단위 테스트 작성 및 통과.
+
 ## 2026-10-09 실현 손익 양수 시 청산 명칭 분리 및 쿨다운 왜곡 방지
 
 - **배경 및 원인 분석**:

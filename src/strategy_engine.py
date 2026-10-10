@@ -367,7 +367,7 @@ class StrategyPolicy:
     # 4. 하드 안전 게이트 (Hard Safety Gates) & 상대 강도(RS) 임계값
     ALPHA_BUY_THRESHOLD: int = 70        # 7대 팩터 복합 알파 승인 점수 (100점 만점, 잡매매 방지 70점 상향)
     ALPHA_BUY_THRESHOLD_NORMAL: int = 70 # 정상장 7대 팩터 복합 알파 승인 점수 (70점)
-    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 72 # 약세장(RISK_OFF) 단타 승인 점수 (72점 엄선)
+    ALPHA_BUY_THRESHOLD_RISK_OFF: int = 80 # 약세장(RISK_OFF) 단타 승인 점수 (80점 이상 엄격 상향)
     RS_MIN_RISK_OFF: float = 0.008       # RISK_OFF 시 BTC 대비 최소 상대 강도 (+0.8% 초과 주도주)
     MIN_TRADE_VALUE_RISK_OFF: float = 1_000_000_000.0  # 약세장 최소 24시간 거래대금 10억 원 (기존 20억 -> 10억 하향)
     MIN_ASSET_PRICE_KRW: float = float(os.getenv("MIN_ASSET_PRICE_KRW", "0.0001"))  # 초저가 코인 제한 전면 해제 (기본 0.0001원, 0원 이하만 차단)
@@ -601,7 +601,7 @@ class StrategyPolicy:
     NIGHT_SESSION_START_HOUR: int = 0
     NIGHT_SESSION_END_HOUR: int = 7
     ALPHA_BUY_THRESHOLD_NIGHT: int = 75           # 심야 정상장 알파 승인 점수 (60 -> 75 상향)
-    ALPHA_BUY_THRESHOLD_NIGHT_RISK_OFF: int = 75  # 심야 약세장 엄선 알파 승인 점수 (75점 유지)
+    ALPHA_BUY_THRESHOLD_NIGHT_RISK_OFF: int = 80  # 심야 약세장 엄선 알파 승인 점수 (80점 이상 상향)
     NIGHT_SESSION_ALLOC_RATIO: float = 0.50       # 심야 진입 자금 비중 50% 축소
     NIGHT_PARTIAL_TP_1_PCT: float = 0.015         # 심야 1차 분할 익절 +1.5% (조기 수익 확정)
     NIGHT_TIME_STOP_SECONDS: int = 5400           # 심야 90분 단축 타임스탑
@@ -1436,13 +1436,25 @@ def calculate_composite_alpha_score(
     # 알파 계산 결과와 최종 진입 판정이 동일한 정책 기준을 참조한다.
     buy_threshold = get_alpha_buy_threshold(btc_regime, night_active)
     total_score = score_mtf + score_vwap + score_macd + score_rsi + score_bb + score_orderflow + score_vol
-    allow_buy = (total_score >= buy_threshold) and (regime_upper not in ("CRASH", "BEAR_VOLATILE"))
+
+    # RISK_OFF 약세장에서는 MACD 가속도(slope > 0) 양수 필수 (NEUTRAL/NEGATIVE 차단)
+    macd_slope = float(macd_acc.get("slope", 0.0) or 0.0)
+    macd_pos = (macd_slope > 0)
+    risk_off_macd_gate = True
+    if regime_upper == "RISK_OFF":
+        risk_off_macd_gate = macd_pos
+
+    allow_buy = (total_score >= buy_threshold) and (regime_upper not in ("CRASH", "BEAR_VOLATILE")) and risk_off_macd_gate
 
     breakdown = {
         "mtf_score": score_mtf,
         "mtf_reason": mtf_reason,
         "vwap_score": score_vwap,
         "macd_score": score_macd,
+        "macd_slope": macd_slope,
+        "macd_is_accelerating": macd_acc.get("is_accelerating", False),
+        "macd_momentum_state": macd_acc.get("momentum_state", "NEUTRAL"),
+        "macd_acceleration_positive": macd_pos,
         "rsi_score": score_rsi,
         "bollinger_score": score_bb,
         "orderflow_score": score_orderflow,
@@ -1460,6 +1472,8 @@ def calculate_composite_alpha_score(
         "factor_breakdown": breakdown,
         "vwap": vwap_data["vwap"],
         "macd_state": macd_acc["momentum_state"],
+        "macd_slope": macd_slope,
+        "macd_is_accelerating": macd_acc.get("is_accelerating", False),
         "rsi": rsi_val,
         "pct_b": bb["pct_b"],
         "bb": bb,
@@ -1741,9 +1755,22 @@ def entry_signal(
         hard_gate_orderbook = (ob_ratio >= min_ob_required)
         ob_reason = f"오더북 비율 {ob_ratio:.2f} {'>=' if hard_gate_orderbook else '<'} 기준 {min_ob_required:.2f}"
 
+    # 2-4. RISK_OFF 약세장 시 MACD 가속도(Slope > 0) 양수 필수 검증 (NEUTRAL / NEGATIVE 차단)
+    hard_gate_macd_risk_off = True
+    macd_fb = alpha_res.get("factor_breakdown", {})
+    macd_slope = float(macd_fb.get("macd_slope", 0.0) or 0.0)
+    macd_is_acc = bool(macd_fb.get("macd_is_accelerating", False))
+    if regime_upper == "RISK_OFF":
+        if "macd_slope" not in macd_fb:
+            m_acc = calculate_macd_acceleration(prices)
+            macd_slope = float(m_acc.get("slope", 0.0) or 0.0)
+            macd_is_acc = bool(m_acc.get("is_accelerating", False))
+        hard_gate_macd_risk_off = (macd_slope > 0 or macd_is_acc)
+
     hard_gates_passed = (
         hard_gate_btc and hard_gate_mtf and hard_gate_rsi and hard_gate_bb
         and hard_gate_ma and hard_gate_disparity and hard_gate_shadow and hard_gate_orderbook
+        and hard_gate_macd_risk_off
     )
 
     # 3. 저점권 반등 정량 게이트: 점수가 높아도 상단권 추격을 허용하지 않는다.
@@ -1970,6 +1997,8 @@ def entry_signal(
         f"이격 {'안정' if hard_gate_disparity else '과열차단'}",
         mtf_reason,
     ]
+    if regime_upper == "RISK_OFF":
+        reasons.append(f"MACD가속도 {'양수통과' if hard_gate_macd_risk_off else '비양수차단'}")
     if normalized_entry_type == "MOMENTUM_BREAKOUT":
         reasons.append(f"모멘텀 돌파 {momentum_breakout_reason}")
     elif normalized_entry_type == "SHAKEOUT_SWEEP":
@@ -2034,6 +2063,10 @@ def entry_signal(
                 "orderbook_raw_ratio": alpha_res["factor_breakdown"].get("orderbook_raw_ratio", 1.0),
                 "orderbook_smoothed_ratio": alpha_res["factor_breakdown"].get("orderbook_smoothed_ratio", 1.0),
                 "orderbook_sample_count": alpha_res["factor_breakdown"].get("orderbook_sample_count", 0),
+                "macd_slope": macd_slope,
+                "macd_is_accelerating": macd_is_acc,
+                "macd_momentum_state": macd_fb.get("macd_momentum_state", alpha_res.get("macd_state", "NEUTRAL")),
+                "hard_gate_macd_risk_off": hard_gate_macd_risk_off,
             },
             "entry_reason": ", ".join(reasons),
             "target_price": final_target_price,

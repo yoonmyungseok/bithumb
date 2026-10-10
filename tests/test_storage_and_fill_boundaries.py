@@ -104,8 +104,46 @@ class StorageAndFillBoundaryTests(unittest.TestCase):
         trade_mem.reset_mock()
         journal.orders[0]["processed_executed_volume"] = 0.0
         processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=105.0, remaining_volume=0.0)
-        cooldown.record_exit.assert_called_once_with("KRW-BTC", "BREAKEVEN_PROFIT_STOP", exit_price=105.0)
         self.assertEqual(trade_mem.record_completed_trade.call_args.kwargs["reason"], "본전 보장 익절")
+
+    def test_time_stop_exit_reason_refined_to_breakeven_and_profit(self):
+        """TIME_STOP 사유가 +0.2%~+1.5%는 '타임스탑 본전익절', +1.5% 이상은 '타임스탑 고수익익절'로 분리된다."""
+        journal = _InMemoryJournal()
+        journal.orders[0]["exit_reason"] = "TIME_STOP"
+        journal.orders[0]["avg_buy_price"] = 100.0
+        cooldown = MagicMock()
+        risk = MagicMock()
+        trade_mem = MagicMock()
+        processor = OrderFillProcessor(journal, risk_manager=risk, cooldown_manager=cooldown, trade_memory=trade_mem)
+
+        # 1. 고수익 타임스탑 (+4.0% 익절, 104원에 체결)
+        processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=104.0, remaining_volume=0.0)
+        cooldown.record_exit.assert_called_once_with("KRW-BTC", "PROFIT_TIMESTOP", exit_price=104.0)
+        self.assertEqual(trade_mem.record_completed_trade.call_args.kwargs["reason"], "타임스탑 고수익익절 (PROFIT_TIMESTOP)")
+
+        # 2. 본전 타임스탑 (+0.5% 본전익절, 100.5원에 체결)
+        cooldown.reset_mock()
+        trade_mem.reset_mock()
+        journal.orders[0]["processed_executed_volume"] = 0.0
+        processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=100.5, remaining_volume=0.0)
+        cooldown.record_exit.assert_called_once_with("KRW-BTC", "BREAKEVEN_TIMESTOP", exit_price=100.5)
+        self.assertEqual(trade_mem.record_completed_trade.call_args.kwargs["reason"], "타임스탑 본전익절 (BREAKEVEN_TIMESTOP)")
+
+        # 3. 횡보 타임스탑 (-0.1% 미세손실, 99.9원에 체결)
+        cooldown.reset_mock()
+        trade_mem.reset_mock()
+        journal.orders[0]["processed_executed_volume"] = 0.0
+        processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=99.9, remaining_volume=0.0)
+        cooldown.record_exit.assert_called_once_with("KRW-BTC", "TIME_STOP", exit_price=99.9)
+        self.assertEqual(trade_mem.record_completed_trade.call_args.kwargs["reason"], "타임스탑 횡보청산")
+
+        # 4. 추세이탈 타임스탑 (-1.0% 손실, 99.0원에 체결)
+        cooldown.reset_mock()
+        trade_mem.reset_mock()
+        journal.orders[0]["processed_executed_volume"] = 0.0
+        processor.process_order_fill("sell-1", OrderStatus.FILLED, 1.0, avg_price=99.0, remaining_volume=0.0)
+        cooldown.record_exit.assert_called_once_with("KRW-BTC", "TIME_STOP", exit_price=99.0)
+        self.assertEqual(trade_mem.record_completed_trade.call_args.kwargs["reason"], "타임스탑 추세이탈청산")
 
     def test_ai_emergency_exit_reason_refined_to_korean(self):
         """AI_EMERGENCY_EXIT 사유가 확정 체결 시 쿨다운에는 원본 코드로, 거래 메모리에는 한글 레이블로 반영된다."""

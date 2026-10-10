@@ -631,6 +631,8 @@ class DashboardWebServer:
                         if (a === 'HOLD') return '관망 대기';
                         if (a === 'STOP_LOSS') return '손절';
                         if (a === 'BREAKEVEN_PROFIT_STOP' || a === 'BREAKEVEN_STOP') return '본전 보장 익절';
+                        if (a === 'PROFIT_TIMESTOP') return '타임스탑 고수익익절';
+                        if (a === 'BREAKEVEN_TIMESTOP') return '타임스탑 본전익절';
                         if (a === 'PARTIAL_TP') return '1차 분할익절';
                         if (a === 'TRAILING_STOP') return '트레일링 익절';
                         if (a === 'TIME_STOP') return '타임스탑 청산';
@@ -649,6 +651,8 @@ class DashboardWebServer:
                         const s = String(side).toUpperCase();
                         if (s === 'BUY' || s === 'BID') return '매수';
                         if (s === 'SELL' || s === 'ASK') return '매도';
+                        if (s.includes('PROFIT_TIMESTOP') || s.includes('타임스탑 고수익익절')) return '타임스탑 고수익익절';
+                        if (s.includes('BREAKEVEN_TIMESTOP') || s.includes('타임스탑 본전익절')) return '타임스탑 본전익절';
                         if (s.includes('BREAKEVEN') || s.includes('본전 보장 익절')) return '본전 보장 익절';
                         if (s.includes('AI_EMERGENCY') || s.includes('EMERGENCY')) return 'AI 비상탈출';
                         if (s.includes('AI_TIGHTENED') || s.includes('TIGHTEN')) return 'AI 손절상향';
