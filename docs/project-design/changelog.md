@@ -2,6 +2,31 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## 2026-10-11 수동 격리 포지션의 미실현 손익 분리 및 봇 일일 킬 스위치 독립 산출 (P0)
+
+- **배경 및 원인 분석**:
+  - 사용자가 거래소에서 직접 수동 매수한 종목(예: `KRW-US` 탈루스, `KRW-CAP`)의 시세가 급락(-24.78%)할 때, 봇의 일일 손실률 산출 로직(`DailyRiskManager.update_daily_equity`)이 계좌 전체 총 평가액(Total Equity)을 기준으로 계산되는 구조적 맹점 확인.
+  - 봇 자체 알고리즘 매매는 2전 2승으로 이익(+616.96원) 상태였음에도 불구하고, 수동 매수 종목의 미실현 평가손실이 봇의 일일 손실 한도(-5.0%)를 침범하여 `일일 킬 스위치 (Latch)`가 오발동되고 신규 매수가 전면 차단되는 부작용 발생.
+- **수정 및 개선 내용**:
+  - `src/position_guard.py`:
+    - `calculate_bot_unrealized_pnl()` 함수 신설: 주문 저널에 유효한 봇 매수 이력이 뒷받침되는 봇 관리 포지션(`is_bot_managed_position = True`)의 미실현 평가손익만 집계하고, 수동 매수/고아 포지션은 0원으로 완전 격리.
+    - `calculate_bot_equity()` 함수 신설: 수동 매수 종목의 평가금을 제외한 `가용/잠김 원화 + 봇 관리 포지션 평가액`만으로 봇 유효 자산을 산출.
+  - `src/risk_manager.py`:
+    - `DailyRiskManager.update_daily_equity()` 확장: `bot_unrealized_pnl_krw` 및 `bot_equity` 인자를 추가 지원하여, 봇 당일 손익률을 `(realized_pnl_krw + bot_unrealized_pnl_krw) / daily_start_equity`로 독립 계산.
+    - 수동 매수 종목의 평가손실이 봇의 일일 킬 스위치 한도(-5.0%)를 절대 침범하지 않도록 철저히 차단. 기존 2인자 호출과의 100% 하위 호환성 유지.
+  - `src/trading_orchestrator.py`:
+    - `PortfolioSnapshot`에 `bot_equity: float = 0.0` 필드 추가.
+    - `refresh_portfolio()`에서 `calculate_bot_unrealized_pnl` 및 `calculate_bot_equity`를 계산하여 `risk_manager.update_daily_equity`에 전달 연동.
+- **검증**:
+  - `tests/test_manual_position_kill_switch_isolation.py` 신규 작성 및 전원 통과:
+    * 수동 매수 종목 -50% 폭락 시 봇 킬스위치 미발동 검증 (`test_manual_position_crash_does_not_trigger_bot_kill_switch`)
+    * 봇 관리 포지션 -12% 하락 시 봇 킬스위치 정상 발동 검증 (`test_bot_managed_position_loss_triggers_kill_switch`)
+    * 봇 실현 손실 초과 시 킬스위치 정상 발동 검증 (`test_bot_realized_loss_triggers_kill_switch`)
+    * 구형 2인자 호출 하위 호환성 검증 (`test_legacy_call_backward_compatibility`)
+    * `TradingOrchestrator.refresh_portfolio` 통합 연동 검증 (`test_orchestrator_refresh_portfolio_manual_position_isolation`)
+  - 기존 리스크/안전 테스트 44건 전원 통과 확인.
+
+
 ## 2026-10-10 타임스탑 청산 라벨링 세분화 및 RISK_OFF 약세장 진입 게이트 강화
 
 - **배경 및 원인 분석**:

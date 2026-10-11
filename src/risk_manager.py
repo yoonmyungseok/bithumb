@@ -1012,7 +1012,13 @@ class DailyRiskManager:
                     f"💵 [초기 입금 감지 및 기준자산 리셋] 기존 잔고 {old_start:,.0f}원 ➜ 실투자 기준자산으로 재설정: {self.daily_start_equity:,.0f}원"
                 )
 
-    def update_daily_equity(self, current_total_equity: float, now_kst: datetime.datetime) -> tuple[bool, float]:
+    def update_daily_equity(
+        self,
+        current_total_equity: float,
+        now_kst: datetime.datetime,
+        bot_unrealized_pnl_krw: float | None = None,
+        bot_equity: float | None = None,
+    ) -> tuple[bool, float]:
         with self._lock:
             date_key = now_kst.strftime("%Y-%m-%d")
 
@@ -1030,22 +1036,34 @@ class DailyRiskManager:
                     self.win_trades_today = 0
 
                 self.current_date_str = date_key
-                self.daily_start_equity = current_total_equity
+                effective_start = bot_equity if (bot_equity is not None and bot_equity > 0) else current_total_equity
+                self.daily_start_equity = effective_start
                 self.last_known_equity = current_total_equity
                 self.kill_switch_active = False
                 self.kill_switch_latched_date = ""
                 self._save_state()
-                logger.info(f"📅 [일일 손익 기준일 갱신: {date_key}] 시작 총 자산: {self.daily_start_equity:,.0f}원")
+                logger.info(
+                    f"📅 [일일 손익 기준일 갱신: {date_key}] 시작 기준 자산: {self.daily_start_equity:,.0f}원 (계좌 총 자산: {current_total_equity:,.0f}원)"
+                )
             else:
-                self.adjust_for_current_equity(current_total_equity)
+                effective_now = bot_equity if (bot_equity is not None and bot_equity > 0) else current_total_equity
+                self.adjust_for_current_equity(effective_now)
 
             self.last_known_equity = current_total_equity
 
-            daily_pnl_pct = (
-                (current_total_equity - self.daily_start_equity) / self.daily_start_equity
-                if self.daily_start_equity > 0
-                else 0.0
-            )
+            # 손익률 계산:
+            # 봇 관리 포지션의 미실현 손익이 전달된 경우, 봇 순수 손익(실현 + 미실현) 기반으로 독립 계산하여
+            # 수동 격리 종목(사용자 매수 코인 등)의 시세 급락에 따른 미실현 손실이 봇 킬스위치를 침범하지 않도록 철저 분리
+            if bot_unrealized_pnl_krw is not None and self.daily_start_equity > 0:
+                bot_total_pnl = self.realized_pnl_krw + bot_unrealized_pnl_krw
+                daily_pnl_pct = bot_total_pnl / self.daily_start_equity
+            else:
+                effective_equity = bot_equity if (bot_equity is not None and bot_equity > 0) else current_total_equity
+                daily_pnl_pct = (
+                    (effective_equity - self.daily_start_equity) / self.daily_start_equity
+                    if self.daily_start_equity > 0
+                    else 0.0
+                )
 
             # 킬스위치 발동 및 당일 Latch 고정 (P1-1)
             if daily_pnl_pct <= -self.max_loss_pct:
@@ -1054,7 +1072,7 @@ class DailyRiskManager:
                     self.kill_switch_latched_date = date_key
                     self._save_state()
                     logger.warning(
-                        f"🛑 [일일 킬 스위치 발동 (Latch)] 당일 손실률({daily_pnl_pct*100:.2f}%)이 한도(-{self.max_loss_pct*100:.1f}%)를 초과했습니다. 오늘 자정까지 신규 매수가 전면 차단됩니다."
+                        f"🛑 [일일 킬 스위치 발동 (Latch)] 당일 봇 손실률({daily_pnl_pct*100:.2f}%)이 한도(-{self.max_loss_pct*100:.1f}%)를 초과했습니다. 오늘 자정까지 신규 매수가 전면 차단됩니다."
                     )
             elif self.kill_switch_latched_date == date_key:
                 # 이미 당일 킬스위치가 발동된 경우, 가격이 일시 반등해도 Latch 유지

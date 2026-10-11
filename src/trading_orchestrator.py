@@ -255,18 +255,66 @@ class TradingOrchestrator:
         """Refresh the shared account/risk snapshot without changing trade rules."""
         # 포트폴리오·킬스위치 계산은 매 사이클 첫 조회를 강제 최신 상태로 시작한다.
         balances = self.get_balance_snapshot(exchange, force_refresh=True)
-        total_equity = calculate_total_equity(balances, exchange)
-        held_markets = get_held_markets(balances, exchange)
-        stale_states = trailing_tracker.reconcile_markets(held_markets, order_journal=order_journal)
+        from position_guard import calculate_bot_equity, calculate_bot_unrealized_pnl
+        from risk_manager import _fetch_held_prices
+
+        price_map = _fetch_held_prices(balances, exchange)
+        try:
+            total_equity = calculate_total_equity(balances, exchange, price_map=price_map)
+        except TypeError:
+            total_equity = calculate_total_equity(balances, exchange)
+
+        try:
+            held_markets = get_held_markets(balances, exchange, price_map=price_map)
+        except TypeError:
+            held_markets = get_held_markets(balances, exchange)
+
+        try:
+            stale_states = trailing_tracker.reconcile_markets(held_markets, order_journal=order_journal)
+        except TypeError:
+            stale_states = trailing_tracker.reconcile_markets(held_markets)
 
         canceled_stale = realtime_engine.clean_stale_orders(max_age_seconds=180)
         requoted = realtime_engine.requote_pending_orders()
         if canceled_stale or requoted:
             # 취소/재호가 직후에는 잠긴 잔고가 달라질 수 있으므로 다시 강제 조회한다.
             balances = self.get_balance_snapshot(exchange, force_refresh=True)
+            price_map = _fetch_held_prices(balances, exchange)
+            try:
+                total_equity = calculate_total_equity(balances, exchange, price_map=price_map)
+            except TypeError:
+                total_equity = calculate_total_equity(balances, exchange)
+
+            try:
+                held_markets = get_held_markets(balances, exchange, price_map=price_map)
+            except TypeError:
+                held_markets = get_held_markets(balances, exchange)
 
         krw_available = float(balances.get("KRW", {}).get("balance", 0.0))
-        is_kill_switch, daily_pnl = risk_manager.update_daily_equity(total_equity, now)
+
+        # 봇 관리 포지션의 순수 미실현 손익 및 봇 유효 자산 계산 (수동 격리 종목 배제)
+        bot_unrealized_pnl = calculate_bot_unrealized_pnl(
+            balances,
+            price_map,
+            order_journal=order_journal,
+            trailing_tracker=trailing_tracker,
+        )
+        bot_equity = calculate_bot_equity(
+            balances,
+            price_map,
+            order_journal=order_journal,
+            trailing_tracker=trailing_tracker,
+        )
+
+        try:
+            is_kill_switch, daily_pnl = risk_manager.update_daily_equity(
+                total_equity,
+                now,
+                bot_unrealized_pnl_krw=bot_unrealized_pnl,
+                bot_equity=bot_equity,
+            )
+        except TypeError:
+            is_kill_switch, daily_pnl = risk_manager.update_daily_equity(total_equity, now)
         is_cooldown, cooldown_minutes = risk_manager.is_cooling_down()
         max_positions, max_position_pct, top_count = get_portfolio_tiers(total_equity)
         risk_guard.update_limits(max_open_positions=max_positions, max_position_pct=max_position_pct)
@@ -285,6 +333,7 @@ class TradingOrchestrator:
             max_positions=max_positions,
             max_position_pct=max_position_pct,
             top_count=top_count,
+            bot_equity=bot_equity,
         )
 
     def select_target_markets(
@@ -847,6 +896,7 @@ class PortfolioSnapshot:
     max_positions: int
     max_position_pct: float
     top_count: int
+    bot_equity: float = 0.0
 
 
 @dataclass(frozen=True)

@@ -185,3 +185,9 @@
   - 거래소 잔고에 실제 자산이 존재함에도 재시작, DB 마이그레이션, 주문 저널 동기화 등으로 진입 시각(`entry_times`)이나 전략 모드가 누락되어 '수동 관리 포지션'으로 오인·방치되는 현상을 방지한다.
   - `TrailingStopTracker.reconcile_markets()` 실행 시 수동 격리 종목(`is_protected_market`)을 제외하고 진입 시각 또는 전략 모드가 누락된 보유 종목을 자동 감지하여, 메이저(BTC/ETH/SOL)는 `SWING`, 알트코인은 `SCALP` 모드로 즉시 자동 입양(Auto-Adopt) 및 추적 상태를 영속 동기화한다.
   - `PositionGuard`는 트레일링 추적기에 등록된 활성 포지션을 최우선으로 봇 관리 포지션(`is_bot_managed_position = True`)으로 승인하며, 주문 저널 내에 과거 봇 매수 체결 이력이 존재하는 경우에도 잔여 포지션으로 정상 관리하도록 보장한다.
+- **수동 격리 포지션의 봇 리스크 및 일일 킬 스위치 완전 분리 정책 (P0)**:
+  - **배경**: 사용자가 거래소에서 직접 수동 매수한 종목(예: `KRW-US`, `KRW-CAP`)의 시세 급락에 따른 미실현 평가손실이 봇의 일일 손실률(`DailyRiskManager.update_daily_equity`) 계산에 합산되어, 봇 알고리즘 매매가 수익 상태임에도 일일 킬 스위치(-5.0% Latch)가 오발동되어 신규 매수가 전면 차단되던 결함을 근절한다.
+  - **봇 순수 미실현 손익 기반 독립 산출 (`calculate_bot_unrealized_pnl`)**: 잔고 내 보유 코인 중 주문 저널에 봇 매수 이력이 뒷받침되는 봇 관리 포지션(`is_bot_managed_position = True`)의 미실현 평가손익만 집계하고, 수동 매수/고아 포지션의 평가손익은 0원으로 완전 격리한다.
+  - **일일 봇 손익률 독립 판정 (`update_daily_equity`)**: 봇 당일 손익률을 `(realized_pnl_krw + bot_unrealized_pnl_krw) / daily_start_equity`로 산출하여, 수동 종목의 폭락이 봇의 킬 스위치를 침범하지 못하도록 구조적으로 분리한다.
+  - **봇 유효 자산 집계 (`calculate_bot_equity`)**: 수동 매수 종목의 평가금을 제외한 `가용/잠김 원화 + 봇 관리 포지션 평가액`을 봇 유효 자산(`PortfolioSnapshot.bot_equity`)으로 독립 산출·보존한다.
+

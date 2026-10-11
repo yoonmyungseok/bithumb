@@ -125,3 +125,82 @@ def is_exit_allowed(
         market,
         default_if_journal_missing=False,
     )
+
+
+def calculate_bot_unrealized_pnl(
+    balances: dict[str, dict[str, float]],
+    price_map: dict[str, float],
+    order_journal: Any = None,
+    trailing_tracker: Any = None,
+) -> float:
+    """
+    봇이 직접 매수하여 관리 중인 활성 포지션들의 미실현 평가손익(KRW)만 합산한다.
+    수동 매수 종목 및 고아 포지션은 0으로 완전 격리하여 봇 킬스위치 왜곡을 차단한다.
+    """
+    unrealized_krw = 0.0
+    for cur, info in balances.items():
+        if cur in ("KRW", "P"):
+            continue
+        market = f"KRW-{cur}"
+        if is_protected_market(market):
+            continue
+
+        vol = float(info.get("balance", 0.0) or 0.0) + float(info.get("locked", 0.0) or 0.0)
+        if vol <= 0:
+            continue
+
+        # 봇 관리 포지션인지 검증 (수동 매수 종목은 제외)
+        if not is_bot_managed_position(order_journal, trailing_tracker, market):
+            continue
+
+        current_price = float(price_map.get(market, 0.0) or 0.0)
+        if current_price <= 0:
+            continue
+
+        avg_buy_price = float(info.get("avg_buy_price", 0.0) or 0.0)
+        if avg_buy_price <= 0 and order_journal and hasattr(order_journal, "orders"):
+            for order in reversed(order_journal.orders):
+                if str(order.get("market", "")).upper() == market.upper() and str(order.get("side", "")).lower() in ("bid", "buy"):
+                    avg_buy_price = float(order.get("price") or order.get("avg_price") or 0.0)
+                    if avg_buy_price > 0:
+                        break
+
+        if avg_buy_price > 0:
+            unrealized_krw += (current_price - avg_buy_price) * vol
+
+    return unrealized_krw
+
+
+def calculate_bot_equity(
+    balances: dict[str, dict[str, float]],
+    price_map: dict[str, float],
+    order_journal: Any = None,
+    trailing_tracker: Any = None,
+) -> float:
+    """
+    봇이 관리하는 유효 총 자산(KRW):
+    가용/잠김 원화 + 봇 관리 포지션의 현재 평가금액
+    (수동 매수 종목의 평가금액은 제외)
+    """
+    krw_balance = float(balances.get("KRW", {}).get("balance", 0.0) or 0.0) + float(balances.get("KRW", {}).get("locked", 0.0) or 0.0)
+    bot_coin_val = 0.0
+    for cur, info in balances.items():
+        if cur in ("KRW", "P"):
+            continue
+        market = f"KRW-{cur}"
+        if is_protected_market(market):
+            continue
+
+        vol = float(info.get("balance", 0.0) or 0.0) + float(info.get("locked", 0.0) or 0.0)
+        if vol <= 0:
+            continue
+
+        if not is_bot_managed_position(order_journal, trailing_tracker, market):
+            continue
+
+        current_price = float(price_map.get(market, 0.0) or 0.0)
+        if current_price > 0:
+            bot_coin_val += vol * current_price
+
+    return krw_balance + bot_coin_val
+
