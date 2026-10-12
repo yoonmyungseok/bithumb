@@ -899,6 +899,8 @@ class DailyRiskManager:
         self.win_trades_today = 0
         self.consecutive_losses = 0
         self.cooldown_until_ts = 0.0
+        self.bot_equity = 0.0
+        self.manual_isolated_equity = 0.0
         self.daily_history: list[dict[str, Any]] = []
         self._load_state()
 
@@ -908,7 +910,9 @@ class DailyRiskManager:
             if isinstance(data, dict):
                 self.current_date_str = data.get("date", "")
                 self.daily_start_equity = float(data.get("start_equity", 0.0))
-                self.last_known_equity = self.daily_start_equity
+                self.last_known_equity = float(data.get("total_equity", self.daily_start_equity) or self.daily_start_equity)
+                self.bot_equity = float(data.get("bot_equity", 0.0) or 0.0)
+                self.manual_isolated_equity = float(data.get("manual_isolated_equity", 0.0) or 0.0)
                 self.realized_pnl_krw = float(data.get("realized_pnl_krw", 0.0))
                 self.total_trades_today = int(data.get("total_trades", 0))
                 self.win_trades_today = int(data.get("win_trades", 0))
@@ -928,6 +932,9 @@ class DailyRiskManager:
             payload = {
                 "date": self.current_date_str,
                 "start_equity": self.daily_start_equity,
+                "total_equity": self.last_known_equity,
+                "bot_equity": self.bot_equity,
+                "manual_isolated_equity": self.manual_isolated_equity,
                 "realized_pnl_krw": self.realized_pnl_krw,
                 "total_trades": self.total_trades_today,
                 "win_trades": self.win_trades_today,
@@ -1049,7 +1056,14 @@ class DailyRiskManager:
                 effective_now = bot_equity if (bot_equity is not None and bot_equity > 0) else current_total_equity
                 self.adjust_for_current_equity(effective_now)
 
-            self.last_known_equity = current_total_equity
+            if bot_equity is not None:
+                self.bot_equity = float(bot_equity)
+                self.manual_isolated_equity = max(0.0, float(current_total_equity) - float(bot_equity))
+            else:
+                self.bot_equity = float(current_total_equity)
+                self.manual_isolated_equity = 0.0
+
+            self.last_known_equity = float(current_total_equity)
 
             # 손익률 계산:
             # 봇 관리 포지션의 미실현 손익이 전달된 경우, 봇 순수 손익(실현 + 미실현) 기반으로 독립 계산하여
@@ -1077,8 +1091,10 @@ class DailyRiskManager:
             elif self.kill_switch_latched_date == date_key:
                 # 이미 당일 킬스위치가 발동된 경우, 가격이 일시 반등해도 Latch 유지
                 self.kill_switch_active = True
+                self._save_state()
             else:
                 self.kill_switch_active = False
+                self._save_state()
 
             return self.kill_switch_active, daily_pnl_pct
 

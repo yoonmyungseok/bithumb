@@ -190,4 +190,17 @@
   - **봇 순수 미실현 손익 기반 독립 산출 (`calculate_bot_unrealized_pnl`)**: 잔고 내 보유 코인 중 주문 저널에 봇 매수 이력이 뒷받침되는 봇 관리 포지션(`is_bot_managed_position = True`)의 미실현 평가손익만 집계하고, 수동 매수/고아 포지션의 평가손익은 0원으로 완전 격리한다.
   - **일일 봇 손익률 독립 판정 (`update_daily_equity`)**: 봇 당일 손익률을 `(realized_pnl_krw + bot_unrealized_pnl_krw) / daily_start_equity`로 산출하여, 수동 종목의 폭락이 봇의 킬 스위치를 침범하지 못하도록 구조적으로 분리한다.
   - **봇 유효 자산 집계 (`calculate_bot_equity`)**: 수동 매수 종목의 평가금을 제외한 `가용/잠김 원화 + 봇 관리 포지션 평가액`을 봇 유효 자산(`PortfolioSnapshot.bot_equity`)으로 독립 산출·보존한다.
+- **가용 예수금 Standby Gate (P0)**:
+  - 가용 원화(`krw_available`)가 최소 주문 금액(`StrategyPolicy.MIN_ORDER_KRW = 5,000원`) 미만인 경우 신규 매수가 불가능하므로, 불필요한 AI 분석 큐 등록(`should_call_ai`) 및 신규 진입 스크리닝을 사전에 바이패스/스킵하여 Gemini 일일 쿼터 및 시스템 연산 자원을 절약한다.
+  - `trading_runtime.py`의 `process_entry_gating`에서 가용 예수금 부족 시 `INSUFFICIENT_CASH`로 신속 Fail-Closed 처리하여 불필요한 오더북 충격 분석 및 슬롯 계산 오버헤드를 차단한다.
+- **대시보드 및 리스크 관리 2-트랙 자산 분리 모델 (P1)**:
+  - 계좌 총 평가액을 봇 알고리즘 운용 자산(`bot_equity`)과 수동 격리 자산(`manual_isolated_equity`)의 2-트랙으로 분리 집계 및 영속화한다.
+  - `DailyRiskManager`의 상태 파일(`daily_risk_{exchange}.json`)에 `bot_equity`, `manual_isolated_equity`, `total_equity`를 명시적으로 분리 저장 및 로드 복원한다.
+  - `DashboardServer` 및 UI 개요 API(`get_overview_data`)에 거래소별 및 통합(`combined`) `bot_equity`, `manual_isolated_equity`를 제공하여, 수동 보유 자산(예: 빗썸 `KRW-US`, 업비트 `KRW-CAP`)의 변동성이 봇 성과 지표를 왜곡하지 않고 투명하게 분리 모니터링되도록 보장한다.
+- **주말/저유동성 장세 적응형 파라미터 가드 (P2)**:
+  - 주말 세션(금요일 23:00 ~ 일요일 23:59:59 KST, `is_weekend_session`) 동안 기관 참여 부재 및 거래량 급감으로 인한 휩소(Fake Breakout)를 방어하기 위해 적응형 가드를 발동한다.
+  - **모멘텀 돌파 알파 점수 허들 상향**: 평시 75점에서 주말 **78점**(`StrategyPolicy.WEEKEND_MOMENTUM_ALPHA_THRESHOLD`)으로 상향한다.
+  - **모멘텀 돌파 최소 거래량 배수 강화**: 평시 1.20배에서 주말 **1.50배**(`StrategyPolicy.WEEKEND_VOLUME_RATIO_MIN`)로 강화하여, 유의미한 수급 폭발이 동반되지 않은 돌파는 `WEEKEND_VOLUME_INSUFFICIENT`로 진입을 원천 차단한다.
+  - **주말 단일 포지션 비중 통제**: 주말 신규 진입 시 최대 비중을 10%(`StrategyPolicy.WEEKEND_MAX_POS_PCT`)로 제한하여 저유동성 주말 하방 변동성에 대한 노출을 축소한다.
+
 

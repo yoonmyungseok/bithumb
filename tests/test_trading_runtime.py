@@ -700,7 +700,7 @@ class TradingRuntimePrefixTests(unittest.TestCase):
             candidate_type="MOMENTUM_BREAKOUT",
             candidate_metadata={
                 "acc_trade_price_24h": 3_100_000_000.0,
-                "change_rate": 0.0615,
+                "change_rate": 0.045,
                 "relative_strength": 0.069,
                 "momentum_phase": "EARLY",
             },
@@ -1477,6 +1477,59 @@ class UpbitCycleMarketCapTests(TradingRuntimePrefixTests):
         # 4H EMA20 지지선 통과로 정상 평가 진행 (should_continue=False)
         self.assertFalse(res.should_continue)
 
+    def test_p0_cash_gate_insufficient_cash_blocks_entry(self):
+        """가용 원화가 5,000원 미만인 경우 신규 매수 게이트에서 즉시 INSUFFICIENT_CASH로 차단되는지 검증."""
+        profile = ExchangeCycleProfile(
+            exchange_key="bithumb",
+            reconcile_label="빗썸 ",
+            decision_exchange="bithumb",
+            log_prefix="빗썸 ",
+            extra_excluded_markets=frozenset(),
+            create_screener=self.create_screener,
+            cycle_start_label="5분 AI 퀀트 트레이딩",
+            tier_label="스마트 자산 티어",
+            tier_top_wording="상위",
+            summary_label="자산 요약",
+            btc_crash_label="비트코인 급락 위험 감지",
+        )
+        engine = self._build_engine(profile)
+        audit_mock = MagicMock()
+        inputs = MarketEntryInputs(
+            exchange=MagicMock(),
+            market="KRW-BTC",
+            korean_name="비트코인",
+            candidate_type="MOMENTUM_BREAKOUT",
+            candidate_metadata={},
+            analyzer=None,
+            coin_available=0.0,
+            avg_buy_price=0.0,
+            current_price=100_000_000.0,
+            coin_value=0.0,
+            krw_available=4_196.0,  # 5,000원 미달
+            candles_5m=[{"trade_price": 100_000_000.0}],
+            candles_1h=[],
+            orderbook={},
+            btc_regime="NORMAL",
+            btc_status_msg="정상",
+            is_btc_crashing=False,
+            is_cooldown=False,
+            is_extreme_fear=False,
+            is_bot_paused=False,
+            is_kill_switch=False,
+            is_entry_ready=True,
+            dyn_max_pos_pct=0.25,
+            now_str="2026-10-12 09:00:00",
+            audit_decision=audit_mock,
+        )
+        res = engine.process_entry_gating(inputs)
+        self.assertTrue(res.should_continue)
+        audit_mock.assert_called_with(
+            "KRW-BTC", "BLOCKED", "INSUFFICIENT_CASH",
+            ["가용 원화(4196원) < 최소 주문(5000원)"],
+            {"krw_available": 4196.0, "min_order_krw": 5000.0},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
+

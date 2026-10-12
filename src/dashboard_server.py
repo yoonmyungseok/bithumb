@@ -320,6 +320,8 @@ class UnifiedDashboardServer:
             "exchange": exchange_name,
             "title": f"{exchange_name.capitalize()} 트레이딩 봇",
             "total_equity": 0.0,
+            "bot_equity": 0.0,
+            "manual_isolated_equity": 0.0,
             "krw_available": 0.0,
             "daily_start_equity": 0.0,
             "daily_pnl_krw": 0.0,
@@ -363,6 +365,14 @@ class UnifiedDashboardServer:
         bt_eq = float(bithumb_data.get("total_equity", 0.0) or 0.0)
         up_eq = float(upbit_data.get("total_equity", 0.0) or 0.0)
         total_equity = bt_eq + up_eq
+
+        bt_bot_eq = float(bithumb_data.get("bot_equity", bt_eq) or 0.0)
+        up_bot_eq = float(upbit_data.get("bot_equity", up_eq) or 0.0)
+        total_bot_equity = bt_bot_eq + up_bot_eq
+
+        bt_manual_eq = float(bithumb_data.get("manual_isolated_equity", 0.0) or 0.0)
+        up_manual_eq = float(upbit_data.get("manual_isolated_equity", 0.0) or 0.0)
+        total_manual_equity = bt_manual_eq + up_manual_eq
 
         bt_krw = float(bithumb_data.get("krw_available", 0.0) or 0.0)
         up_krw = float(upbit_data.get("krw_available", 0.0) or 0.0)
@@ -625,6 +635,8 @@ class UnifiedDashboardServer:
         combined = {
             "title": "Bithumb & Upbit AI 퀀트 트레이딩 Pro (통합)",
             "total_equity": total_equity,
+            "bot_equity": total_bot_equity,
+            "manual_isolated_equity": total_manual_equity,
             "krw_available": total_krw,
             "daily_start_equity": total_start_equity,
             "daily_pnl_krw": total_daily_pnl,

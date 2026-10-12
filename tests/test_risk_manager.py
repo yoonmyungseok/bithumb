@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from risk_manager import (
+    DailyRiskManager,
     TrailingStopTracker,
     build_positions_data,
     calculate_total_equity,
@@ -86,5 +87,39 @@ class RiskManagerPortfolioBatchTests(unittest.TestCase):
         self.mock_api.get_current_price.assert_not_called()
 
 
+
+class DailyRiskManagerDualTrackTests(unittest.TestCase):
+    def test_daily_risk_manager_records_dual_track_equity(self):
+        """DailyRiskManager가 bot_equity와 manual_isolated_equity를 분리 저장하고 로드함을 검증."""
+        test_dir = ".test-tmp-current"
+        os.makedirs(test_dir, exist_ok=True)
+        stats_path = os.path.join(test_dir, "daily_stats.json")
+        if os.path.exists(stats_path):
+            os.remove(stats_path)
+
+        manager = DailyRiskManager(data_dir=test_dir)
+        import datetime
+        now = datetime.datetime(2026, 10, 12, 10, 0, 0)
+
+        # 총 자산 3,000,000원 중 봇 자산 1,000,000원, 수동 자산 2,000,000원
+        manager.update_daily_equity(
+            current_total_equity=3_000_000.0,
+            now_kst=now,
+            bot_unrealized_pnl_krw=0.0,
+            bot_equity=1_000_000.0,
+        )
+
+        self.assertEqual(manager.last_known_equity, 3_000_000.0)
+        self.assertEqual(manager.bot_equity, 1_000_000.0)
+        self.assertEqual(manager.manual_isolated_equity, 2_000_000.0)
+
+        # 새 인스턴스에서 파일로부터 2-트랙 자산이 복원되는지 검증
+        restored = DailyRiskManager(data_dir=test_dir)
+        self.assertEqual(restored.last_known_equity, 3_000_000.0)
+        self.assertEqual(restored.bot_equity, 1_000_000.0)
+        self.assertEqual(restored.manual_isolated_equity, 2_000_000.0)
+
+
 if __name__ == "__main__":
     unittest.main()
+

@@ -1344,6 +1344,21 @@ class TradingCycleEngine:
                 )
                 return EntryGatingResult(should_continue=True)
 
+        # 가용 원화 예수금이 최소 주문 금액 미만인 경우 신규 매수 게이트 조기 차단
+        if market_inputs.coin_available <= 0 and market_inputs.krw_available < StrategyPolicy.MIN_ORDER_KRW:
+            logger.info(
+                "[%s] 가용 원화(%.0f원) < 최소 주문(%.0f원) ➜ 신규 매수 게이트 조기 통과(HOLD)",
+                market,
+                market_inputs.krw_available,
+                StrategyPolicy.MIN_ORDER_KRW,
+            )
+            audit_decision(
+                market, "BLOCKED", "INSUFFICIENT_CASH",
+                [f"가용 원화({market_inputs.krw_available:.0f}원) < 최소 주문({StrategyPolicy.MIN_ORDER_KRW:.0f}원)"],
+                {"krw_available": market_inputs.krw_available, "min_order_krw": StrategyPolicy.MIN_ORDER_KRW},
+            )
+            return EntryGatingResult(should_continue=True)
+
         reentry_allowed = True
         reentry_reason = ""
         if entry_profile.block_on_reentry_denied:
@@ -2843,9 +2858,17 @@ class TradingCycleEngine:
                         max_ai_candidates,
                     )
 
-        # 확실한 전역 진입 차단 상태에서는 개별 신규 진입 AI 분석도 수행하지 않는다.
-        if is_bot_paused or is_kill_switch or is_btc_crashing or not is_entry_ready:
+        # 확실한 전역 진입 차단 상태이거나 가용 원화가 최소 주문 금액 미만이면 개별 신규 진입 AI 분석도 수행하지 않는다.
+        krw_available_val = float(getattr(prefix, "krw_available", float("inf")) or 0.0)
+        is_insufficient_cash = krw_available_val < StrategyPolicy.MIN_ORDER_KRW
+        if is_bot_paused or is_kill_switch or is_btc_crashing or not is_entry_ready or is_insufficient_cash:
             ai_budget_remaining = 0
+            if is_insufficient_cash and len(held_markets) == 0:
+                logger.info(
+                    "💤 [가용 예수금 Standby 가드] 가용 원화(%.0f원) < 최소 주문(%.0f원) ➜ 신규 매수 AI 분석 생략 및 Standby 유지",
+                    krw_available_val,
+                    StrategyPolicy.MIN_ORDER_KRW,
+                )
         else:
             ai_budget_remaining = max_ai_candidates
 

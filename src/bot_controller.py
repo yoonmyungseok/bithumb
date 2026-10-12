@@ -23,6 +23,7 @@ from risk_manager import (
     get_held_markets,
     get_kst_now_str,
 )
+from position_guard import calculate_bot_equity
 from strategy_engine import StrategyPolicy, get_new_listing_alpha_threshold
 from telegram_alert import TelegramAlert
 from trade_memory import TradeMemoryManager
@@ -410,6 +411,13 @@ class BotController:
             held_price_map = _fetch_held_prices(balances, bithumb)
             total_equity = calculate_total_equity(balances, bithumb, price_map=held_price_map)
             krw_avail = balances.get("KRW", {}).get("balance", 0.0)
+            bot_equity = calculate_bot_equity(
+                balances,
+                held_price_map,
+                order_journal=self.order_journal,
+                trailing_tracker=self.trailing_tracker,
+            )
+            manual_isolated_equity = max(0.0, total_equity - bot_equity)
 
             # 장중 입출금 및 초기 입금 기준자산 실시간 보정
             self.risk_manager.adjust_for_current_equity(total_equity)
@@ -588,6 +596,8 @@ class BotController:
 
             self.latest_dashboard_data = {
                 "total_equity": int(total_equity),
+                "bot_equity": int(bot_equity),
+                "manual_isolated_equity": int(manual_isolated_equity),
                 "krw_available": int(krw_avail),
                 "daily_start_equity": int(self.risk_manager.daily_start_equity),
                 "daily_pnl_krw": int(daily_pnl_krw),

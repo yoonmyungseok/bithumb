@@ -2,6 +2,32 @@
 
 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## 2026-10-12 가용 예수금 Standby Gate (P0), 2-트랙 자산 분리 표시 (P1), 주말 적응형 가드 (P2) 구현
+
+- **배경 및 원인 분석**:
+  - **P0 가용 예수금 부족 시 낭비**: 거래소 가용 원화가 최소 주문 금액(5,000원) 미만(예: 업비트 잔여 0.03원)임에도 불구하고, 매 사이클마다 AI 분석 큐(`should_call_ai`)에 후보 종목들을 등록하고 스크리닝을 수행하여 Gemini 일일 무료 쿼터(RPD) 및 시스템 자원을 낭비함.
+  - **P1 수동 격리 자산의 대시보드 통계 왜곡**: 수동 매수 격리 종목(빗썸 `KRW-US` 100% 폭등, 업비트 `KRW-CAP`)이 계좌 총 평가액에 합산 표시되어 대시보드 및 일일 통계에서 봇 자체의 알고리즘 운용 자산(`bot_equity`)과 수동 격리 자산(`manual_isolated_equity`)의 성과 구분이 불가능함.
+  - **P2 주말/저유동성 장세 휩소 취약**: 주말(금 23시 ~ 일 24시 KST) 세션은 기관 유동성이 급감하고 세력의 가짜 돌파(Fake Breakout) 및 호가 왜곡이 빈번하여 평시 모멘텀 돌파 기준(알파 75점, 거래량 1.2배)으로 진입 시 휩소 손절 위험이 높음.
+- **수정 및 개선 내용**:
+  - `src/trading_runtime.py` (P0):
+    - `allocate_ai_budget`: 가용 원화가 `StrategyPolicy.MIN_ORDER_KRW`(5,000원) 미만인 경우 AI 예산 할당을 0으로 차단하고 신규 진입 분석 등록을 원천 스킵.
+    - `process_entry_gating`: 가용 예수금 부족 시 즉시 `INSUFFICIENT_CASH` 사유로 신속 Fail-Closed 차단.
+  - `src/risk_manager.py` (P1):
+    - `DailyRiskManager`: `bot_equity`, `manual_isolated_equity` 필드 추가 및 상태 파일(`daily_risk_{exchange}.json`)에 2-트랙 자산과 `total_equity` 영속화 및 로드 복원 지원.
+  - `src/bot_controller.py` & `src/dashboard_server.py` (P1):
+    - `bot_controller`: `calculate_bot_equity`를 통해 `bot_equity` 및 `manual_isolated_equity`를 산출하여 대시보드 브로드캐스트 데이터에 주입.
+    - `dashboard_server`: 거래소별 개요 및 통합(`combined`) 데이터에 `bot_equity`, `manual_isolated_equity`를 분리 노출.
+  - `src/strategy_engine.py` (P2):
+    - `is_weekend_session(dt)` 헬퍼 구현 (금요일 23:00 ~ 일요일 23:59:59 KST 판별).
+    - `StrategyPolicy`에 `WEEKEND_MOMENTUM_ALPHA_THRESHOLD(78)`, `WEEKEND_VOLUME_RATIO_MIN(1.50)`, `WEEKEND_MAX_POS_PCT(0.10)` 신설.
+    - `get_momentum_breakout_alpha_threshold`: 주말 세션 시 알파 허들을 78점으로 동적 상향.
+    - `entry_signal`: 모멘텀 돌파 경로에서 주말 세션 거래량 1.5배 미달 시 `WEEKEND_VOLUME_INSUFFICIENT`로 진입 차단.
+- **검증**:
+  - `tests/test_trading_runtime.py`: 예수금 부족 시 AI 큐 스킵 및 신속 게이팅 차단 단위 테스트 통과 (42/42).
+  - `tests/test_risk_manager.py`: `DailyRiskManagerDualTrackTests` 2-트랙 자산 영속화 및 로드 단위 테스트 통과 (5/5).
+  - `tests/test_strategy_weekend_regime.py`: 주말 세션 판별, 알파 78점 상향, 거래량 1.5배 가드 단위 테스트 신규 작성 및 통과 (3/3).
+  - 대시보드 및 리스크 관리 전체 회귀 테스트 통과.
+
 ## 2026-10-11 수동 격리 포지션의 미실현 손익 분리 및 봇 일일 킬 스위치 독립 산출 (P0)
 
 - **배경 및 원인 분석**:

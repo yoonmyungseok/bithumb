@@ -25,6 +25,25 @@ def is_night_session(dt: datetime | None = None) -> bool:
     return StrategyPolicy.NIGHT_SESSION_START_HOUR <= kst_dt.hour < StrategyPolicy.NIGHT_SESSION_END_HOUR
 
 
+def is_weekend_session(dt: datetime | None = None) -> bool:
+    """KST 기준 주말 저유동성 세션 (금요일 23:00 ~ 일요일 23:59:59) 판별."""
+    if dt is None:
+        kst_dt = get_kst_now()
+    else:
+        if getattr(dt, "tzinfo", None) is not None:
+            kst_dt = dt.astimezone(KST)
+        else:
+            kst_dt = dt
+    # weekday(): 월=0, 화=1, 수=2, 목=3, 금=4, 토=5, 일=6
+    weekday = kst_dt.weekday()
+    hour = kst_dt.hour
+    if weekday == 4 and hour >= 23:  # 금요일 23시 이후
+        return True
+    if weekday in (5, 6):  # 토요일, 일요일 전일
+        return True
+    return False
+
+
 class StrategyPolicy:
     """
     실거래 및 백테스트 공통 전략 파라미터 및 단일 실행 정책 (Single Source of Truth, SSOT)
@@ -38,6 +57,11 @@ class StrategyPolicy:
     MIN_STOP_PCT: float = 0.015          # 기본 최소 손절선 -1.5%
     STOP_LOSS_PCT: float = 0.018         # 기본 손절 -1.8% (눌림목 바닥 진입으로 손실폭 제한)
     PULLBACK_MIN_DISTANCE_BELOW_HIGH: float = 0.006 # 전고점 대비 최소 눌림 마진 0.6% (상투 꼭지 매수 차단)
+
+    # 1-0. 주말 저유동성 세션 전용 파라미터 (Adaptive Weekend Regime)
+    WEEKEND_MOMENTUM_ALPHA_THRESHOLD: int = 78       # 주말 저유동성 모멘텀 돌파 알파 (78점 상향)
+    WEEKEND_VOLUME_RATIO_MIN: float = 1.5           # 주말 수급 검증 최소 거래량 배수 (1.5배)
+    WEEKEND_MAX_POS_PCT: float = 0.10               # 주말 최대 진입 비중 10% 캡
 
     # 1-1. 메이저 코인(BTC/ETH/SOL) 전용 목표가/익절/타임스탑 (낮은 변동성 적응 및 자금 잠김 방어)
     MAJOR_MIN_TARGET_PCT: float = 0.015          # 메이저 최소 목표 수익률 +1.5%
@@ -682,13 +706,24 @@ def get_momentum_breakout_alpha_threshold(
     btc_regime: str = "NORMAL",
     is_night: bool | None = None,
     relative_strength: float = 0.0,
+    is_weekend: bool | None = None,
 ) -> int:
     """확정봉 모멘텀 돌파 전용 알파 기준을 반환한다.
-    알트코인 독립 매수: 비트코인 급락(CRASH)이 아닌 이상, BTC 레짐(RISK_OFF 등)에 영향없이
-    정상장 기준(주간 55점, 심야 65점)을 일관 적용한다.
+    - 주말 저유동성 세션(금 23시 ~ 일 24시): 가짜 돌파 방어를 위해 최소 78점 이상 엄선.
+    - 심야 세션: 78점 적용.
+    - 정상장: 72점, 상승장: 75점 적용.
     """
     regime_upper = str(btc_regime or "NORMAL").upper()
     night_active = is_night if is_night is not None else is_night_session()
+    weekend_active = is_weekend if is_weekend is not None else is_weekend_session()
+
+    if weekend_active:
+        base_thresh = (
+            StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT_BULL
+            if (night_active and regime_upper == "BULL_TREND")
+            else (StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NIGHT if night_active else StrategyPolicy.MOMENTUM_BREAKOUT_ALPHA_THRESHOLD_NORMAL)
+        )
+        return max(StrategyPolicy.WEEKEND_MOMENTUM_ALPHA_THRESHOLD, base_thresh)
 
     if night_active:
         if regime_upper == "BULL_TREND":
@@ -1847,7 +1882,13 @@ def entry_signal(
         average_volume = (sum(previous_volumes) / len(previous_volumes)) if previous_volumes else 0.0
         current_volume = float(candles[0].get("candle_acc_trade_volume", 0.0) or 0.0)
         current_open = float(candles[0].get("opening_price", current) or current)
-        volume_confirmed = average_volume > 0 and current_volume >= average_volume * StrategyPolicy.MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN
+        is_weekend = is_weekend_session()
+        vol_ratio_required = (
+            StrategyPolicy.WEEKEND_VOLUME_RATIO_MIN
+            if is_weekend
+            else StrategyPolicy.MOMENTUM_BREAKOUT_VOLUME_RATIO_MIN
+        )
+        volume_confirmed = average_volume > 0 and current_volume >= average_volume * vol_ratio_required
 
         breakout_target = (
             previous_high * StrategyPolicy.RS_LEADER_BREAKOUT_TOLERANCE
@@ -1868,8 +1909,9 @@ def entry_signal(
             )
         momentum_breakout_passed = price_breakout and volume_confirmed and bullish_candle and momentum_rsi_passed
         leader_tag = " [RS 주도주 특례]" if is_leader else ""
+        weekend_tag = f" [주말 저유동성 가드(최소 {vol_ratio_required:.1f}배)]" if is_weekend else ""
         momentum_breakout_reason = (
-            f"직전 {lookback}봉 고점 돌파={'통과' if price_breakout else '차단'}{leader_tag}, "
+            f"직전 {lookback}봉 고점 돌파={'통과' if price_breakout else '차단'}{leader_tag}{weekend_tag}, "
             f"거래량배수={(current_volume / average_volume) if average_volume > 0 else 0.0:.2f}, "
             f"양봉={'통과' if bullish_candle else '차단'}, RSI={'통과' if momentum_rsi_passed else '차단'}, "
             f"1H MTF={'통과' if momentum_mtf_allowed else '차단'}"
@@ -1892,7 +1934,7 @@ def entry_signal(
             entry_alpha_threshold = 999
         else:
             entry_alpha_threshold = get_momentum_breakout_alpha_threshold(
-                btc_regime, night_active, relative_strength=relative_strength
+                btc_regime, night_active, relative_strength=relative_strength, is_weekend=is_weekend
             )
             # 모멘텀 돌파는 급등 캔들의 탄력을 감안하여 모멘텀 전용 이격도(최대 +5.0%)를 적용한다.
             hard_gate_disparity_momentum = current <= (ma20 * StrategyPolicy.MAX_MA20_DISPARITY_MOMENTUM)
