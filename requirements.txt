@@ -4,3 +4,5 @@ apscheduler==3.11.3
 python-dotenv==1.2.3
 websocket-client==1.9.0
 matplotlib==3.11.1
+gspread>=6.2.0
+google-auth>=2.62.0

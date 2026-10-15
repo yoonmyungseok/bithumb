@@ -1,6 +1,32 @@
 # 변경 이력
-
-버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
+ 
+ 버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
+ 
++## 2026-10-15 수동 매수 종목 구글 스프레드시트 5분 동기화 모듈 구현 (Gemini 웹 연동 지원)
++
++- **배경 및 요구사항**:
++  - 사용자가 업비트 및 빗썸에서 수동 매수한 종목들의 현재가와 손익 현황을 구글 스프레드시트에 5분 주기로 자동 업데이트.
++  - 단일 스프레드시트 내에서 전체 현황을 한눈에 볼 수 있는 `Summary` 종합 요약 탭과 종목마다 독립적인 개별 탭(`UPBIT_{종목}`, `BITHUMB_{종목}`)을 자동 생성/갱신.
++  - Gemini 웹(`gemini.google.com`)에서 Google Workspace(@Google Drive) 확장을 통해 스프레드시트를 참조하여 실시간 질의응답 및 포트폴리오 분석을 지원.
++- **설계 및 구현 내용**:
++  - `src/sheets/sheet_manager.py`:
++    - `gspread` + Google Cloud Service Account 기반 스프레드시트 통신 모듈 구현.
++    - `Summary` 종합 요약 탭(투자원금, 평가금, 평가손익, 총 수익률, 전 종목 테이블) 갱신.
++    - 종목별 탭(`UPBIT_HOLO`, `BITHUMB_US`, `UPBIT_RSR` 등) 동적 생성 및 상단 포지션 지표 카드 + 하단 5분 주기 시세/손익 히스토리 테이블 자동 누적 기록.
++    - API Quota(분당 쓰기 60회) 보호를 위해 셀 단위 쓰기 대신 배치 업데이트(`batch_update`) 및 주기 간 딜레이 적용.
++  - `src/sheets/manual_position_collector.py`:
++    - 빗썸과 업비트의 잔고 조회 API를 각각의 키/환경변수로 철저히 격리 호출.
++    - `OrderJournal.has_active_bot_position(market)`을 통해 봇이 진입한 포지션은 제외하고, 순수 **수동 매수 종목만 정확히 필터링**.
++  - `src/sheets/sync_worker.py`:
++    - 5분(300초) 주기 백그라운드 스케줄러 워커. `--once` 플래그로 1회 즉시 실행 및 테스트 지원.
++  - 운영 스크립트:
++    - `start_sheets_sync.sh`, `stop_sheets_sync.sh`, `status_sheets_sync.sh` 제공.
++- **검증**:
++  - `src/sheets/sync_worker.py --once` 테스트 실행 완료:
++    - 실제 계좌의 수동 매수 종목 3종목(`UPBIT_HOLO`, `BITHUMB_US`, `UPBIT_RSR`) 정확히 감지 및 추출.
++    - 구글 스프레드시트(`현재가_확인`)에 `Summary` 및 3개 개별 탭 자동 생성, 시세 및 손익 데이터 기록 성공.
++  - 백그라운드 데몬 구동(`start_sheets_sync.sh`) 및 프로세스 상태 정상 확인.
++
 
 ## 2026-10-12 가용 예수금 Standby Gate (P0), 2-트랙 자산 분리 표시 (P1), 주말 적응형 가드 (P2) 구현
 
