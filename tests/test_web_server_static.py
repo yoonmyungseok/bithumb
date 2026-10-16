@@ -158,6 +158,48 @@ class TestWebServerStatic(unittest.TestCase):
             content = resp.read().decode("utf-8")
             self.assertIn("Fallback Bot", content)
 
+    def test_daily_report_api_and_static_page(self):
+        """web_server에서 /api/reports, /api/report 및 reports.html이 정상 서빙되는지 검증"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sample_report = os.path.join(tmp_dir, "daily_quant_report_20261016.md")
+            with open(sample_report, "w", encoding="utf-8") as f:
+                f.write("# 20261016 테스트 보고서")
+
+            self.server = DashboardWebServer(
+                port=self.port,
+                host="127.0.0.1",
+                data_provider=self._get_status,
+                reports_dir=tmp_dir,
+                title="Report Web Bot",
+            )
+            self.server.start()
+            time.sleep(0.2)
+
+            # 1. /api/reports 테스트
+            req_list = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/reports")
+            with urllib.request.urlopen(req_list) as resp:
+                self.assertEqual(resp.status, 200)
+                data = json.loads(resp.read().decode("utf-8"))
+                self.assertTrue(data["success"])
+                self.assertEqual(len(data["reports"]), 1)
+                self.assertEqual(data["reports"][0]["raw_date"], "20261016")
+
+            # 2. /api/report 내용 테스트
+            req_content = urllib.request.Request(f"http://127.0.0.1:{self.port}/api/report?date=20261016")
+            with urllib.request.urlopen(req_content) as resp:
+                self.assertEqual(resp.status, 200)
+                data = json.loads(resp.read().decode("utf-8"))
+                self.assertTrue(data["success"])
+                self.assertIn("테스트 보고서", data["content"])
+
+            # 3. /reports.html 정적 서빙 테스트
+            req_html = urllib.request.Request(f"http://127.0.0.1:{self.port}/reports.html")
+            with urllib.request.urlopen(req_html) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertIn("text/html", resp.headers.get("Content-Type"))
+                html_body = resp.read().decode("utf-8")
+                self.assertIn("일일 퀀트", html_body)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -252,3 +252,170 @@ body {
     flex-shrink: 0;
   }
 }
+
+/* ==========================================================================
+   일일 퀀트 보고서 (Daily Quant Report) 뷰어 스타일
+   ========================================================================== */
+.markdown-report {
+  color: #cbd5e1;
+  font-size: 0.925rem;
+  line-height: 1.75;
+  word-break: break-word;
+}
+
+.markdown-report h1 {
+  font-size: 1.65rem;
+  font-weight: 800;
+  color: #f8fafc;
+  margin-top: 1.25rem;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(to right, #60a5fa, #a78bfa, #34d399);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.markdown-report h2 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #93c5fd;
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.markdown-report h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.markdown-report h4 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #cbd5e1;
+  margin-top: 1.25rem;
+  margin-bottom: 0.35rem;
+}
+
+.markdown-report p {
+  margin-bottom: 0.85rem;
+  color: #cbd5e1;
+}
+
+.markdown-report strong {
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.markdown-report em {
+  font-style: italic;
+  color: #94a3b8;
+}
+
+.markdown-report hr {
+  border: 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+  margin: 1.75rem 0;
+}
+
+.markdown-report blockquote {
+  border-left: 4px solid #6366f1;
+  background-color: rgba(99, 102, 241, 0.08);
+  padding: 0.75rem 1rem;
+  border-radius: 0 0.5rem 0.5rem 0;
+  margin: 1rem 0;
+  color: #e2e8f0;
+}
+
+.markdown-report ul {
+  list-style-type: disc;
+  padding-left: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.markdown-report ol {
+  list-style-type: decimal;
+  padding-left: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.markdown-report li {
+  margin-bottom: 0.35rem;
+}
+
+.markdown-report li::marker {
+  color: #818cf8;
+}
+
+.markdown-report .table-container {
+  overflow-x: auto;
+  margin: 1.25rem 0;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(51, 65, 85, 0.7);
+  background-color: rgba(15, 23, 42, 0.6);
+}
+
+.markdown-report table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.825rem;
+  text-align: left;
+}
+
+.markdown-report th {
+  background-color: rgba(30, 41, 59, 0.9);
+  color: #93c5fd;
+  font-weight: 700;
+  padding: 0.65rem 0.85rem;
+  border-bottom: 1px solid rgba(51, 65, 85, 0.9);
+  border-right: 1px solid rgba(51, 65, 85, 0.4);
+  white-space: nowrap;
+}
+
+.markdown-report td {
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid rgba(51, 65, 85, 0.4);
+  border-right: 1px solid rgba(51, 65, 85, 0.3);
+  color: #e2e8f0;
+}
+
+.markdown-report tr:nth-child(even) {
+  background-color: rgba(30, 41, 59, 0.3);
+}
+
+.markdown-report tr:hover {
+  background-color: rgba(59, 130, 246, 0.1);
+}
+
+.markdown-report code {
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 0.85em;
+  background-color: rgba(30, 41, 59, 0.8);
+  color: #38bdf8;
+  padding: 0.15rem 0.4rem;
+  border-radius: 0.35rem;
+  border: 1px solid rgba(56, 189, 248, 0.2);
+}
+
+.markdown-report pre {
+  background-color: #090d16;
+  border: 1px solid rgba(51, 65, 85, 0.8);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  overflow-x: auto;
+  margin: 1.25rem 0;
+}
+
+.markdown-report pre code {
+  background-color: transparent;
+  padding: 0;
+  border: 0;
+  color: #f1f5f9;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}

@@ -521,6 +521,99 @@ class UnifiedDashboardServerTests(unittest.TestCase):
         self.assertEqual(status["market_intelligence_bithumb"]["regime"], "BEAR_REGIME")
         self.assertEqual(status["market_intelligence_upbit"]["regime"], "BEAR_REGIME")
 
+    def test_get_daily_reports_listing_sorted(self):
+        """보고서 목록 조회가 무관한 파일을 제외하고 최신순으로 정확히 정렬되는지 검증"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # 3개의 일일 보고서와 1개의 무관한 파일 생성
+            rep1 = os.path.join(tmp_dir, "daily_quant_report_20261014.md")
+            rep2 = os.path.join(tmp_dir, "daily_quant_report_20261016.md")
+            rep3 = os.path.join(tmp_dir, "daily_quant_report_20261015.md")
+            other = os.path.join(tmp_dir, "other_report.txt")
+
+            with open(rep1, "w", encoding="utf-8") as f: f.write("# 2026-10-14")
+            with open(rep2, "w", encoding="utf-8") as f: f.write("# 2026-10-16")
+            with open(rep3, "w", encoding="utf-8") as f: f.write("# 2026-10-15")
+            with open(other, "w", encoding="utf-8") as f: f.write("ignore me")
+
+            server = UnifiedDashboardServer(port=17999, reports_dir=tmp_dir)
+            result = server.get_daily_reports()
+
+            self.assertTrue(result["success"])
+            self.assertEqual(result["total"], 3)
+            reports = result["reports"]
+            # 최신순(20261016 -> 20261015 -> 20261014) 정렬 확인
+            self.assertEqual(reports[0]["raw_date"], "20261016")
+            self.assertEqual(reports[0]["date"], "2026-10-16")
+            self.assertEqual(reports[1]["raw_date"], "20261015")
+            self.assertEqual(reports[2]["raw_date"], "20261014")
+
+    def test_get_daily_report_content_latest_default(self):
+        """파라미터 없이 조회할 경우 가장 최신 보고서가 기본 반환되는지 검증"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            rep1 = os.path.join(tmp_dir, "daily_quant_report_20261014.md")
+            rep2 = os.path.join(tmp_dir, "daily_quant_report_20261016.md")
+            with open(rep1, "w", encoding="utf-8") as f: f.write("# 구버전 보고서")
+            with open(rep2, "w", encoding="utf-8") as f: f.write("# 최신 20261016 보고서")
+
+            server = UnifiedDashboardServer(port=17999, reports_dir=tmp_dir)
+            result = server.get_daily_report_content(None)
+
+            self.assertTrue(result["success"])
+            self.assertEqual(result["raw_date"], "20261016")
+            self.assertEqual(result["content"], "# 최신 20261016 보고서")
+
+    def test_get_daily_report_content_by_date_formats(self):
+        """YYYY-MM-DD 및 YYYYMMDD 날짜 형식으로 보고서 내용이 조회되는지 검증"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            rep = os.path.join(tmp_dir, "daily_quant_report_20261015.md")
+            with open(rep, "w", encoding="utf-8") as f: f.write("# 10월 15일 성과 분석")
+
+            server = UnifiedDashboardServer(port=17999, reports_dir=tmp_dir)
+
+            # 1. 2026-10-15 형식
+            res1 = server.get_daily_report_content("2026-10-15")
+            self.assertTrue(res1["success"])
+            self.assertEqual(res1["content"], "# 10월 15일 성과 분석")
+
+            # 2. 20261015 형식
+            res2 = server.get_daily_report_content("20261015")
+            self.assertTrue(res2["success"])
+            self.assertEqual(res2["content"], "# 10월 15일 성과 분석")
+
+            # 3. daily_quant_report_20261015.md 직접 전달
+            res3 = server.get_daily_report_content("daily_quant_report_20261015.md")
+            self.assertTrue(res3["success"])
+            self.assertEqual(res3["content"], "# 10월 15일 성과 분석")
+
+    def test_get_daily_report_content_traversal_attack_blocked(self):
+        """디렉터리 트래버설 공격 시도 시 fail-closed로 거부되는지 검증"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server = UnifiedDashboardServer(port=17999, reports_dir=tmp_dir)
+
+            # 상위 경로 탈출 시도
+            res1 = server.get_daily_report_content("../etc/passwd")
+            self.assertFalse(res1["success"])
+
+            res2 = server.get_daily_report_content("..\\windows\\system32")
+            self.assertFalse(res2["success"])
+
+            res3 = server.get_daily_report_content("20261016/../../secret.txt")
+            self.assertFalse(res3["success"])
+
+    def test_get_daily_report_content_not_found(self):
+        """존재하지 않는 날짜 또는 빈 디렉터리 시 정상 에러 반환 검증"""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server = UnifiedDashboardServer(port=17999, reports_dir=tmp_dir)
+
+            res = server.get_daily_report_content("2099-01-01")
+            self.assertFalse(res["success"])
+            self.assertIn("찾을 수 없습니다", res["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

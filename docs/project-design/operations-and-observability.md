@@ -11,6 +11,7 @@
 - 런타임 설정 매니저(`CommonConfigManager`)는 `MAX_ALT_ALLOC_PCT`, `MIN_ALT_ALLOC_PCT`뿐 아니라 AI 진입/스크리너 캐시 주기 및 사이클당 최대 AI 분석 후보 수(`MAX_AI_CANDIDATES_PER_CYCLE`)도 지원하여 대시보드 및 내부 API를 통해 봇 무중단 핫 리로드로 실시간 동적 조정 및 관측할 수 있다.
 - 확정 체결 기준 운영 리포트(`src/confirmed_fill_performance.py`)는 주문 저널의 실제 체결량(`processed_executed_volume`)과 수수료만을 바탕으로 실현 레그 및 순손익(Net PnL)을 산출한다. 매도 주문에 대응하는 매수 주문 매칭 시 이미 이전 청산으로 전량 소진된 과거 매수 주문의 중복 매칭을 방지(체결 가용 수량 추적)하고, 매도 시각 이전의 유효 매수 주문이 없는 외부/수동 보유분 청산에 대해서는 매도 주문에 보존된 실제 계좌 평단가(`avg_buy_price`)를 기준 진입가로 채택하여 대시보드 최근 완료 거래 내역과의 손익 왜곡을 방지한다.
 - 독립 리포팅 스크립트(`scripts/daily_performance_report.py`)를 통해 대화창이나 터미널에서 언제든 직전 24시간 양 거래소 비교 정밀 마크다운 보고서(`reports/daily_quant_report_YYYYMMDD.md`)를 즉시 생성·보관할 수 있다.
+- 일일 퀀트 성과 분석 보고서(`reports/daily_quant_report_YYYYMMDD.md`)는 대시보드 서버(`src/dashboard_server.py`) 및 개별 봇 웹 서버(`src/web_server.py`)의 안전한 전용 API(`/api/reports`, `/api/report`)를 통해 대시보드에서 직접 열람할 수 있다. 대시보드 메인 상단 헤더의 [일일 퀀트 리포트] 메뉴를 통해 실시간 트레이딩 모니터링 메인 화면과 분리된 전용 페이지(`view-report`)로 전환되며, 날짜별 보고서 선택 드롭다운, 이전/다음 날짜 탐색, 새로고침, 마크다운 원문 복사, 다운로드 및 독립 전용 페이지(`/reports.html`) 직접 접근을 완벽히 지원한다. 임의 파일 노출 방지를 위해 정규식 패턴 검증과 상위 경로 탈출 검증을 fail-closed로 적용한다.
 
 상세 작업 규칙은 [대시보드·운영 규칙](../agent-rules/dashboard-operations.md)을 따른다.
 

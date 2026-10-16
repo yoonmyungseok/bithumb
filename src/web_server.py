@@ -3,6 +3,7 @@ import hmac
 import logging
 import mimetypes
 import os
+import re
 import sys
 import threading
 import urllib.parse
@@ -11,6 +12,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# 일일 퀀트 보고서 상수
+default_reports_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "reports"))
+DAILY_REPORT_FILENAME_PATTERN = re.compile(r"^daily_quant_report_(\d{8})\.md$")
+DAILY_REPORT_DATE_PATTERN = re.compile(r"^\d{4}-?\d{2}-?\d{2}$")
 
 
 class QuietThreadingHTTPServer(ThreadingHTTPServer):
@@ -46,6 +52,7 @@ class DashboardWebServer:
         is_api_only: bool = False,
         config_provider: Callable[[], dict[str, Any]] | None = None,
         config_updater: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        reports_dir: str | None = None,
         **kwargs,
     ):
         self.port = port
@@ -59,6 +66,7 @@ class DashboardWebServer:
         # 설정된 경우에만 원격 제어에 토큰을 요구해 기존 로컬 운영 환경의 호환을 유지한다.
         self.action_token = os.getenv("DASHBOARD_ACTION_TOKEN", "").strip()
         self.static_dir = None if self.is_api_only else (static_dir or self._resolve_static_dir())
+        self.reports_dir = os.path.abspath(reports_dir or default_reports_dir)
         self.server: QuietThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -75,6 +83,95 @@ class DashboardWebServer:
         if os.path.isdir(base_dir) and os.path.isfile(os.path.join(base_dir, "index.html")):
             return base_dir
         return None
+
+    def get_daily_reports(self) -> dict[str, Any]:
+        """일일 퀀트 성과 분석 보고서 파일 목록을 최신순으로 반환"""
+        if not os.path.isdir(self.reports_dir):
+            return {"success": True, "reports": [], "total": 0}
+
+        reports: list[dict[str, Any]] = []
+        try:
+            entries = os.listdir(self.reports_dir)
+        except OSError as e:
+            logger.warning(f"보고서 디렉터리 접근 오류: {e}")
+            return {"success": False, "reports": [], "total": 0, "error": "보고서 디렉터리 접근 실패"}
+
+        for entry in entries:
+            match = DAILY_REPORT_FILENAME_PATTERN.match(entry)
+            if not match:
+                continue
+            raw_date = match.group(1)
+            formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+            file_path = os.path.join(self.reports_dir, entry)
+            try:
+                stat = os.stat(file_path)
+                reports.append({
+                    "filename": entry,
+                    "date": formatted_date,
+                    "raw_date": raw_date,
+                    "title": f"암호화폐 퀀트 매매 성과 분석 보고서 ({formatted_date})",
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                })
+            except OSError:
+                continue
+
+        # 최신 날짜 역순 정렬
+        reports.sort(key=lambda r: r["raw_date"], reverse=True)
+        return {"success": True, "reports": reports, "total": len(reports)}
+
+    def get_daily_report_content(self, target: str | None = None) -> dict[str, Any]:
+        """지정된 날짜 또는 파일명의 일일 퀀트 보고서 마크다운 내용을 안전하게 반환"""
+        if not os.path.isdir(self.reports_dir):
+            return {"success": False, "message": "보고서 디렉터리가 존재하지 않습니다."}
+
+        target_file = None
+        if not target or not str(target).strip():
+            # 타깃이 지정되지 않은 경우 가장 최신 보고서 자동 선택
+            list_res = self.get_daily_reports()
+            reports = list_res.get("reports", [])
+            if not reports:
+                return {"success": False, "message": "생성된 일일 퀀트 보고서가 없습니다."}
+            target_file = reports[0]["filename"]
+        else:
+            cleaned = str(target).strip()
+            # 1. 파일명 직접 전달 (예: daily_quant_report_20261016.md)
+            if DAILY_REPORT_FILENAME_PATTERN.match(cleaned):
+                target_file = cleaned
+            # 2. 날짜 전달 (예: 2026-10-16 또는 20261016)
+            elif DAILY_REPORT_DATE_PATTERN.match(cleaned):
+                raw_digits = cleaned.replace("-", "")
+                target_file = f"daily_quant_report_{raw_digits}.md"
+            else:
+                return {"success": False, "message": "유효하지 않은 보고서 파일명 또는 날짜 형식입니다."}
+
+        # 디렉터리 트래버설 공격 방어: 상위 경로 탈출 검증
+        norm_target = os.path.abspath(os.path.join(self.reports_dir, target_file))
+        norm_reports = os.path.abspath(self.reports_dir)
+        if not norm_target.startswith(norm_reports) or not os.path.isfile(norm_target):
+            return {"success": False, "message": f"보고서 파일을 찾을 수 없습니다: {target_file}"}
+
+        try:
+            with open(norm_target, "r", encoding="utf-8") as f:
+                content = f.read()
+            stat = os.stat(norm_target)
+            match = DAILY_REPORT_FILENAME_PATTERN.match(target_file)
+            raw_date = match.group(1) if match else ""
+            formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}" if len(raw_date) == 8 else ""
+
+            return {
+                "success": True,
+                "filename": target_file,
+                "date": formatted_date,
+                "raw_date": raw_date,
+                "title": f"암호화폐 퀀트 매매 성과 분석 보고서 ({formatted_date})" if formatted_date else target_file,
+                "content": content,
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+            }
+        except Exception as e:
+            logger.error(f"보고서 파일 읽기 실패 ({target_file}): {e}")
+            return {"success": False, "message": f"보고서 파일을 읽는 중 오류가 발생했습니다: {e}"}
 
     def start(self):
         handler_cls = self._create_handler()
@@ -151,6 +248,34 @@ class DashboardWebServer:
                         data = server_self.config_provider() if server_self.config_provider else {"success": False, "message": "설정 제공자가 구성되지 않았습니다."}
                         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
                         self.send_response(200)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+
+                    # 1-2. 일일 퀀트 보고서 목록 조회 API
+                    if path == "/api/reports":
+                        data = server_self.get_daily_reports()
+                        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+
+                    # 1-3. 일일 퀀트 보고서 내용 조회 API
+                    if path == "/api/report":
+                        query_params = urllib.parse.parse_qs(parsed_url.query)
+                        target = query_params.get("date", query_params.get("filename", [""]))[0]
+                        data = server_self.get_daily_report_content(target)
+                        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                        self.send_response(200 if data.get("success") else 404)
                         self.send_header("Content-Type", "application/json; charset=utf-8")
                         self.send_header("Access-Control-Allow-Origin", "*")
                         self.send_header("Content-Length", str(len(body)))

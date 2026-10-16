@@ -16,7 +16,13 @@
     countdownTimer: null,
     candidateFilter: '',
     journalFilter: '',
-    pendingAction: null
+    pendingAction: null,
+    // 일일 퀀트 보고서 상태
+    currentView: 'dashboard',
+    reportList: [],
+    currentReportDate: '',
+    currentReportData: null,
+    isReportLoading: false
   };
 
   // API Helper
@@ -2701,10 +2707,420 @@
     });
   }
 
+  // ==========================================================================
+  // 일일 퀀트 보고서 (Daily Quant Report) 뷰어 엔진
+  // ==========================================================================
+  function formatFileSize(bytes) {
+    if (!bytes || isNaN(bytes)) return '0 B';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+  }
+
+  function escapeHtml(text) {
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  // Marked.js 부재 시 동작하는 안전한 내장 마크다운 폴백 파서
+  function renderMarkdownFallback(md) {
+    if (!md) return '';
+    const lines = md.split('\n');
+    let html = '';
+    let inTable = false;
+    let tableHeaders = [];
+    let inCodeBlock = false;
+    let inList = false;
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+
+      // 코드 블록
+      if (line.trim().startsWith('```')) {
+        if (!inCodeBlock) {
+          inCodeBlock = true;
+          html += '<pre><code>';
+        } else {
+          inCodeBlock = false;
+          html += '</code></pre>\n';
+        }
+        continue;
+      }
+      if (inCodeBlock) {
+        html += escapeHtml(line) + '\n';
+        continue;
+      }
+
+      // 수평선
+      if (/^(\s*[-*_]\s*){3,}$/.test(line)) {
+        if (inList) { html += '</ul>\n'; inList = false; }
+        if (inTable) { html += '</tbody></table></div>\n'; inTable = false; }
+        html += '<hr>\n';
+        continue;
+      }
+
+      // 표 (Table)
+      if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
+        const cells = line.trim().slice(1, -1).split('|').map(c => c.trim());
+        // 구분선 행 (e.g. |---|---|)
+        if (cells.every(c => /^:?-+:?$/.test(c))) {
+          continue;
+        }
+        if (!inTable) {
+          inTable = true;
+          tableHeaders = cells;
+          html += '<div class="table-container"><table><thead><tr>';
+          cells.forEach(h => {
+            html += `<th>${inlineFormat(h)}</th>`;
+          });
+          html += '</tr></thead><tbody>\n';
+          continue;
+        } else {
+          html += '<tr>';
+          cells.forEach(c => {
+            html += `<td>${inlineFormat(c)}</td>`;
+          });
+          html += '</tr>\n';
+          continue;
+        }
+      } else if (inTable) {
+        inTable = false;
+        html += '</tbody></table></div>\n';
+      }
+
+      // 리스트
+      if (/^\s*[-*]\s+/.test(line)) {
+        if (!inList) {
+          inList = true;
+          html += '<ul>\n';
+        }
+        const text = line.replace(/^\s*[-*]\s+/, '');
+        html += `<li>${inlineFormat(text)}</li>\n`;
+        continue;
+      } else if (inList) {
+        inList = false;
+        html += '</ul>\n';
+      }
+
+      // 헤딩
+      if (line.startsWith('# ')) {
+        html += `<h1>${inlineFormat(line.slice(2))}</h1>\n`;
+        continue;
+      }
+      if (line.startsWith('## ')) {
+        html += `<h2>${inlineFormat(line.slice(3))}</h2>\n`;
+        continue;
+      }
+      if (line.startsWith('### ')) {
+        html += `<h3>${inlineFormat(line.slice(4))}</h3>\n`;
+        continue;
+      }
+      if (line.startsWith('#### ')) {
+        html += `<h4>${inlineFormat(line.slice(5))}</h4>\n`;
+        continue;
+      }
+
+      // 인용구
+      if (line.startsWith('> ')) {
+        html += `<blockquote>${inlineFormat(line.slice(2))}</blockquote>\n`;
+        continue;
+      }
+
+      // 빈 줄
+      if (!line.trim()) {
+        continue;
+      }
+
+      // 일반 문단
+      html += `<p>${inlineFormat(line)}</p>\n`;
+    }
+
+    if (inTable) html += '</tbody></table></div>\n';
+    if (inList) html += '</ul>\n';
+    if (inCodeBlock) html += '</code></pre>\n';
+
+    return html;
+  }
+
+  function inlineFormat(text) {
+    if (!text) return '';
+    let s = escapeHtml(text);
+    // 볼드 + 이탤릭
+    s = s.replace(/\*\*\*(.*?)\*\*\*/g, '<strong><em>$1</em></strong>');
+    // 볼드
+    s = s.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    // 이탤릭
+    s = s.replace(/\*(.*?)\*/g, '<em>$1</em>');
+    // 인라인 코드
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    return s;
+  }
+
+  function renderMarkdown(md) {
+    if (!md) return '';
+    if (window.marked && typeof window.marked.parse === 'function') {
+      try {
+        return window.marked.parse(md);
+      } catch (e) {
+        console.warn('Marked.js 파싱 실패, 내장 렌더러로 전환:', e);
+      }
+    }
+    return renderMarkdownFallback(md);
+  }
+
+  function switchView(viewName, targetDate) {
+    state.currentView = viewName;
+    const dashView = document.getElementById('view-dashboard');
+    const repView = document.getElementById('view-report');
+    const navDashBtn = document.getElementById('view_nav_dashboard');
+    const navRepBtn = document.getElementById('view_nav_report');
+
+    if (viewName === 'report') {
+      if (dashView) dashView.classList.add('hidden');
+      if (repView) repView.classList.remove('hidden');
+
+      if (navDashBtn) {
+        navDashBtn.className = "px-3 py-1.5 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white inline-flex items-center gap-1.5";
+      }
+      if (navRepBtn) {
+        navRepBtn.className = "px-3 py-1.5 rounded-lg text-xs font-bold transition bg-indigo-600 text-white inline-flex items-center gap-1.5 shadow-sm";
+      }
+
+      if (state.reportList.length === 0) {
+        fetchReportList(targetDate);
+      } else if (targetDate) {
+        loadReport(targetDate);
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      if (repView) repView.classList.add('hidden');
+      if (dashView) dashView.classList.remove('hidden');
+
+      if (navRepBtn) {
+        navRepBtn.className = "px-3 py-1.5 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white inline-flex items-center gap-1.5";
+      }
+      if (navDashBtn) {
+        navDashBtn.className = "px-3 py-1.5 rounded-lg text-xs font-bold transition bg-indigo-600 text-white inline-flex items-center gap-1.5 shadow-sm";
+      }
+
+      if (window.location.hash.startsWith('#report')) {
+        history.replaceState(null, '', window.location.pathname);
+      }
+    }
+  }
+
+  async function fetchReportList(selectDate) {
+    try {
+      const res = await fetch(getApiBaseUrl() + '/api/reports');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      state.reportList = data.reports || [];
+
+      const selectEl = document.getElementById('report-date-select');
+      if (selectEl) {
+        selectEl.innerHTML = '';
+        if (state.reportList.length === 0) {
+          selectEl.innerHTML = '<option value="">등록된 일일 보고서가 없습니다</option>';
+        } else {
+          state.reportList.forEach((rep, idx) => {
+            const opt = document.createElement('option');
+            opt.value = rep.raw_date;
+            opt.textContent = `${rep.date}${idx === 0 ? ' (최신)' : ''} [${formatFileSize(rep.size)}]`;
+            selectEl.appendChild(opt);
+          });
+        }
+      }
+
+      let target = selectDate;
+      if (!target && state.reportList.length > 0) {
+        target = state.reportList[0].raw_date;
+      }
+      if (target) {
+        loadReport(target);
+      } else {
+        const loadingEl = document.getElementById('report-loading');
+        const errorEl = document.getElementById('report-error');
+        const errorMsg = document.getElementById('report-error-msg');
+        if (loadingEl) loadingEl.classList.add('hidden');
+        if (errorEl) errorEl.classList.remove('hidden');
+        if (errorMsg) errorMsg.textContent = '현재 확인 가능한 일일 퀀트 보고서 파일이 없습니다.';
+      }
+    } catch (err) {
+      console.error('보고서 목록 로드 오류:', err);
+      const loadingEl = document.getElementById('report-loading');
+      const errorEl = document.getElementById('report-error');
+      const errorMsg = document.getElementById('report-error-msg');
+      if (loadingEl) loadingEl.classList.add('hidden');
+      if (errorEl) errorEl.classList.remove('hidden');
+      if (errorMsg) errorMsg.textContent = `보고서 목록을 가져오는 데 실패했습니다: ${err.message}`;
+    }
+  }
+
+  async function loadReport(target) {
+    state.isReportLoading = true;
+    const loadingEl = document.getElementById('report-loading');
+    const errorEl = document.getElementById('report-error');
+    const errorMsg = document.getElementById('report-error-msg');
+    const bodyEl = document.getElementById('report-content-body');
+    const selectEl = document.getElementById('report-date-select');
+    const prevBtn = document.getElementById('report-prev-btn');
+    const nextBtn = document.getElementById('report-next-btn');
+
+    if (loadingEl) loadingEl.classList.remove('hidden');
+    if (errorEl) errorEl.classList.add('hidden');
+    if (bodyEl) bodyEl.classList.add('hidden');
+
+    try {
+      const param = target ? `?date=${encodeURIComponent(target)}` : '';
+      const res = await fetch(getApiBaseUrl() + '/api/report' + param);
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || `HTTP ${res.status}`);
+      }
+
+      state.currentReportData = data;
+      state.currentReportDate = data.raw_date || target;
+
+      if (selectEl && state.currentReportDate) {
+        selectEl.value = state.currentReportDate;
+      }
+
+      // 메타 정보 표시
+      const titleEl = document.getElementById('report-header-title');
+      const dateEl = document.getElementById('report-meta-date');
+      const filenameEl = document.getElementById('report-meta-filename');
+      const sizeEl = document.getElementById('report-meta-size');
+      const mtimeEl = document.getElementById('report-meta-mtime');
+
+      if (titleEl) titleEl.textContent = data.title || '암호화폐 퀀트 매매 성과 분석 보고서';
+      if (dateEl) dateEl.textContent = data.date || '-';
+      if (filenameEl) {
+        filenameEl.textContent = data.filename || '-';
+        filenameEl.title = data.filename || '-';
+      }
+      if (sizeEl) sizeEl.textContent = formatFileSize(data.size);
+      if (mtimeEl) {
+        const d = data.mtime ? new Date(data.mtime * 1000) : new Date();
+        mtimeEl.textContent = d.toLocaleString('ko-KR');
+      }
+
+      // 마크다운 파싱 및 본문 주입
+      if (bodyEl) {
+        const rawHtml = renderMarkdown(data.content);
+        bodyEl.innerHTML = rawHtml;
+
+        // 테이블 요소들을 가로 스크롤 컨테이너로 감싸기
+        const tables = bodyEl.querySelectorAll('table');
+        tables.forEach(tbl => {
+          if (!tbl.parentElement.classList.contains('table-container')) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'table-container';
+            tbl.parentNode.insertBefore(wrapper, tbl);
+            wrapper.appendChild(tbl);
+          }
+        });
+
+        bodyEl.classList.remove('hidden');
+      }
+
+      // 이전/다음 날짜 버튼 상태 업데이트
+      const currIdx = state.reportList.findIndex(r => r.raw_date === state.currentReportDate);
+      if (currIdx !== -1) {
+        if (prevBtn) prevBtn.disabled = (currIdx >= state.reportList.length - 1);
+        if (nextBtn) nextBtn.disabled = (currIdx <= 0);
+      }
+
+      // URL 해시 갱신
+      if (state.currentView === 'report') {
+        history.replaceState(null, '', `#report?date=${state.currentReportDate}`);
+      }
+
+    } catch (err) {
+      console.error('보고서 로드 오류:', err);
+      if (errorEl) errorEl.classList.remove('hidden');
+      if (errorMsg) errorMsg.textContent = err.message || '보고서를 불러올 수 없습니다.';
+    } finally {
+      state.isReportLoading = false;
+      if (loadingEl) loadingEl.classList.add('hidden');
+    }
+  }
+
+  function navigateReport(delta) {
+    if (!state.reportList || state.reportList.length === 0) return;
+    const currIdx = state.reportList.findIndex(r => r.raw_date === state.currentReportDate);
+    if (currIdx === -1) return;
+    // delta = -1: 과거 보고서(리스트상 index + 1)
+    // delta = 1: 최신 보고서(리스트상 index - 1)
+    const targetIdx = delta === -1 ? currIdx + 1 : currIdx - 1;
+    if (targetIdx >= 0 && targetIdx < state.reportList.length) {
+      loadReport(state.reportList[targetIdx].raw_date);
+    }
+  }
+
+  function copyReportMarkdown() {
+    if (!state.currentReportData || !state.currentReportData.content) {
+      alert('복사할 보고서 내용이 없습니다.');
+      return;
+    }
+    navigator.clipboard.writeText(state.currentReportData.content)
+      .then(() => alert('일일 퀀트 보고서 마크다운 원문이 클립보드에 복사되었습니다.'))
+      .catch(() => alert('클립보드 복사에 실패했습니다.'));
+  }
+
+  function downloadReportMarkdown() {
+    if (!state.currentReportData || !state.currentReportData.content) {
+      alert('다운로드할 보고서 데이터가 없습니다.');
+      return;
+    }
+    const blob = new Blob([state.currentReportData.content], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = state.currentReportData.filename || 'daily_quant_report.md';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function openReportInNewTab() {
+    const dateParam = state.currentReportDate ? `?date=${encodeURIComponent(state.currentReportDate)}` : '';
+    window.open(`/reports.html${dateParam}`, '_blank');
+  }
+
+  function checkHashRoute() {
+    const hash = window.location.hash;
+    if (hash.startsWith('#report')) {
+      const match = hash.match(/date=([^&]+)/);
+      const targetDate = match ? decodeURIComponent(match[1]) : '';
+      switchView('report', targetDate);
+    } else if (state.currentView === 'report') {
+      switchView('dashboard');
+    }
+  }
+
+  // 전역 노출 바인딩
+  window.switchView = switchView;
+  window.onReportDateSelect = (val) => loadReport(val);
+  window.navigateReport = navigateReport;
+  window.refreshCurrentReport = () => loadReport(state.currentReportDate);
+  window.copyReportMarkdown = copyReportMarkdown;
+  window.downloadReportMarkdown = downloadReportMarkdown;
+  window.openReportInNewTab = openReportInNewTab;
+
   // Initialize on DOM Ready
   document.addEventListener('DOMContentLoaded', () => {
     window.switchExchange('combined');
     setupPolling();
+
+    // 초기 해시 라우팅 확인
+    checkHashRoute();
+    window.addEventListener('hashchange', checkHashRoute);
 
     // 모바일 화면 회전 및 브라우저 창 리사이즈 시 14일 자산 Canvas 차트 선명하게 재계산
     let resizeTimer = null;

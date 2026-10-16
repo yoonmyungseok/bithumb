@@ -7,6 +7,8 @@
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Marked Markdown Parser CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <!-- TradingView Widget Script -->
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
   <link rel="stylesheet" href="/src/styles.css" />
@@ -36,6 +38,18 @@
 
       <!-- Multi-Bot Exchange Switcher & Action Controls -->
       <div class="flex flex-wrap items-center justify-between sm:justify-end gap-2.5 sm:gap-3 w-full lg:w-auto mt-2 lg:mt-0">
+        <!-- Main Navigation Tabs: 실시간 대시보드 vs 일일 퀀트 리포트 -->
+        <nav class="flex bg-slate-950/80 p-1 rounded-xl border border-slate-800 shrink-0" aria-label="메인 페이지 메뉴">
+          <button id="view_nav_dashboard" onclick="window.switchView('dashboard')" class="px-3 py-1.5 rounded-lg text-xs font-bold transition bg-indigo-600 text-white inline-flex items-center gap-1.5 shadow-sm">
+            <span>📊</span>
+            <span>실시간 대시보드</span>
+          </button>
+          <button id="view_nav_report" onclick="window.switchView('report')" class="px-3 py-1.5 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white inline-flex items-center gap-1.5">
+            <span>📑</span>
+            <span>일일 퀀트 리포트</span>
+          </button>
+        </nav>
+
         <!-- Exchange Switcher Tabs -->
         <div class="flex bg-slate-950/80 p-1 rounded-xl border border-slate-800 shrink-0">
           <button id="exchange_combined" onclick="window.switchExchange('combined')" class="exchange-tab-btn px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-bold transition bg-blue-600 text-white inline-flex items-center gap-1.5">
@@ -85,7 +99,9 @@
       </div>
     </header>
 
-    <!-- Macro Market Intelligence Card (Groq AI) -->
+    <!-- Main Dashboard View Container -->
+    <div id="view-dashboard" class="space-y-4 sm:space-y-6">
+      <!-- Macro Market Intelligence Card (Groq AI) -->
     <div class="card-glass" id="market_intelligence_card" style="margin-bottom: 15px;">
       <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
         <span>🌐 거시 시장 인텔리전스 (Groq AI)</span>
@@ -681,6 +697,122 @@
           <div id="policy_new_listing_time">• 정책 값 수신 대기</div>
           <div id="policy_new_listing_alpha">• 정책 값 수신 대기</div>
         </div>
+      </div>
+    </div>
+    </div> <!-- /#view-dashboard -->
+
+    <!-- Daily Quant Report View Container -->
+    <div id="view-report" class="space-y-4 sm:space-y-6 hidden">
+      <!-- Report Top Control & Date Navigator Bar -->
+      <div class="card-glass p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3">
+        <div class="flex flex-wrap items-center gap-2 sm:gap-3">
+          <button onclick="window.switchView('dashboard')" class="px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white transition inline-flex items-center gap-1.5 shadow-sm border border-slate-700">
+            <span>←</span>
+            <span>실시간 대시보드로 돌아가기</span>
+          </button>
+          <div class="h-5 w-px bg-slate-700 hidden sm:block"></div>
+          <div class="flex items-center gap-1.5">
+            <span class="text-xs font-semibold text-slate-400">📅 보고서 선택:</span>
+            <select id="report-date-select" onchange="window.onReportDateSelect(this.value)" class="bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-1.5 text-xs sm:text-sm font-semibold focus:outline-none focus:border-indigo-500 cursor-pointer">
+              <option value="">보고서 목록 불러오는 중...</option>
+            </select>
+          </div>
+          <div class="flex items-center gap-1">
+            <button id="report-prev-btn" onclick="window.navigateReport(-1)" title="이전 날짜 보고서" class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed border border-slate-700 transition">
+              ◀ 이전
+            </button>
+            <button id="report-next-btn" onclick="window.navigateReport(1)" title="다음 날짜 보고서" class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed border border-slate-700 transition">
+              다음 ▶
+            </button>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2">
+          <button onclick="window.refreshCurrentReport()" title="보고서 새로고침" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition inline-flex items-center gap-1">
+            <span>🔄</span>
+            <span class="hidden sm:inline">새로고침</span>
+          </button>
+          <button onclick="window.openReportInNewTab()" title="새 탭에서 독립 페이지로 열기" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-indigo-300 hover:text-indigo-200 border border-indigo-900/50 transition inline-flex items-center gap-1">
+            <span>↗</span>
+            <span>새 창 열기</span>
+          </button>
+          <button onclick="window.copyReportMarkdown()" title="마크다운 원문 복사" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition inline-flex items-center gap-1">
+            <span>📋</span>
+            <span class="hidden sm:inline">MD 복사</span>
+          </button>
+          <button onclick="window.downloadReportMarkdown()" title="보고서 파일 다운로드" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white transition inline-flex items-center gap-1 shadow-sm">
+            <span>⬇</span>
+            <span>다운로드</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Report Metadata Header Card -->
+      <div id="report-meta-card" class="card-glass p-4 sm:p-5">
+        <div class="flex flex-wrap justify-between items-center gap-2 border-b border-slate-800/80 pb-3 mb-3">
+          <div class="flex items-center space-x-2">
+            <span class="text-xl">📑</span>
+            <h2 id="report-header-title" class="text-base sm:text-lg font-bold text-white">
+              암호화폐 퀀트 매매 성과 분석 보고서
+            </h2>
+          </div>
+          <span id="report-badge-status" class="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+            정상 로드
+          </span>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs text-slate-400">
+          <div class="bg-slate-950/40 p-2.5 rounded-xl border border-slate-800/60">
+            <div class="text-slate-500 mb-0.5">분석 기준일</div>
+            <div id="report-meta-date" class="font-bold text-slate-200">-</div>
+          </div>
+          <div class="bg-slate-950/40 p-2.5 rounded-xl border border-slate-800/60">
+            <div class="text-slate-500 mb-0.5">파일명</div>
+            <div id="report-meta-filename" class="font-bold text-slate-200 truncate">-</div>
+          </div>
+          <div class="bg-slate-950/40 p-2.5 rounded-xl border border-slate-800/60">
+            <div class="text-slate-500 mb-0.5">보고서 용량</div>
+            <div id="report-meta-size" class="font-bold text-slate-200">-</div>
+          </div>
+          <div class="bg-slate-950/40 p-2.5 rounded-xl border border-slate-800/60">
+            <div class="text-slate-500 mb-0.5">최종 갱신 시각</div>
+            <div id="report-meta-mtime" class="font-bold text-slate-200">-</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Report Content Card -->
+      <div class="card-glass p-5 sm:p-8 min-h-[500px]">
+        <!-- Loading State Indicator -->
+        <div id="report-loading" class="flex flex-col items-center justify-center py-20 text-slate-400">
+          <div class="w-10 h-10 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin mb-4"></div>
+          <p class="text-sm font-semibold text-slate-300">일일 퀀트 보고서를 불러오는 중입니다...</p>
+          <p class="text-xs text-slate-500 mt-1">서버에서 마크다운 리포트 데이터를 안전하게 가져오고 있습니다.</p>
+        </div>
+
+        <!-- Error State Indicator -->
+        <div id="report-error" class="hidden flex flex-col items-center justify-center py-20 text-center">
+          <div class="text-4xl mb-3">⚠️</div>
+          <h3 class="text-base font-bold text-rose-400 mb-1">보고서를 불러오지 못했습니다</h3>
+          <p id="report-error-msg" class="text-xs text-slate-400 mb-4">해당 날짜의 보고서가 아직 생성되지 않았거나 파일을 읽을 수 없습니다.</p>
+          <button onclick="window.refreshCurrentReport()" class="px-4 py-2 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-lg shadow-indigo-600/30">
+            다시 시도
+          </button>
+        </div>
+
+        <!-- Markdown Render Container -->
+        <div id="report-content-body" class="markdown-report hidden">
+          <!-- Rendered Markdown HTML injected here -->
+        </div>
+      </div>
+
+      <!-- Report Bottom Navigation -->
+      <div class="flex justify-between items-center pt-2">
+        <button onclick="window.switchView('dashboard')" class="px-4 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition">
+          ← 실시간 대시보드로 돌아가기
+        </button>
+        <button onclick="window.scrollTo({top: 0, behavior: 'smooth'})" class="px-4 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition">
+          ↑ 맨 위로 이동
+        </button>
       </div>
     </div>
 
