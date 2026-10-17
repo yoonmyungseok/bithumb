@@ -2,22 +2,63 @@
  
  버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
  
+## 2026-10-17 봇 전용 독립 시드 모드, 매크로 쇼크 V자 반등 조기 해제, 수동 포지션 관측 알림 구현
+
+- **배경 및 요구사항**:
+  1. **파라미터: 봇 전용 독립 시드 모드 (`ISOLATED_BOT_BUDGET_MODE`)**: 계좌에 대량의 수동 코인이 존재할 때 계좌 총 평가액이 비중 분모로 사용되어 총 익스포저(헤드룸) 계산 시 신규 매수가 0원으로 클램핑되거나 전면 차단되는 문제를 해결. 수동 자산을 비중 분모에서 완전 분리하고 봇 전용 할당 예산(예: 100,000 KRW) 기준으로만 종목당 비중(38%)을 산정하도록 개선.
+  2. **필터: BTC 매크로 쇼크 V자 반등 조기 해제 (`MACRO_SHOCK_V_SHAPE_EARLY_RELEASE`)**: 급락 직후 저점 대비 +1.5% 이상 거래량(180%+)을 동반한 V자 반등 발생 시 30분 쿨다운을 조기 해제하여 주도 알트코인의 반등 모멘텀을 선별 포착할 수 있도록 필터 보완.
+  3. **기능: 수동 포지션 스마트 모니터링 알림 (`MANUAL_POSITION_OBSERVER`)**: 봇의 매매 격리 원칙을 엄격히 준수하면서, 수동 보유 종목의 24시간 고점 대비 -8% 이상 급락 또는 주요 지지선(일봉 EMA20) 이탈 시 텔레그램으로 참고용 시황 알림을 전송하는 관측 모드 추가.
+
+- **설계 및 구현 내용**:
+  1. **봇 전용 독립 시드 모드 (`ISOLATED_BOT_BUDGET_MODE`, `BOT_ALLOCATED_BUDGET`)**:
+     - `src/risk_controls.py`:
+       - `get_dynamic_portfolio_tiers`: 소액 구간(30만 원 미만) 시드에서 최대 3종목 분할 시 종목당 비중 상한을 기존 35%에서 **38%**(`0.38`)로 현실화.
+       - `RiskGuard`: `isolated_budget_mode`, `bot_allocated_budget` 속성 및 `update_limits` 지원 추가. `validate_buy`에서 `eval_equity`(봇 할당 예산)를 기준으로 종목당 비중 및 총 익스포저(`projected_exposure = 1.0 - max(0.0, min(available_krw, eval_equity) - order_krw) / eval_equity`)를 독립 검사.
+     - `src/position_guard.py`:
+       - `get_bot_held_markets()` 및 `get_manual_held_markets()` 신설: 봇 매수 포지션과 수동 자산을 명확히 분리하여 봇 보유 슬롯 수 카운트 시 수동 코인 배제.
+     - `src/trading_runtime.py`:
+       - `ISOLATED_BOT_BUDGET_MODE` 활성화 시 `current_total_equity` 대신 `eval_equity`(예: 100,000원)를 적용하여 사전 헤드룸 클램핑(가용 헤드룸 85,000원 유지) 및 알트코인 포지션 균등화가 정상 작동하도록 개선.
+  2. **BTC 매크로 쇼크 V자 반등 조기 해제 (`MACRO_SHOCK_V_SHAPE_EARLY_RELEASE`)**:
+     - `src/strategy_engine.py`:
+       - `StrategyPolicy`: `ENABLE_V_SHAPE_SHOCK_RELEASE = True`, `V_SHAPE_REBOUND_THRESHOLD = 0.015`(+1.5%), `V_SHAPE_VOLUME_RATIO = 1.8`(180%) 선언.
+       - `set_macro_shock` 시 저점 가격(`trough_price`) 영속 기록 지원.
+       - `check_macro_shock_v_shape_release(candles_5m, scope)`: 최근 30분 내 최저점 대비 +1.5% 이상 반등 및 20이평 거래량 대비 1.8배 이상 거래량 급증 검증 후 `clear_macro_shock` 호출.
+     - `src/trading_orchestrator.py`:
+       - `classify_market_regime`: 쿨다운 유지 중 매 사이클마다 V자 반등을 감지하여 성립 시 30분 쿨다운 조기 해제 및 `NORMAL` 레짐 복원.
+  3. **수동 포지션 스마트 모니터링 알림 (`MANUAL_POSITION_OBSERVER`)**:
+     - `src/manual_position_observer.py`:
+       - `ManualPositionObserver`: 수동 보유 종목에 대해 일봉 30일 캔들을 조회하여 24시간 고가 대비 -8% 이상 급락(`drop_from_high <= -0.08`) 또는 일봉 EMA20 하향 이탈(`cur_price < ema20_daily`) 감지.
+       - 동일 종목당 최소 2시간(7200초) 쿨다운 디바운싱을 적용하여 텔레그램 중복 도배 방지.
+       - 봇의 매매와 절대 간섭하지 않는 안전 관측 전용 설계 보장.
+     - `src/trading_runtime.py`, `src/main.py`, `src/main_upbit.py`:
+       - 매 5분 사이클마다 `ManualPositionObserver` 실행 연동 및 `TradingRuntimeContext.telegram` 주입 완료.
+  4. **설정 스키마 및 공통 SSOT 동기화 (`src/runtime_config.py`)**:
+     - `COMMON_CONFIG_SCHEMA`에 `ISOLATED_BOT_BUDGET_MODE`, `BOT_ALLOCATED_BUDGET`, `ISOLATE_MANUAL_ASSETS_FROM_HEADROOM`, `MACRO_SHOCK_V_SHAPE_EARLY_RELEASE`, `MANUAL_POSITION_OBSERVER` 등록.
+
+- **테스트 및 검증**:
+  - `tests/test_isolated_bot_budget.py`: 소액 38% 티어 산정, 수동 코인 1천만 원 상태에서 10만 원 봇 예산 기준 38,000원 주문 정상 승인, 45,000원 비중 초과 차단, 헤드룸 85,000원 정상 산정, 봇 보유 슬롯 격리 등 4개 테스트 완료 (4/4 OK).
+  - `tests/test_macro_shock_v_shape.py`: +1.5% 반등 및 1.8배 거래량 동반 조기 해제, 반등 부족 시 유지, 거래량 부족 시 유지, 오케스트레이터 사이클 연동 등 4개 테스트 완료 (4/4 OK).
+  - `tests/test_manual_position_observer.py`: 수동 코인 -10% 급락 알림, 봇 매수 코인 제외 격리, 2시간 쿨다운 중복 방지 등 3개 테스트 완료 (3/3 OK).
+  - 기존 관련 테스트(`test_macro_shock_and_guards.py`, `test_position_guard.py`, `test_manual_position_kill_switch_isolation.py`, `test_runtime_config_manager.py` 등 총 42개) 100% 통과 (42/42 OK).
+
 ## 2026-10-17 24h 종목 분석 보고서 대시보드 전용 페이지 분리 열람 기능 구현
 
 - **배경 및 요구사항**:
   - `24h/` 디렉터리에 생성되는 종목별 24시간 시세 흐름 및 전략 분석 보고서(`{종목명}_24h_YYYYMMDD.md`, 예: `HOLO_24h_20261017.md`, `RSR_24h_20261017.md`, `US_24h_20261017.md`)를 대시보드에서 열람할 수 있도록 지원.
   - 기존 실시간 대시보드, 일일 퀀트 리포트와 페이지를 완전히 분리하여 독립된 전용 뷰 및 페이지 제공 요청.
+  - 종목별 여러 일자의 보고서가 누적되더라도 혼선을 방지하고 각 종목당 가장 최신의 보고서 1건만 열람할 수 있도록 필터링 지원.
 - **설계 및 구현 내용**:
   - **백엔드 API 구현 (`src/dashboard_server.py`, `src/web_server.py`)**:
-    - `GET /api/analysis-24h` (또는 `/api/reports-24h`): `24h/` 디렉터리 내 정규식(`^([A-Za-z0-9_]+)_24h_(\d{8})\.md$`) 매칭 파일 목록을 최신 날짜 역순 및 종목 심볼 알파벳 오름차순으로 스캔/반환. 파일 첫 줄 헤더(`# ...`)에서 한국어 타이틀 자동 추출.
+    - `GET /api/analysis-24h` (또는 `/api/reports-24h`): `24h/` 디렉터리 내 정규식(`^([A-Za-z0-9_]+)_24h_(\d{8})\.md$`) 매칭 파일 목록을 스캔하고, 종목별로 가장 최신 날짜의 보고서 1건만 남기도록 필터링(`only_latest=True`, 전체 조회는 `?all=true`). 최신 날짜 역순 및 종목 심볼 알파벳 오름차순으로 정렬. 파일 첫 줄 헤더(`# ...`)에서 한국어 타이틀 자동 추출.
     - `GET /api/analysis-24h?file=...` 및 `GET /api/analysis-24h/content`: 특정 파일명 또는 종목 심볼의 마크다운 원문 및 메타데이터 반환. 파라미터 미지정 시 가장 최신 보고서 자동 반환.
     - 보안: 파일명 정규식 검증, 상위 경로 탈출(`..`) 차단, `os.path.abspath` 경로 검증으로 디렉터리 트래버설 공격을 fail-closed로 방어.
   - **프론트엔드 전용 페이지 및 뷰 분리 (`dashboard/analysis_24h.html`, `dashboard/index.html`, `dashboard/reports.html`, `dashboard/src/app.js`)**:
-    - **독립 전용 페이지 (`dashboard/analysis_24h.html`)**: URL 직접 접근(`/analysis_24h.html`) 또는 새 탭 열기로 접근 가능한 풀스크린 24h 종목 분석 뷰어. 종목 드롭다운, 이전/다음 종목 탐색, 마크다운 파싱 렌더링, MD 복사, 다운로드 및 상단 네비게이션 탭([📊 실시간 대시보드], [📑 일일 퀀트 리포트], [⏱️ 24h 종목 분석]) 탑재.
+    - **독립 전용 페이지 (`dashboard/analysis_24h.html`)**: URL 직접 접근(`/analysis_24h.html`) 또는 새 탭 열기로 접근 가능한 풀스크린 24h 종목 분석 뷰어. 종목 드롭다운(종목별 최신 기준 표시), 이전/다음 종목 탐색, 마크다운 파싱 렌더링, MD 복사, 다운로드 및 상단 네비게이션 탭([📊 실시간 대시보드], [📑 일일 퀀트 리포트], [⏱️ 24h 종목 분석]) 탑재.
     - **일일 퀀트 리포트 (`dashboard/reports.html`)**: 상단 및 하단 네비게이션에 [⏱️ 24h 종목 분석] 링크를 추가하여 3개 페이지 간 분리와 유기적 이동 연결.
     - **통합 메인 SPA (`dashboard/index.html`, `dashboard/src/app.js`)**: 상단 메인 메뉴에 3개 페이지 탭([📊 실시간 대시보드], [📑 일일 퀀트 리포트], [⏱️ 24h 종목 분석])을 배치하고, `#view-analysis-24h` 독립 컨테이너를 탑재하여 SPA 화면 전환 및 해시 라우팅(`#analysis-24h`)을 완벽 지원.
   - **테스트 및 검증**:
-    - `tests/test_analysis_24h_dashboard.py`: 목록 조회/정렬, 최신 기본 선택, 파일명/심볼별 조회, 디렉터리 트래버설 공격 차단, 웹 서버 메서드 등 6개 단위 테스트 추가 및 전체 통과 (53/53 OK).
+    - `tests/test_analysis_24h_dashboard.py`: 종목별 최신 1건 필터링, 전체 조회 옵션(`only_latest=False`), 최신 기본 선택, 파일명/심볼별 조회, 디렉터리 트래버설 공격 차단, 웹 서버 메서드 등 6개 단위 테스트 추가 및 전체 통과.
+    - 대시보드 및 웹 서버 관련 58개 단위 테스트 100% 통과 (58/58 OK).
 
 - **배경 및 요구사항**:
   - 매일 자동/수동 생성되는 24시간 롤링 성과 분석 보고서(`reports/daily_quant_report_YYYYMMDD.md`)를 대시보드 메인 모니터링 화면이 아닌 다른 페이지로 넘어가서 열람할 수 있도록 지원 요청.

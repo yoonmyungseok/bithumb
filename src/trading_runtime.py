@@ -179,6 +179,7 @@ class TradingRuntimeContext:
     # 업비트 RISK_OFF 모멘텀 돌파 당일 손실 재진입 차단 (빗썸은 None).
     risk_off_loss_reentry_guard: Any = None
     ack_reconcile_scheduler: Any = None
+    telegram: Any = None
 
 
 @dataclass
@@ -580,7 +581,68 @@ class TradingCycleEngine:
         dyn_max_pos_pct = snapshot.max_position_pct
         dyn_top_count = snapshot.top_count
 
-        tot_disp = format_krw_display(current_total_equity)
+        # 독립 시드 모드(ISOLATED_BOT_BUDGET_MODE) 및 수동 자산 분리 설정 로드
+        from runtime_config import get_exchange_env_setting
+        from position_guard import get_bot_held_markets, get_manual_held_markets
+
+        ex_scope = getattr(profile, "exchange_key", "bithumb")
+        isolated_bot_budget_mode = get_exchange_env_setting(
+            ex_scope, "ISOLATED_BOT_BUDGET_MODE", default=False, type_cast=bool,
+        )
+        bot_allocated_budget = float(get_exchange_env_setting(
+            ex_scope, "BOT_ALLOCATED_BUDGET", default=100000.0, type_cast=float,
+        ))
+        isolate_manual_assets = get_exchange_env_setting(
+            ex_scope, "ISOLATE_MANUAL_ASSETS_FROM_HEADROOM", default=True, type_cast=bool,
+        )
+
+        bot_held_markets = get_bot_held_markets(balances, ctx.order_journal, ctx.trailing_tracker)
+
+        if isolated_bot_budget_mode:
+            eval_equity = bot_allocated_budget if bot_allocated_budget > 0 else (snapshot.bot_equity if snapshot.bot_equity > 0 else current_total_equity)
+            dyn_max_positions, dyn_max_pos_pct, dyn_top_count = ctx.get_portfolio_tiers(eval_equity)
+            ctx.risk_guard.update_limits(
+                max_open_positions=dyn_max_positions,
+                max_position_pct=dyn_max_pos_pct,
+                isolated_budget_mode=True,
+                bot_allocated_budget=bot_allocated_budget,
+            )
+            # 수동 자산을 비중 분모에서 완전 분리
+            current_total_equity = eval_equity
+            tot_disp = f"독립예산 {format_krw_display(eval_equity)} (계좌전체 {format_krw_display(snapshot.total_equity)})"
+        elif isolate_manual_assets and snapshot.bot_equity > 0 and snapshot.bot_equity < current_total_equity:
+            ctx.risk_guard.update_limits(
+                isolated_budget_mode=True,
+                bot_allocated_budget=snapshot.bot_equity,
+            )
+            tot_disp = format_krw_display(current_total_equity)
+        else:
+            tot_disp = format_krw_display(current_total_equity)
+
+        if isolated_bot_budget_mode or isolate_manual_assets:
+            held_markets = bot_held_markets
+
+        # 수동 포지션 스마트 모니터링 알림 (MANUAL_POSITION_OBSERVER)
+        manual_observer_enabled = get_exchange_env_setting(
+            ex_scope, "MANUAL_POSITION_OBSERVER", default=True, type_cast=bool,
+        )
+        if manual_observer_enabled:
+            try:
+                from manual_position_observer import ManualPositionObserver
+                observer = ManualPositionObserver(
+                    exchange=exchange,
+                    telegram=getattr(ctx, "telegram", None) or getattr(self.config, "telegram", None),
+                    logger=logger,
+                    enabled=True,
+                )
+                observer.observe_manual_positions(
+                    balances=balances,
+                    order_journal=ctx.order_journal,
+                    trailing_tracker=ctx.trailing_tracker,
+                )
+            except Exception as obs_exc:
+                logger.debug("[%s] 수동 포지션 스마트 모니터링 예외: %s", ex_scope, obs_exc)
+
         logger.info(
             f"📊 [{profile.tier_label}] 총 자산 {tot_disp} ➜ 최대 {dyn_max_positions}종목 분할 "
             f"(종목당 {dyn_max_pos_pct * 100:.0f}% 한도, {profile.tier_top_wording} {dyn_top_count}개)"

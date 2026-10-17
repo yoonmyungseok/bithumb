@@ -3131,7 +3131,7 @@
           state.analysis24hList.forEach((rep, idx) => {
             const opt = document.createElement('option');
             opt.value = rep.filename;
-            opt.textContent = `[${rep.symbol}] ${rep.title} (${rep.date}) [${formatFileSize(rep.size)}]`;
+            opt.textContent = `[${rep.symbol}] ${rep.title} (최신: ${rep.date}) [${formatFileSize(rep.size)}]`;
             selectEl.appendChild(opt);
           });
         }

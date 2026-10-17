@@ -204,3 +204,48 @@ def calculate_bot_equity(
 
     return krw_balance + bot_coin_val
 
+
+def get_manual_held_markets(
+    balances: dict[str, dict[str, float]],
+    order_journal: Any = None,
+    trailing_tracker: Any = None,
+) -> list[str]:
+    """
+    수동 매수 및 격리된 보유 종목 목록을 반환한다.
+    봇이 매수한 기록이 없거나 영구 보호 종목인 자산을 식별한다.
+    """
+    manual_markets: list[str] = []
+    for cur, info in balances.items():
+        if cur in ("KRW", "P"):
+            continue
+        market = f"KRW-{cur}"
+        vol = float(info.get("balance", 0.0) or 0.0) + float(info.get("locked", 0.0) or 0.0)
+        if vol <= 0:
+            continue
+        if is_protected_market(market) or not is_bot_managed_position(order_journal, trailing_tracker, market):
+            manual_markets.append(market)
+    return manual_markets
+
+
+def get_bot_held_markets(
+    balances: dict[str, dict[str, float]],
+    order_journal: Any = None,
+    trailing_tracker: Any = None,
+) -> list[str]:
+    """
+    봇이 직접 매수하여 현재 관리 중인 순수 봇 보유 종목 목록만 반환한다.
+    수동 자산 및 보호 종목은 제외된다.
+    """
+    bot_markets: list[str] = []
+    for cur, info in balances.items():
+        if cur in ("KRW", "P"):
+            continue
+        market = f"KRW-{cur}"
+        vol = float(info.get("balance", 0.0) or 0.0) + float(info.get("locked", 0.0) or 0.0)
+        if vol <= 0:
+            continue
+        if not is_protected_market(market) and is_bot_managed_position(order_journal, trailing_tracker, market):
+            bot_markets.append(market)
+    return bot_markets
+
+

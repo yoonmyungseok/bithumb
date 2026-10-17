@@ -542,6 +542,7 @@ cycle_engine = TradingCycleEngine(
         strategy_cache_manager=strategy_cache_mgr,
         risk_off_loss_reentry_guard=risk_off_loss_reentry_guard,
         ack_reconcile_scheduler=ack_reconcile_scheduler,
+        telegram=telegram,
     ),
 )
 

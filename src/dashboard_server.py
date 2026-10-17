@@ -369,8 +369,8 @@ class UnifiedDashboardServer:
             logger.error(f"보고서 파일 읽기 실패 ({target_file}): {e}")
             return {"success": False, "message": f"보고서 파일을 읽는 중 오류가 발생했습니다: {e}"}
 
-    def get_analysis_24h_reports(self) -> dict[str, Any]:
-        """24h 종목 시세 흐름 분석 보고서 파일 목록을 최신순 및 종목명순으로 반환"""
+    def get_analysis_24h_reports(self, only_latest: bool = True) -> dict[str, Any]:
+        """24h 종목 시세 흐름 분석 보고서 파일 목록 반환 (기본값: 종목별 가장 최신 보고서만 반환)"""
         if not os.path.isdir(self.analysis_24h_dir):
             return {"success": True, "reports": [], "total": 0}
 
@@ -414,6 +414,18 @@ class UnifiedDashboardServer:
                 })
             except OSError:
                 continue
+
+        # 종목별 가장 최신 날짜의 보고서 1건만 유지
+        if only_latest:
+            latest_by_symbol: dict[str, dict[str, Any]] = {}
+            for rep in reports:
+                sym = rep["symbol"].upper()
+                if sym not in latest_by_symbol:
+                    latest_by_symbol[sym] = rep
+                else:
+                    if rep["raw_date"] > latest_by_symbol[sym]["raw_date"]:
+                        latest_by_symbol[sym] = rep
+            reports = list(latest_by_symbol.values())
 
         # 최신 날짜 내림차순, 날짜 동일 시 종목 심볼 오름차순
         reports.sort(key=lambda r: (-int(r["raw_date"]) if r["raw_date"].isdigit() else 0, r["symbol"]))
@@ -1287,7 +1299,8 @@ class UnifiedDashboardServer:
                             data = server_self.get_analysis_24h_content(target)
                             status_code = 200 if data.get("success") else 404
                         else:
-                            data = server_self.get_analysis_24h_reports()
+                            all_param = query_params.get("all", ["false"])[0].lower() in ("true", "1")
+                            data = server_self.get_analysis_24h_reports(only_latest=not all_param)
                             status_code = 200
                         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
                         self.send_response(status_code)

@@ -17,14 +17,17 @@ class Analysis24hDashboardTests(unittest.TestCase):
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.analysis_dir = self.tmp_dir.name
 
-        # 테스트용 24h 보고서 3개 및 무관한 파일 생성
+        # 테스트용 24h 보고서 4개 및 무관한 파일 생성
         self.file_holo = os.path.join(self.analysis_dir, "HOLO_24h_20261017.md")
+        self.file_holo_past = os.path.join(self.analysis_dir, "HOLO_24h_20261016.md")
         self.file_rsr = os.path.join(self.analysis_dir, "RSR_24h_20261017.md")
         self.file_us_old = os.path.join(self.analysis_dir, "US_24h_20261016.md")
         self.file_other = os.path.join(self.analysis_dir, "other_notes.txt")
 
         with open(self.file_holo, "w", encoding="utf-8") as f:
-            f.write("# 홀로월드에이아이(HOLO) 24시간 시세 흐름 분석\n\n내용 HOLO")
+            f.write("# 홀로월드에이아이(HOLO) 24시간 시세 흐름 분석\n\n내용 HOLO 최신")
+        with open(self.file_holo_past, "w", encoding="utf-8") as f:
+            f.write("# 홀로월드에이아이(HOLO) 24시간 시세 흐름 분석 (과거)\n\n내용 HOLO 과거")
         with open(self.file_rsr, "w", encoding="utf-8") as f:
             f.write("# 리저브라이트(RSR) 24시간 시세 흐름 분석\n\n내용 RSR")
         with open(self.file_us_old, "w", encoding="utf-8") as f:
@@ -46,7 +49,8 @@ class Analysis24hDashboardTests(unittest.TestCase):
         self.tmp_dir.cleanup()
 
     def test_get_analysis_24h_reports_listing_and_sorting(self):
-        """24h 보고서 목록이 무관한 파일을 제외하고 최신 날짜 및 심볼순으로 정렬되는지 검증"""
+        """24h 보고서 목록이 종목별 가장 최신 보고서만 필터링되고 최신 날짜 및 심볼순으로 정렬되는지 검증"""
+        # 기본 조회: 종목별 최신 1개만 반환 (HOLO는 20261017만 포함, 20261016은 제외)
         result = self.server.get_analysis_24h_reports()
 
         self.assertTrue(result["success"])
@@ -66,6 +70,10 @@ class Analysis24hDashboardTests(unittest.TestCase):
         self.assertEqual(reports[2]["filename"], "US_24h_20261016.md")
         self.assertEqual(reports[2]["symbol"], "US")
         self.assertEqual(reports[2]["raw_date"], "20261016")
+
+        # only_latest=False 시 전체 4개 보고서 모두 반환 확인
+        all_result = self.server.get_analysis_24h_reports(only_latest=False)
+        self.assertEqual(all_result["total"], 4)
 
     def test_get_analysis_24h_content_default_latest(self):
         """타깃 지정 없이 조회 시 가장 최신의 첫 번째 보고서가 반환되는지 검증"""

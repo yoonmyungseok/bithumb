@@ -798,20 +798,50 @@ class TradingOrchestrator:
             scope = str(scope).lower()
 
             # BTC 매크로 쇼크 발생 시 30분 신규 BUY 쿨다운 등록 (이미 활성 중이면 중복 경고 방지 및 롤링 연장 방지)
+            trough_price = float(result.get("trough_price", 0.0))
             if result.get("macro_shock", False):
                 shock_reason = str(result.get("shock_reason") or reason)
                 is_shock_active, current_until, _ = StrategyPolicy.is_macro_shock_active(scope)
                 if not is_shock_active:
                     shock_until = time.time() + StrategyPolicy.MACRO_SHOCK_COOLDOWN_SEC
-                    StrategyPolicy.set_macro_shock(scope, shock_until, shock_reason)
+                    StrategyPolicy.set_macro_shock(scope, shock_until, shock_reason, trough_price=trough_price)
                     self.logger.warning(
                         f"🚨 [{scope.upper()}] BTC 매크로 쇼크 발동! 향후 30분간 신규 매수 차단 등록 (사유: {shock_reason})"
                     )
                 else:
-                    remain_min = max(0.0, (current_until - time.time()) / 60.0)
-                    self.logger.info(
-                        f"🛡️ [{scope.upper()}] BTC 매크로 쇼크 쿨다운 유지 중 (잔여: {remain_min:.1f}분, 사유: {shock_reason})"
-                    )
+                    # 쿨다운 유지 중 V자 반등 조기 해제 검증
+                    v_released, v_details = StrategyPolicy.check_macro_shock_v_shape_release(candles_5m, scope)
+                    if v_released:
+                        rebound_pct = v_details.get("rebound_pct", 0.0)
+                        vol_ratio = v_details.get("volume_ratio", 0.0)
+                        self.logger.info(
+                            f"🚀 [{scope.upper()}] BTC 강력 V자 반등 감지! 매크로 쇼크 30분 쿨다운 조기 해제 "
+                            f"(저점 대비 +{rebound_pct:.2f}%, 거래량 {vol_ratio:.1f}배 ➜ 알트 진입 기회 복원)"
+                        )
+                        result["macro_shock"] = False
+                        regime = "NORMAL"
+                        reason = f"BTC V자 반등 조기 해제 (반등 +{rebound_pct:.2f}%, 거래량 {vol_ratio:.1f}배)"
+                    else:
+                        remain_min = max(0.0, (current_until - time.time()) / 60.0)
+                        self.logger.info(
+                            f"🛡️ [{scope.upper()}] BTC 매크로 쇼크 쿨다운 유지 중 (잔여: {remain_min:.1f}분, 사유: {shock_reason})"
+                        )
+            else:
+                # 신규 쇼크 조건은 아니지만 과거 쇼크 쿨다운이 잔여 중인 경우에도 V자 반등 조기 해제 검사
+                is_shock_active, current_until, shock_reason = StrategyPolicy.is_macro_shock_active(scope)
+                if is_shock_active:
+                    v_released, v_details = StrategyPolicy.check_macro_shock_v_shape_release(candles_5m, scope)
+                    if v_released:
+                        rebound_pct = v_details.get("rebound_pct", 0.0)
+                        vol_ratio = v_details.get("volume_ratio", 0.0)
+                        self.logger.info(
+                            f"🚀 [{scope.upper()}] BTC 강력 V자 반등 감지! 잔여 매크로 쇼크 쿨다운 조기 해제 "
+                            f"(저점 대비 +{rebound_pct:.2f}%, 거래량 {vol_ratio:.1f}배 ➜ 알트 진입 기회 복원)"
+                        )
+                        result["macro_shock"] = False
+                        if regime == "RISK_OFF":
+                            regime = "NORMAL"
+                        reason = f"BTC V자 반등 조기 해제 (반등 +{rebound_pct:.2f}%, 거래량 {vol_ratio:.1f}배)"
 
             # 1차 로컬 판별에서 이미 급락이면 즉시 차단
             if regime == "CRASH":

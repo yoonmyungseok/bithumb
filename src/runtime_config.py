@@ -178,6 +178,15 @@ COMMON_CONFIG_SCHEMA: dict[str, ConfigFieldDef] = {
         description="호가 잔량 부족 또는 예상 슬리피지 초과 시 실제 매수를 차단합니다.",
         unit="",
     ),
+    "MACRO_SHOCK_V_SHAPE_EARLY_RELEASE": ConfigFieldDef(
+        key="MACRO_SHOCK_V_SHAPE_EARLY_RELEASE",
+        type_name="bool",
+        default=True,
+        category="risk",
+        label="BTC 매크로 쇼크 V자 반등 조기 해제",
+        description="급락 직후 저점 대비 +1.5% 이상 거래량을 동반한 V자 반등 발생 시 30분 쿨다운을 조기 해제합니다.",
+        unit="",
+    ),
 
     # 2. 스크리닝 & 전략
     "MAX_CYCLE_MARKETS": ConfigFieldDef(
@@ -371,6 +380,44 @@ COMMON_CONFIG_SCHEMA: dict[str, ConfigFieldDef] = {
         label="알트코인 단일 최소 비중 (하한 캡)",
         description="알트코인 진입 시 수수료 대비 실익을 확보하기 위한 최소 비중 하한선입니다.",
         unit="%",
+    ),
+    "ISOLATED_BOT_BUDGET_MODE": ConfigFieldDef(
+        key="ISOLATED_BOT_BUDGET_MODE",
+        type_name="bool",
+        default=False,
+        category="portfolio",
+        label="봇 전용 독립 시드 모드",
+        description="수동 자산을 비중 분모에서 완전 분리하고 봇 전용 할당 예산 기준으로 종목당 비중(38%)을 산정합니다.",
+        unit="",
+    ),
+    "BOT_ALLOCATED_BUDGET": ConfigFieldDef(
+        key="BOT_ALLOCATED_BUDGET",
+        type_name="krw",
+        default=100_000,
+        min_val=10_000,
+        max_val=100_000_000,
+        category="portfolio",
+        label="봇 전용 할당 예산",
+        description="독립 시드 모드 활성 시 봇의 비중 및 슬롯 산정 기준이 되는 원화 예산 한도입니다.",
+        unit="원",
+    ),
+    "ISOLATE_MANUAL_ASSETS_FROM_HEADROOM": ConfigFieldDef(
+        key="ISOLATE_MANUAL_ASSETS_FROM_HEADROOM",
+        type_name="bool",
+        default=True,
+        category="portfolio",
+        label="수동 자산 헤드룸 분리",
+        description="포트폴리오 헤드룸 및 익스포저 계산 시 수동 매수 자산을 분모/분자에서 제외합니다.",
+        unit="",
+    ),
+    "MANUAL_POSITION_OBSERVER": ConfigFieldDef(
+        key="MANUAL_POSITION_OBSERVER",
+        type_name="bool",
+        default=True,
+        category="monitoring",
+        label="수동 포지션 스마트 모니터링 알림",
+        description="수동 종목의 고점 대비 -8% 이상 급락 또는 일봉 지지선(EMA20) 이탈 시 텔레그램 시황 알림을 전송합니다.",
+        unit="",
     ),
 
     # 4. AI 모델 & 자율 판단 설정

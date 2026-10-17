@@ -441,16 +441,116 @@ class StrategyPolicy:
     MACRO_SHOCK_RECENT_DROP_PCT: float = 0.004   # 15분 기준 -0.4%
     MACRO_SHOCK_1H_DROP_PCT: float = 0.004       # 1시간 기준 -0.4% (23:00형 -0.49% 급락 포착)
     MACRO_SHOCK_COOLDOWN_SEC: float = 1800.0     # 30분 쿨다운
+    ENABLE_V_SHAPE_SHOCK_RELEASE: bool = True    # V자 반등 시 조기 해제 활성화
+    V_SHAPE_REBOUND_THRESHOLD: float = 0.015     # 저점 대비 +1.5% 이상 반등
+    V_SHAPE_VOLUME_RATIO: float = 1.8            # 20이평 거래량 대비 1.8배(180%) 이상
     _MACRO_SHOCK_STATE: dict[str, dict[str, Any]] = {}
 
     @classmethod
-    def set_macro_shock(cls, scope: str, until_ts: float, reason: str = "") -> None:
+    def set_macro_shock(cls, scope: str, until_ts: float, reason: str = "", trough_price: float = 0.0) -> None:
         """거래소 스코프별 매크로 쇼크 쿨다운 상태를 등록한다."""
         sc = str(scope or "global").strip().lower()
         cls._MACRO_SHOCK_STATE[sc] = {
             "until_ts": float(until_ts),
             "reason": str(reason),
             "updated_at": time.time(),
+            "trough_price": float(trough_price),
+            "shock_time": time.time(),
+        }
+
+    @classmethod
+    def clear_macro_shock(cls, scope: str, reason: str = "") -> bool:
+        """거래소 스코프별 매크로 쇼크 쿨다운을 조기 해제한다."""
+        sc = str(scope or "global").strip().lower()
+        cleared = False
+        if sc in cls._MACRO_SHOCK_STATE:
+            del cls._MACRO_SHOCK_STATE[sc]
+            cleared = True
+        if "global" in cls._MACRO_SHOCK_STATE:
+            del cls._MACRO_SHOCK_STATE["global"]
+            cleared = True
+        return cleared
+
+    @classmethod
+    def check_macro_shock_v_shape_release(
+        cls,
+        candles_5m: list[dict[str, Any]],
+        scope: str = "",
+    ) -> tuple[bool, dict[str, Any]]:
+        """
+        매크로 쇼크 쿨다운 상태에서 BTC가 저점 대비 +1.5% 이상 거래량(180%+)을 동반한
+        V자 반등을 달성했는지 판정하여 쿨다운을 조기 해제한다.
+        """
+        sc = str(scope or "global").strip().lower()
+        entry = cls._MACRO_SHOCK_STATE.get(sc) or cls._MACRO_SHOCK_STATE.get("global")
+        if not entry:
+            return False, {}
+
+        now = time.time()
+        until_ts = float(entry.get("until_ts", 0.0))
+        if now >= until_ts:
+            return False, {}
+
+        if not cls.ENABLE_V_SHAPE_SHOCK_RELEASE:
+            return False, {}
+
+        if not candles_5m or len(candles_5m) < 3:
+            return False, {}
+
+        cur_p = float(candles_5m[0].get("trade_price", 0.0))
+        if cur_p <= 0:
+            return False, {}
+
+        # 최근 30분(최대 6개 5분봉) 내 최저가 탐색
+        lookback = min(len(candles_5m), 6)
+        recent_lows = [
+            float(c.get("low_price") or c.get("trade_price") or 0.0)
+            for c in candles_5m[:lookback]
+        ]
+        recent_lows = [l for l in recent_lows if l > 0]
+        recorded_trough = float(entry.get("trough_price", 0.0))
+        if recorded_trough > 0:
+            recent_lows.append(recorded_trough)
+
+        if not recent_lows:
+            return False, {}
+
+        trough = min(recent_lows)
+        # 저점 갱신 저장
+        if trough < recorded_trough or recorded_trough <= 0:
+            entry["trough_price"] = trough
+
+        rebound_ratio = (cur_p - trough) / trough if trough > 0 else 0.0
+
+        # 거래량 검증: 최근 2봉 최대 거래량 vs 20이평 거래량
+        vol_0 = float(candles_5m[0].get("candle_acc_trade_volume", 0.0) or 0.0)
+        vol_1 = float(candles_5m[1].get("candle_acc_trade_volume", 0.0) or 0.0) if len(candles_5m) > 1 else 0.0
+        recent_vol = max(vol_0, vol_1)
+
+        vols_20 = [
+            float(c.get("candle_acc_trade_volume", 0.0) or 0.0)
+            for c in candles_5m[:min(len(candles_5m), 20)]
+        ]
+        vol_ma20 = sum(vols_20) / len(vols_20) if vols_20 else 0.0
+        volume_ratio = recent_vol / vol_ma20 if vol_ma20 > 0 else 1.0
+
+        if rebound_ratio >= cls.V_SHAPE_REBOUND_THRESHOLD and volume_ratio >= cls.V_SHAPE_VOLUME_RATIO:
+            cls.clear_macro_shock(
+                sc,
+                reason=f"V자 반등 조기 해제 (반등 +{rebound_ratio*100:.2f}%, 거래량 {volume_ratio:.1f}배)",
+            )
+            return True, {
+                "rebound_pct": round(rebound_ratio * 100.0, 2),
+                "volume_ratio": round(volume_ratio, 2),
+                "trough_price": trough,
+                "current_price": cur_p,
+            }
+
+        return False, {
+            "rebound_pct": round(rebound_ratio * 100.0, 2),
+            "volume_ratio": round(volume_ratio, 2),
+            "trough_price": trough,
+            "current_price": cur_p,
         }
 
     @classmethod
@@ -1149,6 +1249,8 @@ def classify_btc_regime(
     p_3 = float(candles_5m[min(len(candles_5m) - 1, 3)].get("trade_price", cur_p))
     recent_drop = (cur_p - p_3) / p_3 if p_3 > 0 else 0.0
 
+    trough_price = min(float(c.get("low_price") or c.get("trade_price") or cur_p) for c in candles_5m[:min(len(candles_5m), 4)])
+
     if recent_drop <= -crash_threshold_pct:
         return {
             "regime": "CRASH",
@@ -1156,6 +1258,7 @@ def classify_btc_regime(
             "reason": f"BTC 15분 급락 경보 ({recent_drop*100.0:.2f}%)",
             "macro_shock": True,
             "shock_reason": f"BTC 15분 급락 ({recent_drop*100.0:.2f}%)",
+            "trough_price": trough_price,
         }
 
     is_macro_shock = False
@@ -1184,6 +1287,7 @@ def classify_btc_regime(
                 "reason": f"BTC 매크로 쇼크 ({shock_reason})",
                 "macro_shock": True,
                 "shock_reason": shock_reason,
+                "trough_price": trough_price,
             }
 
         if cur_1h < ema50_1h or drop_1h <= -0.005:
@@ -1215,6 +1319,7 @@ def classify_btc_regime(
             "reason": f"BTC 매크로 쇼크 ({shock_reason})",
             "macro_shock": True,
             "shock_reason": shock_reason,
+            "trough_price": trough_price,
         }
 
     return {"regime": "NORMAL", "drop_pct": round(recent_drop * 100.0, 2), "reason": "BTC 정상 안정세", "macro_shock": False}

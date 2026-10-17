@@ -19,7 +19,7 @@ def get_dynamic_portfolio_tiers(
         max_pct = custom_max_position_pct if (custom_max_position_pct is not None and custom_max_position_pct > 0) else round(min(0.50, max(0.15, 1.0 / custom_max_positions + 0.05)), 2)
         return custom_max_positions, max_pct, max(10, min(20, custom_max_positions * 3))
     if total_equity < 300_000.0:
-        base_pos, base_pct, base_top = 3, 0.35, 10
+        base_pos, base_pct, base_top = 3, 0.38, 10
     elif total_equity < 1_000_000.0:
         base_pos, base_pct, base_top = 5, 0.25, 12
     else:
@@ -43,6 +43,8 @@ class RiskGuard:
         max_new_listing_positions: int = 0,
         dynamic_slots_enabled: bool | None = None,
         dynamic_safety_max_positions: int | None = None,
+        isolated_budget_mode: bool = False,
+        bot_allocated_budget: float = 0.0,
     ):
         self.min_order_krw = min_order_krw
         self.max_open_positions = max_open_positions
@@ -61,6 +63,8 @@ class RiskGuard:
             if dynamic_safety_max_positions is None
             else int(dynamic_safety_max_positions)
         )
+        self.isolated_budget_mode = bool(isolated_budget_mode)
+        self.bot_allocated_budget = float(bot_allocated_budget or 0.0)
         self.current_regime: str = "NORMAL"
 
     def set_current_regime(self, regime: str) -> None:
@@ -83,7 +87,13 @@ class RiskGuard:
         max_scalp_positions: int | None = None,
         dynamic_slots_enabled: bool | None = None,
         current_regime: str | None = None,
+        isolated_budget_mode: bool | None = None,
+        bot_allocated_budget: float | None = None,
     ) -> None:
+        if isolated_budget_mode is not None:
+            self.isolated_budget_mode = bool(isolated_budget_mode)
+        if bot_allocated_budget is not None:
+            self.bot_allocated_budget = float(bot_allocated_budget or 0.0)
         if dynamic_slots_enabled is not None:
             self.dynamic_slots_enabled = bool(dynamic_slots_enabled)
         if current_regime is not None:
@@ -122,7 +132,14 @@ class RiskGuard:
             return False, "가용 KRW 초과"
         if self.max_order_krw > 0 and order_krw > self.max_order_krw:
             return False, "건당 주문 한도 초과"
-        if total_equity <= 0:
+
+        # 봇 독립 시드 모드: 수동 자산을 비중 분모에서 완전 분리
+        eval_equity = (
+            self.bot_allocated_budget
+            if (self.isolated_budget_mode and self.bot_allocated_budget > 0)
+            else total_equity
+        )
+        if eval_equity <= 0:
             return False, "총 자산 평가 실패"
 
         mode_upper = str(strategy_mode).upper()
@@ -134,7 +151,7 @@ class RiskGuard:
             effective_max_pct = self.max_position_pct * StrategyPolicy.NEW_LISTING_ALLOC_RATIO
         else:
             effective_max_pct = self.max_position_pct
-        if order_krw / total_equity > effective_max_pct:
+        if order_krw / eval_equity > effective_max_pct:
             return False, "종목당 비중 한도 초과"
 
         swing_held = set(held_swing_markets or [])
@@ -166,7 +183,8 @@ class RiskGuard:
             # (3) 레짐별 동적 총 투자 비중(Total Exposure) 한도 검사
             regime_max_exposure = StrategyPolicy.get_regime_max_exposure(self.current_regime, self.max_total_exposure_pct)
             effective_total_exposure = min(self.max_total_exposure_pct, regime_max_exposure)
-            projected_exposure = 1.0 - max(0.0, available_krw - order_krw) / total_equity
+            effective_available = min(available_krw, eval_equity) if self.isolated_budget_mode else available_krw
+            projected_exposure = 1.0 - max(0.0, effective_available - order_krw) / eval_equity
             if projected_exposure > effective_total_exposure:
                 return False, f"총 투자 비중 한도 초과 ({self.current_regime} 레짐 상한 {effective_total_exposure*100:.0f}%)"
 
@@ -199,7 +217,8 @@ class RiskGuard:
         if len(held_markets) >= self.max_open_positions and market not in held_markets:
             return False, "동시 보유 종목 수 한도 초과"
 
-        projected_exposure = 1.0 - max(0.0, available_krw - order_krw) / total_equity
+        effective_available = min(available_krw, eval_equity) if self.isolated_budget_mode else available_krw
+        projected_exposure = 1.0 - max(0.0, effective_available - order_krw) / eval_equity
         return (False, "총 투자 비중 한도 초과") if projected_exposure > self.max_total_exposure_pct else (True, "OK")
 
 
