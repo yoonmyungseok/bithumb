@@ -38,8 +38,8 @@
 
       <!-- Multi-Bot Exchange Switcher & Action Controls -->
       <div class="flex flex-wrap items-center justify-between sm:justify-end gap-2.5 sm:gap-3 w-full lg:w-auto mt-2 lg:mt-0">
-        <!-- Main Navigation Tabs: 실시간 대시보드 vs 일일 퀀트 리포트 -->
-        <nav class="flex bg-slate-950/80 p-1 rounded-xl border border-slate-800 shrink-0" aria-label="메인 페이지 메뉴">
+        <!-- Main Navigation Tabs: 실시간 대시보드 vs 일일 퀀트 리포트 vs 24h 종목 분석 -->
+        <nav class="flex flex-wrap bg-slate-950/80 p-1 rounded-xl border border-slate-800 shrink-0 gap-0.5" aria-label="메인 페이지 메뉴">
           <button id="view_nav_dashboard" onclick="window.switchView('dashboard')" class="px-3 py-1.5 rounded-lg text-xs font-bold transition bg-indigo-600 text-white inline-flex items-center gap-1.5 shadow-sm">
             <span>📊</span>
             <span>실시간 대시보드</span>
@@ -47,6 +47,10 @@
           <button id="view_nav_report" onclick="window.switchView('report')" class="px-3 py-1.5 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white inline-flex items-center gap-1.5">
             <span>📑</span>
             <span>일일 퀀트 리포트</span>
+          </button>
+          <button id="view_nav_analysis_24h" onclick="window.switchView('analysis-24h')" class="px-3 py-1.5 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white inline-flex items-center gap-1.5">
+            <span>⏱️</span>
+            <span>24h 종목 분석</span>
           </button>
         </nav>
 
@@ -806,6 +810,126 @@
       </div>
 
       <!-- Report Bottom Navigation -->
+      <div class="flex justify-between items-center pt-2">
+        <button onclick="window.switchView('dashboard')" class="px-4 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition">
+          ← 실시간 대시보드로 돌아가기
+        </button>
+        <button onclick="window.scrollTo({top: 0, behavior: 'smooth'})" class="px-4 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition">
+          ↑ 맨 위로 이동
+        </button>
+      </div>
+    </div>
+
+    <!-- 24h Symbol Analysis View Container -->
+    <div id="view-analysis-24h" class="space-y-4 sm:space-y-6 hidden">
+      <!-- 24h Top Control & Symbol Navigator Bar -->
+      <div class="card-glass p-4 sm:p-5 flex flex-wrap items-center justify-between gap-3">
+        <div class="flex flex-wrap items-center gap-2 sm:gap-3">
+          <button onclick="window.switchView('dashboard')" class="px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white transition inline-flex items-center gap-1.5 shadow-sm border border-slate-700">
+            <span>←</span>
+            <span>실시간 대시보드로 돌아가기</span>
+          </button>
+          <div class="h-5 w-px bg-slate-700 hidden sm:block"></div>
+          <div class="flex items-center gap-1.5">
+            <span class="text-xs font-semibold text-slate-400">🪙 종목 선택:</span>
+            <select id="analysis-24h-select" onchange="window.onAnalysis24hSelect(this.value)" class="bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-1.5 text-xs sm:text-sm font-semibold focus:outline-none focus:border-amber-500 cursor-pointer max-w-[260px] sm:max-w-md truncate">
+              <option value="">24h 분석 보고서 불러오는 중...</option>
+            </select>
+          </div>
+          <div class="flex items-center gap-1">
+            <button id="analysis-24h-prev-btn" onclick="window.navigateAnalysis24h(-1)" title="이전 종목 보고서" class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed border border-slate-700 transition">
+              ◀ 이전
+            </button>
+            <button id="analysis-24h-next-btn" onclick="window.navigateAnalysis24h(1)" title="다음 종목 보고서" class="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed border border-slate-700 transition">
+              다음 ▶
+            </button>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2">
+          <button onclick="window.refreshCurrentAnalysis24h()" title="보고서 새로고침" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition inline-flex items-center gap-1">
+            <span>🔄</span>
+            <span class="hidden sm:inline">새로고침</span>
+          </button>
+          <button onclick="window.openAnalysis24hInNewTab()" title="새 탭에서 독립 페이지로 열기" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-amber-300 hover:text-amber-200 border border-amber-900/50 transition inline-flex items-center gap-1">
+            <span>↗</span>
+            <span>새 창 열기</span>
+          </button>
+          <button onclick="window.copyAnalysis24hMarkdown()" title="마크다운 원문 복사" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition inline-flex items-center gap-1">
+            <span>📋</span>
+            <span class="hidden sm:inline">MD 복사</span>
+          </button>
+          <button onclick="window.downloadAnalysis24hMarkdown()" title="보고서 파일 다운로드" class="px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-600 hover:bg-amber-700 text-white transition inline-flex items-center gap-1 shadow-sm">
+            <span>⬇</span>
+            <span>다운로드</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 24h Metadata Header Card -->
+      <div id="analysis-24h-meta-card" class="card-glass p-4 sm:p-5">
+        <div class="flex flex-wrap justify-between items-center gap-2 border-b border-slate-800/80 pb-3 mb-3">
+          <div class="flex items-center space-x-2">
+            <span class="text-xl">⏱️</span>
+            <h2 id="analysis-24h-header-title" class="text-base sm:text-lg font-bold text-white">
+              24시간 시세 흐름 및 맞춤 대응 전략
+            </h2>
+          </div>
+          <div class="flex items-center gap-2">
+            <span id="analysis-24h-badge-symbol" class="px-2.5 py-1 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+              -
+            </span>
+            <span id="analysis-24h-badge-status" class="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+              정상 로드
+            </span>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs text-slate-400">
+          <div class="bg-slate-950/40 p-2.5 rounded-xl border border-slate-800/60">
+            <div class="text-slate-500 mb-0.5">분석 대상 종목</div>
+            <div id="analysis-24h-meta-symbol" class="font-bold text-amber-300">-</div>
+          </div>
+          <div class="bg-slate-950/40 p-2.5 rounded-xl border border-slate-800/60">
+            <div class="text-slate-500 mb-0.5">분석 기준일</div>
+            <div id="analysis-24h-meta-date" class="font-bold text-slate-200">-</div>
+          </div>
+          <div class="bg-slate-950/40 p-2.5 rounded-xl border border-slate-800/60">
+            <div class="text-slate-500 mb-0.5">파일명</div>
+            <div id="analysis-24h-meta-filename" class="font-bold text-slate-200 truncate">-</div>
+          </div>
+          <div class="bg-slate-950/40 p-2.5 rounded-xl border border-slate-800/60">
+            <div class="text-slate-500 mb-0.5">보고서 용량</div>
+            <div id="analysis-24h-meta-size" class="font-bold text-slate-200">-</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 24h Report Content Card -->
+      <div class="card-glass p-5 sm:p-8 min-h-[500px]">
+        <!-- Loading State Indicator -->
+        <div id="analysis-24h-loading" class="flex flex-col items-center justify-center py-20 text-slate-400">
+          <div class="w-10 h-10 border-4 border-amber-500/30 border-t-amber-500 rounded-full animate-spin mb-4"></div>
+          <p class="text-sm font-semibold text-slate-300">24h 종목 분석 보고서를 불러오는 중입니다...</p>
+          <p class="text-xs text-slate-500 mt-1">서버에서 24h 마크다운 리포트 데이터를 안전하게 가져오고 있습니다.</p>
+        </div>
+
+        <!-- Error State Indicator -->
+        <div id="analysis-24h-error" class="hidden flex flex-col items-center justify-center py-20 text-center">
+          <div class="text-4xl mb-3">⚠️</div>
+          <h3 class="text-base font-bold text-rose-400 mb-1">보고서를 불러오지 못했습니다</h3>
+          <p id="analysis-24h-error-msg" class="text-xs text-slate-400 mb-4">해당 종목의 24h 분석 파일이 존재하지 않거나 읽을 수 없습니다.</p>
+          <button onclick="window.refreshCurrentAnalysis24h()" class="px-4 py-2 rounded-xl text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white transition shadow-lg shadow-amber-600/30">
+            다시 시도
+          </button>
+        </div>
+
+        <!-- Markdown Render Container -->
+        <div id="analysis-24h-content-body" class="markdown-report hidden">
+          <!-- Rendered Markdown HTML injected here -->
+        </div>
+      </div>
+
+      <!-- 24h Bottom Navigation -->
       <div class="flex justify-between items-center pt-2">
         <button onclick="window.switchView('dashboard')" class="px-4 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition">
           ← 실시간 대시보드로 돌아가기

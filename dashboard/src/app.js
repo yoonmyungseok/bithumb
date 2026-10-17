@@ -22,7 +22,12 @@
     reportList: [],
     currentReportDate: '',
     currentReportData: null,
-    isReportLoading: false
+    isReportLoading: false,
+    // 24h 종목 분석 보고서 상태
+    analysis24hList: [],
+    currentAnalysis24hTarget: '',
+    currentAnalysis24hData: null,
+    isAnalysis24hLoading: false
   };
 
   // API Helper
@@ -2872,42 +2877,58 @@
     return renderMarkdownFallback(md);
   }
 
-  function switchView(viewName, targetDate) {
+  function switchView(viewName, targetParam) {
     state.currentView = viewName;
     const dashView = document.getElementById('view-dashboard');
     const repView = document.getElementById('view-report');
+    const analysisView = document.getElementById('view-analysis-24h');
     const navDashBtn = document.getElementById('view_nav_dashboard');
     const navRepBtn = document.getElementById('view_nav_report');
+    const navAnalysisBtn = document.getElementById('view_nav_analysis_24h');
 
-    if (viewName === 'report') {
+    const activeNavClass = "px-3 py-1.5 rounded-lg text-xs font-bold transition bg-indigo-600 text-white inline-flex items-center gap-1.5 shadow-sm";
+    const inactiveNavClass = "px-3 py-1.5 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white inline-flex items-center gap-1.5";
+
+    if (viewName === 'analysis-24h' || viewName === 'analysis24h') {
       if (dashView) dashView.classList.add('hidden');
+      if (repView) repView.classList.add('hidden');
+      if (analysisView) analysisView.classList.remove('hidden');
+
+      if (navDashBtn) navDashBtn.className = inactiveNavClass;
+      if (navRepBtn) navRepBtn.className = inactiveNavClass;
+      if (navAnalysisBtn) navAnalysisBtn.className = activeNavClass;
+
+      if (state.analysis24hList.length === 0) {
+        fetchAnalysis24hList(targetParam);
+      } else if (targetParam) {
+        loadAnalysis24h(targetParam);
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else if (viewName === 'report') {
+      if (dashView) dashView.classList.add('hidden');
+      if (analysisView) analysisView.classList.add('hidden');
       if (repView) repView.classList.remove('hidden');
 
-      if (navDashBtn) {
-        navDashBtn.className = "px-3 py-1.5 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white inline-flex items-center gap-1.5";
-      }
-      if (navRepBtn) {
-        navRepBtn.className = "px-3 py-1.5 rounded-lg text-xs font-bold transition bg-indigo-600 text-white inline-flex items-center gap-1.5 shadow-sm";
-      }
+      if (navDashBtn) navDashBtn.className = inactiveNavClass;
+      if (navAnalysisBtn) navAnalysisBtn.className = inactiveNavClass;
+      if (navRepBtn) navRepBtn.className = activeNavClass;
 
       if (state.reportList.length === 0) {
-        fetchReportList(targetDate);
-      } else if (targetDate) {
-        loadReport(targetDate);
+        fetchReportList(targetParam);
+      } else if (targetParam) {
+        loadReport(targetParam);
       }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } else {
       if (repView) repView.classList.add('hidden');
+      if (analysisView) analysisView.classList.add('hidden');
       if (dashView) dashView.classList.remove('hidden');
 
-      if (navRepBtn) {
-        navRepBtn.className = "px-3 py-1.5 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white inline-flex items-center gap-1.5";
-      }
-      if (navDashBtn) {
-        navDashBtn.className = "px-3 py-1.5 rounded-lg text-xs font-bold transition bg-indigo-600 text-white inline-flex items-center gap-1.5 shadow-sm";
-      }
+      if (navRepBtn) navRepBtn.className = inactiveNavClass;
+      if (navAnalysisBtn) navAnalysisBtn.className = inactiveNavClass;
+      if (navDashBtn) navDashBtn.className = activeNavClass;
 
-      if (window.location.hash.startsWith('#report')) {
+      if (window.location.hash.startsWith('#report') || window.location.hash.startsWith('#analysis-24h')) {
         history.replaceState(null, '', window.location.pathname);
       }
     }
@@ -3093,13 +3114,212 @@
     window.open(`/reports.html${dateParam}`, '_blank');
   }
 
+  // --- 24h 종목 시세 흐름 및 전략 분석 보고서 관련 로직 ---
+  async function fetchAnalysis24hList(selectTarget) {
+    try {
+      const res = await fetch(getApiBaseUrl() + '/api/analysis-24h');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      state.analysis24hList = data.reports || [];
+
+      const selectEl = document.getElementById('analysis-24h-select');
+      if (selectEl) {
+        selectEl.innerHTML = '';
+        if (state.analysis24hList.length === 0) {
+          selectEl.innerHTML = '<option value="">24h 디렉터리에 분석 보고서가 없습니다</option>';
+        } else {
+          state.analysis24hList.forEach((rep, idx) => {
+            const opt = document.createElement('option');
+            opt.value = rep.filename;
+            opt.textContent = `[${rep.symbol}] ${rep.title} (${rep.date}) [${formatFileSize(rep.size)}]`;
+            selectEl.appendChild(opt);
+          });
+        }
+      }
+
+      let target = selectTarget;
+      if (!target && state.analysis24hList.length > 0) {
+        target = state.analysis24hList[0].filename;
+      }
+      if (target) {
+        loadAnalysis24h(target);
+      } else {
+        const loadingEl = document.getElementById('analysis-24h-loading');
+        const errorEl = document.getElementById('analysis-24h-error');
+        const errorMsg = document.getElementById('analysis-24h-error-msg');
+        if (loadingEl) loadingEl.classList.add('hidden');
+        if (errorEl) errorEl.classList.remove('hidden');
+        if (errorMsg) errorMsg.textContent = '현재 확인 가능한 24h 종목 분석 보고서 파일이 없습니다.';
+      }
+    } catch (err) {
+      console.error('24h 보고서 목록 로드 오류:', err);
+      const loadingEl = document.getElementById('analysis-24h-loading');
+      const errorEl = document.getElementById('analysis-24h-error');
+      const errorMsg = document.getElementById('analysis-24h-error-msg');
+      if (loadingEl) loadingEl.classList.add('hidden');
+      if (errorEl) errorEl.classList.remove('hidden');
+      if (errorMsg) errorMsg.textContent = `24h 보고서 목록을 가져오는 데 실패했습니다: ${err.message}`;
+    }
+  }
+
+  async function loadAnalysis24h(target) {
+    state.isAnalysis24hLoading = true;
+    const loadingEl = document.getElementById('analysis-24h-loading');
+    const errorEl = document.getElementById('analysis-24h-error');
+    const errorMsg = document.getElementById('analysis-24h-error-msg');
+    const bodyEl = document.getElementById('analysis-24h-content-body');
+    const selectEl = document.getElementById('analysis-24h-select');
+
+    if (loadingEl) loadingEl.classList.remove('hidden');
+    if (errorEl) errorEl.classList.add('hidden');
+    if (bodyEl) bodyEl.classList.add('hidden');
+
+    try {
+      const param = target ? `?file=${encodeURIComponent(target)}` : '';
+      const res = await fetch(getApiBaseUrl() + '/api/analysis-24h' + param);
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || `HTTP ${res.status}`);
+      }
+
+      state.currentAnalysis24hData = data;
+      state.currentAnalysis24hTarget = data.filename || target;
+
+      if (selectEl && state.currentAnalysis24hTarget) {
+        selectEl.value = state.currentAnalysis24hTarget;
+      }
+
+      // 메타 정보 표시
+      const titleEl = document.getElementById('analysis-24h-header-title');
+      const symbolBadge = document.getElementById('analysis-24h-badge-symbol');
+      const symbolMeta = document.getElementById('analysis-24h-meta-symbol');
+      const dateEl = document.getElementById('analysis-24h-meta-date');
+      const filenameEl = document.getElementById('analysis-24h-meta-filename');
+      const sizeEl = document.getElementById('analysis-24h-meta-size');
+
+      if (titleEl) titleEl.textContent = data.title || `${data.symbol} 24시간 시세 분석 보고서`;
+      if (symbolBadge) symbolBadge.textContent = data.symbol || '-';
+      if (symbolMeta) symbolMeta.textContent = data.symbol || '-';
+      if (dateEl) dateEl.textContent = data.date || '-';
+      if (filenameEl) {
+        filenameEl.textContent = data.filename || '-';
+        filenameEl.title = data.filename || '-';
+      }
+      if (sizeEl) sizeEl.textContent = formatFileSize(data.size);
+
+      // 마크다운 파싱 및 본문 주입
+      if (bodyEl) {
+        const rawHtml = renderMarkdown(data.content);
+        bodyEl.innerHTML = rawHtml;
+
+        const tables = bodyEl.querySelectorAll('table');
+        tables.forEach(tbl => {
+          if (!tbl.parentElement.classList.contains('table-container')) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'table-container';
+            tbl.parentNode.insertBefore(wrapper, tbl);
+            wrapper.appendChild(tbl);
+          }
+        });
+
+        bodyEl.classList.remove('hidden');
+      }
+
+      updateAnalysis24hNavButtons();
+    } catch (err) {
+      console.error('24h 보고서 내용 로드 오류:', err);
+      if (errorEl) errorEl.classList.remove('hidden');
+      if (errorMsg) errorMsg.textContent = err.message || '24h 보고서 데이터를 불러오지 못했습니다.';
+    } finally {
+      state.isAnalysis24hLoading = false;
+      if (loadingEl) loadingEl.classList.add('hidden');
+    }
+  }
+
+  function updateAnalysis24hNavButtons() {
+    const prevBtn = document.getElementById('analysis-24h-prev-btn');
+    const nextBtn = document.getElementById('analysis-24h-next-btn');
+    if (!state.analysis24hList || state.analysis24hList.length === 0) {
+      if (prevBtn) prevBtn.disabled = true;
+      if (nextBtn) nextBtn.disabled = true;
+      return;
+    }
+
+    const currentIndex = state.analysis24hList.findIndex(r => r.filename === state.currentAnalysis24hTarget);
+    if (currentIndex === -1) {
+      if (prevBtn) prevBtn.disabled = true;
+      if (nextBtn) nextBtn.disabled = true;
+      return;
+    }
+
+    if (prevBtn) prevBtn.disabled = (currentIndex >= state.analysis24hList.length - 1);
+    if (nextBtn) nextBtn.disabled = (currentIndex <= 0);
+  }
+
+  function navigateAnalysis24h(direction) {
+    if (!state.analysis24hList || state.analysis24hList.length === 0) return;
+    const currentIndex = state.analysis24hList.findIndex(r => r.filename === state.currentAnalysis24hTarget);
+    if (currentIndex === -1) return;
+
+    const nextIndex = currentIndex - direction;
+    if (nextIndex >= 0 && nextIndex < state.analysis24hList.length) {
+      const nextTarget = state.analysis24hList[nextIndex].filename;
+      loadAnalysis24h(nextTarget);
+    }
+  }
+
+  function copyAnalysis24hMarkdown() {
+    if (!state.currentAnalysis24hData || !state.currentAnalysis24hData.content) {
+      alert('복사할 24h 보고서 내용이 아직 로드되지 않았습니다.');
+      return;
+    }
+    navigator.clipboard.writeText(state.currentAnalysis24hData.content)
+      .then(() => alert('24h 분석 보고서 마크다운 원문이 클립보드에 복사되었습니다.'))
+      .catch(err => {
+        console.error('복사 실패:', err);
+        const textarea = document.createElement('textarea');
+        textarea.value = state.currentAnalysis24hData.content;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        alert('24h 분석 보고서 마크다운 원문이 클립보드에 복사되었습니다.');
+      });
+  }
+
+  function downloadAnalysis24hMarkdown() {
+    if (!state.currentAnalysis24hData || !state.currentAnalysis24hData.content) {
+      alert('다운로드할 24h 보고서 데이터가 없습니다.');
+      return;
+    }
+    const blob = new Blob([state.currentAnalysis24hData.content], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = state.currentAnalysis24hData.filename || 'analysis_24h.md';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function openAnalysis24hInNewTab() {
+    const fileParam = state.currentAnalysis24hTarget ? `?file=${encodeURIComponent(state.currentAnalysis24hTarget)}` : '';
+    window.open(`/analysis_24h.html${fileParam}`, '_blank');
+  }
+
   function checkHashRoute() {
     const hash = window.location.hash;
-    if (hash.startsWith('#report')) {
+    if (hash.startsWith('#analysis-24h') || hash.startsWith('#analysis24h')) {
+      const match = hash.match(/file=([^&]+)/) || hash.match(/symbol=([^&]+)/);
+      const target = match ? decodeURIComponent(match[1]) : '';
+      switchView('analysis-24h', target);
+    } else if (hash.startsWith('#report')) {
       const match = hash.match(/date=([^&]+)/);
       const targetDate = match ? decodeURIComponent(match[1]) : '';
       switchView('report', targetDate);
-    } else if (state.currentView === 'report') {
+    } else if (state.currentView === 'report' || state.currentView === 'analysis-24h') {
       switchView('dashboard');
     }
   }
@@ -3112,6 +3332,13 @@
   window.copyReportMarkdown = copyReportMarkdown;
   window.downloadReportMarkdown = downloadReportMarkdown;
   window.openReportInNewTab = openReportInNewTab;
+
+  window.onAnalysis24hSelect = (val) => loadAnalysis24h(val);
+  window.navigateAnalysis24h = navigateAnalysis24h;
+  window.refreshCurrentAnalysis24h = () => loadAnalysis24h(state.currentAnalysis24hTarget);
+  window.copyAnalysis24hMarkdown = copyAnalysis24hMarkdown;
+  window.downloadAnalysis24hMarkdown = downloadAnalysis24hMarkdown;
+  window.openAnalysis24hInNewTab = openAnalysis24hInNewTab;
 
   // Initialize on DOM Ready
   document.addEventListener('DOMContentLoaded', () => {

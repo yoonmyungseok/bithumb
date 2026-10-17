@@ -88,6 +88,10 @@ ALERT_TARGET_PER_SOURCE = 20  # 소스당 최소 확보 목표 경고 건수
 default_reports_dir = os.path.join(project_root, "reports")
 DAILY_REPORT_FILENAME_PATTERN = re.compile(r"^daily_quant_report_(\d{8})\.md$")
 DAILY_REPORT_DATE_PATTERN = re.compile(r"^\d{4}-?\d{2}-?\d{2}$")
+
+# 24h 종목 시세 흐름 분석 보고서 패턴 및 경로 설정
+default_analysis_24h_dir = os.path.join(project_root, "24h")
+ANALYSIS_24H_FILENAME_PATTERN = re.compile(r"^([A-Za-z0-9_]+)_24h_(\d{8})\.md$")
 ALERT_LIMIT = 100
 
 
@@ -117,6 +121,7 @@ class UnifiedDashboardServer:
         static_dir: str | None = None,
         alert_log_dir: str | None = None,
         reports_dir: str | None = None,
+        analysis_24h_dir: str | None = None,
     ):
         self.port = port if port is not None else int(os.getenv("DASHBOARD_PORT", "7979"))
         self.host = host if host is not None else os.getenv("DASHBOARD_HOST", "100.76.22.126")
@@ -128,6 +133,7 @@ class UnifiedDashboardServer:
         # 테스트에서는 임시 경로를 주입할 수 있지만 운영에서는 프로젝트 logs만 읽는다.
         self.alert_log_dir = os.path.abspath(alert_log_dir or log_dir)
         self.reports_dir = os.path.abspath(reports_dir or default_reports_dir)
+        self.analysis_24h_dir = os.path.abspath(analysis_24h_dir or default_analysis_24h_dir)
         self.server: QuietThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._poll_thread: threading.Thread | None = None
@@ -362,6 +368,120 @@ class UnifiedDashboardServer:
         except Exception as e:
             logger.error(f"보고서 파일 읽기 실패 ({target_file}): {e}")
             return {"success": False, "message": f"보고서 파일을 읽는 중 오류가 발생했습니다: {e}"}
+
+    def get_analysis_24h_reports(self) -> dict[str, Any]:
+        """24h 종목 시세 흐름 분석 보고서 파일 목록을 최신순 및 종목명순으로 반환"""
+        if not os.path.isdir(self.analysis_24h_dir):
+            return {"success": True, "reports": [], "total": 0}
+
+        reports: list[dict[str, Any]] = []
+        try:
+            entries = os.listdir(self.analysis_24h_dir)
+        except OSError as e:
+            logger.warning(f"24h 보고서 디렉터리 접근 오류: {e}")
+            return {"success": False, "reports": [], "total": 0, "error": "24h 보고서 디렉터리 접근 실패"}
+
+        for entry in entries:
+            match = ANALYSIS_24H_FILENAME_PATTERN.match(entry)
+            if not match:
+                continue
+            symbol = match.group(1)
+            raw_date = match.group(2)
+            formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+            file_path = os.path.join(self.analysis_24h_dir, entry)
+            try:
+                stat = os.stat(file_path)
+                title = f"{symbol} 24시간 시세 분석 보고서 ({formatted_date})"
+                # 파일 첫 줄 헤더 제목 추출 시도
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            sline = line.strip()
+                            if sline.startswith("# "):
+                                title = sline.lstrip("# ").strip()
+                                break
+                except Exception:
+                    pass
+
+                reports.append({
+                    "filename": entry,
+                    "symbol": symbol,
+                    "date": formatted_date,
+                    "raw_date": raw_date,
+                    "title": title,
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                })
+            except OSError:
+                continue
+
+        # 최신 날짜 내림차순, 날짜 동일 시 종목 심볼 오름차순
+        reports.sort(key=lambda r: (-int(r["raw_date"]) if r["raw_date"].isdigit() else 0, r["symbol"]))
+        return {"success": True, "reports": reports, "total": len(reports)}
+
+    def get_analysis_24h_content(self, target: str | None = None) -> dict[str, Any]:
+        """지정된 파일명 또는 종목명의 24h 분석 보고서 마크다운 내용을 안전하게 반환"""
+        if not os.path.isdir(self.analysis_24h_dir):
+            return {"success": False, "message": "24h 보고서 디렉터리가 존재하지 않습니다."}
+
+        target_file = None
+        if not target or not str(target).strip():
+            list_res = self.get_analysis_24h_reports()
+            reports = list_res.get("reports", [])
+            if not reports:
+                return {"success": False, "message": "생성된 24h 종목 분석 보고서가 없습니다."}
+            target_file = reports[0]["filename"]
+        else:
+            cleaned = str(target).strip()
+            # 1. 파일명 직접 전달 (예: HOLO_24h_20261017.md)
+            if ANALYSIS_24H_FILENAME_PATTERN.match(cleaned):
+                target_file = cleaned
+            else:
+                # 2. 심볼명 또는 심볼 검색
+                list_res = self.get_analysis_24h_reports()
+                reports = list_res.get("reports", [])
+                matching = [r for r in reports if r["symbol"].upper() == cleaned.upper()]
+                if matching:
+                    target_file = matching[0]["filename"]
+                else:
+                    return {"success": False, "message": f"유효하지 않은 24h 보고서 파일명 또는 종목명입니다: {cleaned}"}
+
+        # 디렉터리 트래버설 공격 방어: 상위 경로 탈출 검증
+        norm_target = os.path.abspath(os.path.join(self.analysis_24h_dir, target_file))
+        norm_dir = os.path.abspath(self.analysis_24h_dir)
+        if not norm_target.startswith(norm_dir) or not os.path.isfile(norm_target):
+            return {"success": False, "message": f"24h 보고서 파일을 찾을 수 없습니다: {target_file}"}
+
+        try:
+            with open(norm_target, "r", encoding="utf-8") as f:
+                content = f.read()
+            stat = os.stat(norm_target)
+            match = ANALYSIS_24H_FILENAME_PATTERN.match(target_file)
+            symbol = match.group(1) if match else ""
+            raw_date = match.group(2) if match else ""
+            formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}" if len(raw_date) == 8 else ""
+
+            title = f"{symbol} 24시간 시세 분석 보고서 ({formatted_date})"
+            for line in content.splitlines():
+                sline = line.strip()
+                if sline.startswith("# "):
+                    title = sline.lstrip("# ").strip()
+                    break
+
+            return {
+                "success": True,
+                "filename": target_file,
+                "symbol": symbol,
+                "date": formatted_date,
+                "raw_date": raw_date,
+                "title": title,
+                "content": content,
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+            }
+        except Exception as e:
+            logger.error(f"24h 보고서 파일 읽기 실패 ({target_file}): {e}")
+            return {"success": False, "message": f"24h 보고서 파일을 읽는 중 오류가 발생했습니다: {e}"}
 
     def _resolve_static_dir(self) -> str | None:
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dashboard"))
@@ -1159,6 +1279,40 @@ class UnifiedDashboardServer:
                         self.wfile.write(body)
                         return
 
+                    # 2-4. 24h 종목 분석 보고서 목록 및 내용 조회 API
+                    if path in ("/api/analysis-24h", "/api/analysis_24h", "/api/reports-24h"):
+                        query_params = urllib.parse.parse_qs(parsed_url.query)
+                        target = query_params.get("file", query_params.get("filename", query_params.get("symbol", query_params.get("target", [""]))))[0]
+                        if target:
+                            data = server_self.get_analysis_24h_content(target)
+                            status_code = 200 if data.get("success") else 404
+                        else:
+                            data = server_self.get_analysis_24h_reports()
+                            status_code = 200
+                        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                        self.send_response(status_code)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+
+                    if path in ("/api/analysis-24h/content", "/api/analysis_24h/content", "/api/report-24h"):
+                        query_params = urllib.parse.parse_qs(parsed_url.query)
+                        target = query_params.get("file", query_params.get("filename", query_params.get("symbol", query_params.get("target", [""]))))[0]
+                        data = server_self.get_analysis_24h_content(target)
+                        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                        self.send_response(200 if data.get("success") else 404)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+
                     # 3. 정적 SPA 파일 서빙
                     if server_self.static_dir:
                         rel_path = path.lstrip("/")
@@ -1332,6 +1486,8 @@ class UnifiedDashboardServer:
             </div>
             <!-- Quick Actions -->
             <div class="flex flex-wrap gap-2 mt-4 sm:mt-0">
+                <a href="/reports.html" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 font-bold rounded-lg text-sm text-slate-200 border border-slate-700 shadow-lg transition inline-flex items-center gap-1.5">📑 일일 퀀트 리포트</a>
+                <a href="/analysis_24h.html" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 font-bold rounded-lg text-sm text-amber-300 border border-amber-900/40 shadow-lg transition inline-flex items-center gap-1.5">⏱️ 24h 종목 분석</a>
                 <button onclick="openConfigModal()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 font-bold rounded-lg text-sm text-white shadow-lg transition">⚙️ 공통 설정</button>
                 <button onclick="triggerAction('panic')" class="px-4 py-2 bg-rose-600 hover:bg-rose-700 font-bold rounded-lg text-sm text-white shadow-lg transition">🚨 긴급 전량 매도</button>
                 <button onclick="triggerAction('pause')" class="px-4 py-2 bg-amber-600 hover:bg-amber-700 font-bold rounded-lg text-sm text-white shadow-lg transition">⏸️ 전체 일시정지</button>

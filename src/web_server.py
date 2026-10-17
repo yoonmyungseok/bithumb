@@ -18,6 +18,10 @@ default_reports_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".
 DAILY_REPORT_FILENAME_PATTERN = re.compile(r"^daily_quant_report_(\d{8})\.md$")
 DAILY_REPORT_DATE_PATTERN = re.compile(r"^\d{4}-?\d{2}-?\d{2}$")
 
+# 24h 종목 시세 흐름 분석 보고서 패턴 및 경로 설정
+default_analysis_24h_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "24h"))
+ANALYSIS_24H_FILENAME_PATTERN = re.compile(r"^([A-Za-z0-9_]+)_24h_(\d{8})\.md$")
+
 
 class QuietThreadingHTTPServer(ThreadingHTTPServer):
     """클라이언트 연결 끊김(새로고침, 탭 닫기 등) 시 발생하는 불필요한 스택트레이스 억제"""
@@ -53,6 +57,7 @@ class DashboardWebServer:
         config_provider: Callable[[], dict[str, Any]] | None = None,
         config_updater: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         reports_dir: str | None = None,
+        analysis_24h_dir: str | None = None,
         **kwargs,
     ):
         self.port = port
@@ -67,6 +72,7 @@ class DashboardWebServer:
         self.action_token = os.getenv("DASHBOARD_ACTION_TOKEN", "").strip()
         self.static_dir = None if self.is_api_only else (static_dir or self._resolve_static_dir())
         self.reports_dir = os.path.abspath(reports_dir or default_reports_dir)
+        self.analysis_24h_dir = os.path.abspath(analysis_24h_dir or default_analysis_24h_dir)
         self.server: QuietThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -173,6 +179,115 @@ class DashboardWebServer:
             logger.error(f"보고서 파일 읽기 실패 ({target_file}): {e}")
             return {"success": False, "message": f"보고서 파일을 읽는 중 오류가 발생했습니다: {e}"}
 
+    def get_analysis_24h_reports(self) -> dict[str, Any]:
+        """24h 종목 시세 흐름 분석 보고서 파일 목록을 최신순 및 종목명순으로 반환"""
+        if not os.path.isdir(self.analysis_24h_dir):
+            return {"success": True, "reports": [], "total": 0}
+
+        reports: list[dict[str, Any]] = []
+        try:
+            entries = os.listdir(self.analysis_24h_dir)
+        except OSError as e:
+            logger.warning(f"24h 보고서 디렉터리 접근 오류: {e}")
+            return {"success": False, "reports": [], "total": 0, "error": "24h 보고서 디렉터리 접근 실패"}
+
+        for entry in entries:
+            match = ANALYSIS_24H_FILENAME_PATTERN.match(entry)
+            if not match:
+                continue
+            symbol = match.group(1)
+            raw_date = match.group(2)
+            formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+            file_path = os.path.join(self.analysis_24h_dir, entry)
+            try:
+                stat = os.stat(file_path)
+                title = f"{symbol} 24시간 시세 분석 보고서 ({formatted_date})"
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            sline = line.strip()
+                            if sline.startswith("# "):
+                                title = sline.lstrip("# ").strip()
+                                break
+                except Exception:
+                    pass
+
+                reports.append({
+                    "filename": entry,
+                    "symbol": symbol,
+                    "date": formatted_date,
+                    "raw_date": raw_date,
+                    "title": title,
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                })
+            except OSError:
+                continue
+
+        reports.sort(key=lambda r: (-int(r["raw_date"]) if r["raw_date"].isdigit() else 0, r["symbol"]))
+        return {"success": True, "reports": reports, "total": len(reports)}
+
+    def get_analysis_24h_content(self, target: str | None = None) -> dict[str, Any]:
+        """지정된 파일명 또는 종목명의 24h 분석 보고서 마크다운 내용을 안전하게 반환"""
+        if not os.path.isdir(self.analysis_24h_dir):
+            return {"success": False, "message": "24h 보고서 디렉터리가 존재하지 않습니다."}
+
+        target_file = None
+        if not target or not str(target).strip():
+            list_res = self.get_analysis_24h_reports()
+            reports = list_res.get("reports", [])
+            if not reports:
+                return {"success": False, "message": "생성된 24h 종목 분석 보고서가 없습니다."}
+            target_file = reports[0]["filename"]
+        else:
+            cleaned = str(target).strip()
+            if ANALYSIS_24H_FILENAME_PATTERN.match(cleaned):
+                target_file = cleaned
+            else:
+                list_res = self.get_analysis_24h_reports()
+                reports = list_res.get("reports", [])
+                matching = [r for r in reports if r["symbol"].upper() == cleaned.upper()]
+                if matching:
+                    target_file = matching[0]["filename"]
+                else:
+                    return {"success": False, "message": f"유효하지 않은 24h 보고서 파일명 또는 종목명입니다: {cleaned}"}
+
+        norm_target = os.path.abspath(os.path.join(self.analysis_24h_dir, target_file))
+        norm_dir = os.path.abspath(self.analysis_24h_dir)
+        if not norm_target.startswith(norm_dir) or not os.path.isfile(norm_target):
+            return {"success": False, "message": f"24h 보고서 파일을 찾을 수 없습니다: {target_file}"}
+
+        try:
+            with open(norm_target, "r", encoding="utf-8") as f:
+                content = f.read()
+            stat = os.stat(norm_target)
+            match = ANALYSIS_24H_FILENAME_PATTERN.match(target_file)
+            symbol = match.group(1) if match else ""
+            raw_date = match.group(2) if match else ""
+            formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}" if len(raw_date) == 8 else ""
+
+            title = f"{symbol} 24시간 시세 분석 보고서 ({formatted_date})"
+            for line in content.splitlines():
+                sline = line.strip()
+                if sline.startswith("# "):
+                    title = sline.lstrip("# ").strip()
+                    break
+
+            return {
+                "success": True,
+                "filename": target_file,
+                "symbol": symbol,
+                "date": formatted_date,
+                "raw_date": raw_date,
+                "title": title,
+                "content": content,
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+            }
+        except Exception as e:
+            logger.error(f"24h 보고서 파일 읽기 실패 ({target_file}): {e}")
+            return {"success": False, "message": f"24h 보고서 파일을 읽는 중 오류가 발생했습니다: {e}"}
+
     def start(self):
         handler_cls = self._create_handler()
         for attempt in range(5):
@@ -274,6 +389,40 @@ class DashboardWebServer:
                         query_params = urllib.parse.parse_qs(parsed_url.query)
                         target = query_params.get("date", query_params.get("filename", [""]))[0]
                         data = server_self.get_daily_report_content(target)
+                        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                        self.send_response(200 if data.get("success") else 404)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+
+                    # 1-4. 24h 종목 분석 보고서 목록 및 내용 조회 API
+                    if path in ("/api/analysis-24h", "/api/analysis_24h", "/api/reports-24h"):
+                        query_params = urllib.parse.parse_qs(parsed_url.query)
+                        target = query_params.get("file", query_params.get("filename", query_params.get("symbol", query_params.get("target", [""]))))[0]
+                        if target:
+                            data = server_self.get_analysis_24h_content(target)
+                            status_code = 200 if data.get("success") else 404
+                        else:
+                            data = server_self.get_analysis_24h_reports()
+                            status_code = 200
+                        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                        self.send_response(status_code)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Access-Control-Allow-Origin", "*")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.send_header("Connection", "close")
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+
+                    if path in ("/api/analysis-24h/content", "/api/analysis_24h/content", "/api/report-24h"):
+                        query_params = urllib.parse.parse_qs(parsed_url.query)
+                        target = query_params.get("file", query_params.get("filename", query_params.get("symbol", query_params.get("target", [""]))))[0]
+                        data = server_self.get_analysis_24h_content(target)
                         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
                         self.send_response(200 if data.get("success") else 404)
                         self.send_header("Content-Type", "application/json; charset=utf-8")

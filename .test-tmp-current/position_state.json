@@ -1,0 +1,12 @@
+{
+  "peaks": {},
+  "partial_tp_done": {},
+  "auto_breakeven_active": {},
+  "entry_times": {
+    "KRW-BTC": 1792196795.856713
+  },
+  "strategy_modes": {
+    "KRW-BTC": "SWING",
+    "KRW-SOLV": "SCALP"
+  }
+}
