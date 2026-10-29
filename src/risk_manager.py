@@ -151,18 +151,33 @@ def get_held_markets(
     bithumb: Any,
     min_val_krw: float = 4000.0,
     price_map: dict[str, float] | None = None,
+    order_journal: Any = None,
+    trailing_tracker: Any = None,
 ) -> list[str]:
     """현재 의미 있게 보유 중인(4,000원 이상) 마켓 코드 목록 반환 (수동 격리 종목 완전 배제)"""
     held = []
     excluded = get_excluded_manual_holdings()
     if price_map is None:
         price_map = _fetch_held_prices(balances, bithumb)
+    
+    # 봇 관리 종목 판별기 지연 임포트
+    is_bot_managed_fn = None
+    if order_journal is not None or trailing_tracker is not None:
+        try:
+            from position_guard import is_bot_managed_position
+            is_bot_managed_fn = is_bot_managed_position
+        except Exception:
+            is_bot_managed_fn = None
+
     for cur, info in balances.items():
         if cur in ("KRW", "P") or cur in excluded or f"KRW-{cur}" in excluded:
             continue
         total_vol = info.get("balance", 0.0) + info.get("locked", 0.0)
         if total_vol > 0:
             market = f"KRW-{cur}"
+            # 수동 매수 포지션은 봇 보유 마켓 목록에서 완전 배제
+            if is_bot_managed_fn and not is_bot_managed_fn(order_journal, trailing_tracker, market):
+                continue
             price = price_map.get(market, 0.0)
             if price > 0 and (total_vol * price) >= min_val_krw:
                 held.append(market)
@@ -174,6 +189,8 @@ def build_positions_data(
     bithumb: Any,
     strategies: dict[str, dict[str, Any]] | None = None,
     price_map: dict[str, float] | None = None,
+    order_journal: Any = None,
+    trailing_tracker: Any = None,
 ) -> list[dict[str, Any]]:
     """웹 대시보드 표시용 보유 코인 포지션 목록 생성 (수동 격리 종목 완전 배제)"""
     positions = []
@@ -181,6 +198,16 @@ def build_positions_data(
     excluded = get_excluded_manual_holdings()
     if price_map is None:
         price_map = _fetch_held_prices(balances, bithumb)
+
+    # 봇 관리 종목 판별기 지연 임포트
+    is_bot_managed_fn = None
+    if order_journal is not None or trailing_tracker is not None:
+        try:
+            from position_guard import is_bot_managed_position
+            is_bot_managed_fn = is_bot_managed_position
+        except Exception:
+            is_bot_managed_fn = None
+
     for cur, info in balances.items():
         if cur in ("KRW", "P") or cur in excluded or f"KRW-{cur}" in excluded:
             continue
@@ -188,6 +215,9 @@ def build_positions_data(
         if vol <= 0:
             continue
         market = f"KRW-{cur}"
+        # 수동 매수 포지션은 대시보드 봇 포지션 목록에서 완전 배제
+        if is_bot_managed_fn and not is_bot_managed_fn(order_journal, trailing_tracker, market):
+            continue
         try:
             price = price_map.get(market, 0.0)
             if price <= 0:

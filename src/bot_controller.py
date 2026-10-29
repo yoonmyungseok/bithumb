@@ -218,15 +218,28 @@ class BotController:
             exchange = self.get_exchange()
             fng = get_fear_and_greed_index()
             balances = exchange.get_balances()
-            total_equity = calculate_total_equity(balances, exchange)
+            held_price_map = _fetch_held_prices(balances, exchange)
+            total_equity = calculate_total_equity(balances, exchange, price_map=held_price_map)
+            bot_equity = calculate_bot_equity(
+                balances,
+                held_price_map,
+                order_journal=self.order_journal,
+                trailing_tracker=self.trailing_tracker,
+            )
             krw_avail = balances.get("KRW", {}).get("balance", 0.0)
-            daily_pnl_krw = total_equity - self.risk_manager.daily_start_equity
+            daily_pnl_krw = bot_equity - self.risk_manager.daily_start_equity
             daily_pnl_pct = (
                 (daily_pnl_krw / self.risk_manager.daily_start_equity * 100)
                 if self.risk_manager.daily_start_equity > 0
                 else 0.0
             )
-            held = get_held_markets(balances, exchange)
+            held = get_held_markets(
+                balances,
+                exchange,
+                price_map=held_price_map,
+                order_journal=self.order_journal,
+                trailing_tracker=self.trailing_tracker,
+            )
             held_str = ", ".join(held) if held else "없음 (100% 현금)"
 
             state_badge = "⏸️ 일시정지 중 (관망)" if self.get_is_paused() else "🟢 정상 가동 중"
@@ -234,7 +247,7 @@ class BotController:
             return (
                 f"📊 <b>[{self.exchange_name} AI 퀀트 봇 실시간 종합 대시보드]</b>\n\n"
                 f"• <b>봇 상태:</b> {state_badge}\n"
-                f"• <b>총 평가 자산:</b> {total_equity:,.0f} KRW\n"
+                f"• <b>총 평가 자산:</b> {bot_equity:,.0f} KRW\n"
                 f"• <b>가용 원화 잔고:</b> {krw_avail:,.0f} KRW\n"
                 f"• <b>금일 자산 변동:</b> {daily_pnl_krw:+,.0f} KRW ({daily_pnl_pct:+.2f}%)\n"
                 f"• <b>금일 확정 실현 손익:</b> {self.risk_manager.realized_pnl_krw:+,.0f} KRW (거래 {self.risk_manager.total_trades_today}회, 자정 리셋)\n"
@@ -419,10 +432,10 @@ class BotController:
             )
             manual_isolated_equity = max(0.0, total_equity - bot_equity)
 
-            # 장중 입출금 및 초기 입금 기준자산 실시간 보정
-            self.risk_manager.adjust_for_current_equity(total_equity)
+            # 장중 입출금 및 초기 입금 기준자산 실시간 보정 (수동 격리 종목 완전 배제)
+            self.risk_manager.adjust_for_current_equity(bot_equity)
 
-            daily_pnl_krw = total_equity - self.risk_manager.daily_start_equity
+            daily_pnl_krw = bot_equity - self.risk_manager.daily_start_equity
             daily_pnl_pct = (
                 (daily_pnl_krw / self.risk_manager.daily_start_equity * 100)
                 if self.risk_manager.daily_start_equity > 0
@@ -435,15 +448,28 @@ class BotController:
 
             state_badge = "⏸️ 일시정지 중" if self.get_is_paused() else "🟢 정상 가동 중"
 
-            # 1. 포지션 및 후보군 데이터
-            held_markets = get_held_markets(balances, bithumb, price_map=held_price_map)
+            # 1. 포지션 및 후보군 데이터 (수동 격리 종목 완전 배제)
+            held_markets = get_held_markets(
+                balances,
+                bithumb,
+                price_map=held_price_map,
+                order_journal=self.order_journal,
+                trailing_tracker=self.trailing_tracker,
+            )
             if hasattr(self.trailing_tracker, "_load_state"):
                 try:
                     self.trailing_tracker._load_state()
                 except Exception:
                     pass
             self.restore_missing_position_strategies(held_markets)
-            positions_data = build_positions_data(balances, bithumb, self.latest_strategies, price_map=held_price_map)
+            positions_data = build_positions_data(
+                balances,
+                bithumb,
+                self.latest_strategies,
+                price_map=held_price_map,
+                order_journal=self.order_journal,
+                trailing_tracker=self.trailing_tracker,
+            )
             # 확정 체결 기반 보유 시간과 익절 단계를 덧붙인다. 수동 보유분에는 시간을 추정하지 않는다.
             for position in positions_data:
                 market_key = str(position.get("market", "") or "")
@@ -595,7 +621,8 @@ class BotController:
                 logger.debug("확정 체결 성과 리포트 생성 예외: %s", report_exc)
 
             self.latest_dashboard_data = {
-                "total_equity": int(total_equity),
+                "total_equity": int(bot_equity),
+                "account_total_equity": int(total_equity),
                 "bot_equity": int(bot_equity),
                 "manual_isolated_equity": int(manual_isolated_equity),
                 "krw_available": int(krw_avail),

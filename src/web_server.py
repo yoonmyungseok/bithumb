@@ -22,6 +22,14 @@ DAILY_REPORT_DATE_PATTERN = re.compile(r"^\d{4}-?\d{2}-?\d{2}$")
 default_analysis_24h_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "24h"))
 ANALYSIS_24H_FILENAME_PATTERN = re.compile(r"^([A-Za-z0-9_]+)_24h_(\d{8})\.md$")
 
+try:
+    from src.drive_sync import DriveAnalysis24hSyncer
+except ImportError:
+    try:
+        from drive_sync import DriveAnalysis24hSyncer
+    except ImportError:
+        DriveAnalysis24hSyncer = None
+
 
 class QuietThreadingHTTPServer(ThreadingHTTPServer):
     """클라이언트 연결 끊김(새로고침, 탭 닫기 등) 시 발생하는 불필요한 스택트레이스 억제"""
@@ -73,6 +81,9 @@ class DashboardWebServer:
         self.static_dir = None if self.is_api_only else (static_dir or self._resolve_static_dir())
         self.reports_dir = os.path.abspath(reports_dir or default_reports_dir)
         self.analysis_24h_dir = os.path.abspath(analysis_24h_dir or default_analysis_24h_dir)
+        # 기본 24h 디렉터리를 사용하는 경우에만 자동 동기화 활성화 (단위 테스트 등 임시 디렉터리 분리 보장)
+        is_default_dir = os.path.normpath(self.analysis_24h_dir) == os.path.normpath(default_analysis_24h_dir)
+        self._drive_syncer = DriveAnalysis24hSyncer(local_dir=self.analysis_24h_dir) if (DriveAnalysis24hSyncer and is_default_dir) else None
         self.server: QuietThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -179,8 +190,14 @@ class DashboardWebServer:
             logger.error(f"보고서 파일 읽기 실패 ({target_file}): {e}")
             return {"success": False, "message": f"보고서 파일을 읽는 중 오류가 발생했습니다: {e}"}
 
-    def get_analysis_24h_reports(self, only_latest: bool = True) -> dict[str, Any]:
+    def get_analysis_24h_reports(self, only_latest: bool = True, auto_sync: bool = True) -> dict[str, Any]:
         """24h 종목 시세 흐름 분석 보고서 파일 목록 반환 (기본값: 종목별 가장 최신 보고서만 반환)"""
+        if auto_sync and getattr(self, "_drive_syncer", None) is not None:
+            try:
+                self._drive_syncer.sync()
+            except Exception as e:
+                logger.debug(f"24h 보고서 드라이브 자동 동기화 예외 (무시됨): {e}")
+
         if not os.path.isdir(self.analysis_24h_dir):
             return {"success": True, "reports": [], "total": 0}
 
@@ -206,9 +223,12 @@ class DashboardWebServer:
                     with open(file_path, "r", encoding="utf-8") as f:
                         for line in f:
                             sline = line.strip()
-                            if sline.startswith("# "):
-                                title = sline.lstrip("# ").strip()
-                                break
+                            if sline.startswith("#"):
+                                cleaned_title = re.sub(r"^[#\s]+", "", sline).strip()
+                                cleaned_title = re.sub(r"^\*\*|\*\*$", "", cleaned_title).strip()
+                                if cleaned_title:
+                                    title = cleaned_title
+                                    break
                 except Exception:
                     pass
 
@@ -862,7 +882,8 @@ class DashboardWebServer:
                 const res = await fetch('/api/status');
                 const data = await res.json();
                 if (data) {{
-                    document.getElementById('total_equity').innerText = (data.total_equity || 0).toLocaleString() + ' 원';
+                    const displayEquity = (data.bot_equity != null && data.bot_equity > 0) ? data.bot_equity : (data.total_equity || 0);
+                    document.getElementById('total_equity').innerText = displayEquity.toLocaleString() + ' 원';
                     document.getElementById('krw_avail').innerText = (data.krw_available || 0).toLocaleString() + ' 원';
                     document.getElementById('start_equity').innerText = (data.daily_start_equity || 0).toLocaleString() + ' 원';
                     

@@ -269,7 +269,22 @@ class OrderFillProcessor:
                         refined_exit_reason = "긴급 전량매도"
                     elif "MANUAL" in stored_upper:
                         refined_exit_reason = "수동 청산"
-                    if self.risk_manager:
+
+                    # 사용자가 수동 매수한 종목 또는 수동 청산("MANUAL") 건은 봇의 실현 손익에 합산하지 않음
+                    is_manual_trade = (
+                        "MANUAL" in stored_upper
+                        or bool(order.get("is_manual"))
+                        or bool(order.get("is_manual_position"))
+                    )
+                    if not is_manual_trade:
+                        try:
+                            from position_guard import is_protected_market
+                            if is_protected_market(market):
+                                is_manual_trade = True
+                        except Exception:
+                            pass
+
+                    if self.risk_manager and not is_manual_trade:
                         self.risk_manager.add_realized_trade(pnl_krw, is_win=is_win)
 
                     if self.cooldown_manager:

@@ -40,6 +40,7 @@ class ExchangeBootstrapProfile:
     shutdown_complete_message: str
     log_prefix: str = ""
     catch_main_loop_exceptions: bool = False
+    scheduler_24h_report_job_id: str = ""
 
 
 @dataclass
@@ -62,6 +63,7 @@ class TradingBootstrapContext:
     cycle_offset_seconds: int = 0
     reconcile_after_private_ws: Callable[[], None] | None = None
     warmup_callback: Callable[[], None] | None = None
+    run_24h_analysis_report: Callable[[], None] | None = None
 
 
 class TradingBotBootstrap:
@@ -216,9 +218,23 @@ class TradingBotBootstrap:
             coalesce=True,
             misfire_grace_time=600,
         )
+        # 24시간 수동 종목 분석 보고서 스케줄러 (매일 오전 09:00 실행)
+        run_24h_report_fn = getattr(self.ctx, "run_24h_analysis_report", None)
+        if callable(run_24h_report_fn):
+            report_24h_job_id = getattr(self.profile, "scheduler_24h_report_job_id", "") or f"{self.profile.exchange_key}_24h_analysis_report"
+            self._scheduler.add_job(
+                run_24h_report_fn,
+                "cron",
+                hour=9,
+                minute=0,
+                id=report_24h_job_id,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=600,
+            )
         self._scheduler.start()
         self.ctx.logger.info(
-            "⏰ APScheduler 가동 완료 (%d분 주기 매매 및 매일 09:00 모닝 리포트)",
+            "⏰ APScheduler 가동 완료 (%d분 주기 매매 및 매일 09:00 모닝 리포트/24h 분석)",
             interval_minutes,
         )
 
@@ -342,6 +358,7 @@ def execute_daily_morning_report_shared(
 ) -> None:
     """빗썸/업비트 공통 매일 아침 09:00 KST 일일 결산 모닝 리포트를 생성 및 전송한다."""
     from risk_manager import (
+        _fetch_held_prices as _default_held_prices,
         calculate_total_equity as _default_calc_equity,
         get_fear_and_greed_index as _default_fng,
         get_held_markets as _default_held_markets,
@@ -363,17 +380,24 @@ def execute_daily_morning_report_shared(
         exchange_client = create_exchange_client()
         fng = get_fear_and_greed_index()
         balances = exchange_client.get_balances()
-        total_equity = calculate_total_equity(balances, exchange_client)
+        held_price_map = _default_held_prices(balances, exchange_client)
+        total_equity = calculate_total_equity(balances, exchange_client, price_map=held_price_map)
+        bot_equity = total_equity
+        try:
+            from position_guard import calculate_bot_equity
+            bot_equity = calculate_bot_equity(balances, held_price_map)
+        except Exception:
+            pass
         krw_avail = balances.get("KRW", {}).get("balance", 0.0)
 
-        daily_pnl_krw = total_equity - risk_manager.daily_start_equity
+        daily_pnl_krw = bot_equity - risk_manager.daily_start_equity
         daily_pnl_pct = (
             (daily_pnl_krw / risk_manager.daily_start_equity) * 100.0
             if risk_manager.daily_start_equity > 0
             else 0.0
         )
 
-        held_markets = get_held_markets(balances, exchange_client)
+        held_markets = get_held_markets(balances, exchange_client, price_map=held_price_map)
         held_names = [f"{exchange_client.get_korean_name(m)}({m.split('-')[-1]})" for m in held_markets]
         held_desc = ", ".join(held_names) if held_names else "없음 (100% 현금 보유)"
 
@@ -397,7 +421,7 @@ def execute_daily_morning_report_shared(
                 macro_diag = analyzer.diagnose_macro_regime(candles_1h, fng_index=fng)
                 ai_comment = analyzer.generate_market_briefing(
                     exchange_name=exchange_name,
-                    total_equity=total_equity,
+                    total_equity=bot_equity,
                     daily_pnl_krw=daily_pnl_krw,
                     daily_pnl_pct=daily_pnl_pct,
                     held_positions_desc=held_desc,
@@ -411,7 +435,7 @@ def execute_daily_morning_report_shared(
 
         telegram.send_message(
             f"🌅 <b>[{exchange_name} AI 퀀트 봇 - 09:00 KST 일일 성과 결산 브리핑]</b>\n\n"
-            f"• <b>총 평가 자산:</b> {total_equity:,.0f} KRW\n"
+            f"• <b>총 평가 자산:</b> {bot_equity:,.0f} KRW\n"
             f"• <b>금일 자산 변동:</b> {daily_pnl_krw:+,.0f} KRW ({daily_pnl_pct:+.2f}%)\n"
             f"• <b>금일 확정 실현 손익:</b> {risk_manager.realized_pnl_krw:+,.0f} KRW (총 {risk_manager.total_trades_today}회 거래)\n"
             f"• <b>가용 원화 잔고:</b> {krw_avail:,.0f} KRW\n"

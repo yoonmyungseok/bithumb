@@ -215,6 +215,124 @@ class GroqProvider:
             status_code=last_status,
         )
 
+    def complete_text(
+        self,
+        prompt: str,
+        *,
+        system_instruction: str = "You are a professional crypto quant analyst. Always respond in high quality markdown.",
+        models: list[str] | None = None,
+        timeout: float | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+    ) -> GroqResult:
+        """텍스트/마크다운 형식으로 Groq를 호출하고 결과 문자열을 반환합니다."""
+        if not self.is_available:
+            return GroqResult(
+                value=None,
+                model="",
+                success=False,
+                latency_sec=0.0,
+                error_kind="API_KEY_MISSING",
+            )
+
+        candidate_models = models or self.models
+        req_timeout = float(timeout if timeout is not None else self.timeout)
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        last_status: int | None = None
+        last_error_kind = ""
+
+        for model in candidate_models:
+            start_ts = time.time()
+            self.total_calls += 1
+            self.last_call_ts = start_ts
+
+            payload: dict[str, Any] = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+
+            try:
+                resp = requests.post(
+                    self.API_URL,
+                    headers=headers,
+                    json=payload,
+                    timeout=req_timeout,
+                )
+                latency = time.time() - start_ts
+                self.last_latency_sec = latency
+                last_status = resp.status_code
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    choices = data.get("choices", [])
+                    if not choices:
+                        last_error_kind = "EMPTY_CHOICES"
+                        self.failed_calls += 1
+                        continue
+
+                    raw_content = choices[0].get("message", {}).get("content", "")
+                    if not raw_content or not raw_content.strip():
+                        last_error_kind = "EMPTY_CONTENT"
+                        self.failed_calls += 1
+                        continue
+
+                    self.success_calls += 1
+                    self.last_error = ""
+                    return GroqResult(
+                        value=raw_content.strip(),
+                        model=model,
+                        success=True,
+                        latency_sec=latency,
+                        status_code=resp.status_code,
+                    )
+                elif resp.status_code == 404:
+                    last_error_kind = "MODEL_NOT_FOUND"
+                    logger.info(f"Groq API 404 Model Not Found (모델 '{model}' 미지원/종료) -> 다음 모델 폴백")
+                elif resp.status_code == 429:
+                    last_error_kind = "RATE_LIMIT_EXCEEDED"
+                    logger.info(f"Groq API 429 Rate Limit (모델: {model}) -> 다음 모델 폴백")
+                else:
+                    last_error_kind = f"HTTP_{resp.status_code}"
+                    err_detail = ""
+                    try:
+                        err_payload = resp.json().get("error", {})
+                        err_code = err_payload.get("code") or err_payload.get("type") or ""
+                        raw_msg = str(err_payload.get("message") or "")[:80]
+                        err_detail = f" ({err_code}: {raw_msg})" if err_code or raw_msg else ""
+                    except Exception:
+                        pass
+                    logger.warning(f"Groq API 오류 HTTP {resp.status_code}{err_detail} (모델: {model})")
+
+                self.failed_calls += 1
+
+            except requests.Timeout:
+                last_error_kind = "TIMEOUT"
+                self.failed_calls += 1
+                logger.warning(f"Groq API 타임아웃 ({req_timeout}s, 모델: {model})")
+            except Exception as exc:
+                last_error_kind = "NETWORK_ERROR"
+                self.failed_calls += 1
+                logger.warning(f"Groq API 호출 예외 ({model}): {exc}")
+
+        self.last_error = last_error_kind
+        return GroqResult(
+            value=None,
+            model=candidate_models[-1] if candidate_models else "",
+            success=False,
+            latency_sec=time.time() - self.last_call_ts,
+            error_kind=last_error_kind,
+            status_code=last_status,
+        )
+
     def get_stats(self) -> dict[str, Any]:
         """외부 모니터링을 위한 호출 통계를 반환합니다."""
         return {

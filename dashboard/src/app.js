@@ -1349,12 +1349,25 @@
       titleEl.innerText = d.title;
     }
 
-    // 1. Total Equity
+    // 1. Total Equity (수동 매수 종목 배제한 봇 운용 평가 자산)
     const totalEqEl = document.getElementById('total_equity');
-    if (totalEqEl) totalEqEl.innerText = formatKrw(d.total_equity);
+    const displayEquity = (d.bot_equity != null && d.bot_equity > 0) ? d.bot_equity : (d.total_equity || 0);
+    if (totalEqEl) totalEqEl.innerText = formatKrw(displayEquity);
 
     const krwAvailEl = document.getElementById('krw_avail');
     if (krwAvailEl) krwAvailEl.innerText = formatKrw(d.krw_available);
+
+    const manualRow = document.getElementById('manual_isolated_row');
+    const manualVal = document.getElementById('manual_isolated_val');
+    if (manualRow && manualVal) {
+      const manualEq = Number(d.manual_isolated_equity || 0);
+      if (manualEq > 0) {
+        manualRow.classList.remove('hidden');
+        manualVal.innerText = `${formatKrw(manualEq)} (제외됨)`;
+      } else {
+        manualRow.classList.add('hidden');
+      }
+    }
 
     // 2. Daily PnL
     const dailyPnlKrw = d.daily_pnl_krw || 0;

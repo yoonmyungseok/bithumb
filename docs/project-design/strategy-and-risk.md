@@ -194,8 +194,11 @@
 - **가용 예수금 Standby Gate (P0)**:
   - 가용 원화(`krw_available`)가 최소 주문 금액(`StrategyPolicy.MIN_ORDER_KRW = 5,000원`) 미만인 경우 신규 매수가 불가능하므로, 불필요한 AI 분석 큐 등록(`should_call_ai`) 및 신규 진입 스크리닝을 사전에 바이패스/스킵하여 Gemini 일일 쿼터 및 시스템 연산 자원을 절약한다.
   - `trading_runtime.py`의 `process_entry_gating`에서 가용 예수금 부족 시 `INSUFFICIENT_CASH`로 신속 Fail-Closed 처리하여 불필요한 오더북 충격 분석 및 슬롯 계산 오버헤드를 차단한다.
-- **대시보드 및 리스크 관리 2-트랙 자산 분리 모델 (P1)**:
-  - 계좌 총 평가액을 봇 알고리즘 운용 자산(`bot_equity`)과 수동 격리 자산(`manual_isolated_equity`)의 2-트랙으로 분리 집계 및 영속화한다.
+- **대시보드 및 핵심 성과 지표 수동 매수 자산 완전 배제 정책 (P0)**:
+  - **총 평가 자산 (Card 1)**: 대시보드 및 텔레그램 상태/모닝 리포트의 총 평가 자산은 사용자가 수동 매수한 종목을 배제한 봇 운용 평가 자산(`bot_equity` = 원화 잔고 + 봇 관리 포지션 평가액)만을 단일 기준으로 표시한다. 수동 격리 자산(`manual_isolated_equity`)은 대시보드 보조 안내 또는 별도 분리 라벨로만 제공하며 총 평가 자산 본문에 합산하지 않는다.
+  - **금일 자산 변동 (Card 2)**: `daily_pnl_krw` 및 `daily_pnl_pct` 산출 시 계좌 전체 총액(`total_equity`)이 아닌 수동 종목을 배제한 `bot_equity - daily_start_equity` 기준으로 계산하여, 수동 보유 종목의 급등락으로 인한 당일 봇 운용 성과 왜곡을 원천 차단한다. 장중 자산 보정(`adjust_for_current_equity`) 역시 `bot_equity`를 단일 기준으로 전달한다.
+  - **금일 확정 실현 손익 (Card 3)**: 사용자가 수동 매수한 종목 또는 수동 청산(`MANUAL`) 체결 건은 봇의 일일 확정 실현 손익(`realized_pnl_krw`) 및 일일 거래 횟수 집계에서 완전 제외하여, 봇 자체 알고리즘 매매 성과만 순수하게 추적한다.
+  - **보유 포지션 목록 (`positions`)**: 대시보드의 포지션 목록 및 마켓 스캔 목록(`build_positions_data`, `get_held_markets`)에서 주문 저널에 매수 기록이 없는 수동 보유 종목(`is_bot_managed_position = False`)을 원천 배제하여, 봇이 관리하지 않는 코인이 봇 포지션 목록에 관망/보유로 표시되는 혼선을 방지한다.
   - `DailyRiskManager`의 상태 파일(`daily_risk_{exchange}.json`)에 `bot_equity`, `manual_isolated_equity`, `total_equity`를 명시적으로 분리 저장 및 로드 복원한다.
   - `DashboardServer` 및 UI 개요 API(`get_overview_data`)에 거래소별 및 통합(`combined`) `bot_equity`, `manual_isolated_equity`를 제공하여, 수동 보유 자산(예: 빗썸 `KRW-US`, 업비트 `KRW-CAP`)의 변동성이 봇 성과 지표를 왜곡하지 않고 투명하게 분리 모니터링되도록 보장한다.
 - **주말/저유동성 장세 적응형 파라미터 가드 (P2)**:

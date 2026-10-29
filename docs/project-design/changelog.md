@@ -2,6 +2,70 @@
  
  버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
  
+## 2026-10-29 수동 매수 종목 Groq API 기반 24시간 시세 분석 보고서 스케줄러 자동화 구현
+
+- **배경 및 요구사항**:
+  - 기존에 구글 드라이브 동기화로 수동 업로드되던 24시간 종목 시세 흐름 분석 보고서를, Groq API를 연동하여 완전 자동화하도록 요청.
+  - 조건 1: 매일 오전 09:00 정각에 해당 작업 시작.
+  - 조건 2: 봇 자동 매매 포지션을 엄격히 제외하고 사용자가 수동으로 매수한 종목에 대해서만 작업 진행.
+  - 조건 3: 작업이 완료된 마크다운 파일은 `24h/{SYMBOL}_24h_{YYYYMMDD}.md` 디렉터리에 저장하여 대시보드와 즉시 연동.
+  - 실행 방식: 봇 스케줄러(`APScheduler`) 태스크로 상시 구동되도록 구현.
+- **설계 및 구현 내용**:
+  1. **Groq Provider 마크다운 텍스트 생성 메서드 추가 (`src/groq_provider.py`)**:
+     - 기존 JSON 모드 외에 마크다운 및 분석 텍스트를 고속 생성할 수 있는 `complete_text` 메서드 구현.
+     - 지원 모델(`openai/gpt-oss-120b` -> `qwen/qwen3.8-27b` -> `openai/gpt-oss-20b`) 자동 순차 폴백 및 Rate Limit(429) 복원력 보장.
+  2. **수동 종목 24h 분석 보고서 생성기 신설 (`src/analysis_24h_generator.py`)**:
+     - `ManualPositionCollector`와 연동하여 봇 관리 포지션을 제외한 순수 수동 매수 포지션(보유수량, 평단가, 평가액, 손익률, 계좌 내 비중) 자동 수집.
+     - 업비트/빗썸 실시간 시세 및 최근 일봉 캔들(`v1/candles/days`) 데이터를 주입하여 정합성 보장(Hallucination 원천 방지).
+     - 5개 핵심 섹션(최근 24시간 흐름, 24시간 단기 예측, 중장기 예측, 평단가 기반 맞춤 대응 전략, 핵심 요약) 및 포지션 요약 표 서식 엄격 적용.
+     - 원자적 파일 쓰기(`save_report`)를 통해 `24h/{SYMBOL}_24h_{YYYYMMDD}.md`로 안전하게 저장.
+  3. **봇 스케줄러(APScheduler) 연동 및 거래소 격리 (`src/trading_bot_bootstrap.py`, `src/main_upbit.py`, `src/main.py`)**:
+     - `TradingBotBootstrap`: 매일 09:00 정각에 실행되는 `scheduler_24h_report_job_id` 크론 잡 등록.
+     - 거래소 격리 원칙 엄격 준수: `main_upbit.py`는 업비트 수동 종목(예: HOLO, RSR)만, `main.py`는 빗썸 수동 종목(예: US)만 처리하도록 스코프 분리.
+     - 생성 완료 시 텔레그램 발행 요약 알림 전송.
+  4. **수동 실행 CLI 도구 신설 (`scripts/generate_24h_reports.py`)**:
+     - 즉시 테스트 및 특정 종목 개별 생성을 위한 CLI 도구 제공 (`--exchange`, `--symbol`, `--min-eval` 지원).
+  5. **단위 테스트 작성 (`tests/test_analysis_24h_generator.py`)**:
+     - 파일 저장, 프롬프트 구조, Groq 응답 정제, 복수 종목 순회 및 저장 로직 단위 테스트 4종 작성 및 통과 (4/4 OK).
+
+- **배경 및 요구사항**:
+  - 사용자가 거래소(빗썸, 업비트)에서 직접 수동 매수한 종목(예: `KRW-US`, `KRW-CAP`, `KRW-RSR` 등)이 대시보드의 총 평가 자산, 금일 자산 변동(평가손익), 금일 확정 실현 손익 및 보유 포지션 목록에 포함되어 봇 자체의 알고리즘 운용 성과가 심각하게 왜곡되는 문제 해결 요청.
+- **수정 및 개선 내용**:
+  1. **총 평가 자산 및 금일 자산 변동 기준 정렬 (`src/bot_controller.py`, `src/trading_bot_bootstrap.py`)**:
+     - `get_dashboard_data`: 대시보드 메인 KPI `total_equity`를 봇 운용 평가 자산(`bot_equity` = 원화 잔고 + 봇 관리 포지션 평가액)으로 설정하고, 계좌 전체 총 자산은 `account_total_equity`로 분리 보존.
+     - `adjust_for_current_equity`: 장중 기준자산 보정 시 기존 `total_equity` 전달 버그를 수정하여 `bot_equity`를 전달.
+     - `daily_pnl_krw` 및 `daily_pnl_pct`: `bot_equity - daily_start_equity` 기준으로 재산출하여, 수동 보유 코인의 급등락이 당일 손익률을 왜곡하지 않도록 완전 분리.
+     - `get_status_message` 및 `send_morning_report_shared`: 텔레그램 `/status` 및 09:00 모닝 리포트에서도 `bot_equity` 및 봇 기준 자산 변동을 단일 기준으로 통일.
+  2. **수동 거래 실현 손익 누적 차단 (`src/order_safety/fill_processor.py`)**:
+     - 매도 체결 시 `MANUAL` 청산, `order.is_manual`, 영구 보호 종목 등 수동 매수/수동 거래 건은 `risk_manager.add_realized_trade` 호출을 배제하여 봇의 `realized_pnl_krw` 및 당일 승률 통계에 일절 합산되지 않도록 원천 차단.
+  3. **대시보드 통합 게이트웨이 및 프론트엔드 연동 (`src/dashboard_server.py`, `dashboard/`)**:
+     - `dashboard_server.py`: `combined` 데이터의 `total_equity`를 `total_bot_equity`로 일치시키고, 내장 폴백 템플릿에서도 `bot_equity`를 단일 기준으로 렌더링.
+     - `dashboard/src/app.js` & `index.html`: 카드 1(총 평가 자산)에 `displayEquity`(`bot_equity` 우선) 적용 및 수동 격리 자산 존재 시 `수동 격리: X원 (제외됨)` 안내 뱃지 추가.
+  4. **보유 포지션 목록 수동 코인 배제 (`src/risk_manager.py`)**:
+     - `build_positions_data` 및 `get_held_markets`: 주문 저널에 봇 매수 이력이 없는 수동 포지션(`is_bot_managed_position = False`)을 포지션 테이블 및 보유 목록에서 원천 배제.
+- **검증**:
+  - `tests/test_manual_assets_exclusion_from_metrics.py`: 대시보드 지표, 텔레그램 상태, 수동 매도 체결, 통합 게이트웨이, 포지션 목록 배제 전용 단위 테스트 5종 신규 작성 및 통과 (5/5 OK).
+  - 리스크 관리, 체결 품질, 일일 통계 등 관련 테스트 스위트 51종 전체 통과 확인.
+
+## 2026-10-25 구글 드라이브(24h_reports 폴더) 24h 종목 분석 보고서 자동 동기화 기능 구현
+
+- **배경 및 요구사항**:
+  - Gemini 웹 등에서 구글 스프레드시트(`현재가_확인`)를 분석하여 작성한 마크다운 분석 보고서를 구글 드라이브 `24h_reports` 폴더에 `.md` 또는 Google Docs로 저장 시, 로컬 `24h/{종목심볼}_24h_{YYYYMMDD}.md` 파일로 자동 다운로드·동기화하고 대시보드에 즉시 노출되도록 요청.
+- **설계 및 구현 내용**:
+  1. **구글 드라이브 24h 보고서 동기화 모듈 신설 (`src/drive_sync.py`)**:
+     - `DriveAnalysis24hSyncer`: 서비스 계정 키(`config/service_account.json`)를 통해 구글 드라이브 API 연동.
+     - `24h_reports` 폴더 자동 감지 및 `{종목심볼}_24h_{YYYYMMDD}.md` 명명 규칙 매칭 파일 탐색.
+     - Google Docs 형식(`application/vnd.google-apps.document`)은 `mimeType=text/markdown`으로 안전하게 Export 추출하고 일반 텍스트/.md 파일은 직접 다운로드.
+     - 원격 수정 일시(`modifiedTime`) 및 로컬 수정 일시(`mtime`) 비교를 통해 변경된 파일만 효율적으로 다운로드하고, 불필요한 API 호출 방지를 위해 60초 TTL 캐싱 적용.
+  2. **대시보드 및 웹 서버 자동 동기화 트리거 연동 (`src/web_server.py`, `src/dashboard_server.py`)**:
+     - `get_analysis_24h_reports()` API 호출 시 `_drive_syncer.sync()`를 자동 실행하여 대시보드 24h 분석 페이지 진입 또는 새로고침 시 최신 보고서가 로컬에 자동 반영되도록 구현.
+     - 마크다운 헤더 파싱 로직을 개선하여 `# **제목**` 형태의 볼드 마크다운도 정갈하게 제목으로 추출하도록 처리.
+     - 단위 테스트 등 독립 격리 디렉터리 사용 시에는 자동 동기화를 비활성화하여 테스트 안전성 보장.
+  3. **단위 테스트 추가 (`tests/test_drive_sync.py`)**:
+     - Google Docs/바이너리 파일 다운로드 및 로컬 저장 모킹 테스트, TTL 캐싱 검증 완료 (2/2 통과).
+     - 기존 `tests/test_analysis_24h_dashboard.py` (6/6 통과) 확인.
+
+ 
 ## 2026-10-17 봇 전용 독립 시드 모드, 매크로 쇼크 V자 반등 조기 해제, 수동 포지션 관측 알림 구현
 
 - **배경 및 요구사항**:

@@ -19,6 +19,7 @@ Python과 Windows 배치·`process_manager.py` 기반의 듀얼 거래소 자동
 3. `StrategyPolicy`가 확정봉 기반 후보를 평가하고 알트코인 포지션 사이징 하한(`MIN_ALT_ALLOC_PCT`) 균등화를 적용하며, `order_safety/`가 저널·멱등 주문·체결 증가분·쿨다운·호가 영향을 처리한다.
 4. 각 거래소 상태 API는 독립 제공하며 통합 대시보드는 표시용으로만 합산한다.
 5. `src/sheets/sync_worker.py`는 5분 주기로 빗썸·업비트의 봇 미관리(수동 매수) 종목을 자동 수집하여 단일 구글 스프레드시트에 종합 Summary 탭 및 종목별 개별 탭(`UPBIT_BTC`, `BITHUMB_ETH` 등)으로 시세와 손익 히스토리를 갱신한다. Gemini 웹 Workspace 연동 시 즉각 분석 질의가 가능하다.
+6. `src/analysis_24h_generator.py`는 매일 09:00 KST에 `TradingBotBootstrap` 스케줄러에 의해 자동 실행되며, 거래소별 수동 매수 종목(봇 관리 포지션 제외)에 대해 실시간 시세와 캔들 히스토리를 주입하고 Groq LLM을 통해 24시간 분석 마크다운 보고서를 자동 생성하여 `24h/{SYMBOL}_24h_{YYYYMMDD}.md`로 저장한다. 빗썸 봇은 빗썸 종목, 업비트 봇은 업비트 종목만 담당하여 거래소 격리를 유지한다.
 
 `KRW-HOLO`는 업비트의 수동 관리 종목으로 환경 설정, 스크리닝, 매수, 주문, 자산 평가, 실시간 청산과 긴급 매도의 자동 경로에서 제외한다.
 

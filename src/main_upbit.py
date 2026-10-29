@@ -589,6 +589,26 @@ def update_heartbeat() -> None:
         logger.debug(f"업비트 하트비트 기록 예외: {e}")
 
 
+def run_upbit_24h_analysis_report() -> None:
+    """매일 09:00 업비트 수동 매수 종목 24시간 시세 분석 보고서 자동 생성."""
+    try:
+        from analysis_24h_generator import Analysis24hGenerator
+
+        generator = Analysis24hGenerator(exchange_scope="upbit")
+        saved_files = generator.run()
+        if saved_files:
+            logger.info("⏰ [Upbit 24h 분석] %d건 생성 완료: %s", len(saved_files), ", ".join(os.path.basename(p) for p in saved_files))
+            if telegram:
+                msg = (
+                    f"⏱️ [업비트 24h 수동 종목 분석 보고서 자동 생성]\n"
+                    f"총 {len(saved_files)}개 종목 분석이 완료되어 24h 디렉터리 및 대시보드에 반영되었습니다.\n"
+                    + "\n".join(f"• {os.path.basename(p)}" for p in saved_files)
+                )
+                telegram.send_message(msg)
+    except Exception as exc:
+        logger.error("업비트 24h 수동 종목 분석 보고서 생성 실패: %s", exc, exc_info=True)
+
+
 UPBIT_BOOTSTRAP_PROFILE = ExchangeBootstrapProfile(
     exchange_key="upbit",
     migration_base_dir=os.path.dirname(DATA_DIR),
@@ -599,6 +619,7 @@ UPBIT_BOOTSTRAP_PROFILE = ExchangeBootstrapProfile(
     internal_api_title="Upbit Trading Core API",
     scheduler_cycle_job_id="run_upbit_trading_cycle",
     scheduler_morning_job_id="upbit_morning_daily_report",
+    scheduler_24h_report_job_id="upbit_24h_manual_analysis_report",
     startup_banner_lines=(
         "  Upbit AI Pro Quant Trading Bot 가동 시작",
         f"  (데이터 경로: {DATA_DIR} | 웹 대시보드 포트: {WEB_PORT})",
@@ -629,6 +650,7 @@ def main():
             cycle_offset_seconds=CYCLE_OFFSET_SECONDS,
             reconcile_after_private_ws=_reconcile_after_private_ws_drain,
             warmup_callback=cycle_engine.warmup_macro_regime,
+            run_24h_analysis_report=run_upbit_24h_analysis_report,
         ),
     )
     bootstrap.run()
