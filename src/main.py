@@ -522,13 +522,13 @@ def update_heartbeat() -> None:
         logger.debug(f"하트비트 기록 예외: {e}")
 
 
-def run_bithumb_24h_analysis_report() -> None:
+def run_bithumb_24h_analysis_report() -> tuple[list[str], list[str]]:
     """매일 09:00 빗썸 수동 매수 종목 24시간 시세 분석 보고서 자동 생성."""
     try:
         from analysis_24h_generator import Analysis24hGenerator
 
         generator = Analysis24hGenerator(exchange_scope="bithumb")
-        saved_files = generator.run()
+        saved_files, failed_currencies = generator.run_with_failures()
         if saved_files:
             logger.info("⏰ [Bithumb 24h 분석] %d건 생성 완료: %s", len(saved_files), ", ".join(os.path.basename(p) for p in saved_files))
             if telegram:
@@ -537,9 +537,17 @@ def run_bithumb_24h_analysis_report() -> None:
                     f"총 {len(saved_files)}개 종목 분석이 완료되어 24h 디렉터리 및 대시보드에 반영되었습니다.\n"
                     + "\n".join(f"• {os.path.basename(p)}" for p in saved_files)
                 )
+                if failed_currencies:
+                    msg += f"\n\n⚠️ 생성 실패 종목({len(failed_currencies)}개: {', '.join(failed_currencies)})은 1시간 뒤 자동 재시도됩니다."
                 telegram.send_message(msg)
+        elif failed_currencies:
+            logger.warning("⏰ [Bithumb 24h 분석] 모든 종목 생성 실패 (%s) -> 1시간 뒤 재시도 예정", ", ".join(failed_currencies))
+            if telegram:
+                telegram.send_message(f"⚠️ [빗썸 24h 분석 보고서] 대상 종목({', '.join(failed_currencies)}) 분석에 실패하여 1시간 뒤 재시도합니다.")
+        return saved_files, failed_currencies
     except Exception as exc:
         logger.error("빗썸 24h 수동 종목 분석 보고서 생성 실패: %s", exc, exc_info=True)
+        return [], ["ALL"]
 
 
 BITHUMB_BOOTSTRAP_PROFILE = ExchangeBootstrapProfile(

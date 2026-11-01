@@ -63,7 +63,7 @@ class TradingBootstrapContext:
     cycle_offset_seconds: int = 0
     reconcile_after_private_ws: Callable[[], None] | None = None
     warmup_callback: Callable[[], None] | None = None
-    run_24h_analysis_report: Callable[[], None] | None = None
+    run_24h_analysis_report: Callable[..., Any] | None = None
 
 
 class TradingBotBootstrap:
@@ -218,12 +218,54 @@ class TradingBotBootstrap:
             coalesce=True,
             misfire_grace_time=600,
         )
-        # 24시간 수동 종목 분석 보고서 스케줄러 (매일 오전 09:00 실행)
+        # 24시간 수동 종목 분석 보고서 스케줄러 (매일 오전 09:00 실행 및 1시간 후 재시도 지원)
         run_24h_report_fn = getattr(self.ctx, "run_24h_analysis_report", None)
         if callable(run_24h_report_fn):
             report_24h_job_id = getattr(self.profile, "scheduler_24h_report_job_id", "") or f"{self.profile.exchange_key}_24h_analysis_report"
+            retry_24h_job_id = f"{report_24h_job_id}_retry"
+
+            def _wrapped_24h_report_runner(is_retry: bool = False) -> None:
+                """보고서 생성 실행 및 실패 시 1시간 후 1회성 재시도 등록."""
+                failed_items: list[str] = []
+                try:
+                    res = run_24h_report_fn()
+                    if isinstance(res, (list, tuple)) and len(res) == 2:
+                        _, failed_items = res
+                except Exception as ex:
+                    self.ctx.logger.error("24h 분석 보고서 실행 중 예외: %s", ex, exc_info=True)
+                    failed_items = ["ALL"]
+
+                if not is_retry:
+                    if failed_items:
+                        retry_time = datetime.now() + timedelta(hours=1)
+                        self.ctx.logger.warning(
+                            "⚠️ [24h 분석 보고서] 미완료 종목(%s) 감지 -> 1시간 뒤(%s) 재시도 스케줄 등록",
+                            ", ".join(failed_items),
+                            retry_time.strftime("%H:%M:%S"),
+                        )
+                        if self._scheduler:
+                            try:
+                                self._scheduler.add_job(
+                                    _wrapped_24h_report_runner,
+                                    "date",
+                                    run_date=retry_time,
+                                    id=retry_24h_job_id,
+                                    args=[True],
+                                    replace_existing=True,
+                                    misfire_grace_time=600,
+                                )
+                            except Exception as s_err:
+                                self.ctx.logger.error("24h 보고서 재시도 잡 등록 실패: %s", s_err)
+                    else:
+                        # 모두 성공한 경우 이전 남아있던 재시도 잡이 있다면 제거
+                        if self._scheduler and self._scheduler.get_job(retry_24h_job_id):
+                            try:
+                                self._scheduler.remove_job(retry_24h_job_id)
+                            except Exception:
+                                pass
+
             self._scheduler.add_job(
-                run_24h_report_fn,
+                _wrapped_24h_report_runner,
                 "cron",
                 hour=9,
                 minute=0,

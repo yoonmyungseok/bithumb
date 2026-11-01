@@ -383,11 +383,11 @@ class Analysis24hGenerator:
         else:
             return self.collector.get_all_manual_positions()
 
-    def run(
+    def run_with_failures(
         self,
         target_currency: str | None = None,
         now_dt: datetime | None = None,
-    ) -> list[str]:
+    ) -> tuple[list[str], list[str]]:
         """
         수동 매수 종목들을 순회하며 24h 분석 보고서를 생성하고 저장합니다.
         
@@ -396,7 +396,7 @@ class Analysis24hGenerator:
             now_dt: 기준 일시 (기본: 현재 시각 KST)
         
         Returns:
-            생성되어 저장된 파일 경로 리스트
+            (생성되어 저장된 파일 경로 리스트, 생성 실패한 종목 심볼 리스트)
         """
         now_dt = now_dt or datetime.now(KST)
         date_str = now_dt.strftime("%Y%m%d")
@@ -411,13 +411,19 @@ class Analysis24hGenerator:
         # 총 매수원금 합산 (비중 산출용)
         total_account_buy = sum(float(p.get("total_buy_price", 0.0)) for p in positions)
 
-        saved_files: list[str] = []
-        for idx, pos in enumerate(positions):
-            currency = pos["currency"].upper()
-            if target_currency and currency != target_currency.upper():
-                continue
+        target_positions = [
+            p for p in positions
+            if not target_currency or p["currency"].upper() == target_currency.upper()
+        ]
 
-            logger.info(f"▶️ [{idx+1}/{len(positions)}] {pos['exchange']} {currency} 분석 진행 중...")
+        saved_files: list[str] = []
+        failed_currencies: list[str] = []
+
+        for idx, pos in enumerate(target_positions):
+            currency = pos["currency"].upper()
+
+            logger.info(f"▶️ [{idx+1}/{len(target_positions)}] {pos['exchange']} {currency} 분석 진행 중...")
+            success = False
             try:
                 report_content = self.generate_report_for_position(
                     pos=pos,
@@ -427,12 +433,27 @@ class Analysis24hGenerator:
                 if report_content:
                     saved_path = self.save_report(currency, report_content, date_str)
                     saved_files.append(saved_path)
+                    success = True
             except Exception as e:
                 logger.error(f"❌ {pos['exchange']} {currency} 보고서 생성 중 예외 발생: {e}", exc_info=True)
 
+            if not success:
+                failed_currencies.append(currency)
+
             # Groq API 호출 간격 제어 (Rate Limit 보호용 2초 휴식)
-            if idx < len(positions) - 1:
+            if idx < len(target_positions) - 1:
                 time.sleep(2.0)
 
-        logger.info(f"✨ [Analysis24hGenerator] 작업 완료: 총 {len(saved_files)}개 보고서 저장됨")
+        logger.info(
+            f"✨ [Analysis24hGenerator] 작업 완료: 총 {len(saved_files)}개 저장됨, {len(failed_currencies)}개 실패"
+        )
+        return saved_files, failed_currencies
+
+    def run(
+        self,
+        target_currency: str | None = None,
+        now_dt: datetime | None = None,
+    ) -> list[str]:
+        """기존 인터페이스 호환용 run 메소드 (성공한 파일 경로 리스트 반환)."""
+        saved_files, _ = self.run_with_failures(target_currency=target_currency, now_dt=now_dt)
         return saved_files
