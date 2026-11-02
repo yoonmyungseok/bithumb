@@ -447,6 +447,18 @@ class UnifiedDashboardServer:
                         latest_by_symbol[sym] = rep
             reports = list(latest_by_symbol.values())
 
+        # 현재 보유 중인 종목만 필터링 (미보유 종목 제외)
+        try:
+            from sheets.manual_position_collector import ManualPositionCollector
+            collector = ManualPositionCollector(min_eval_krw=1000.0)
+            held_positions = collector.collect_all_manual_positions()
+            # 보유 중인 종목이 정상 조회된 경우에만 필터링 적용 (API 장애 등으로 빈 목록일 땐 보고서 보존)
+            if held_positions:
+                held_symbols = {p["currency"].upper() for p in held_positions}
+                reports = [r for r in reports if r["symbol"].upper() in held_symbols]
+        except Exception as e:
+            logger.debug(f"24h 보고서 보유 종목 필터링 예외 (전체 표시): {e}")
+
         # 최신 날짜 내림차순, 날짜 동일 시 종목 심볼 오름차순
         reports.sort(key=lambda r: (-int(r["raw_date"]) if r["raw_date"].isdigit() else 0, r["symbol"]))
         return {"success": True, "reports": reports, "total": len(reports)}

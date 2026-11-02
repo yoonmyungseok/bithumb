@@ -200,6 +200,10 @@ class ManualPositionCollector:
 
         return results
 
+    def get_all_manual_positions(self) -> list[dict[str, Any]]:
+        """collect_all_manual_positions의 별칭(호환성 보장)."""
+        return self.collect_all_manual_positions()
+
     def collect_all_manual_positions(self) -> list[dict[str, Any]]:
         """두 거래소의 모든 수동 매수 포지션을 수집하여 정렬 반환."""
         upbit_positions = self.collect_upbit_manual_positions()
