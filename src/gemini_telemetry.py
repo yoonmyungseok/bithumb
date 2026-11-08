@@ -213,7 +213,8 @@ class GeminiTelemetrySnapshot:
             "updated_at": 0.0,
         }
         try:
-            from src.ai_provider import AIProviderTelemetry
+            # 매매 엔진과 동일한 모듈 인스턴스를 사용해야 진입 차단 상태가 분리되지 않는다.
+            from ai_provider import AIProviderTelemetry
             up_safety = AIProviderTelemetry.snapshot("upbit").get("entry_safety")
             if isinstance(up_safety, dict) and up_safety:
                 entry_safety = up_safety

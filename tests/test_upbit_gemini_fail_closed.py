@@ -17,6 +17,13 @@ from upbit_ai import build_upbit_analyzer, get_upbit_ai_config_block_reason, get
 class UpbitGeminiFailClosedTests(unittest.TestCase):
     """업비트도 빗썸과 동일하게 AI 응답 실패 및 Flash-Lite 부재 시 신규 BUY를 차단한다."""
 
+    def test_dashboard_telemetry_tracks_actual_upbit_entry_safety(self):
+        """대시보드가 매매 엔진과 같은 업비트 진입 안전 상태를 표시한다."""
+        AIProviderTelemetry.record_entry_safety("upbit", blocked=True, reason="timeout", context="trading")
+        self.assertTrue(GeminiTelemetry.snapshot().to_dict()["entry_safety"]["entry_blocked"])
+        AIProviderTelemetry.record_entry_safety("upbit", blocked=False, context="trading")
+        self.assertFalse(GeminiTelemetry.snapshot().to_dict()["entry_safety"]["entry_blocked"])
+
     def setUp(self):
         self.env = dict(os.environ)
         self.temp_dir = tempfile.mkdtemp()

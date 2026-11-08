@@ -17,7 +17,7 @@
 
 ## 문서 경계
 
-- macOS 개별 재시작 스크립트의 백그라운드 실행·워치독 감시·상태 확인은 [운영 및 관측성](docs/project-design/operations-and-observability.md)의 개별 재시작 절차를 따른다.
+- macOS 개별 재시작 스크립트의 백그라운드 실행·워치독 감시·상태 확인과 업비트 Gemini 진입 안전 상태 표시는 [운영 및 관측성](docs/project-design/operations-and-observability.md)을 따른다.
 - DB 연결 수명과 요청 스레드 종료 후 자원 회수는 [운영 및 관측성](docs/project-design/operations-and-observability.md)의 SQLite 연결 관리 절차를 따른다.
 - `docs/agent-rules/`는 작업 규칙의 단일 원본이고, 이 문서 묶음은 실제 구현 구조와 동작 흐름을 설명한다.
 - 빗썸과 업비트의 키, API 클라이언트, 포트, 주문 상태, 데이터, 로그, 거래 메모리는 혼합하지 않는다.
