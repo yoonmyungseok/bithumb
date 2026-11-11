@@ -41,6 +41,7 @@ class ExchangeBootstrapProfile:
     log_prefix: str = ""
     catch_main_loop_exceptions: bool = False
     scheduler_24h_report_job_id: str = ""
+    scheduler_daily_quant_report_job_id: str = ""
 
 
 @dataclass
@@ -64,6 +65,7 @@ class TradingBootstrapContext:
     reconcile_after_private_ws: Callable[[], None] | None = None
     warmup_callback: Callable[[], None] | None = None
     run_24h_analysis_report: Callable[..., Any] | None = None
+    run_daily_quant_report: Callable[..., Any] | None = None
 
 
 class TradingBotBootstrap:
@@ -270,6 +272,74 @@ class TradingBotBootstrap:
                 hour=9,
                 minute=0,
                 id=report_24h_job_id,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=600,
+            )
+
+        # 24시간 롤링 매매 성과 분석 리포트 AI 생성기 스케줄러 (매일 오전 09:00:30 KST 실행 및 지연 재시도 지원)
+        run_daily_quant_report_fn = getattr(self.ctx, "run_daily_quant_report", None)
+        if callable(run_daily_quant_report_fn):
+            daily_quant_job_id = getattr(self.profile, "scheduler_daily_quant_report_job_id", "") or f"{self.profile.exchange_key}_daily_quant_report"
+            retry_daily_quant_job_id = f"{daily_quant_job_id}_retry"
+
+            def _wrapped_daily_quant_runner(retry_count: int = 0) -> None:
+                """리포트 생성 실행 및 필요 시 30분/1시간 후 단계별 재시도 잡 등록."""
+                needs_retry = False
+                retry_delay_minutes = 30
+                try:
+                    res = run_daily_quant_report_fn()
+                    if isinstance(res, tuple) and len(res) >= 2:
+                        # (success, needs_retry, retry_delay_minutes)
+                        needs_retry = bool(res[1])
+                        if len(res) >= 3 and isinstance(res[2], int):
+                            retry_delay_minutes = res[2]
+                    elif hasattr(res, "needs_retry"):
+                        needs_retry = bool(res.needs_retry)
+                        retry_delay_minutes = int(getattr(res, "retry_delay_minutes", 30))
+                except Exception as ex:
+                    self.ctx.logger.error("일일 퀀트 보고서 생성 중 예외: %s", ex, exc_info=True)
+                    needs_retry = True
+                    retry_delay_minutes = 30 if retry_count == 0 else 60
+
+                if needs_retry and retry_count < 2:
+                    next_retry_count = retry_count + 1
+                    # 1회 실패 후 30분, 2회 실패 후 60분 간격
+                    delay = 30 if next_retry_count == 1 else 60
+                    retry_time = datetime.now() + timedelta(minutes=delay)
+                    self.ctx.logger.warning(
+                        "⚠️ [일일 퀀트 보고서] AI 생성 미완료(폴백 템플릿 발행됨) -> %d분 뒤(%s) 재시도 스케줄 등록 (시도 %d/2)",
+                        delay,
+                        retry_time.strftime("%H:%M:%S"),
+                        next_retry_count,
+                    )
+                    if self._scheduler:
+                        try:
+                            self._scheduler.add_job(
+                                _wrapped_daily_quant_runner,
+                                "date",
+                                run_date=retry_time,
+                                id=retry_daily_quant_job_id,
+                                args=[next_retry_count],
+                                replace_existing=True,
+                                misfire_grace_time=600,
+                            )
+                        except Exception as s_err:
+                            self.ctx.logger.error("일일 퀀트 보고서 재시도 잡 등록 실패: %s", s_err)
+                elif not needs_retry:
+                    if self._scheduler and self._scheduler.get_job(retry_daily_quant_job_id):
+                        try:
+                            self._scheduler.remove_job(retry_daily_quant_job_id)
+                        except Exception:
+                            pass
+
+            self._scheduler.add_job(
+                _wrapped_daily_quant_runner,
+                "cron",
+                hour=9,
+                minute=0,
+                second=30,
+                id=daily_quant_job_id,
                 max_instances=1,
                 coalesce=True,
                 misfire_grace_time=600,

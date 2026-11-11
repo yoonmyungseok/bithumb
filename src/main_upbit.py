@@ -617,6 +617,35 @@ def run_upbit_24h_analysis_report() -> tuple[list[str], list[str]]:
         return [], ["ALL"]
 
 
+def run_upbit_daily_quant_report() -> tuple[bool, bool, int]:
+    """매일 09:00:30 업비트/양 거래소 통합 24시간 롤링 일일 퀀트 매매 성과 분석 보고서 자동 생성."""
+    try:
+        from daily_quant_reporter import DailyQuantReportGenerator
+
+        generator = DailyQuantReportGenerator()
+        outcome = generator.generate()
+        if outcome.success:
+            logger.info("📑 [일일 퀀트 보고서] 생성 완료: %s (제공자: %s, 모델: %s)",
+                        outcome.report_filepath, outcome.used_provider, outcome.used_model)
+            if telegram:
+                msg = (
+                    f"📑 [일일 퀀트 성과 분석 보고서 자동 발행]\n"
+                    f"24시간 롤링 퀀트 성과 분석 보고서가 발행되어 대시보드에 반영되었습니다.\n"
+                    f"• 생성 모델: {outcome.used_provider} ({outcome.used_model})\n"
+                    f"• 파일명: {os.path.basename(outcome.report_filepath)}"
+                )
+                if outcome.needs_retry:
+                    msg += f"\n\n⚠️ Gemini Flash/Groq 지연으로 임시 템플릿 발행됨 -> {outcome.retry_delay_minutes}분 뒤 AI 리포트로 자동 재시도됩니다."
+                telegram.send_message(msg)
+            return outcome.success, outcome.needs_retry, outcome.retry_delay_minutes
+        else:
+            logger.error("📑 [일일 퀀트 보고서] 생성 실패: %s", outcome.error_message)
+            return False, True, 30
+    except Exception as exc:
+        logger.error("일일 퀀트 보고서 자동 생성 예외: %s", exc, exc_info=True)
+        return False, True, 30
+
+
 UPBIT_BOOTSTRAP_PROFILE = ExchangeBootstrapProfile(
     exchange_key="upbit",
     migration_base_dir=os.path.dirname(DATA_DIR),
@@ -628,6 +657,7 @@ UPBIT_BOOTSTRAP_PROFILE = ExchangeBootstrapProfile(
     scheduler_cycle_job_id="run_upbit_trading_cycle",
     scheduler_morning_job_id="upbit_morning_daily_report",
     scheduler_24h_report_job_id="upbit_24h_manual_analysis_report",
+    scheduler_daily_quant_report_job_id="upbit_daily_quant_report",
     startup_banner_lines=(
         "  Upbit AI Pro Quant Trading Bot 가동 시작",
         f"  (데이터 경로: {DATA_DIR} | 웹 대시보드 포트: {WEB_PORT})",
@@ -659,6 +689,7 @@ def main():
             reconcile_after_private_ws=_reconcile_after_private_ws_drain,
             warmup_callback=cycle_engine.warmup_macro_regime,
             run_24h_analysis_report=run_upbit_24h_analysis_report,
+            run_daily_quant_report=run_upbit_daily_quant_report,
         ),
     )
     bootstrap.run()

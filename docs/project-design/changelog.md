@@ -1,6 +1,27 @@
 # 변경 이력
  
  버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
+
+## 2026-11-11 24시간 일일 퀀트 매매 성과 분석 보고서 Gemini Flash 연동 및 다단계 재시도 자동화 신설
+
+- **배경 및 요구사항**:
+  - 기존에 사용자가 Antigravity 대화창에 수동 요청하여 마크다운 보고서로 발행하던 24시간 매매 성과 분석 리포트를 Gemini Flash API와 연동하여 완전 자동화.
+  - Gemini 모델 선택 시 Pro 모델은 완전 배제하고 Flash 계열(`gemini-3.5-flash`, `gemini-3.8-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite` 등)만 사용.
+  - Gemini API의 일시적 장애(429, 503, 타임아웃)에 대비한 다단계 복원력 및 재시도 전략 구성:
+    1. 1차: Gemini Flash 계열 순차 시도
+    2. 2차: Groq LLM 즉시 폴백
+    3. 3차: 모두 실패 시 정량 팩트 데이터 기반 템플릿 리포트 폴백 발행 + 30분 / 1시간 후 단계별 지연 재시도 스케줄 자동 등록
+- **구현 내용**:
+  1. `src/daily_quant_reporter.py` 신설:
+     - 24시간 롤링 DB 거래, 체결, 수수료, 승률, PnL, MDD, BTC 시세 지표 집계.
+     - Gemini Flash (Pro 완전 제외) ➜ Groq LLM ➜ 정량 템플릿 폴백 엔진 탑재.
+     - 대시보드 뷰어 및 웹 서버 API 연동 규격(`reports/daily_quant_report_{YYYYMMDD}.md`) 준수.
+  2. `scripts/generate_daily_quant_report.py` 신설: 수동 실행 및 테스트 CLI 도구.
+  3. `src/trading_bot_bootstrap.py` 및 `src/main_upbit.py` 스케줄러 연동:
+     - 매일 09:00:30 KST 자동 실행 등록 및 실패 시 30분(1차), 60분(2차) 지연 재시도 잡 연계.
+     - 텔레그램 발행 완료 및 재시도 알림 지원.
+  4. 단위 테스트 `tests/test_daily_quant_reporter.py` 작성 및 전체 검증 통과 (Pro 모델 배제 검증, Gemini Flash 성공, Groq 폴백 성공, 템플릿 폴백 및 30분 재시도 플래그 검증).
+
  
 ## 2026-11-08 업비트 Gemini 진입 안전 상태 표시 수정
 
