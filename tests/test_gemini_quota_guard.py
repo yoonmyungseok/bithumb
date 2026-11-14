@@ -83,6 +83,12 @@ class TestGeminiQuotaGuard(unittest.TestCase):
         max_rpm = 60.0 / GeminiAnalyzer._MIN_CALL_INTERVAL_SEC
         self.assertLessEqual(max_rpm, 10.0)
 
+    def test_hydrogen_model_telemetry_bucket_and_call_guard(self):
+        """gemini-4-hydrogen 모델이 전용 버킷으로 매핑되고 호출 가드를 통과하는지 검증"""
+        from gemini_telemetry import quota_bucket_for_model
+        self.assertEqual(quota_bucket_for_model("gemini-4-hydrogen"), "gemini-4-hydrogen")
+        self.assertTrue(GeminiTelemetry.can_call_model("gemini-4-hydrogen", for_emergency_exit=False))
+
 
 if __name__ == "__main__":
     unittest.main()

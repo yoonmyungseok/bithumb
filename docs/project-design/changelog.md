@@ -2,6 +2,17 @@
  
  버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## 2026-11-14 Gemini 4 Hydrogen (`gemini-4-hydrogen`) 모델 지원 추가
+
+- **배경 및 문제**:
+  - Google의 최신 Gemini 4 시리즈 모델 `gemini-4-hydrogen`이 출시되었으나, 기존 모델 라우터·필터(`flash-lite` / `flash` 문자열 기반 필터) 및 `thinkingConfig` 처리(`thinkingBudget` 전용)에서 지원되지 않았다.
+- **구현 내용**:
+  - `src/ai_provider.py`: `BaseGeminiProvider`의 `TRADING_MODELS` 폴백, `MACRO_FALLBACK_MODELS`·`BRIEFING_FALLBACK_MODELS` 최우선 목록 및 `_discover_models()` 필터에 `gemini-4-hydrogen`을 추가하고, `_apply_thinking_config()` 헬퍼로 Gemini 4 계열에 `thinkingLevel: "low"`를 적용(400 응답 시 자동 제거 재시도 유지).
+  - `src/gemini_analyzer.py`: `FALLBACK_MODELS`, `BRIEFING_FALLBACK_MODELS`, `MACRO_FALLBACK_MODELS` 및 `ListModels` 필터/우선순위 정렬에 `gemini-4-hydrogen` 추가.
+  - `src/gemini_telemetry.py`: `quota_bucket_for_model()`에 `gemini-4-hydrogen` 버킷 매핑 추가.
+  - `src/daily_quant_reporter.py`: `GEMINI_FLASH_CANDIDATE_MODELS`에 `gemini-4-hydrogen` 추가.
+  - `tests/test_bithumb_gemini_provider.py`, `tests/test_gemini_quota_guard.py`: `gemini-4-hydrogen` 탐색·정렬·`thinkingLevel`·텔레메트리 버킷 회귀 테스트 추가.
+
 ## 2026-11-14 PaperBroker 호가·슬리피지 현실화 및 포트폴리오 Walk-Forward 백테스트 도입
 
 - **배경 및 문제**:

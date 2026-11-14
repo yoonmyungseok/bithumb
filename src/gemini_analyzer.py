@@ -102,17 +102,18 @@ class GeminiAnalyzer:
     - [안정형 모델 라우터 & 무중단 로컬 퀀트 폴백]: Rate Limit 429 시 100% 로컬 앙상블 자율 전환
     """
 
-    # 1. Fallback 기본 안정 모델 (무료 티어 20 RPD 제한 회피 및 500 RPD 쿼터 최적화를 위해 실존하는 Flash-Lite 전용 구성)
+    # 1. Fallback 기본 안정 모델 (무료 티어 20 RPD 제한 회피 및 500 RPD 쿼터 최적화를 위해 Flash-Lite 우선 + Hydrogen 폴백 구성)
     FALLBACK_MODELS: ClassVar[list[str]] = [
         "gemini-3.5-flash-lite",
         "gemini-3.1-flash-lite",
+        "gemini-4-hydrogen",
     ]
     # 하위 호환성을 위한 참조
     STABLE_MODELS = FALLBACK_MODELS
 
-    # 브리핑 전용 Fallback 모델 (하루 1회 발송용 최신 Flash 모델 순차 구성, Pro 모델 완전 배제)
-    # 브리핑 전용 Fallback 모델 (하루 1회 발송용 최신 Flash 모델 순차 구성, Pro 모델 완전 배제)
+    # 브리핑 전용 Fallback 모델 (하루 1회 발송용 최신 Hydrogen/Flash 모델 순차 구성, Pro 모델 완전 배제)
     BRIEFING_FALLBACK_MODELS: ClassVar[list[str]] = [
+        "gemini-4-hydrogen",
         "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
@@ -122,8 +123,9 @@ class GeminiAnalyzer:
         "gemini-3.1-flash-lite",
     ]
 
-    # 거시 레짐(Macro Regime) 정밀 진단 전용 Fallback 모델 (일반 Flash 최우선 ➜ 쿼터 소진/장애 시 Flash-Lite 순차 폴백)
+    # 거시 레짐(Macro Regime) 정밀 진단 전용 Fallback 모델 (Hydrogen/일반 Flash 최우선 ➜ 쿼터 소진/장애 시 Flash-Lite 순차 폴백)
     MACRO_FALLBACK_MODELS: ClassVar[list[str]] = [
+        "gemini-4-hydrogen",
         "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
@@ -295,9 +297,11 @@ class GeminiAnalyzer:
         """
         lower_name = name.lower()
 
-        # 1. Tier 판별: 일반 flash = 1, flash-lite = 0, pro 및 기타 = -1 (Pro 모델 완전 배제)
+        # 1. Tier 판별: hydrogen = 2, 일반 flash = 1, flash-lite = 0, pro 및 기타 = -1 (Pro 모델 완전 배제)
         if "pro" in lower_name:
             tier = -1
+        elif "hydrogen" in lower_name:
+            tier = 2
         elif "flash-lite" in lower_name:
             tier = 0
         elif "flash" in lower_name:
@@ -354,8 +358,10 @@ class GeminiAnalyzer:
                     m_name = item.get("name", "").replace("models/", "").strip()
                     methods = item.get("supportedGenerationMethods", [])
 
-                    # generateContent 지원 및 Flash-Lite 계열만 선별 (일반 Flash는 일일 20회 제한으로 배제)
-                    if "generateContent" in methods and "flash-lite" in m_name.lower():
+                    # generateContent 지원 및 Flash-Lite / Hydrogen 계열만 선별 (일반 Flash는 일일 20회 제한으로 배제)
+                    if "generateContent" in methods and (
+                        "flash-lite" in m_name.lower() or "hydrogen" in m_name.lower()
+                    ):
                         # 트레이딩 부적합 모델(이미지/오디오/음성/임베딩/특수 목적) 엄격 배제
                         bad_keywords = [
                             "embedding", "aqa", "imagen", "image", "audio",
@@ -443,8 +449,8 @@ class GeminiAnalyzer:
                         ]
                         if any(bad in m_name.lower() for bad in bad_keywords):
                             continue
-                        # Flash 계열 모델만 허용
-                        if "flash" not in m_name.lower():
+                        # Flash 또는 Hydrogen 계열 모델만 허용
+                        if "flash" not in m_name.lower() and "hydrogen" not in m_name.lower():
                             continue
                         valid_models.append(m_name)
 
@@ -539,7 +545,7 @@ class GeminiAnalyzer:
                         ]
                         if any(bad in m_name.lower() for bad in bad_keywords):
                             continue
-                        if "flash" not in m_name.lower():
+                        if "flash" not in m_name.lower() and "hydrogen" not in m_name.lower():
                             continue
                         valid_models.append(m_name)
 

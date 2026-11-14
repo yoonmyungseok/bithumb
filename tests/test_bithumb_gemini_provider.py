@@ -382,6 +382,43 @@ class BithumbGeminiProviderTests(unittest.TestCase):
         )
         self.assertIn("리스크 안전선 내에서 정상 운용 중입니다", res3)
 
+    @patch("ai_provider.requests.post")
+    @patch("ai_provider.requests.get")
+    def test_hydrogen_model_discovery_and_thinking_level(self, mock_get, mock_post):
+        """gemini-4-hydrogen이 ListModels에서 trading/macro/briefing 모두 허용되고 thinkingLevel을 전달하는지 검증한다."""
+        from gemini_analyzer import GeminiAnalyzer
+
+        list_resp = MagicMock(status_code=200)
+        list_resp.json.return_value = {"models": [
+            {"name": "models/gemini-4-hydrogen", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.5-flash-lite", "supportedGenerationMethods": ["generateContent"]},
+        ]}
+        mock_get.return_value = list_resp
+        mock_post.return_value = self._json_response()
+
+        provider = BithumbGeminiProvider("bithumb-only-key")
+        self.assertEqual(provider.models_for("trading"), ["gemini-3.5-flash-lite", "gemini-4-hydrogen"])
+        self.assertEqual(provider.models_for("macro")[0], "gemini-4-hydrogen")
+        self.assertEqual(provider.models_for("briefing")[0], "gemini-4-hydrogen")
+
+        result = provider.complete_json(
+            "분석", ["gemini-4-hydrogen"], ENTRY_JSON_SCHEMA, context="KRW-TEST", timeout=1.0, max_tokens=200
+        )
+        self.assertIsInstance(result.value, dict)
+        self.assertEqual(result.model, "gemini-4-hydrogen")
+        sent_payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(sent_payload["generationConfig"]["thinkingConfig"], {"thinkingLevel": "low"})
+
+        # GeminiAnalyzer의 동적 라우터에서도 gemini-4-hydrogen이 포함 및 우선 정렬되는지 확인
+        with patch("gemini_analyzer.requests.get", return_value=list_resp):
+            trading_models = GeminiAnalyzer.fetch_available_models("test-key")
+            briefing_models = GeminiAnalyzer.fetch_available_briefing_models("test-key")
+            macro_models = GeminiAnalyzer.fetch_available_macro_models("test-key")
+        self.assertIn("gemini-4-hydrogen", trading_models)
+        self.assertEqual(briefing_models[0], "gemini-4-hydrogen")
+        self.assertEqual(macro_models[0], "gemini-4-hydrogen")
+
 
 if __name__ == "__main__":
     unittest.main()

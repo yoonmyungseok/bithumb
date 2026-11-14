@@ -821,13 +821,15 @@ class BaseGeminiProvider:
     exchange = "base"
     is_entry_fail_closed = True
 
-    # 신규 BUY 진입은 Flash-Lite 계열(3.5 우선 후 3.1 순차 폴백)만 허용해 안정성과 복원력을 유지한다.
+    # 신규 BUY 진입은 Flash-Lite 계열(3.5 우선 후 3.1 순차 폴백)을 우선하며, Hydrogen 모델을 폴백으로 허용한다.
     TRADING_MODELS = [
         "gemini-3.5-flash-lite",
         "gemini-3.1-flash-lite",
+        "gemini-4-hydrogen",
     ]
     TRADING_MODEL = TRADING_MODELS[0]
     MACRO_FALLBACK_MODELS = [
+        "gemini-4-hydrogen",
         "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
@@ -837,6 +839,7 @@ class BaseGeminiProvider:
         "gemini-3.1-flash-lite",
     ]
     BRIEFING_FALLBACK_MODELS = [
+        "gemini-4-hydrogen",
         "gemini-3.8-flash",
         "gemini-3.7-flash",
         "gemini-3.6-flash",
@@ -1058,7 +1061,10 @@ class BaseGeminiProvider:
                 str(item.get("name", "")).replace("models/", "").strip()
                 for item in payload.get("models", []) if isinstance(item, dict)
                 and "generateContent" in item.get("supportedGenerationMethods", [])
-                and "flash-lite" in str(item.get("name", "")).lower()
+                and (
+                    "flash-lite" in str(item.get("name", "")).lower()
+                    or "hydrogen" in str(item.get("name", "")).lower()
+                )
             ]
             if not models:
                 self._record_entry_safety(ProviderResult(None, "", "no_flash_lite", status_code), "list_models")
@@ -1157,6 +1163,15 @@ class BaseGeminiProvider:
             return available
         return []
 
+    @staticmethod
+    def _apply_thinking_config(model: str, generation_config: dict[str, Any], *, gemini4_level: str = "low") -> None:
+        """모델 세대별 사고(thinking) 설정을 generationConfig에 적용합니다."""
+        lower_model = model.lower()
+        if "hydrogen" in lower_model or "gemini-4" in lower_model:
+            generation_config["thinkingConfig"] = {"thinkingLevel": gemini4_level}
+        elif any(marker in lower_model for marker in ("3.7", "thinking", "2.5")):
+            generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+
     def complete_json(
         self, prompt: str, models: list[str], schema: dict[str, Any], *, context: str, timeout: float, max_tokens: int,
         schema_name: str = "bithumb_trading_result", strict: bool = True,
@@ -1185,8 +1200,7 @@ class BaseGeminiProvider:
                 generation_config: dict[str, Any] = {
                     "temperature": 0.1, "topP": 0.8, "maxOutputTokens": max_tokens, "responseMimeType": "application/json",
                 }
-                if any(marker in model.lower() for marker in ("3.7", "thinking", "2.5")):
-                    generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+                self._apply_thinking_config(model, generation_config, gemini4_level="low")
                 payload: dict[str, Any] = {
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": generation_config,
@@ -1314,8 +1328,7 @@ class BaseGeminiProvider:
                     "temperature": 0.2,
                     "maxOutputTokens": max_tokens,
                 }
-                if any(marker in model.lower() for marker in ("3.7", "thinking", "2.5")):
-                    generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+                self._apply_thinking_config(model, generation_config, gemini4_level="low")
                 payload: dict[str, Any] = {
                     "contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": generation_config,

@@ -80,6 +80,9 @@ def quota_bucket_for_model(model: str) -> str:
             return "gemini-3.5-flash-lite"
         return "gemini-3.5-flash-lite"
 
+    if "hydrogen" in lower:
+        return "gemini-4-hydrogen"
+
     flash_match = re.search(r"gemini-(\d+(?:\.\d+)?)-flash", lower)
     if flash_match and "lite" not in lower:
         return f"gemini-{flash_match.group(1)}-flash"
