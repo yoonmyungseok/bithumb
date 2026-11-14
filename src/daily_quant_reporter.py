@@ -53,12 +53,12 @@ DATA_DIR = PROJECT_ROOT / "data"
 BITHUMB_DB = DATA_DIR / "trading.db"
 UPBIT_DB = DATA_DIR / "upbit" / "trading.db"
 
-# Gemini 모델: Pro 모델 제외, Flash 계열만 후보로 설정
+# Gemini 모델: Pro 모델 제외, 실제 안정 응답이 확인된 Flash-Lite를 최우선 배치
 GEMINI_FLASH_CANDIDATE_MODELS = [
-    "gemini-3.5-flash",
-    "gemini-3.8-flash",
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.8-flash",
     "gemini-flash-latest",
 ]
 

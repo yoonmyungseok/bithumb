@@ -437,9 +437,9 @@ class StrategyPolicy:
     AI_DIRECT_ENTRY_MAX_24H_GAIN_PCT: float = 0.08  # 당일 상승률 +8.0% 초과 종목은 고점 과열 추격 매수 원천 차단
 
     # 4-0-2. BTC 매크로 쇼크 필터 (Macro Shock Filter)
-    # BTC 15분 -0.4% 급락 또는 1시간 -0.5% 급락 발생 시 알트코인 휩소 진입을 차단하는 30분 쿨다운
-    MACRO_SHOCK_RECENT_DROP_PCT: float = 0.004   # 15분 기준 -0.4%
-    MACRO_SHOCK_1H_DROP_PCT: float = 0.004       # 1시간 기준 -0.4% (23:00형 -0.49% 급락 포착)
+    # BTC 15분 -0.8% 급락 또는 실제 1시간 -1.2% 급락 발생 시 알트코인 휩소 진입을 차단하는 30분 쿨다운
+    MACRO_SHOCK_RECENT_DROP_PCT: float = 0.008   # 15분 기준 -0.8%
+    MACRO_SHOCK_1H_DROP_PCT: float = 0.012       # 1시간 기준 -1.2% (실제 직전 1H 대비 급락 포착)
     MACRO_SHOCK_COOLDOWN_SEC: float = 1800.0     # 30분 쿨다운
     ENABLE_V_SHAPE_SHOCK_RELEASE: bool = True    # V자 반등 시 조기 해제 활성화
     V_SHAPE_REBOUND_THRESHOLD: float = 0.015     # 저점 대비 +1.5% 이상 반등
@@ -1237,7 +1237,7 @@ def classify_btc_regime(
     """Classify BTC market regime into BULL_TREND, NORMAL, RISK_OFF, or CRASH.
 
     - CRASH: Recent 5m/15m drop >= crash_threshold_pct (1.5%) -> Stop all new buys
-    - MACRO_SHOCK: Recent 15m drop >= 0.4% or 1H drop >= 0.5% -> Activate 30m cooldown, force RISK_OFF
+    - MACRO_SHOCK: Recent 15m drop >= 0.8% or 1H drop >= 1.2% -> Activate 30m cooldown, force RISK_OFF
     - RISK_OFF: 1H Close < 1H EMA50 or 1H drop >= 0.5% or Macro Shock -> Stricter gates & 50% sizing
     - BULL_TREND: 1H Close >= EMA20 >= EMA50 (정배열) & 최근 하락 없음(drop_1h > -0.3%) & 12H 상승 유지
     - NORMAL: Healthy uptrend/stable state
@@ -1273,7 +1273,8 @@ def classify_btc_regime(
         ema50_1h = calculate_ema(prices_1h, min(len(prices_1h), 50))
         ema20_1h = calculate_ema(prices_1h, min(len(prices_1h), 20))
         cur_1h = prices_1h[0]
-        p_1h_prev = prices_1h[min(len(prices_1h) - 1, 3)]
+        # 직전 1시간봉(index 1) 대비 실제 1H 변동률 산출 (기존 index 3은 3시간 전 비교 오류)
+        p_1h_prev = prices_1h[1]
         drop_1h = (cur_1h - p_1h_prev) / p_1h_prev if p_1h_prev > 0 else 0.0
 
         if drop_1h <= -StrategyPolicy.MACRO_SHOCK_1H_DROP_PCT:

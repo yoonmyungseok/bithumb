@@ -528,6 +528,8 @@ class RealtimeRiskEngine:
                     available_volume=coin_available,
                     original_filled_volume=original_filled,
                     scalp_stage_ratio=scalp_ratio,
+                    current_price=current_price,
+                    min_order_krw=self.min_order_krw,
                 )
                 sell_val = sell_vol * current_price
                 if is_swing and sell_vol <= 0.0:

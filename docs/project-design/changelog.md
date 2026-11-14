@@ -2,6 +2,53 @@
  
  버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## 2026-11-14 PaperBroker 호가·슬리피지 현실화 및 포트폴리오 Walk-Forward 백테스트 도입
+
+- **배경 및 문제**:
+  - `PaperBroker`가 슬리피지와 호가 잔량을 반영하지 않고 지정가를 즉시 체결해 페이퍼 트레이딩 성과가 낙관적으로 왜곡됐다.
+  - `QuantBacktester`가 단일 종목 독립 백테스트만 지원해 다중 마켓 자본 경합, 최대 동시 보유 슬롯 제한, OOS 워밍업 분리를 검증하기 어려웠다.
+- **구현 내용**:
+  - `src/paper_broker.py`: `PAPER_SLIPPAGE_RATE`(기본 `0.0005`) 및 `get_orderbook` 기반 VWAP 호가 소진 체결, 지정가 미체결(`wait`)·잠금(`locked`)·자동 체결·취소 상태 관리를 구현.
+  - `src/backtest.py`: 다중 마켓 공유 자본·동시 포지션 한도·소액 분할익절 전량 청산 규칙을 반영한 `run_portfolio_backtest()` 및 워밍업 분리 `run_portfolio_walk_forward_backtest()` 추가.
+  - `tests/test_paper_broker.py`, `tests/test_backtest_rigor_pro.py` 회귀 테스트 추가.
+
+## 2026-11-14 trade_memory 오염 데이터 아카이빙 및 strategy_decisions 보존 기간 단축
+
+- **배경 및 문제**:
+  - `trade_memory`에 `exit_reason` 누락 또는 `UNKNOWN` 레짐의 과거 이상치 레코드가 혼입되어 있었고, `strategy_decisions`의 30일 보관 정책으로 양 거래소 DB가 각각 약 300MB까지 비대화됐다.
+- **구현 내용**:
+  - `src/db_manager.py`: 비정상 레거시 레코드를 `trade_memory_archive` 테이블로 무손실 분리 이관하는 `archive_anomalous_trade_memory()` 추가.
+  - `src/trading_runtime.py`: `strategy_decisions` 기본 보존 기간을 30일에서 14일(`STRATEGY_DECISION_RETENTION_DAYS`)로 단축.
+  - `tests/test_storage_and_fill_boundaries.py` 회귀 테스트 추가 및 양 거래소 DB 백업 후 정제 실행.
+
+## 2026-11-14 Gemini/Groq 모델 체인 슬림화 및 타임아웃·컨텍스트 길이 보호
+
+- **배경 및 문제**:
+  - `BaseGeminiProvider`의 `MACRO_FALLBACK_MODELS`·`BRIEFING_FALLBACK_MODELS`에 상시 타임아웃이 발생하는 모델(`gemini-3.7-flash`, `gemini-3.6-flash`)이 포함되고 타임아웃 쿨다운이 120초에 불과해 매 사이클 40~50초 지연이 반복됐다.
+  - `GroqProvider` 기본 목록에 404 종료 모델(`groq/compound`, `groq/compound-mini`)과 짧은 컨텍스트로 400 오류를 내는 `allam-2-7b`가 포함되어 있었다.
+- **구현 내용**:
+  - `src/ai_provider.py`: 기존 모델 목록 호환성을 유지하면서 타임아웃 쿨다운을 600초·404 쿨다운을 1800초로 상향하고, 폴백 루프 전체 시간 예산(`max(timeout*2, 22s)`) 상한을 추가해 연쇄 타임아웃 블로킹 차단.
+  - `src/daily_quant_reporter.py`: 안정 응답이 확인된 `gemini-3.5-flash-lite`·`gemini-3.1-flash-lite`를 최우선 배치.
+  - `src/groq_provider.py`: 404/400 유발 모델 제거, 18,000자 초과 프롬프트 안전 축약(`_prepare_groq_prompt`) 및 시간 예산 상한 적용.
+  - `tests/test_ai_provider_resilience.py` 신설.
+
+## 2026-11-14 소액 계좌 분할익절 최소주문금액 보정 및 리스크 사이징 폴백 차단
+
+- **배경 및 문제**:
+  - 10만 원대 소액 포지션(1만~1.5만 원)에서 분할익절 시 매도 금액 또는 잔여 평가액이 `MIN_ORDER_KRW`(5,000원) 미만으로 떨어져 익절 주문이 거절되거나 Dust 잔고가 발생할 위험이 있었고, `trading_runtime.py`가 `risk_based_budget <= 0`일 때 `slot_budget`으로 폴백해 리스크 한도를 우회할 수 있었다.
+- **구현 내용**:
+  - `src/order_safety/position_sizing.py`: `calculate_partial_take_profit_volume()`에 `current_price`, `min_order_krw` 파라미터를 추가해 분할 매도액 또는 잔여액이 최소주문금액 미만이면 자동 전량 익절로 전환하고, 시드 증액 시 자동으로 분할익절을 유지하도록 구현 (`src/realtime_engine.py`, `src/trading_runtime.py` 호출부 연동).
+  - `src/trading_runtime.py`: `risk_based_budget <= 0`일 때 `slot_budget` 폴백을 제거하고 `trade_budget <= 0`이면 신규 매수를 차단(`RISK_SIZING_ZERO`).
+  - `tests/test_swing_partial_take_profit_sizing.py` 및 `docs/project-design/strategy-and-risk.md` 갱신.
+
+## 2026-11-14 BTC 매크로 쇼크 필터 기간 정합성 수정 및 임계값 현실화
+
+- **배경 및 문제**:
+  - `classify_btc_regime()`가 1시간봉 3봉 전(`prices_1h[3]`, 즉 3시간 전) 가격과 비교해 `drop_1h`를 산출하고 있었고, `MACRO_SHOCK_RECENT_DROP_PCT = 0.004`(-0.4%)·`MACRO_SHOCK_1H_DROP_PCT = 0.004`(-0.4%) 임계값이 일상적 변동폭에서도 30분 전역 매수 차단을 반복 유발했다.
+- **구현 내용**:
+  - `src/strategy_engine.py`: `prices_1h[1]`(실제 직전 1시간봉) 대비 변동률로 수정하고, `MACRO_SHOCK_RECENT_DROP_PCT = 0.008`(-0.8%), `MACRO_SHOCK_1H_DROP_PCT = 0.012`(-1.2%)로 상향해 완만한 조정(`RISK_OFF`)과 급락 쇼크(`MACRO_SHOCK`)를 분리.
+  - `tests/test_macro_shock_and_guards.py` 및 `docs/project-design/strategy-and-risk.md` 갱신.
+
 ## 2026-11-11 24시간 일일 퀀트 매매 성과 분석 보고서 Gemini Flash 연동 및 다단계 재시도 자동화 신설
 
 - **배경 및 요구사항**:

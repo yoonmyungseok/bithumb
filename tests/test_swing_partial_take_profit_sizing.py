@@ -51,6 +51,36 @@ class SwingPartialTakeProfitSizingTests(unittest.TestCase):
             30.0,
         )
 
+    def test_small_account_falls_back_to_full_exit_when_partial_or_remainder_below_min_order(self):
+        """소액 포지션에서 분할 매도액 또는 잔여 평가액이 최소주문금액 미만이면 전량 익절로 전환한다."""
+        # 보유 10,000원(10개 * 1,000원), 40% 분할 시 매도액 4,000원 < 5,000원 -> 전량 10개 익절
+        self.assertEqual(
+            calculate_partial_take_profit_volume(
+                is_swing=False, stage=1, available_volume=10.0, scalp_stage_ratio=0.4,
+                current_price=1000.0, min_order_krw=5000.0,
+            ),
+            10.0,
+        )
+        # 보유 11,000원(11개 * 1,000원), 60% 분할 시 매도액 6,600원은 통과하나 잔여 4,400원 < 5,000원 -> Dust 방지를 위해 전량 11개 익절
+        self.assertEqual(
+            calculate_partial_take_profit_volume(
+                is_swing=False, stage=1, available_volume=11.0, scalp_stage_ratio=0.6,
+                current_price=1000.0, min_order_krw=5000.0,
+            ),
+            11.0,
+        )
+
+    def test_scaled_account_keeps_partial_take_profit_when_both_sides_meet_min_order(self):
+        """시드 증액으로 분할 매도액과 잔여액이 모두 최소주문금액 이상이면 원래 분할 비율을 유지한다."""
+        # 보유 50,000원(50개 * 1,000원), 60% 분할 시 매도액 30,000원 >= 5,000원, 잔여 20,000원 >= 5,000원
+        self.assertEqual(
+            calculate_partial_take_profit_volume(
+                is_swing=False, stage=1, available_volume=50.0, scalp_stage_ratio=0.6,
+                current_price=1000.0, min_order_krw=5000.0,
+            ),
+            30.0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

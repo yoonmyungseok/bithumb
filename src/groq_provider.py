@@ -22,10 +22,21 @@ DEFAULT_GROQ_MODELS = [
     "openai/gpt-oss-120b",
     "qwen/qwen3.8-27b",
     "openai/gpt-oss-20b",
-    "groq/compound",
-    "groq/compound-mini",
-    "allam-2-7b",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
 ]
+
+MAX_GROQ_PROMPT_CHARS = 18000
+
+
+def _prepare_groq_prompt(prompt: str, max_chars: int = MAX_GROQ_PROMPT_CHARS) -> str:
+    """컨텍스트 길이 초과(HTTP 400) 방지를 위해 과도하게 긴 프롬프트를 앞뒤 보존 방식으로 축약한다."""
+    text = str(prompt or "")
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    head_len = int(max_chars * 0.6)
+    tail_len = max(0, max_chars - head_len - 64)
+    return text[:head_len] + "\n\n... [중략: 컨텍스트 길이 제한 보호] ...\n\n" + text[-tail_len:]
 
 
 @dataclass(frozen=True)
@@ -106,6 +117,8 @@ class GroqProvider:
 
         candidate_models = models or self.models
         req_timeout = float(timeout if timeout is not None else self.timeout)
+        safe_prompt = _prepare_groq_prompt(prompt)
+        deadline = time.monotonic() + max(req_timeout * 2.5, 20.0)
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -114,7 +127,10 @@ class GroqProvider:
         last_status: int | None = None
         last_error_kind = ""
 
-        for model in candidate_models:
+        for idx, model in enumerate(candidate_models):
+            if idx > 0 and time.monotonic() >= deadline:
+                logger.warning("Groq API 폴백 시간 예산 초과로 잔여 모델 시도 중단")
+                break
             start_ts = time.time()
             self.total_calls += 1
             self.last_call_ts = start_ts
@@ -123,7 +139,7 @@ class GroqProvider:
                 "model": model,
                 "messages": [
                     {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": prompt},
+                    {"role": "user", "content": safe_prompt},
                 ],
                 "response_format": {"type": "json_object"},
                 "temperature": 0.2,
@@ -237,6 +253,8 @@ class GroqProvider:
 
         candidate_models = models or self.models
         req_timeout = float(timeout if timeout is not None else self.timeout)
+        safe_prompt = _prepare_groq_prompt(prompt)
+        deadline = time.monotonic() + max(req_timeout * 2.5, 20.0)
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -245,7 +263,10 @@ class GroqProvider:
         last_status: int | None = None
         last_error_kind = ""
 
-        for model in candidate_models:
+        for idx, model in enumerate(candidate_models):
+            if idx > 0 and time.monotonic() >= deadline:
+                logger.warning("Groq API 폴백 시간 예산 초과로 잔여 모델 시도 중단")
+                break
             start_ts = time.time()
             self.total_calls += 1
             self.last_call_ts = start_ts
@@ -254,7 +275,7 @@ class GroqProvider:
                 "model": model,
                 "messages": [
                     {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": prompt},
+                    {"role": "user", "content": safe_prompt},
                 ],
                 "temperature": temperature,
                 "max_tokens": max_tokens,

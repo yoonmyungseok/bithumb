@@ -2,6 +2,7 @@
 
 import os
 import sys
+import tempfile
 import threading
 import unittest
 from unittest.mock import MagicMock, patch
@@ -223,6 +224,35 @@ class StorageAndFillBoundaryTests(unittest.TestCase):
             self.assertEqual(row["market_regime"], "BULL_TREND")
             self.assertEqual(row["hold_duration_min"], 30)  # 6봉 * 5분 = 30분
             self.assertEqual(row["exit_time"], "2026-09-06 12:00:00")
+
+    def test_archive_anomalous_trade_memory_isolates_legacy_pollution(self):
+        """빈 exit_reason, UNKNOWN 레짐, 초대형 이상치만 trade_memory_archive로 분리하고 정상 거래는 보존한다."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = db_manager.DatabaseManager(db_path=os.path.join(tmpdir, "test.db"))
+            mgr.insert_trade("bithumb", {
+                "market": "KRW-BTC",
+                "pnl_krw": 1200.0,
+                "exit_reason": "1차 분할익절",
+                "market_regime": "NORMAL",
+            })
+            mgr.insert_trade("bithumb", {
+                "market": "KRW-BTC",
+                "pnl_krw": -20000000.0,
+                "exit_reason": "",
+                "market_regime": "NORMAL",
+            })
+            mgr.insert_trade("bithumb", {
+                "market": "KRW-ETH",
+                "pnl_krw": 150000.0,
+                "exit_reason": "TRAILING_STOP",
+                "market_regime": "UNKNOWN",
+            })
+            moved = mgr.archive_anomalous_trade_memory("bithumb")
+            self.assertEqual(moved, 2)
+            remaining = mgr.get_trades("bithumb")
+            self.assertEqual(len(remaining), 1)
+            self.assertEqual(remaining[0]["exit_reason"], "1차 분할익절")
+            mgr.dispose()
 
 
 if __name__ == "__main__":

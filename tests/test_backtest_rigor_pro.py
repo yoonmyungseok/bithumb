@@ -83,6 +83,51 @@ class BacktestRigorProTests(unittest.TestCase):
         self.assertIn("total_return_pct", sens_res[0])
         self.assertIn("max_drawdown_pct", sens_res[0])
 
+    def test_portfolio_backtest_respects_max_positions_and_shared_capital(self):
+        """다중 마켓 포트폴리오 백테스트의 최대 동시 포지션 제한 및 마켓별 집계 검증"""
+        backtester = QuantBacktester(initial_capital=1_000_000.0)
+        market_candles = {
+            "KRW-BTC": self.mock_candles,
+            "KRW-ETH": self.mock_candles,
+            "KRW-XRP": self.mock_candles,
+        }
+        res = backtester.run_portfolio_backtest(
+            market_candles=market_candles,
+            btc_candles=self.mock_candles,
+            max_positions=2,
+        )
+        self.assertEqual(set(res["markets"]), {"KRW-BTC", "KRW-ETH", "KRW-XRP"})
+        self.assertLessEqual(res["max_concurrent_positions"], 2)
+        self.assertIn("KRW-BTC", res["market_breakdown"])
+        self.assertGreater(len(res["equity_curve"]), 10)
+
+    def test_portfolio_walk_forward_backtest_with_warmup(self):
+        """포트폴리오 Walk-Forward 전진 검증 및 워밍업 분리 검증"""
+        long_candles = []
+        for i in range(140):
+            base_p = 1000.0 + (i * 1.8) + (4.0 if i % 3 == 0 else -2.0)
+            long_candles.append({
+                "opening_price": base_p - 1.0,
+                "high_price": base_p + 5.0,
+                "low_price": base_p - 3.0,
+                "trade_price": base_p,
+                "candle_acc_trade_volume": 200.0,
+            })
+        long_candles = long_candles[::-1]
+
+        backtester = QuantBacktester(initial_capital=1_000_000.0)
+        res = backtester.run_portfolio_walk_forward_backtest(
+            market_candles={"KRW-BTC": long_candles, "KRW-ETH": long_candles},
+            btc_candles=long_candles,
+            num_windows=2,
+            train_ratio=0.7,
+            max_positions=2,
+        )
+        self.assertGreaterEqual(res["num_windows"], 1)
+        self.assertIn("mean_out_of_sample_return_pct", res)
+        self.assertIn("mean_out_of_sample_mdd_pct", res)
+        self.assertIn("robustness_score", res)
+
 
 if __name__ == "__main__":
     unittest.main()

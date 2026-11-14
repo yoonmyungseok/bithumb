@@ -382,6 +382,80 @@ class DatabaseManager:
                 results.append(item)
             return results
 
+    def archive_anomalous_trade_memory(
+        self,
+        exchange: str | None = None,
+        max_abs_pnl_krw: float = 5_000_000.0,
+    ) -> int:
+        """
+        오염된 레거시/테스트 이상치(exit_reason 누락 또는 비정상 손익)를 삭제하지 않고
+        trade_memory_archive 테이블로 안전하게 분리 아카이빙한다.
+        """
+        where_clauses = [
+            "(COALESCE(exit_reason, '') = '' OR COALESCE(market_regime, '') = 'UNKNOWN' OR ABS(COALESCE(pnl_krw, 0.0)) > ?)"
+        ]
+        params: list[Any] = [float(max_abs_pnl_krw)]
+        if exchange:
+            where_clauses.append("exchange = ?")
+            params.append(exchange.strip().lower())
+        where_sql = " AND ".join(where_clauses)
+
+        with _DB_LOCK, self._get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trade_memory_archive (
+                    id INTEGER PRIMARY KEY,
+                    exchange TEXT NOT NULL,
+                    market TEXT NOT NULL,
+                    entry_time TEXT,
+                    exit_time TEXT,
+                    entry_price REAL,
+                    exit_price REAL,
+                    pnl_krw REAL,
+                    pnl_pct REAL,
+                    hold_duration_min INTEGER,
+                    exit_reason TEXT,
+                    strategy_tags TEXT,
+                    market_regime TEXT,
+                    btc_trend TEXT,
+                    factor_scores TEXT,
+                    raw_data TEXT,
+                    created_at TIMESTAMP,
+                    archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            rows_to_move = conn.execute(
+                f"SELECT COUNT(*) FROM trade_memory WHERE {where_sql}",
+                params,
+            ).fetchone()[0]
+            if not rows_to_move:
+                return 0
+            conn.execute(
+                f"""
+                INSERT OR IGNORE INTO trade_memory_archive (
+                    id, exchange, market, entry_time, exit_time,
+                    entry_price, exit_price, pnl_krw, pnl_pct, hold_duration_min,
+                    exit_reason, strategy_tags, market_regime, btc_trend,
+                    factor_scores, raw_data, created_at
+                )
+                SELECT
+                    id, exchange, market, entry_time, exit_time,
+                    entry_price, exit_price, pnl_krw, pnl_pct, hold_duration_min,
+                    exit_reason, strategy_tags, market_regime, btc_trend,
+                    factor_scores, raw_data, created_at
+                FROM trade_memory
+                WHERE {where_sql}
+                """,
+                params,
+            )
+            cursor = conn.execute(
+                f"DELETE FROM trade_memory WHERE {where_sql}",
+                params,
+            )
+            conn.commit()
+            return int(cursor.rowcount)
+
     # =========================================================================
     # Orders & Journal Operations
     # =========================================================================

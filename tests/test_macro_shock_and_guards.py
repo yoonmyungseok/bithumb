@@ -22,12 +22,12 @@ class TestMacroShockAndAIGuards(unittest.TestCase):
         StrategyPolicy._MACRO_SHOCK_STATE.clear()
 
     def test_classify_btc_regime_detects_15m_shock(self):
-        """15분 기준 -0.4% 급락 시 매크로 쇼크 감지 및 RISK_OFF 전환"""
+        """15분 기준 -0.8% 이상 급락 시 매크로 쇼크 감지 및 RISK_OFF 전환"""
         candles_5m = [
-            {"trade_price": 99.5},   # cur_p
-            {"trade_price": 99.8},
+            {"trade_price": 99.1},   # cur_p (drop: -0.9%)
+            {"trade_price": 99.6},
             {"trade_price": 100.0},
-            {"trade_price": 100.0},  # p_3 (drop: -0.5%)
+            {"trade_price": 100.0},  # p_3
         ]
         res = classify_btc_regime(candles_5m)
         self.assertTrue(res.get("macro_shock"))
@@ -35,18 +35,18 @@ class TestMacroShockAndAIGuards(unittest.TestCase):
         self.assertIn("15분", res["reason"])
 
     def test_classify_btc_regime_detects_1h_shock_and_blocks_bull_trend(self):
-        """12H 상승 정배열이어도 최근 1H -0.48% 급락 시 BULL_TREND 진입을 원천 차단하고 RISK_OFF로 격하"""
+        """12H 상승 정배열이어도 직전 1H 대비 -1.2% 이상 급락 시 BULL_TREND를 차단하고 RISK_OFF로 격하"""
         now_price = 115000000.0
-        # 1H candles: 0번(현재)은 115M, 3번(직전)은 115.57M (약 -0.49% 급락)
-        # 12번은 114M (+0.87% 상승 상태)
+        # 1H candles: 0번(현재)은 115M, 1번(직전 1H)은 116.5M (약 -1.29% 급락)
+        # 12번은 112M (+2.68% 상승 상태)
         candles_1h = [{"trade_price": now_price}]
         for idx in range(1, 25):
-            if idx <= 3:
-                candles_1h.append({"trade_price": 115570000.0})
+            if idx == 1:
+                candles_1h.append({"trade_price": 116500000.0})
             elif idx <= 12:
-                candles_1h.append({"trade_price": 114000000.0})
+                candles_1h.append({"trade_price": 112000000.0})
             else:
-                candles_1h.append({"trade_price": 113000000.0})
+                candles_1h.append({"trade_price": 111000000.0})
 
         candles_5m = [{"trade_price": now_price} for _ in range(5)]
 
@@ -55,6 +55,21 @@ class TestMacroShockAndAIGuards(unittest.TestCase):
         self.assertNotEqual(res["regime"], "BULL_TREND")
         self.assertEqual(res["regime"], "RISK_OFF")
         self.assertIn("매크로 쇼크", res["reason"])
+
+    def test_classify_btc_regime_mild_3h_drop_does_not_trigger_macro_shock(self):
+        """3시간에 걸친 -0.7% 완만 하락 및 1H -0.4% 수준 조정은 전역 30분 매크로 쇼크를 발동하지 않음"""
+        now_price = 99300000.0
+        candles_1h = [
+            {"trade_price": now_price},       # 현재
+            {"trade_price": 99600000.0},      # 1H 전 (-0.30%)
+            {"trade_price": 99800000.0},      # 2H 전
+            {"trade_price": 100000000.0},     # 3H 전 (-0.70%)
+        ] + [{"trade_price": 100500000.0} for _ in range(20)]
+        candles_5m = [{"trade_price": now_price} for _ in range(5)]
+
+        res = classify_btc_regime(candles_5m, candles_1h)
+        self.assertFalse(res.get("macro_shock"))
+        self.assertEqual(res["regime"], "RISK_OFF")
 
     def test_macro_shock_cooldown_blocks_pre_qualification(self):
         """매크로 쇼크 쿨다운 활성 중에는 is_macro_valid가 False가 되어 사전 게이트에서 차단"""
@@ -116,8 +131,8 @@ class TestMacroShockAndAIGuards(unittest.TestCase):
         orchestrator = TradingOrchestrator(logger)
 
         candles_5m = [
-            {"trade_price": 99.5},
-            {"trade_price": 99.8},
+            {"trade_price": 99.1},
+            {"trade_price": 99.6},
             {"trade_price": 100.0},
             {"trade_price": 100.0},
             {"trade_price": 100.0},

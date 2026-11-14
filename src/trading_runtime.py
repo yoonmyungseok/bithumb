@@ -809,8 +809,9 @@ class TradingCycleEngine:
             exchange, candle_prefetch_cache, self.config.interval_minutes,
         )
 
+        decision_retention_days = max(1, int(os.getenv("STRATEGY_DECISION_RETENTION_DAYS", "14") or 14))
         ctx.decision_db.purge_strategy_decisions(
-            profile.decision_exchange, time.time() - 30 * 24 * 60 * 60,
+            profile.decision_exchange, time.time() - decision_retention_days * 24 * 60 * 60,
         )
         cycle_id = now_dt.strftime("%Y%m%d%H%M%S")
         decision_exchange = profile.decision_exchange
@@ -937,6 +938,8 @@ class TradingCycleEngine:
                 available_volume=coin_available,
                 original_filled_volume=original_filled,
                 scalp_stage_ratio=scalp_ratio,
+                current_price=current_price,
+                min_order_krw=min_order_krw,
             )
             sell_val = sell_vol * current_price
             stage_name = exit_profile.partial_tp_stage2_name if is_stage2 else exit_profile.partial_tp_stage1_name
@@ -2586,8 +2589,8 @@ class TradingCycleEngine:
                 risk_scale_factor=risk_scale,
                 strategy_mode=strategy_mode,
             )
-            effective_risk_budget = risk_based_budget if risk_based_budget > 0 else slot_budget
-            trade_budget = min(krw_available, slot_budget, effective_risk_budget)
+            # 리스크 기반 사이징이 최소 주문금액 미달(0.0)이면 슬롯 한도로 우회 진입하지 않고 차단한다.
+            trade_budget = min(krw_available, slot_budget, risk_based_budget)
         else:
             if smart_taker_price is not None:
                 order_price = exchange.adjust_price_to_tick(smart_taker_price, side="bid", mode="round")
@@ -2612,6 +2615,13 @@ class TradingCycleEngine:
                 strategy_mode=strategy_mode,
             )
             trade_budget = min(krw_available, max_slot_budget, calculated_size)
+
+        if trade_budget <= 0:
+            logger.info(
+                f"[{korean_name} / {market}] 리스크 기반 포지션 사이징 한도 미달(0원) ➜ 신규 매수 차단"
+            )
+            audit_decision(market, "BLOCKED", "RISK_SIZING_ZERO", ["리스크 기반 포지션 사이징 한도 미달(최소 주문금액 미만)"], {})
+            return True
 
         # 알트코인 포지션 사이징 균등화 (10% ~ 15% 균등 분할 & 심야 10% 캡)
         # 특정 종목 몰빵 및 극소액 푼돈 진입 쏠림을 원천 차단

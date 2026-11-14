@@ -1167,7 +1167,11 @@ class BaseGeminiProvider:
         last_result = ProviderResult(None, models[0], "configuration")
         is_emergency = "holding" in context or "emergency" in context
         failed_models: list[str] = []
+        deadline = time.monotonic() + max(float(timeout) * 2.0, 22.0)
         for model in models:
+            if time.monotonic() >= deadline and failed_models:
+                logger.warning("[%s] Gemini 폴백 시간 예산 초과로 잔여 모델 시도 중단 (%s)", self.exchange, context)
+                break
             # 호출 직전 쿨다운/쿼터 안전 검증 (이미 소진된 모델에 대한 불필요한 HTTP 호출 원천 차단)
             if not self.can_call_model_safety(model, for_emergency_exit=is_emergency):
                 logger.info("[%s] %s 쿨다운 또는 쿼터 소진으로 호출 건너뜀 (차순위 시도)", self.exchange, model)
@@ -1227,8 +1231,13 @@ class BaseGeminiProvider:
                             )
                     elif status_code in (500, 502, 503, 504):
                         self.set_model_cooldown(
-                            model, duration_sec=120.0,
+                            model, duration_sec=300.0,
                             reason=f"HTTP {status_code} 서버 일시 장애 ({error_code or 'UNAVAILABLE'})",
+                        )
+                    elif status_code == 404:
+                        self.set_model_cooldown(
+                            model, duration_sec=1800.0,
+                            reason="HTTP 404 미지원/종료 모델",
                         )
                     last_result = ProviderResult(None, model, error_kind, status_code, error_code)
                     failed_models.append(model)
@@ -1254,7 +1263,7 @@ class BaseGeminiProvider:
             except requests.exceptions.Timeout:
                 error_kind = "timeout"
                 self.set_model_cooldown(
-                    model, duration_sec=120.0,
+                    model, duration_sec=600.0,
                     reason="API 호출 타임아웃 (서버 무응답)",
                 )
                 last_result = ProviderResult(None, model, error_kind, status_code, error_code)
@@ -1282,12 +1291,18 @@ class BaseGeminiProvider:
         last_error_code = ""
 
         system_instruction = self.BRIEFING_SYSTEM_INSTRUCTION if "briefing" in context else self.SYSTEM_INSTRUCTION
+        deadline = time.monotonic() + max(float(timeout) * 2.0, 22.0)
+        attempted_count = 0
 
         for model in models:
+            if time.monotonic() >= deadline and attempted_count > 0:
+                logger.warning("[%s] Gemini 브리핑 폴백 시간 예산 초과로 잔여 모델 시도 중단 (%s)", self.exchange, context)
+                break
             # 브리핑 등 텍스트 생성도 쿨다운 또는 쿼터 소진 모델은 건너뜀
             if not self.can_call_model_safety(model, for_emergency_exit=True):
                 logger.info("[%s] %s 쿨다운 또는 쿼터 소진으로 브리핑 호출 건너뜀 (차순위 시도)", self.exchange, model)
                 continue
+            attempted_count += 1
 
             started = time.monotonic()
             status_code: int | None = None
@@ -1347,8 +1362,13 @@ class BaseGeminiProvider:
                             )
                     elif status_code in (500, 502, 503, 504):
                         self.set_model_cooldown(
-                            model, duration_sec=120.0,
+                            model, duration_sec=300.0,
                             reason=f"HTTP {status_code} 서버 일시 장애 ({error_code or 'UNAVAILABLE'})",
+                        )
+                    elif status_code == 404:
+                        self.set_model_cooldown(
+                            model, duration_sec=1800.0,
+                            reason="HTTP 404 미지원/종료 모델",
                         )
                     last_error = error_kind
                     last_status_code = status_code
@@ -1368,7 +1388,7 @@ class BaseGeminiProvider:
             except requests.exceptions.Timeout:
                 error_kind = "timeout"
                 self.set_model_cooldown(
-                    model, duration_sec=120.0,
+                    model, duration_sec=600.0,
                     reason="API 호출 타임아웃 (서버 무응답)",
                 )
                 last_error = "timeout"
