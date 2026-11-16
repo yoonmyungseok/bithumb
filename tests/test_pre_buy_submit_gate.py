@@ -38,6 +38,9 @@ class TestPreBuySubmitGate(unittest.TestCase):
             data_dir=os.path.join(self.temp_dir.name, "upbit"),
             exchange_scope="upbit",
         )
+        # 기존 게이트 테스트는 정상 잔고 평가가 끝난 상태에서 실행한다.
+        self.journal_bithumb.set_valuation_ready(True)
+        self.journal_upbit.set_valuation_ready(True)
         self.journal_bithumb.reconciliation_state = "READY"
         self.journal_upbit.reconciliation_state = "READY"
         self.journal_bithumb.reconciliation_metrics["last_completed_at"] = time.time()
@@ -51,6 +54,31 @@ class TestPreBuySubmitGate(unittest.TestCase):
         ws.is_connected = True
         ws.last_tick_time_by_market[market.upper()] = time.time()
         return ws
+
+    def test_valuation_failure_blocks_only_affected_exchange_until_refresh(self):
+        """시세 평가 실패는 해당 거래소만 차단하고 정상 평가 후 복구한다."""
+        self.journal_bithumb.set_valuation_ready(False)
+        def check(journal):
+            return evaluate_pre_buy_submit_gate(
+                market="KRW-ETH", exchange_name="bithumb", order_journal=journal,
+                current_price=100.0, check_cooldown=False,
+            )
+        self.assertEqual(check(self.journal_bithumb)[1], "PRE_BUY_VALUATION_UNAVAILABLE")
+        self.assertTrue(check(self.journal_upbit)[0])
+        self.journal_bithumb.complete_reconciliation_if_safe()
+        self.assertFalse(check(self.journal_bithumb)[0])
+        self.journal_bithumb.set_valuation_ready(True)
+        self.assertTrue(check(self.journal_bithumb)[0])
+
+    def test_valuation_failure_does_not_block_exit(self):
+        """평가 차단 상태에서도 기존 포지션의 청산 주문 경로를 유지한다."""
+        self.journal_bithumb.set_valuation_ready(False)
+        exchange = MagicMock()
+        exchange.create_order.return_value = {"uuid": "test-order"}
+        SafeOrderExecutor(self.journal_bithumb).submit(
+            exchange, "KRW-ETH", "ask", volume=1.0, price=100.0, exchange_name="bithumb",
+        )
+        exchange.create_order.assert_called_once()
 
     def test_blocks_stale_ws_at_submit(self):
         ws = self._ready_ws()

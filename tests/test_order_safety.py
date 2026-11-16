@@ -60,6 +60,8 @@ class OrderSafetyTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.journal = OrderJournal(os.path.join(self.temp_dir.name, "orders.json"))
         # 실거래는 REST 대사 완료 후에만 BUY를 제출하므로 테스트 저널도 READY로 맞춘다.
+        # 정상 평가를 전제로 주문 수명주기를 검증한다.
+        self.journal.set_valuation_ready(True)
         self.journal.reconciliation_state = "READY"
         self.journal.reconciliation_metrics["last_completed_at"] = time.time()
 
@@ -270,10 +272,10 @@ class OrderSafetyTests(unittest.TestCase):
         self.assertFalse(self.journal.is_managed_order(""))
 
     def test_dynamic_portfolio_tiers(self):
-        # 1. 소액 (< 30만 원) -> 3종목, 35%, 10개 스크리닝
+        # 1. 소액 (< 30만 원) -> 3종목, 38%, 10개 스크리닝
         slots, pos_pct, top_n = get_dynamic_portfolio_tiers(27_680.0)
         self.assertEqual(slots, 3)
-        self.assertEqual(pos_pct, 0.35)
+        self.assertEqual(pos_pct, 0.38)
         self.assertEqual(top_n, 10)
 
         # 2. 중소액 (30만 ~ 100만 원) -> 5종목, 25%, 12개 스크리닝
@@ -315,8 +317,8 @@ class OrderSafetyTests(unittest.TestCase):
         # 다른 무관한 종목은 정상 진입 가능
         self.assertTrue(self.journal.is_entry_ready("KRW-SUI"))
 
-    def test_per_market_isolation_allows_unrelated_symbols(self):
-        """한 종목이 체결 대기(RECONCILIATION_PENDING) 상태여도 무관한 다른 종목의 진입은 차단되지 않는다."""
+    def test_pending_order_blocks_unrelated_symbols(self):
+        """한 종목의 미확정 체결은 다른 종목의 신규 매수도 차단한다."""
         self.journal.reconciliation_state = "READY"
         client_id = self.journal.record_intent("KRW-TRX", "bid", 100.0, 455.0, "limit")
         self.journal.mark(client_id, OrderStatus.RECONCILIATION_PENDING, exchange_uuid="trx-pending-1")
@@ -334,8 +336,8 @@ class OrderSafetyTests(unittest.TestCase):
         self.assertFalse(allowed_trx)
         self.assertEqual(code_trx, "PRE_BUY_RECONCILIATION_PENDING")
 
-        # SUI는 정상 허용
-        self.assertTrue(self.journal.is_entry_ready("KRW-SUI"))
+        # 미확정 잔고의 영향을 받는 다른 종목도 차단한다.
+        self.assertFalse(self.journal.is_entry_ready("KRW-SUI"))
         allowed_sui, code_sui, _, _ = evaluate_pre_buy_submit_gate(
             exchange_name="bithumb",
             market="KRW-SUI",
@@ -344,8 +346,8 @@ class OrderSafetyTests(unittest.TestCase):
             ws_client=None,
             cooldown_manager=None,
         )
-        self.assertTrue(allowed_sui)
-        self.assertEqual(code_sui, "OK")
+        self.assertFalse(allowed_sui)
+        self.assertEqual(code_sui, "PRE_BUY_GLOBAL_RECONCILIATION")
 
     def test_open_order_allows_unrelated_symbols_when_ready(self):
         """특정 종목에 OPEN 주문이 있어도 저널이 READY이면 무관한 다른 종목의 진입은 정상 허용된다."""

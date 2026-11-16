@@ -140,6 +140,9 @@ class BotController:
                 block_reasons.append("Private WebSocket 이벤트 큐 포화")
             else:
                 block_reasons.append("초기 주문 체결 대사 미완료")
+        valuation_check = getattr(self.order_journal, "is_valuation_ready", None)
+        if callable(valuation_check) and not valuation_check():
+            block_reasons.append("잔고 또는 보유 종목 시세 평가 불완전")
         if status_counts.get("RECONCILIATION_PENDING", 0) > 0:
             block_reasons.append(f"체결 대사 진행 주문 {status_counts['RECONCILIATION_PENDING']}건")
         if status_counts.get("UNKNOWN", 0) > 0:
@@ -433,7 +436,7 @@ class BotController:
             manual_isolated_equity = max(0.0, total_equity - bot_equity)
 
             # 장중 입출금 및 초기 입금 기준자산 실시간 보정 (수동 격리 종목 완전 배제)
-            self.risk_manager.adjust_for_current_equity(bot_equity)
+            # 화면 조회의 별도 시세가 불완전할 수 있으므로 기준 자산은 거래 사이클에서만 갱신한다.
 
             daily_pnl_krw = bot_equity - self.risk_manager.daily_start_equity
             daily_pnl_pct = (

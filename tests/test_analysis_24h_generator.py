@@ -32,13 +32,25 @@ class TestAnalysis24hGenerator(unittest.TestCase):
         content = "# 홀로월드에이아이(HOLO) 24시간 시세 분석 보고서\n\n내용입니다."
         date_str = "20261029"
 
-        saved_path = self.generator.save_report(currency, content, date_str)
+        saved_path = self.generator.save_report(currency, content, date_str, "UPBIT")
         self.assertTrue(os.path.exists(saved_path))
-        self.assertEqual(os.path.basename(saved_path), "HOLO_24h_20261029.md")
+        self.assertEqual(os.path.basename(saved_path), "HOLO_24h_20261029_UPBIT.md")
 
         with open(saved_path, "r", encoding="utf-8") as f:
             read_content = f.read()
         self.assertIn("# 홀로월드에이아이(HOLO)", read_content)
+
+    def test_exchange_reports_do_not_overwrite(self):
+        """같은 종목과 날짜의 거래소별 보고서를 각각 보존한다."""
+        bithumb = self.generator.save_report("BTC", "빗썸", "20261029", "BITHUMB")
+        upbit = self.generator.save_report("BTC", "업비트", "20261029", "UPBIT")
+        self.assertNotEqual(bithumb, upbit)
+        with open(bithumb, encoding="utf-8") as saved:
+            self.assertEqual(saved.read().strip(), "빗썸")
+        with open(upbit, encoding="utf-8") as saved:
+            self.assertEqual(saved.read().strip(), "업비트")
+        with self.assertRaises(ValueError):
+            self.generator.save_report("BTC", "내용", "20261029", "unknown")
 
     def test_build_prompts_structure(self):
         """build_prompts가 팩트 데이터와 5개 섹션 마크다운 가이드라인을 정확히 포함하는지 검증."""
@@ -161,8 +173,8 @@ class TestAnalysis24hGenerator(unittest.TestCase):
         saved_files = self.generator.run(now_dt=datetime(2026, 10, 29, 9, 0, 0, tzinfo=KST))
 
         self.assertEqual(len(saved_files), 2)
-        self.assertTrue(any("HOLO_24h_20261029.md" in p for p in saved_files))
-        self.assertTrue(any("RSR_24h_20261029.md" in p for p in saved_files))
+        self.assertTrue(any("HOLO_24h_20261029_UPBIT.md" in p for p in saved_files))
+        self.assertTrue(any("RSR_24h_20261029_UPBIT.md" in p for p in saved_files))
 
 
 if __name__ == "__main__":

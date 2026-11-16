@@ -20,7 +20,7 @@ DAILY_REPORT_DATE_PATTERN = re.compile(r"^\d{4}-?\d{2}-?\d{2}$")
 
 # 24h 종목 시세 흐름 분석 보고서 패턴 및 경로 설정
 default_analysis_24h_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "24h"))
-ANALYSIS_24H_FILENAME_PATTERN = re.compile(r"^([A-Za-z0-9_]+)_24h_(\d{8})\.md$")
+ANALYSIS_24H_FILENAME_PATTERN = re.compile(r"^([A-Za-z0-9_]+)_24h_(\d{8})(?:_(BITHUMB|UPBIT))?\.md$")
 
 try:
     from src.drive_sync import DriveAnalysis24hSyncer
@@ -246,9 +246,11 @@ class DashboardWebServer:
 
         # 종목별 가장 최신 날짜의 보고서 1건만 유지
         if only_latest:
-            latest_by_symbol: dict[str, dict[str, Any]] = {}
+            latest_by_symbol: dict[tuple[str, str], dict[str, Any]] = {}
             for rep in reports:
-                sym = rep["symbol"].upper()
+                # 기존 보고서와 각 거래소 보고서의 최신본을 별도로 유지한다.
+                match = ANALYSIS_24H_FILENAME_PATTERN.match(rep["filename"])
+                sym = (rep["symbol"].upper(), (match.group(3) or "") if match else "")
                 if sym not in latest_by_symbol:
                     latest_by_symbol[sym] = rep
                 else:
@@ -291,6 +293,9 @@ class DashboardWebServer:
                 list_res = self.get_analysis_24h_reports()
                 reports = list_res.get("reports", [])
                 matching = [r for r in reports if r["symbol"].upper() == cleaned.upper()]
+                # 동일 종목의 거래소가 둘 이상이면 임의의 보고서를 선택하지 않는다.
+                if len(matching) > 1:
+                    return {"success": False, "message": "동일 종목의 보고서가 여러 개입니다. 파일명을 지정해 주세요."}
                 if matching:
                     target_file = matching[0]["filename"]
                 else:

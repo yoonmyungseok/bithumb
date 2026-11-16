@@ -348,7 +348,7 @@ if UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY:
                 exchange=create_exchange_client(),
                 fill_processor=fill_processor,
                 delay_sec=0.5,
-            ) if ack_reconcile_scheduler is not None and str(event.get("state") or event.get("s") or event.get("status") or "").lower() in ("trade", "done") else None,
+            ) if ack_reconcile_scheduler is not None and str(event.get("state") or event.get("s") or event.get("status") or "").lower() in ("trade", "done", "cancel") else None,
         ),
         on_queue_overflow=lambda: (
             order_journal.suspend_entry_for_reconciliation("private_ws_queue_full"),

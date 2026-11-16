@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -14,6 +15,10 @@ class Analysis24hDashboardTests(unittest.TestCase):
     """24h 종목 시세 흐름 및 전략 분석 보고서 대시보드 API 단위 테스트"""
 
     def setUp(self):
+        # 실제 계좌 및 네트워크에 접근하지 않고 보고서 API만 검증한다.
+        collector_patch = patch("sheets.manual_position_collector.ManualPositionCollector.collect_all_manual_positions", return_value=[])
+        collector_patch.start()
+        self.addCleanup(collector_patch.stop)
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.analysis_dir = self.tmp_dir.name
 
@@ -74,6 +79,23 @@ class Analysis24hDashboardTests(unittest.TestCase):
         # only_latest=False 시 전체 4개 보고서 모두 반환 확인
         all_result = self.server.get_analysis_24h_reports(only_latest=False)
         self.assertEqual(all_result["total"], 4)
+
+    def test_exchange_reports_remain_separate_and_legacy_is_available(self):
+        """거래소별 최신 보고서와 기존 보고서를 각 서버에서 모두 읽는다."""
+        for exchange in ("BITHUMB", "UPBIT"):
+            path = os.path.join(self.analysis_dir, f"RSR_24h_20261018_{exchange}.md")
+            with open(path, "w", encoding="utf-8") as saved:
+                saved.write(f"# {exchange} 보고서\n")
+        for server in (self.server, self.web_server):
+            reports = server.get_analysis_24h_reports(auto_sync=False)["reports"]
+            rsr = [report for report in reports if report["symbol"] == "RSR"]
+            self.assertEqual({report["filename"] for report in rsr}, {
+                "RSR_24h_20261017.md", "RSR_24h_20261018_BITHUMB.md", "RSR_24h_20261018_UPBIT.md"
+            })
+            self.assertTrue(all("exchange" not in report for report in rsr))
+            for report in rsr:
+                self.assertTrue(server.get_analysis_24h_content(report["filename"])["success"])
+            self.assertFalse(server.get_analysis_24h_content("RSR")["success"])
 
     def test_get_analysis_24h_content_default_latest(self):
         """타깃 지정 없이 조회 시 가장 최신의 첫 번째 보고서가 반환되는지 검증"""

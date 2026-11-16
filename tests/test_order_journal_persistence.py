@@ -179,8 +179,10 @@ class TestOrderJournalPersistence(unittest.TestCase):
             self.assertFalse(journal._save())
 
     def test_get_entry_blocking_markets_and_system_readiness(self) -> None:
-        """단일 종목의 대사 대기 시 시스템은 READY이나 해당 종목만 블로킹 마켓으로 반환된다."""
+        """단일 종목의 대사 대기 시 시스템 전체의 진입을 차단한다."""
         journal = OrderJournal(data_dir=self.bithumb_dir, exchange_scope="bithumb")
+        # 대사 차단만 검증하므로 정상 시세 평가 상태를 준비한다.
+        journal.set_valuation_ready(True)
         journal.reconciliation_state = "READY"
         self.assertTrue(journal.is_system_entry_ready())
         self.assertEqual(journal.get_entry_blocking_markets(), [])
@@ -189,11 +191,11 @@ class TestOrderJournalPersistence(unittest.TestCase):
         cid = journal.record_intent("KRW-FOLD", "bid", 10.0, 100.0, "limit")
         journal.mark(cid, "RECONCILIATION_PENDING")
 
-        # 시스템 레벨은 정상이나, FOLD 종목은 차단, 무관한 LSK 종목은 허용
-        self.assertTrue(journal.is_system_entry_ready())
+        # 미확정 주문은 시스템과 모든 종목의 신규 진입을 차단한다.
+        self.assertFalse(journal.is_system_entry_ready())
         self.assertEqual(journal.get_entry_blocking_markets(), ["KRW-FOLD"])
         self.assertFalse(journal.is_entry_ready("KRW-FOLD"))
-        self.assertTrue(journal.is_entry_ready("KRW-LSK"))
+        self.assertFalse(journal.is_entry_ready("KRW-LSK"))
         # 인자 없이 호출 시 전역 미대사 주문이 있으므로 False
         self.assertFalse(journal.is_entry_ready())
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 from typing import Any
 
@@ -33,68 +34,24 @@ def is_bot_managed_position(
 
         lock = getattr(order_journal, "_lock", threading.Lock())
         with lock:
-            bot_bids: list[dict[str, Any]] = []
-            bot_asks: list[dict[str, Any]] = []
+            # REST 대사로 처리된 누적 체결량만 사용하고 요청 수량·WS 원시값은 제외한다.
+            # 과거 잔량보다 많은 매도는 0으로 제한해 이후 새 매수의 소유량을 보존한다.
+            remaining = 0.0
             for order in order_journal.orders:
                 if str(order.get("market", "")).upper() != market.upper():
                     continue
+                try:
+                    confirmed = float(order.get("processed_executed_volume", 0.0) or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(confirmed) or confirmed <= 0:
+                    continue
                 side = str(order.get("side", "")).lower()
-                status = str(order.get("status", "")).upper()
-                executed = float(
-                    order.get("executed_volume")
-                    or order.get("filled_volume")
-                    or order.get("processed_executed_volume")
-                    or 0.0
-                )
                 if side in ("bid", "buy"):
-                    if status in ("FILLED", "PARTIALLY_FILLED", "OPEN", "ACKNOWLEDGED", "DONE") or executed > 0:
-                        bot_bids.append(order)
+                    remaining += confirmed
                 elif side in ("ask", "sell"):
-                    if status in ("FILLED", "PARTIALLY_FILLED", "DONE") or executed > 0:
-                        bot_asks.append(order)
-
-            if not bot_bids:
-                return False
-
-            last_bid = bot_bids[-1]
-            last_bid_time = float(last_bid.get("created_at") or 0.0)
-            bid_vol = float(
-                last_bid.get("executed_volume")
-                or last_bid.get("filled_volume")
-                or last_bid.get("processed_executed_volume")
-                or last_bid.get("volume")
-                or 0.0
-            )
-
-            asks_after_bid = [
-                a for a in bot_asks
-                if float(a.get("created_at") or 0.0) >= last_bid_time
-            ]
-
-            if not asks_after_bid:
-                return True
-
-            last_ask = asks_after_bid[-1]
-            last_ask_reason = str(last_ask.get("exit_reason", "")).upper()
-
-            if "PARTIAL" not in last_ask_reason:
-                return False
-
-            if bid_vol > 0:
-                sold_vol = sum(
-                    float(
-                        a.get("executed_volume")
-                        or a.get("filled_volume")
-                        or a.get("processed_executed_volume")
-                        or a.get("volume")
-                        or 0.0
-                    )
-                    for a in asks_after_bid
-                )
-                if sold_vol >= (bid_vol * 0.999):
-                    return False
-
-            return True
+                    remaining = max(0.0, remaining - confirmed)
+            return remaining > 1e-8
 
     # 2. order_journal이 없는 경우(트래커 단독 모드 또는 테스트 환경):
     if trailing_tracker:

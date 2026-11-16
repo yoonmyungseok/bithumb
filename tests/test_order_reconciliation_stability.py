@@ -19,6 +19,8 @@ class OrderReconciliationStabilityTests(unittest.TestCase):
     def setUp(self):
         self.test_dir = tempfile.mkdtemp(prefix="test_order_reconcile_stability_")
         self.journal = OrderJournal(data_dir=self.test_dir, exchange_scope="bithumb")
+        # 주문 대사 검증은 정상적인 잔고 평가 완료 상태에서 실행한다.
+        self.journal.set_valuation_ready(True)
         self.journal.reconciliation_state = "READY"
         self.journal.reconciliation_metrics["last_completed_at"] = time.time()
         self.risk = DailyRiskManager(data_dir=self.test_dir)
@@ -120,6 +122,41 @@ class OrderReconciliationStabilityTests(unittest.TestCase):
         self.assertEqual(order["status"], OrderStatus.CANCELED)
         self.assertEqual(order["processed_executed_volume"], 0.0)
 
+    def test_ws_cancel_partial_fill_requires_rest_and_processes_once(self):
+        """부분 체결 후 취소 신호는 REST 확인 전 체결과 신규 매수를 확정하지 않는다."""
+        client_id = self.journal.record_intent("KRW-WLD", "bid", 10.0, 500.0, "limit", exchange="bithumb")
+        self.journal.mark(client_id, OrderStatus.OPEN, exchange_uuid="test-order")
+        event = {"client_order_id": client_id, "state": "cancel", "executed_volume": 4.0, "remaining_volume": 0.0}
+        self.journal.apply_private_order_event(event, fill_processor=self.processor, require_rest_confirmation=True)
+        self.assertEqual(self.journal.get_order_by_client_id(client_id)["status"], OrderStatus.RECONCILIATION_PENDING)
+        self.assertFalse(self.journal.is_entry_ready("KRW-OTHER"))
+        self.assertEqual(self.journal.get_order_by_client_id(client_id)["processed_executed_volume"], 0.0)
+        # 지연된 접수 통지가 나중에 도착해도 대기 상태는 해제되지 않는다.
+        self.journal.apply_private_order_event({"client_order_id": client_id, "state": "wait", "remaining_volume": 10.0}, require_rest_confirmation=True)
+        self.assertEqual(self.journal.get_order_by_client_id(client_id)["status"], OrderStatus.RECONCILIATION_PENDING)
+        remote = {"state": "cancel", "executed_volume": "4", "remaining_volume": "6", "paid_fee": "2", "trades": [{"price": "500", "volume": "4"}]}
+        self.journal.reconcile_exchange_statuses(MagicMock(return_value=remote), fill_processor=self.processor)
+        order = self.journal.get_order_by_client_id(client_id)
+        self.assertEqual(order["status"], OrderStatus.CANCELED)
+        self.assertEqual(order["processed_executed_volume"], 4.0)
+        self.journal.apply_private_order_event(event, fill_processor=self.processor, require_rest_confirmation=True)
+        self.journal.reconcile_exchange_statuses(MagicMock(return_value=remote), fill_processor=self.processor)
+        self.assertEqual(self.journal.get_order_by_client_id(client_id)["processed_executed_volume"], 4.0)
+
+    def test_bot_position_uses_confirmed_net_volume(self):
+        """확정 체결만 반영하며 부분 매도와 과거 청산 이후 재매수를 구분한다."""
+        self.journal.orders = [
+            {"market": "KRW-WLD", "side": "bid", "status": "OPEN", "executed_volume": 10},
+            {"market": "KRW-WLD", "side": "bid", "processed_executed_volume": 5},
+            {"market": "KRW-WLD", "side": "bid", "processed_executed_volume": 3},
+            {"market": "KRW-WLD", "side": "ask", "processed_executed_volume": 6, "exit_reason": "STOP_LOSS"},
+        ]
+        self.assertTrue(self.journal.has_active_bot_position("KRW-WLD"))
+        self.journal.orders.append({"market": "KRW-WLD", "side": "ask", "processed_executed_volume": 20})
+        self.assertFalse(self.journal.has_active_bot_position("KRW-WLD"))
+        self.journal.orders.append({"market": "KRW-WLD", "side": "bid", "processed_executed_volume": 1})
+        self.assertTrue(self.journal.has_active_bot_position("KRW-WLD"))
+
     def test_ws_done_rest_wait_stays_pending_until_rest_confirms(self):
         """WS done 신호 후 REST가 wait·0체결이면 FILLED로 확정하지 않는다."""
         client_id = self.journal.record_intent("KRW-WLD", "bid", 2.0, 500.0, "limit", exchange="bithumb")
@@ -145,7 +182,7 @@ class OrderReconciliationStabilityTests(unittest.TestCase):
         })
         self.journal.reconcile_exchange_statuses(get_order, fill_processor=self.processor)
         order = self.journal.get_order_by_client_id(client_id)
-        self.assertEqual(order["status"], OrderStatus.OPEN)
+        self.assertEqual(order["status"], OrderStatus.RECONCILIATION_PENDING)
         self.assertEqual(order["processed_executed_volume"], 0.0)
 
     def test_rest_validation_failure_blocks_entry(self):

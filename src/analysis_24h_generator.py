@@ -2,7 +2,7 @@
 
 - 수동으로 매수한 종목(봇 자동 매매 포지션 제외)만 선별하여 분석을 수행합니다.
 - 거래소 실시간 시세 및 최근 24h/일봉 캔들 데이터를 주입하여 정합성을 보장합니다.
-- Groq LLM을 통해 지정된 5개 섹션 마크다운 보고서를 생성하고 '24h/{SYMBOL}_24h_{YYYYMMDD}.md'로 저장합니다.
+- Groq LLM을 통해 지정된 5개 섹션 마크다운 보고서를 생성하고 '24h/{SYMBOL}_24h_{YYYYMMDD}_{EXCHANGE}.md'로 저장합니다.
 - 거래소 격리 원칙(업비트/빗썸 키 및 API 분리)을 철저히 준수합니다.
 """
 
@@ -352,9 +352,13 @@ class Analysis24hGenerator:
         logger.info(f"[{exchange}] {currency} Groq 보고서 생성 성공 (모델: {result.model}, 소요: {result.latency_sec:.2f}s)")
         return content
 
-    def save_report(self, currency: str, content: str, date_str: str) -> str:
+    def save_report(self, currency: str, content: str, date_str: str, exchange: str) -> str:
         """보고서 내용을 원자적으로 파일에 저장."""
-        filename = f"{currency.upper()}_24h_{date_str}.md"
+        # 거래소별 보고서가 같은 종목과 날짜에 서로 덮어쓰지 않도록 구분한다.
+        exchange = str(exchange).upper()
+        if exchange not in {"BITHUMB", "UPBIT"}:
+            raise ValueError("유효하지 않은 보고서 거래소입니다.")
+        filename = f"{currency.upper()}_24h_{date_str}_{exchange}.md"
         target_path = os.path.join(self.output_dir, filename)
 
         # 원자적 쓰기 (임시 파일 생성 후 rename)
@@ -431,7 +435,7 @@ class Analysis24hGenerator:
                     now_dt=now_dt,
                 )
                 if report_content:
-                    saved_path = self.save_report(currency, report_content, date_str)
+                    saved_path = self.save_report(currency, report_content, date_str, pos["exchange"])
                     saved_files.append(saved_path)
                     success = True
             except Exception as e:

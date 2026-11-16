@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import math
 import os
 import time
 from collections import defaultdict, deque
@@ -253,6 +254,10 @@ class TradingOrchestrator:
         order_journal: Any = None,
     ) -> "PortfolioSnapshot":
         """Refresh the shared account/risk snapshot without changing trade rules."""
+        # 조회 도중 실패하거나 사이클이 중단돼도 이전 평가로 신규 주문하지 않는다.
+        valuation_setter = getattr(order_journal, "set_valuation_ready", None)
+        if callable(valuation_setter):
+            valuation_setter(False)
         # 포트폴리오·킬스위치 계산은 매 사이클 첫 조회를 강제 최신 상태로 시작한다.
         balances = self.get_balance_snapshot(exchange, force_refresh=True)
         from position_guard import calculate_bot_equity, calculate_bot_unrealized_pnl
@@ -269,10 +274,24 @@ class TradingOrchestrator:
         except TypeError:
             held_markets = get_held_markets(balances, exchange)
 
-        try:
-            stale_states = trailing_tracker.reconcile_markets(held_markets, order_journal=order_journal)
-        except TypeError:
-            stale_states = trailing_tracker.reconcile_markets(held_markets)
+        # 추적 상태 삭제는 평가액이 아닌 실제 잔고로 판단한다. 시세 누락이나
+        # 최소 평가액 미달만으로 보유 포지션의 손절 상태를 지우면 안 된다.
+        balance_markets = [
+            f"KRW-{currency}"
+            for currency, info in balances.items()
+            if currency not in ("KRW", "P")
+            and isinstance(info, dict)
+            and float(info.get("balance", 0.0) or 0.0) + float(info.get("locked", 0.0) or 0.0) > 0
+        ]
+        if balances:
+            try:
+                stale_states = trailing_tracker.reconcile_markets(balance_markets, order_journal=order_journal)
+            except TypeError:
+                stale_states = trailing_tracker.reconcile_markets(balance_markets)
+        else:
+            # 빈 응답은 실제 빈 계좌인지 조회 실패인지 구분할 수 없다.
+            self.logger.warning("잔고가 비어 있어 트레일링 상태 정리를 보류합니다.")
+            stale_states = 0
 
         canceled_stale = realtime_engine.clean_stale_orders(max_age_seconds=180)
         requoted = realtime_engine.requote_pending_orders()
@@ -306,15 +325,33 @@ class TradingOrchestrator:
             trailing_tracker=trailing_tracker,
         )
 
-        try:
-            is_kill_switch, daily_pnl = risk_manager.update_daily_equity(
-                total_equity,
-                now,
-                bot_unrealized_pnl_krw=bot_unrealized_pnl,
-                bot_equity=bot_equity,
-            )
-        except TypeError:
-            is_kill_switch, daily_pnl = risk_manager.update_daily_equity(total_equity, now)
+        # 평가 대상 전체의 양수 잔고와 시세를 확인한다. 수동 격리 종목은 평가 대상에서 제외한다.
+        from market_policy import is_protected_market
+        required_markets = [
+            f"KRW-{currency}" for currency, info in balances.items()
+            if currency not in ("KRW", "P") and not is_protected_market(currency)
+            and isinstance(info, dict)
+            and float(info.get("balance", 0.0) or 0.0) + float(info.get("locked", 0.0) or 0.0) > 0
+        ]
+        valuation_ready = bool(balances) and all(
+            math.isfinite(float(price_map.get(market, 0.0) or 0.0))
+            and float(price_map.get(market, 0.0) or 0.0) > 0
+            for market in required_markets
+        )
+        if valuation_ready:
+            try:
+                is_kill_switch, daily_pnl = risk_manager.update_daily_equity(
+                    total_equity, now, bot_unrealized_pnl_krw=bot_unrealized_pnl, bot_equity=bot_equity,
+                )
+            except TypeError:
+                is_kill_switch, daily_pnl = risk_manager.update_daily_equity(total_equity, now)
+            if callable(valuation_setter):
+                valuation_setter(True)
+        else:
+            # 잘못된 평가로 기준 자산과 킬스위치를 바꾸지 않는다.
+            self.logger.warning("잔고 또는 보유 시세가 불완전하여 일일 위험 갱신과 신규 매수를 보류합니다.")
+            is_kill_switch = bool(getattr(risk_manager, "kill_switch_active", False))
+            daily_pnl = 0.0
         is_cooldown, cooldown_minutes = risk_manager.is_cooling_down()
         max_positions, max_position_pct, top_count = get_portfolio_tiers(total_equity)
         risk_guard.update_limits(max_open_positions=max_positions, max_position_pct=max_position_pct)

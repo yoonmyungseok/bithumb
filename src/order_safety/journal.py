@@ -46,6 +46,8 @@ class OrderJournal:
         self.exchange_scope = exchange_scope.strip().lower()
         self.reconciliation_state = "PENDING"
         self._last_reconcile_failed_count = 0
+        # 시세 평가 안전 상태는 주문 대사와 독립하며 재시작 직후에는 차단한다.
+        self._valuation_checked_at = 0.0
         # 대사 백필 지연과 실패를 대시보드/로그에서 추적할 수 있게 보존한다.
         self.reconciliation_metrics: dict[str, Any] = {
             "last_started_at": 0.0, "last_completed_at": 0.0,
@@ -235,6 +237,9 @@ class OrderJournal:
                 if order["client_order_id"] == client_order_id:
                     # 단조성(Monotonicity) 가드: 이미 최종 상태(FILLED/CANCELED)인 경우 하위 상태(OPEN/ACK)로 역행 방지
                     curr_status = order.get("status")
+                    # 비동기 이벤트가 순서를 바꿔도 미확정 체결 대기를 접수 상태로 되돌리지 않는다.
+                    if curr_status == OrderStatus.RECONCILIATION_PENDING and status in {OrderStatus.OPEN, OrderStatus.ACKNOWLEDGED}:
+                        return
                     if curr_status in terminal_states and status not in terminal_states:
                         logger.debug("상태 역행 방지: %s -> %s (무시됨)", curr_status, status)
                         return
@@ -372,86 +377,24 @@ class OrderJournal:
             )
 
     def has_active_bot_position(self, market: str) -> bool:
-        """해당 종목이 봇이 매수하여 현재 활성 보유 중인 포지션인지 저널 기반으로 확인.
-        1. 봇 매수(bid/buy) 이력이 없으면 무조건 False (수동 매수 종목 보호).
-        2. 가장 최근 봇 매수 이후 전량 매도(non-partial ask FILLED)가 발생했으면 False.
-        3. 가장 최근 봇 매수 이후 분할 매도가 있었더라도, 매도된 누적 수량이 해당 봇 매수 수량 이상이면
-           봇 매수 물량이 전량 청산 완료된 것으로 판정하여 False (이후 잔고는 수동 매수 물량).
-        4. 봇 매수 이후 체결된 매도 수량이 매수 수량 미만이고 잔여 물량이 남아있는 경우에만 True.
-        """
-        m_upper = market.upper()
+        """REST 대사로 처리된 체결량만 누적하여 봇의 잔여 보유를 판정한다."""
+        remaining = 0.0
         with self._lock:
-            # 1. 봇 매수/매도 주문 추출 (해당 마켓 대상)
-            bot_bids: list[dict[str, Any]] = []
-            bot_asks: list[dict[str, Any]] = []
+            # 저널 순서대로 잔여 수량을 계산해 과거 초과 매도가 이후 재매수를 지우지 않도록 한다.
             for order in self.orders:
-                if str(order.get("market", "")).upper() != m_upper:
+                if str(order.get("market", "")).upper() != market.upper():
+                    continue
+                try:
+                    # 원시 체결량과 과거 요청량은 REST 확인의 증거가 아니므로 사용하지 않는다.
+                    volume = max(0.0, float(order.get("processed_executed_volume", 0.0) or 0.0))
+                except (TypeError, ValueError):
                     continue
                 side = str(order.get("side", "")).lower()
-                status = str(order.get("status", "")).upper()
-                executed = float(
-                    order.get("executed_volume")
-                    or order.get("filled_volume")
-                    or order.get("processed_executed_volume")
-                    or 0.0
-                )
                 if side in ("bid", "buy"):
-                    if status in ("FILLED", "PARTIALLY_FILLED", "OPEN", "ACKNOWLEDGED", "DONE") or executed > 0:
-                        bot_bids.append(order)
+                    remaining += volume
                 elif side in ("ask", "sell"):
-                    if status in ("FILLED", "PARTIALLY_FILLED", "DONE") or executed > 0:
-                        bot_asks.append(order)
-
-            # 봇 매수 체결 이력이 단 한 번도 없다면 수동 종목
-            if not bot_bids:
-                return False
-
-            # 가장 최근 봇 매수 주문
-            last_bid = bot_bids[-1]
-            last_bid_time = float(last_bid.get("created_at") or 0.0)
-            bid_vol = float(
-                last_bid.get("executed_volume")
-                or last_bid.get("filled_volume")
-                or last_bid.get("processed_executed_volume")
-                or last_bid.get("volume")
-                or 0.0
-            )
-
-            # 해당 매수 이후 발생한 봇 매도들
-            asks_after_bid = [
-                a for a in bot_asks
-                if float(a.get("created_at") or 0.0) >= last_bid_time
-            ]
-
-            # 매수 이후 매도가 전혀 없었다면 활성 포지션
-            if not asks_after_bid:
-                return True
-
-            # 매수 이후 발생한 매도 중 가장 최근 매도
-            last_ask = asks_after_bid[-1]
-            last_ask_reason = str(last_ask.get("exit_reason", "")).upper()
-
-            # 마지막 매도가 분할 익절(PARTIAL)이 아니라면 전량 청산 완료
-            if "PARTIAL" not in last_ask_reason:
-                return False
-
-            # 분할 익절인 경우: 매도 누적 수량이 봇 매수 수량 이상인지 검증
-            if bid_vol > 0:
-                sold_vol = sum(
-                    float(
-                        a.get("executed_volume")
-                        or a.get("filled_volume")
-                        or a.get("processed_executed_volume")
-                        or a.get("volume")
-                        or 0.0
-                    )
-                    for a in asks_after_bid
-                )
-                # 매도 누적 수량이 매수 수량을 채웠거나 초과했다면 (수동 매수 분할 매도 포함) 봇 물량 전량 청산 완료
-                if sold_vol >= (bid_vol * 0.999):
-                    return False
-
-            return True
+                    remaining = max(0.0, remaining - volume)
+        return remaining > 1e-12
 
     def reconcile_exchange_statuses(
         self,
@@ -716,19 +659,25 @@ class OrderJournal:
                 for order in self.orders
             )
 
+    def set_valuation_ready(self, ready: bool) -> None:
+        """신뢰 가능한 잔고·보유 시세 평가의 완료 시각을 기록한다."""
+        with self._lock:
+            self._valuation_checked_at = time.monotonic() if ready else 0.0
+
+    def is_valuation_ready(self) -> bool:
+        """평가 실패나 오래된 평가 상태에서는 신규 매수를 차단한다."""
+        with self._lock:
+            return self._valuation_checked_at > 0 and time.monotonic() - self._valuation_checked_at < 600.0
+
     def is_entry_ready(self, market: str | None = None) -> bool:
         """초기 REST 대사 전·체결 미확정 주문·대사 실패 시 신규 매수만 차단한다.
 
-        market이 지정된 경우 해당 종목의 대사 대기/UNKNOWN 여부만 검사하여(Per-Market Isolation),
-        무관한 다른 종목의 신규 매수 기회가 차단되지 않도록 한다.
-        market이 None인 경우 기존과 같이 전역 주문 목록에 블로킹 주문이 있는지 검사한다.
+        마켓 인자와 관계없이 미확정 주문은 계좌 전체 신규 매수를 차단한다.
         """
         if self.reconciliation_state != "READY":
             return False
         if int(self.reconciliation_metrics.get("last_failed_count", 0) or 0) > 0:
             return False
-        if market is not None:
-            return not self.has_entry_blocking_market(market)
         return not self._has_entry_blocking_orders()
 
     def is_system_entry_ready(self) -> bool:
@@ -737,7 +686,7 @@ class OrderJournal:
             return False
         if int(self.reconciliation_metrics.get("last_failed_count", 0) or 0) > 0:
             return False
-        return True
+        return self.is_valuation_ready() and not self._has_entry_blocking_orders()
 
     def get_entry_blocking_markets(self) -> list[str]:
         """현재 체결 대사 대기, UNKNOWN 등 신규 BUY가 차단된 마켓 코드 목록을 반환한다."""
@@ -825,6 +774,9 @@ class OrderJournal:
         # 1) 단순 접수 대기(wait)는 체결이 발생하지 않은 정상 미체결 상태이므로 손익 왜곡 위험이 없다.
         #    전역 차단(suspend)이나 RECONCILIATION_PENDING 대신 정상 OPEN으로 기록한다.
         if state == "wait" and not invalid:
+            # 순서가 뒤바뀐 접수 이벤트는 이미 관측한 체결·취소의 대기 상태를 해제하지 않는다.
+            if local.get("status") == OrderStatus.RECONCILIATION_PENDING:
+                return True
             update_kwargs: dict[str, Any] = {
                 "exchange_order_id": oid,
                 "exchange_state": state,
@@ -834,23 +786,10 @@ class OrderJournal:
             self.mark(str(client_id), OrderStatus.OPEN, **update_kwargs)
             return True
 
-        # 2) 단순 취소(cancel)는 체결 증가분이 없는 정상 종료 상태이므로 즉시 CANCELED로 반영한다.
-        if state == "cancel" and not invalid:
-            update_kwargs = {
-                "exchange_order_id": oid,
-                "exchange_state": state,
-                "remaining_volume": 0.0,
-                "last_event_at": time.time(),
-            }
-            if exec_vol > 0:
-                update_kwargs["executed_volume"] = exec_vol
-            self.mark(str(client_id), OrderStatus.CANCELED, **update_kwargs)
-            return True
-
-        if require_rest_confirmation or invalid:
+        # 취소도 직전 부분 체결이 누락됐을 수 있으므로 반드시 REST 최종 대사를 거친다.
+        if require_rest_confirmation or invalid or state == "cancel":
             # WebSocket은 빠른 알림용이며, 평균 체결가·수수료는 REST가 기준이다.
-            # 단일 주문의 체결 대기(trade/done)는 해당 주문을 RECONCILIATION_PENDING으로 격리하고,
-            # 전역 계좌 락 대신 종목별 게이트(has_entry_blocking_market)로 매수를 안전하게 차단한다.
+            # 체결·취소 통지를 대사 대기로 유지해 거래소 계좌의 신규 매수를 차단한다.
             self.mark(
                 str(client_id), OrderStatus.RECONCILIATION_PENDING,
                 exchange_order_id=oid,

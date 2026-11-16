@@ -62,6 +62,11 @@ def evaluate_pre_buy_submit_gate(
         details["reconciliation_state"] = state
         return False, "PRE_BUY_GLOBAL_RECONCILIATION", reason, details
 
+    # 잔고 평가 상태는 REST 주문 대사가 성공해도 독립적으로 유지한다.
+    valuation_check = getattr(order_journal, "is_valuation_ready", None)
+    if callable(valuation_check) and not valuation_check():
+        return False, "PRE_BUY_VALUATION_UNAVAILABLE", "잔고 또는 보유 종목 시세 평가가 불완전합니다.", details
+
     if ws_client is not None and hasattr(ws_client, "get_health_status"):
         ws_health = ws_client.get_health_status(market=market)
         ws_status = str(ws_health.get("status", ""))

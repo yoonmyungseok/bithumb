@@ -20,6 +20,8 @@ class TestOrderLifecycle(unittest.TestCase):
         self.journal_path = os.path.join(self.temp_dir.name, "order_journal.json")
         self.memory_path = os.path.join(self.temp_dir.name, "trade_memory.json")
         self.journal = OrderJournal(path=self.journal_path)
+        # 정상 평가를 전제로 주문 수명주기를 검증한다.
+        self.journal.set_valuation_ready(True)
         self.journal.reconciliation_state = "READY"
         self.journal.reconciliation_metrics["last_completed_at"] = time.time()
         self.executor = SafeOrderExecutor(journal=self.journal)
@@ -129,7 +131,8 @@ class TestOrderLifecycle(unittest.TestCase):
         })
 
         order = self.journal.get_order_by_client_id(client_id)
-        self.assertEqual(order["status"], OrderStatus.CANCELED)
+        # 취소 통지만으로 종료하지 않고 REST 확정까지 대기한다.
+        self.assertEqual(order["status"], OrderStatus.RECONCILIATION_PENDING)
         self.assertEqual(order["executed_volume"], 30.0)
 
     def test_05_timeout_unknown_blocks_duplicate(self):

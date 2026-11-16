@@ -3144,7 +3144,9 @@
           state.analysis24hList.forEach((rep, idx) => {
             const opt = document.createElement('option');
             opt.value = rep.filename;
-            opt.textContent = `[${rep.symbol}] ${rep.title} (최신: ${rep.date}) [${formatFileSize(rep.size)}]`;
+            // 파일명 접미사로 거래소를 구분해 기존 응답 필드는 유지한다.
+            const exchangeMatch = rep.filename.match(/_(BITHUMB|UPBIT)\.md$/);
+            opt.textContent = `[${exchangeMatch ? exchangeMatch[1] + " / " : ""}${rep.symbol}] ${rep.title} (최신: ${rep.date}) [${formatFileSize(rep.size)}]`;
             selectEl.appendChild(opt);
           });
         }

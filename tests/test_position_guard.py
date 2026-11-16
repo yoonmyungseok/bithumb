@@ -22,7 +22,7 @@ class PositionGuardTests(unittest.TestCase):
 
     def test_bot_filled_position_is_exit_allowed(self):
         journal = MagicMock()
-        journal.orders = [{"market": "KRW-BTC", "side": "bid", "status": "FILLED"}]
+        journal.orders = [{"market": "KRW-BTC", "side": "bid", "status": "FILLED", "processed_executed_volume": 1.0}]
         tracker = MagicMock()
         tracker.get_entry_time.return_value = 0.0
 
@@ -31,7 +31,7 @@ class PositionGuardTests(unittest.TestCase):
 
     def test_protected_market_always_blocked(self):
         journal = MagicMock()
-        journal.orders = [{"market": "KRW-HOLO", "side": "bid", "status": "FILLED"}]
+        journal.orders = [{"market": "KRW-HOLO", "side": "bid", "status": "FILLED", "processed_executed_volume": 1.0}]
         tracker = MagicMock()
 
         self.assertFalse(is_exit_allowed("KRW-HOLO", journal, tracker))
@@ -50,6 +50,7 @@ class PositionGuardTests(unittest.TestCase):
                 "side": "bid",
                 "status": "CANCELED",
                 "executed_volume": 2700.0,
+                "processed_executed_volume": 2700.0,
                 "volume": 16376.76,
             }
         ]
@@ -63,7 +64,7 @@ class PositionGuardTests(unittest.TestCase):
         """미체결 취소된 신규 주문(체결량 0)이 있더라도 이전 매수 체결 건이 있으면 봇 관리 포지션 유지."""
         journal = MagicMock()
         journal.orders = [
-            {"market": "KRW-SOLV", "side": "bid", "status": "FILLED", "executed_volume": 1000.0},
+            {"market": "KRW-SOLV", "side": "bid", "status": "FILLED", "processed_executed_volume": 1000.0, "executed_volume": 1000.0},
             {"market": "KRW-SOLV", "side": "bid", "status": "CANCELED", "executed_volume": 0.0},
         ]
         tracker = MagicMock()
@@ -83,6 +84,23 @@ class PositionGuardTests(unittest.TestCase):
         self.assertFalse(is_bot_managed_position(journal, tracker, "KRW-SOLV"))
         self.assertFalse(is_exit_allowed("KRW-SOLV", journal, tracker))
 
+    def test_only_rest_confirmed_quantity_counts(self):
+        """미체결 주문과 WS 원시 수량은 수동 잔고를 봇 소유로 만들지 않는다."""
+        journal = MagicMock()
+        journal.orders = [{"market": "KRW-SOL", "side": "bid", "status": "OPEN",
+                           "executed_volume": 2.0, "processed_executed_volume": 0.0}]
+        self.assertFalse(is_bot_managed_position(journal, None, "KRW-SOL"))
+
+    def test_partial_sell_without_partial_reason_preserves_remainder(self):
+        """청산 사유가 아닌 확정 수량으로 잔여 포지션을 판단한다."""
+        journal = MagicMock()
+        journal.orders = [
+            {"market": "KRW-SOL", "side": "bid", "processed_executed_volume": 3.0},
+            {"market": "KRW-SOL", "side": "ask", "processed_executed_volume": 1.0,
+             "exit_reason": "STOP_LOSS"},
+        ]
+        self.assertTrue(is_bot_managed_position(journal, None, "KRW-SOL"))
+
     def test_trailing_tracker_standalone_is_bot_managed_when_no_journal(self):
         """저널이 없는 환경에서 트레일링 추적기에 진입 시각 또는 전략 모드가 등록된 종목은 봇 관리 포지션으로 인정."""
         tracker = MagicMock()
@@ -99,8 +117,8 @@ class PositionGuardTests(unittest.TestCase):
         journal.has_active_bot_position = None
         del journal.has_active_bot_position
         journal.orders = [
-            {"market": "KRW-CAP", "side": "bid", "status": "FILLED", "executed_volume": 1000.0},
-            {"market": "KRW-CAP", "side": "ask", "status": "FILLED", "executed_volume": 1000.0, "exit_reason": "STOP_LOSS"},
+            {"market": "KRW-CAP", "side": "bid", "status": "FILLED", "processed_executed_volume": 1000.0, "executed_volume": 1000.0},
+            {"market": "KRW-CAP", "side": "ask", "status": "FILLED", "processed_executed_volume": 1000.0, "executed_volume": 1000.0, "exit_reason": "STOP_LOSS"},
         ]
         tracker = MagicMock()
         tracker.get_entry_time.return_value = 1789804245.0
@@ -115,10 +133,10 @@ class PositionGuardTests(unittest.TestCase):
         journal.has_active_bot_position = None
         del journal.has_active_bot_position
         journal.orders = [
-            {"market": "KRW-CAP", "side": "bid", "status": "FILLED", "executed_volume": 1886.0, "created_at": 1000.0},
-            {"market": "KRW-CAP", "side": "ask", "status": "FILLED", "executed_volume": 1886.0, "exit_reason": "STOP_LOSS", "created_at": 2000.0},
+            {"market": "KRW-CAP", "side": "bid", "status": "FILLED", "processed_executed_volume": 1886.0, "executed_volume": 1886.0, "created_at": 1000.0},
+            {"market": "KRW-CAP", "side": "ask", "status": "FILLED", "processed_executed_volume": 1886.0, "executed_volume": 1886.0, "exit_reason": "STOP_LOSS", "created_at": 2000.0},
             # 이후 사용자가 수동 매수한 상태에서 오작동으로 PARTIAL 매도가 나간 경우
-            {"market": "KRW-CAP", "side": "ask", "status": "FILLED", "executed_volume": 7629.0, "exit_reason": "PARTIAL_TP_1", "created_at": 3000.0},
+            {"market": "KRW-CAP", "side": "ask", "status": "FILLED", "processed_executed_volume": 7629.0, "executed_volume": 7629.0, "exit_reason": "PARTIAL_TP_1", "created_at": 3000.0},
         ]
         tracker = MagicMock()
         tracker.get_entry_time.return_value = 1789804245.0
