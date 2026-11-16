@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from trading_orchestrator import TradingOrchestrator
+from risk_manager import filter_small_manual_holdings, _fetch_held_prices
 
 
 class PortfolioTrackingSafetyTests(unittest.TestCase):
@@ -28,6 +29,59 @@ class PortfolioTrackingSafetyTests(unittest.TestCase):
             order_journal=MagicMock(),
         )
         return tracker
+
+    def test_small_manual_cost_is_excluded_but_unknown_and_bot_are_preserved(self):
+        """수동 소액만 제외하고 5천 원 경계·평단 누락·봇 보유는 보존한다."""
+        journal = MagicMock()
+        journal.has_active_bot_position = MagicMock(side_effect=lambda market: market == "KRW-BOT")
+        balances = {
+            "KRW": {"balance": 10000},
+            "DUST": {"balance": 1, "locked": 1, "avg_buy_price": 2000},
+            "EDGE": {"balance": 1, "avg_buy_price": 5000},
+            "UNKNOWN": {"balance": 1, "avg_buy_price": 0},
+            "BOT": {"balance": 1, "avg_buy_price": 100},
+        }
+        filtered = filter_small_manual_holdings(balances, journal)
+        self.assertNotIn("DUST", filtered)
+        self.assertEqual(set(filtered), {"KRW", "EDGE", "UNKNOWN", "BOT"})
+        exchange = MagicMock()
+        exchange.get_tickers.return_value = []
+        _fetch_held_prices(filtered, exchange)
+        self.assertEqual(set(exchange.get_tickers.call_args.args[0]), {"KRW-EDGE", "KRW-UNKNOWN", "KRW-BOT"})
+        self.assertIn("DUST", filter_small_manual_holdings(balances, None))
+
+    def test_bithumb_fixed_exclusion_respects_exchange_and_bot_ownership(self):
+        """고정 목록은 빗썸 수동 잔고에만 적용하고 봇 보유와 업비트는 보호한다."""
+        balances = {"ETH": {"balance": 1, "avg_buy_price": 10000},
+                    "BTG": {"balance": 1, "avg_buy_price": 0},
+                    "ETHW": {"balance": 1, "avg_buy_price": 0},
+                    "DIS": {"balance": 1, "avg_buy_price": 0}}
+        journal = MagicMock()
+        journal.exchange_scope = "bithumb"
+        journal.has_active_bot_position = MagicMock(side_effect=lambda market: market == "KRW-ETH")
+        self.assertEqual(set(filter_small_manual_holdings(balances, journal)), {"ETH"})
+        journal.exchange_scope = "upbit"
+        self.assertEqual(set(filter_small_manual_holdings(balances, journal)), {"ETH", "BTG", "ETHW", "DIS"})
+
+    def test_small_manual_missing_price_does_not_block_valuation(self):
+        """매수원금이 확인된 수동 소액 시세가 없어도 나머지 평가를 완료한다."""
+        exchange = MagicMock()
+        exchange.get_balances.return_value = {"KRW": {"balance": 10000}, "DUST": {"balance": 1, "avg_buy_price": 100}}
+        tracker, realtime, risk, journal = MagicMock(), MagicMock(), MagicMock(), MagicMock()
+        journal.has_active_bot_position.return_value = False
+        realtime.clean_stale_orders.return_value = realtime.requote_pending_orders.return_value = 0
+        risk.update_daily_equity.return_value = (False, 0.0)
+        risk.is_cooling_down.return_value = (False, 0)
+        TradingOrchestrator(logging.getLogger(__name__)).refresh_portfolio(
+            exchange, calculate_total_equity=lambda *a, **kw: 10000.0,
+            get_held_markets=lambda *a, **kw: [], trailing_tracker=tracker,
+            realtime_engine=realtime, risk_manager=risk, risk_guard=MagicMock(),
+            get_portfolio_tiers=lambda _: (3, 0.3, 3), now=datetime.datetime.now(), order_journal=journal,
+        )
+        exchange.get_tickers.assert_not_called()
+        risk.update_daily_equity.assert_called_once()
+        self.assertEqual(journal.set_valuation_ready.call_args.args, (True,))
+        self.assertEqual(tracker.reconcile_markets.call_args.args[0], ["KRW-DUST"])
 
     def test_incomplete_valuation_preserves_risk_and_blocks_until_recovery(self):
         """가격 누락 시 위험 갱신을 보류하고 완전한 조회에서만 차단을 해제한다."""

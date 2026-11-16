@@ -1,5 +1,6 @@
 import datetime
 import logging
+import math
 import os
 import threading
 import time
@@ -83,6 +84,44 @@ def get_excluded_manual_holdings() -> set[str]:
     - KRW-HOLO, HOLO는 어떠한 경우에도 자동매매/자산평가 대상에서 엄격히 제외
     """
     return get_excluded_markets()
+
+
+# 빗썸 소액 잔고와 사용자가 명시적으로 지정한 수동 잔고의 고정 제외 목록이다.
+# 이 목록은 빗썸의 포트폴리오·대시보드 시세 평가에만 적용한다.
+BITHUMB_FIXED_SMALL_HOLDINGS = frozenset({"ETH", "BTG", "ETZ", "MED", "PCI", "HOLO", "ETHW", "DIS"})
+
+
+def filter_small_manual_holdings(
+    balances: dict[str, dict[str, float]], order_journal: Any, trailing_tracker: Any = None,
+) -> dict[str, dict[str, float]]:
+    """확인 가능한 수동 소액 잔고만 시세 평가 대상에서 제외한다."""
+    if order_journal is None:
+        # 소유 여부를 확인할 저널이 없으면 봇 포지션 보호를 우선한다.
+        return dict(balances)
+    from position_guard import is_bot_managed_position
+
+    filtered = {}
+    for currency, info in balances.items():
+        if currency in ("KRW", "P") or not isinstance(info, dict):
+            filtered[currency] = info
+            continue
+        try:
+            volume = float(info.get("balance", 0.0) or 0.0) + float(info.get("locked", 0.0) or 0.0)
+            avg = float(info.get("avg_buy_price", 0.0) or 0.0)
+            cost = volume * avg
+            small = math.isfinite(volume) and math.isfinite(avg) and math.isfinite(cost) and volume > 0 and avg > 0 and cost < StrategyPolicy.MIN_ORDER_KRW
+            # 고정 제외는 빗썸 저널에만 적용하고 봇이 관리하는 포지션은 항상 보호한다.
+            fixed_bithumb = (
+                str(getattr(order_journal, "exchange_scope", "")).lower() == "bithumb"
+                and currency.upper() in BITHUMB_FIXED_SMALL_HOLDINGS
+            )
+            if (small or fixed_bithumb) and not is_bot_managed_position(order_journal, trailing_tracker, f"KRW-{currency}"):
+                continue
+        except (TypeError, ValueError, OverflowError):
+            # 판정 불가능한 잔고는 시세 확인 및 fail-closed 대상에 남긴다.
+            pass
+        filtered[currency] = info
+    return filtered
 
 
 def _fetch_held_prices(balances: dict[str, dict[str, float]], exchange_api: Any) -> dict[str, float]:

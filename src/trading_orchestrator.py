@@ -261,9 +261,10 @@ class TradingOrchestrator:
         # 포트폴리오·킬스위치 계산은 매 사이클 첫 조회를 강제 최신 상태로 시작한다.
         balances = self.get_balance_snapshot(exchange, force_refresh=True)
         from position_guard import calculate_bot_equity, calculate_bot_unrealized_pnl
-        from risk_manager import _fetch_held_prices
+        from risk_manager import _fetch_held_prices, filter_small_manual_holdings
 
-        price_map = _fetch_held_prices(balances, exchange)
+        valuation_balances = filter_small_manual_holdings(balances, order_journal, trailing_tracker)
+        price_map = _fetch_held_prices(valuation_balances, exchange)
         try:
             total_equity = calculate_total_equity(balances, exchange, price_map=price_map)
         except TypeError:
@@ -298,7 +299,8 @@ class TradingOrchestrator:
         if canceled_stale or requoted:
             # 취소/재호가 직후에는 잠긴 잔고가 달라질 수 있으므로 다시 강제 조회한다.
             balances = self.get_balance_snapshot(exchange, force_refresh=True)
-            price_map = _fetch_held_prices(balances, exchange)
+            valuation_balances = filter_small_manual_holdings(balances, order_journal, trailing_tracker)
+            price_map = _fetch_held_prices(valuation_balances, exchange)
             try:
                 total_equity = calculate_total_equity(balances, exchange, price_map=price_map)
             except TypeError:
@@ -325,10 +327,10 @@ class TradingOrchestrator:
             trailing_tracker=trailing_tracker,
         )
 
-        # 평가 대상 전체의 양수 잔고와 시세를 확인한다. 수동 격리 종목은 평가 대상에서 제외한다.
+        # 확정된 소액 수동 잔고를 제외한 평가 대상의 양수 잔고와 시세를 확인한다.
         from market_policy import is_protected_market
         required_markets = [
-            f"KRW-{currency}" for currency, info in balances.items()
+            f"KRW-{currency}" for currency, info in valuation_balances.items()
             if currency not in ("KRW", "P") and not is_protected_market(currency)
             and isinstance(info, dict)
             and float(info.get("balance", 0.0) or 0.0) + float(info.get("locked", 0.0) or 0.0) > 0

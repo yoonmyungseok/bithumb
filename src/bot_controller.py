@@ -15,6 +15,7 @@ from risk_manager import (
     DailyRiskManager,
     TrailingStopTracker,
     _fetch_held_prices,
+    filter_small_manual_holdings,
     build_candidates_data,
     build_positions_data,
     calculate_total_equity,
@@ -221,7 +222,7 @@ class BotController:
             exchange = self.get_exchange()
             fng = get_fear_and_greed_index()
             balances = exchange.get_balances()
-            held_price_map = _fetch_held_prices(balances, exchange)
+            held_price_map = _fetch_held_prices(filter_small_manual_holdings(balances, self.order_journal, self.trailing_tracker), exchange)
             total_equity = calculate_total_equity(balances, exchange, price_map=held_price_map)
             bot_equity = calculate_bot_equity(
                 balances,
@@ -424,7 +425,7 @@ class BotController:
             bithumb = self.get_exchange()
             fng = get_fear_and_greed_index()
             balances = bithumb.get_balances()
-            held_price_map = _fetch_held_prices(balances, bithumb)
+            held_price_map = _fetch_held_prices(filter_small_manual_holdings(balances, self.order_journal, self.trailing_tracker), bithumb)
             total_equity = calculate_total_equity(balances, bithumb, price_map=held_price_map)
             krw_avail = balances.get("KRW", {}).get("balance", 0.0)
             bot_equity = calculate_bot_equity(
