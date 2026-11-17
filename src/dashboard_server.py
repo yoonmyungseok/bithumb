@@ -381,7 +381,7 @@ class UnifiedDashboardServer:
             return {"success": False, "message": f"보고서 파일을 읽는 중 오류가 발생했습니다: {e}"}
 
     def get_analysis_24h_reports(self, only_latest: bool = True, auto_sync: bool = True) -> dict[str, Any]:
-        """24h 종목 시세 흐름 분석 보고서 파일 목록 반환 (기본값: 종목별 가장 최신 보고서만 반환)"""
+        """24h 종목 시세 흐름 분석 보고서 파일 목록 반환 (기본값: 가장 최신 날짜의 보고서만 반환)"""
         if auto_sync and getattr(self, "_drive_syncer", None) is not None:
             try:
                 self._drive_syncer.sync()
@@ -435,20 +435,6 @@ class UnifiedDashboardServer:
             except OSError:
                 continue
 
-        # 종목별 가장 최신 날짜의 보고서 1건만 유지
-        if only_latest:
-            latest_by_symbol: dict[tuple[str, str], dict[str, Any]] = {}
-            for rep in reports:
-                # 기존 보고서와 각 거래소 보고서의 최신본을 별도로 유지한다.
-                match = ANALYSIS_24H_FILENAME_PATTERN.match(rep["filename"])
-                sym = (rep["symbol"].upper(), (match.group(3) or "") if match else "")
-                if sym not in latest_by_symbol:
-                    latest_by_symbol[sym] = rep
-                else:
-                    if rep["raw_date"] > latest_by_symbol[sym]["raw_date"]:
-                        latest_by_symbol[sym] = rep
-            reports = list(latest_by_symbol.values())
-
         # 현재 보유 중인 종목만 필터링 (미보유 종목 제외)
         try:
             from sheets.manual_position_collector import ManualPositionCollector
@@ -460,6 +446,11 @@ class UnifiedDashboardServer:
                 reports = [r for r in reports if r["symbol"].upper() in held_symbols]
         except Exception as e:
             logger.debug(f"24h 보고서 보유 종목 필터링 예외 (전체 표시): {e}")
+
+        # 가장 최신 날짜의 보고서만 유지
+        if only_latest and reports:
+            latest_date = max(r["raw_date"] for r in reports)
+            reports = [r for r in reports if r["raw_date"] == latest_date]
 
         # 최신 날짜 내림차순, 날짜 동일 시 종목 심볼 오름차순
         reports.sort(key=lambda r: (-int(r["raw_date"]) if r["raw_date"].isdigit() else 0, r["symbol"]))

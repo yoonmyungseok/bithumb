@@ -54,15 +54,15 @@ class Analysis24hDashboardTests(unittest.TestCase):
         self.tmp_dir.cleanup()
 
     def test_get_analysis_24h_reports_listing_and_sorting(self):
-        """24h 보고서 목록이 종목별 가장 최신 보고서만 필터링되고 최신 날짜 및 심볼순으로 정렬되는지 검증"""
-        # 기본 조회: 종목별 최신 1개만 반환 (HOLO는 20261017만 포함, 20261016은 제외)
+        """24h 보고서 목록이 가장 최신 날짜의 보고서만 필터링되고 심볼순으로 정렬되는지 검증"""
+        # 기본 조회: 가장 최신 날짜(20261017)의 보고서만 반환 (20261016인 HOLO 과거, US 제외)
         result = self.server.get_analysis_24h_reports()
 
         self.assertTrue(result["success"])
-        self.assertEqual(result["total"], 3)
+        self.assertEqual(result["total"], 2)
         reports = result["reports"]
 
-        # 최신 날짜(20261017) 우선 정렬, 동일 날짜는 심볼 알파벳 오름차순(HOLO -> RSR)
+        # 최신 날짜(20261017) 심볼 알파벳 오름차순(HOLO -> RSR)
         self.assertEqual(reports[0]["filename"], "HOLO_24h_20261017.md")
         self.assertEqual(reports[0]["symbol"], "HOLO")
         self.assertEqual(reports[0]["raw_date"], "20261017")
@@ -71,17 +71,14 @@ class Analysis24hDashboardTests(unittest.TestCase):
 
         self.assertEqual(reports[1]["filename"], "RSR_24h_20261017.md")
         self.assertEqual(reports[1]["symbol"], "RSR")
-
-        self.assertEqual(reports[2]["filename"], "US_24h_20261016.md")
-        self.assertEqual(reports[2]["symbol"], "US")
-        self.assertEqual(reports[2]["raw_date"], "20261016")
+        self.assertEqual(reports[1]["raw_date"], "20261017")
 
         # only_latest=False 시 전체 4개 보고서 모두 반환 확인
         all_result = self.server.get_analysis_24h_reports(only_latest=False)
         self.assertEqual(all_result["total"], 4)
 
     def test_exchange_reports_remain_separate_and_legacy_is_available(self):
-        """거래소별 최신 보고서와 기존 보고서를 각 서버에서 모두 읽는다."""
+        """거래소별 최신 날짜 보고서를 각 서버에서 모두 읽는다."""
         for exchange in ("BITHUMB", "UPBIT"):
             path = os.path.join(self.analysis_dir, f"RSR_24h_20261018_{exchange}.md")
             with open(path, "w", encoding="utf-8") as saved:
@@ -90,7 +87,7 @@ class Analysis24hDashboardTests(unittest.TestCase):
             reports = server.get_analysis_24h_reports(auto_sync=False)["reports"]
             rsr = [report for report in reports if report["symbol"] == "RSR"]
             self.assertEqual({report["filename"] for report in rsr}, {
-                "RSR_24h_20261017.md", "RSR_24h_20261018_BITHUMB.md", "RSR_24h_20261018_UPBIT.md"
+                "RSR_24h_20261018_BITHUMB.md", "RSR_24h_20261018_UPBIT.md"
             })
             self.assertTrue(all("exchange" not in report for report in rsr))
             for report in rsr:
@@ -135,7 +132,7 @@ class Analysis24hDashboardTests(unittest.TestCase):
         """DashboardWebServer에서도 동일하게 24h 보고서 목록 및 내용이 반환되는지 검증"""
         list_res = self.web_server.get_analysis_24h_reports()
         self.assertTrue(list_res["success"])
-        self.assertEqual(list_res["total"], 3)
+        self.assertEqual(list_res["total"], 2)
 
         content_res = self.web_server.get_analysis_24h_content("HOLO_24h_20261017.md")
         self.assertTrue(content_res["success"])
