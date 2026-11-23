@@ -2,6 +2,35 @@
  
  버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## 2026-11-24 대시보드 Soft Kill-Switch 명확화 및 이상 로그 탐색기 추가 (4단계)
+
+- `src/bot_controller.py`: `handle_web_action()`에 `pause_buy` / `resume_buy` 액션 경로 추가(기존 보유 포지션 보호는 유지하고 신규 매수만 중지/재개).
+- `src/dashboard_server.py`: `get_alert_logs()` 및 `/api/alerts`에 `level`(ALL/ERROR/WARNING)과 `keyword` 필터 지원 추가(`WARNING` 이상 경계 및 시크릿 마스킹 유지).
+- `dashboard/index.html`, `dashboard/src/app.js`: 상단 제어 버튼 라벨을 `신규매수 중지`로 명확화하고, `#section_alerts`에 수준 필터 버튼(`전체(WARNING+)` / `ERROR+` / `WARNING`)과 키워드 검색 입력(`#alerts_keyword_input`, `filterAlertItems`) 추가.
+- `tests/test_dashboard_server.py`, `tests/test_dashboard_frontend_korean.py`: 이상 로그 수준·키워드 필터링, `pause_buy`/`resume_buy` 액션, 클라이언트 필터 헬퍼 회귀 테스트 추가.
+
+## 2026-11-24 대시보드 체결 품질(슬리피지·수수료) 및 시간대·레짐별 성과 분석 추가 (3단계)
+
+- `src/confirmed_fill_performance.py`: `summarize_trade_legs()`에 `avg_entry_slippage_bps`, `avg_exit_slippage_bps`, `max_slippage_bps` 추가, `aggregate_by_hour_kst()` 및 `aggregate_by_regime()` 구현, `merge_exchange_reports()`에 통합 슬리피지 가중 평균 및 시간대·레짐 브레이크다운 병합 추가.
+- `dashboard/index.html`, `dashboard/src/app.js`: 확정 체결 성과 카드에 누적 수수료·진입/청산/최대 슬리피지 요약 표시 및 `#confirmed_fill_breakdown` 패널(시장 레짐별·KST 시간대별 승률 및 순손익) 구현.
+- `tests/test_confirmed_fill_performance.py`: 슬리피지 요약·KST 시간대별·레짐별 집계 및 통합 병합 회귀 테스트 추가.
+
+## 2026-11-24 대시보드 AI·필터 의사결정 피드("왜 안 샀지?") 추가 (2단계)
+
+- `src/db_manager.py`: `DatabaseManager`에 거래소별 `get_recent_strategy_decisions()` 및 최근 1시간 `get_strategy_decision_summary()`(TOP 3 탈락 사유 집계) 추가.
+- `src/bot_controller.py`: `/api/status`에 `recent_decisions`와 `decision_summary` 필드 노출(거래소별 격리 DB 조회).
+- `src/dashboard_server.py`: 오프라인 폴백 및 통합 `combined` 응답에 양 거래소 의사결정 피드 최신순 병합 및 요약 합산 추가.
+- `dashboard/index.html`, `dashboard/src/app.js`: `#decision_feed_panel` 섹션과 필터(`전체` / `진입` / `차단·보류`), TOP 3 탈락 사유 뱃지, UI 경계 한국어 라벨 변환(`formatDecisionActionBadge`, `formatPolicyModeLabel`) 구현.
+- `tests/test_dashboard_server.py`, `tests/test_dashboard_frontend_korean.py`: 거래소별 DB 격리·통합 병합 및 한국어 라벨 변환 회귀 테스트 추가.
+
+## 2026-11-24 대시보드 안전·대사·Private WS 상태 가시화 강화 (1단계)
+
+- `src/base_websocket.py`: `BasePrivateWebSocketClient`에 연결/수신/재연결 상태 추적 및 `get_health_status()` 추가(자격 증명 미노출).
+- `src/bot_controller.py`, `src/main.py`, `src/main_upbit.py`: `get_private_ws_health` 콜백을 연결해 `/api/status`의 `safety.private_ws` 필드로 노출.
+- `src/dashboard_server.py`: 오프라인 폴백 및 통합 `combined.safety` 집계에 `private_ws` 상태와 거래소별 격리 보존 추가.
+- `dashboard/index.html`, `dashboard/src/app.js`: 상단 안전 관제 경고 배너(`#safety_alert_banner`)와 거래소별 카드 내 4대 상태 칩(`신규 BUY`, `REST 대사`, `Private WS`, `Public WS`), 매수 잠금 종목(`entry_blocking_markets`) 표시 추가.
+- `tests/test_dashboard_server.py`, `tests/test_dashboard_frontend_korean.py`: Private WS 상태 집계·자격 증명 마스킹 및 안전 상태 포맷터 회귀 테스트 추가.
+
 ## 2026-11-16 빗썸 수동 잔고 고정 제외 추가
 
 - 사용자 요청에 따라 평균 매수가를 확인할 수 없는 ETHW와 DIS를 빗썸 수동 잔고 시세 평가 고정 제외 목록에 추가한다. 업비트 및 봇 관리 포지션은 제외하지 않는다.

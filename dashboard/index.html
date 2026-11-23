@@ -91,9 +91,9 @@
             <span>🚨</span>
             <span class="hidden sm:inline">긴급 전량 매도</span>
           </button>
-          <button onclick="window.triggerAction('pause')" title="일시정지" class="px-3 sm:px-3.5 py-2 min-h-[38px] bg-amber-600 hover:bg-amber-700 font-bold rounded-xl text-xs sm:text-sm text-white shadow-lg shadow-amber-600/30 transition active:scale-95 flex items-center justify-center gap-1.5">
+          <button onclick="window.triggerAction('pause')" title="신규 매수만 중지 (기존 포지션 손절·익절 보호 유지)" class="px-3 sm:px-3.5 py-2 min-h-[38px] bg-amber-600 hover:bg-amber-700 font-bold rounded-xl text-xs sm:text-sm text-white shadow-lg shadow-amber-600/30 transition active:scale-95 flex items-center justify-center gap-1.5">
             <span>⏸️</span>
-            <span class="hidden sm:inline">일시정지</span>
+            <span class="hidden sm:inline">신규매수 중지</span>
           </button>
           <button onclick="window.triggerAction('resume')" title="재개" class="px-3 sm:px-3.5 py-2 min-h-[38px] bg-emerald-600 hover:bg-emerald-700 font-bold rounded-xl text-xs sm:text-sm text-white shadow-lg shadow-emerald-600/30 transition active:scale-95 flex items-center justify-center gap-1.5">
             <span>▶️</span>
@@ -188,6 +188,7 @@
         </div>
         <span id="entry_ready_badge" class="px-3 py-1 rounded-full text-xs font-bold bg-slate-700 text-slate-300">확인 중</span>
       </div>
+      <div id="safety_alert_banner" class="hidden mb-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-200"></div>
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 text-xs">
         <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-3">
           <div class="text-slate-400 mb-1">신규 매수 차단 사유</div>
@@ -496,6 +497,42 @@
       </div>
     </div>
 
+    <!-- Section: AI & Filter Decision Feed ("왜 안 샀지?") -->
+    <section id="decision_feed_panel" class="card-glass p-5 sm:p-6">
+      <div class="flex flex-wrap justify-between items-start gap-3 mb-3">
+        <div>
+          <h2 class="text-base sm:text-lg font-bold text-white flex items-center">
+            <span class="mr-2">🧠</span> AI · 필터 의사결정 피드 <span class="ml-2 text-xs font-normal text-slate-400">(최근 1시간 요약 및 최근 스캔 기록)</span>
+          </h2>
+          <p id="decision_summary_text" class="text-xs text-slate-400 mt-0.5">최근 스캔·진입·필터 탈락 내역을 불러오는 중...</p>
+        </div>
+        <div class="flex items-center gap-1.5" id="decision_filter_buttons">
+          <button type="button" data-decision-filter="ALL" class="decision-filter-btn px-2.5 py-1 rounded-lg text-xs font-medium bg-blue-600 text-white">전체</button>
+          <button type="button" data-decision-filter="ENTER" class="decision-filter-btn px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700">진입</button>
+          <button type="button" data-decision-filter="BLOCKED" class="decision-filter-btn px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700">차단·보류</button>
+        </div>
+      </div>
+      <div id="decision_top_reasons" class="flex flex-wrap gap-1.5 mb-3"></div>
+      <div class="overflow-x-auto max-h-80 overflow-y-auto rounded-xl border border-slate-800">
+        <table class="w-full text-left border-collapse text-xs">
+          <thead class="bg-slate-900/90 text-slate-400 sticky top-0 z-10">
+            <tr>
+              <th class="p-2.5">시각</th>
+              <th class="p-2.5">거래소</th>
+              <th class="p-2.5">종목</th>
+              <th class="p-2.5">판단</th>
+              <th class="p-2.5">단계</th>
+              <th class="p-2.5 min-w-[240px]">사유</th>
+              <th class="p-2.5">레짐</th>
+            </tr>
+          </thead>
+          <tbody id="decision_feed_tbody" class="divide-y divide-slate-800 bg-slate-900/30">
+            <tr><td colspan="7" class="p-5 text-center text-slate-500">의사결정 피드를 불러오는 중...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <!-- Section: Daily Asset & Performance History -->
     <div id="section_daily_history" class="card-glass p-5 sm:p-6">
       <div class="flex flex-wrap justify-between items-center mb-4">
@@ -560,6 +597,7 @@
         <div id="confirmed_fill_generated_at" class="text-[11px] text-slate-500 font-mono"></div>
       </div>
       <div id="confirmed_fill_summary_cards" class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4"></div>
+      <div id="confirmed_fill_breakdown" class="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-4 hidden"></div>
       <div id="confirmed_fill_comparison" class="mb-4 text-xs text-slate-400 bg-slate-950/40 rounded-lg p-3 border border-slate-800/80 hidden"></div>
       <div class="overflow-x-auto rounded-xl border border-slate-800/80">
         <table class="w-full text-left text-xs text-slate-300">
@@ -642,11 +680,19 @@
 
     <!-- 비정상 운영 로그: INFO는 제외하고 경고 이상만 노출 (최근 24시간) -->
     <div id="section_alerts" class="card-glass p-5 sm:p-6">
-      <div class="flex items-center justify-between gap-3 mb-3">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
         <h2 class="text-base font-bold text-white flex items-center">
           <span class="mr-2">⚠️</span> 비정상 운영 로그 <span class="text-xs font-normal text-slate-400 ml-1">(최근 24시간)</span>
         </h2>
-        <span id="alerts_count" class="text-xs text-slate-400">조회 중...</span>
+        <div class="flex flex-wrap items-center gap-2">
+          <div class="flex items-center gap-1" id="alert_level_buttons">
+            <button type="button" data-alert-level="ALL" class="alert-level-btn px-2 py-1 rounded-lg text-[11px] font-medium bg-blue-600 text-white">전체(WARNING+)</button>
+            <button type="button" data-alert-level="ERROR" class="alert-level-btn px-2 py-1 rounded-lg text-[11px] font-medium bg-slate-800 text-slate-300 hover:bg-slate-700">ERROR+</button>
+            <button type="button" data-alert-level="WARNING" class="alert-level-btn px-2 py-1 rounded-lg text-[11px] font-medium bg-slate-800 text-slate-300 hover:bg-slate-700">WARNING</button>
+          </div>
+          <input id="alerts_keyword_input" type="search" placeholder="구성요소 · 키워드 검색" class="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-700 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 w-44" />
+          <span id="alerts_count" class="text-xs text-slate-400">조회 중...</span>
+        </div>
       </div>
       <p class="text-xs text-slate-500 mb-3">최근 24시간 동안 발생한 WARNING · ERROR · CRITICAL 로그만 최근순으로 표시합니다.</p>
       <!-- 원문 로그는 아래 표에서 textContent로 렌더링하고, 이 영역은 반복 사건의 우선순위만 요약한다. -->

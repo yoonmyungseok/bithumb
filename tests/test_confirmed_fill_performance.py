@@ -280,6 +280,84 @@ class ConfirmedFillPerformanceTests(unittest.TestCase):
         self.assertEqual(len(legs), 1)
         self.assertEqual(legs[0]["entry_price"], 115.0)
 
+    def test_slippage_hourly_and_regime_breakdown_and_merge(self):
+        """슬리피지 요약과 KST 시간대별·레짐별 성과 집계 및 통합 병합을 검증한다."""
+        from confirmed_fill_performance import (
+            aggregate_by_hour_kst,
+            aggregate_by_regime,
+            merge_exchange_reports,
+            summarize_trade_legs,
+        )
+
+        legs_bt = [
+            {
+                "exit_at_kst": "2026-11-23 09:15:00",
+                "regime": "NORMAL",
+                "net_pnl_krw": 1000.0,
+                "gross_pnl_krw": 1100.0,
+                "total_fee_krw": 100.0,
+                "entry_slippage_bps": 4.0,
+                "exit_slippage_bps": 6.0,
+            },
+            {
+                "exit_at_kst": "2026-11-23 09:45:00",
+                "regime": "BULL_TREND",
+                "net_pnl_krw": -500.0,
+                "gross_pnl_krw": -400.0,
+                "total_fee_krw": 100.0,
+                "entry_slippage_bps": 8.0,
+                "exit_slippage_bps": 12.0,
+            },
+        ]
+        summary_bt = summarize_trade_legs(legs_bt)
+        self.assertEqual(summary_bt["avg_entry_slippage_bps"], 6.0)
+        self.assertEqual(summary_bt["avg_exit_slippage_bps"], 9.0)
+        self.assertEqual(summary_bt["max_slippage_bps"], 12.0)
+
+        hourly_bt = aggregate_by_hour_kst(legs_bt)
+        self.assertEqual(len(hourly_bt), 1)
+        self.assertEqual(hourly_bt[0]["hour_kst"], "09:00")
+        self.assertEqual(hourly_bt[0]["count"], 2)
+        self.assertEqual(hourly_bt[0]["win_rate_pct"], 50.0)
+        self.assertEqual(hourly_bt[0]["net_pnl_krw"], 500.0)
+
+        regime_bt = aggregate_by_regime(legs_bt)
+        self.assertEqual(len(regime_bt), 2)
+
+        report_bt = {
+            "summary": summary_bt,
+            "hourly_kst_breakdown": hourly_bt,
+            "regime_breakdown": regime_bt,
+            "recent_trade_legs": [],
+        }
+        report_up = {
+            "summary": {
+                "confirmed_fill_count": 2,
+                "win_count": 2,
+                "loss_count": 0,
+                "gross_win_krw": 2000.0,
+                "gross_loss_krw": 0.0,
+                "total_gross_pnl_krw": 2200.0,
+                "total_net_pnl_krw": 2000.0,
+                "total_fee_krw": 200.0,
+                "avg_entry_slippage_bps": 2.0,
+                "avg_exit_slippage_bps": 3.0,
+                "max_slippage_bps": 5.0,
+            },
+            "hourly_kst_breakdown": [{"hour_kst": "09:00", "count": 2, "win_count": 2, "net_pnl_krw": 2000.0, "total_fee_krw": 200.0}],
+            "regime_breakdown": [{"regime": "NORMAL", "count": 2, "win_count": 2, "net_pnl_krw": 2000.0, "total_fee_krw": 200.0}],
+            "recent_trade_legs": [],
+        }
+        merged = merge_exchange_reports(report_bt, report_up)
+        self.assertEqual(merged["summary"]["avg_entry_slippage_bps"], 4.0)
+        self.assertEqual(merged["summary"]["avg_exit_slippage_bps"], 6.0)
+        self.assertEqual(merged["summary"]["max_slippage_bps"], 12.0)
+        self.assertEqual(merged["hourly_kst_breakdown"][0]["count"], 4)
+        self.assertEqual(merged["hourly_kst_breakdown"][0]["win_rate_pct"], 75.0)
+        normal_row = [r for r in merged["regime_breakdown"] if r["regime"] == "NORMAL"][0]
+        self.assertEqual(normal_row["count"], 3)
+        self.assertEqual(normal_row["net_pnl_krw"], 3000.0)
+
 
 def datetime_ts(year: int, month: int, day: int, hour: int, minute: int) -> float:
     import datetime

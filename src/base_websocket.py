@@ -367,6 +367,9 @@ class BasePrivateWebSocketClient:
         self.on_asset = on_asset
         self.on_queue_overflow = on_queue_overflow
         self.is_running = False
+        self.is_connected = False
+        self.last_event_time: float = 0.0
+        self.reconnect_count: int = 0
         self.ws: websocket.WebSocketApp | None = None
         self._thread: threading.Thread | None = None
         self._order_event_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1000)
@@ -375,6 +378,29 @@ class BasePrivateWebSocketClient:
     def pending_order_event_count(self) -> int:
         """메인 스레드가 아직 처리하지 않은 주문 이벤트 수."""
         return self._order_event_queue.qsize()
+
+    def get_health_status(self) -> dict[str, Any]:
+        """Private WebSocket 연결·대기 이벤트·최근 수신 상태를 읽기 전용으로 반환한다."""
+        enabled = bool(self.access_key and self.secret_key)
+        if not enabled:
+            status = "DISABLED"
+        elif not self.is_running:
+            status = "STOPPED"
+        elif self.is_connected:
+            status = "CONNECTED"
+        else:
+            status = "RECONNECTING"
+
+        last_event_age = round(max(0.0, time.time() - self.last_event_time), 1) if self.last_event_time > 0 else None
+        return {
+            "enabled": enabled,
+            "is_running": bool(self.is_running),
+            "is_connected": bool(self.is_connected),
+            "status": status,
+            "pending_order_events": self.pending_order_event_count(),
+            "reconnect_count": int(self.reconnect_count),
+            "last_event_age_seconds": last_event_age,
+        }
 
     def _handle_order_queue_overflow(self) -> None:
         logger.warning(
@@ -417,22 +443,41 @@ class BasePrivateWebSocketClient:
         self.is_running = True
         self._reconnect_delay = 2
 
+        def _handle_open(ws: Any) -> None:
+            self.is_connected = True
+            self._on_open(ws)
+
+        def _handle_message(ws: Any, message: Any) -> None:
+            self.last_event_time = time.time()
+            self._on_message(ws, message)
+
+        def _handle_error(_ws: Any, err: Any) -> None:
+            self.is_connected = False
+            logger.warning(f"{self.CLIENT_NAME} 오류: {err}")
+
+        def _handle_close(_ws: Any, code: Any, _msg: Any) -> None:
+            self.is_connected = False
+            logger.info(f"{self.CLIENT_NAME} 연결 종료 (code: {code})")
+
         def run() -> None:
             while self.is_running:
                 try:
                     self.ws = websocket.WebSocketApp(
                         self.ws_url,
                         header=self._headers(),
-                        on_open=self._on_open,
-                        on_message=self._on_message,
-                        on_error=lambda _ws, err: logger.warning(f"{self.CLIENT_NAME} 오류: {err}"),
-                        on_close=lambda _ws, code, msg: logger.info(f"{self.CLIENT_NAME} 연결 종료 (code: {code})"),
+                        on_open=_handle_open,
+                        on_message=_handle_message,
+                        on_error=_handle_error,
+                        on_close=_handle_close,
                     )
                     self.ws.run_forever(ping_interval=30, ping_timeout=20)
                 except Exception as exc:
+                    self.is_connected = False
                     logger.warning(f"{self.CLIENT_NAME} 루프 예외: {exc}")
+                self.is_connected = False
                 if not self.is_running:
                     break
+                self.reconnect_count += 1
                 time.sleep(self._reconnect_delay)
                 self._reconnect_delay = min(self._reconnect_delay * 2, 60)
 
@@ -442,6 +487,7 @@ class BasePrivateWebSocketClient:
 
     def stop(self) -> None:
         self.is_running = False
+        self.is_connected = False
         if self.ws:
             self.ws.close()
         logger.info(f"{self.CLIENT_NAME} 종료 완료")

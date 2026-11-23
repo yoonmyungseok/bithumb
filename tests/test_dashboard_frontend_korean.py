@@ -497,6 +497,104 @@ class DashboardFrontendKoreanTests(unittest.TestCase):
         self.assertIn("-2.44%", html_output)
         self.assertIn("-50,000 원", html_output)
 
+    def test_safety_status_formatters_and_banner_details(self):
+        """안전 상태 포맷터가 REST 대사, Private WS, Public WS 상태를 한국어로 정확히 변환하는지 검증"""
+        funcs = "\n".join([
+            self._extract_function("formatReconciliationLabel"),
+            self._extract_function("formatPrivateWsLabel"),
+            self._extract_function("formatPublicWsLabel"),
+        ])
+        js_code = f"""
+        {funcs}
+        const recOk = formatReconciliationLabel('READY', 0, 0);
+        const recPending = formatReconciliationLabel('PENDING', 2, 1);
+        const pwsConn = formatPrivateWsLabel({{ status: 'CONNECTED', pending_order_events: 0 }});
+        const pwsReconn = formatPrivateWsLabel({{ status: 'RECONNECTING', pending_order_events: 3 }});
+        const pubOk = formatPublicWsLabel({{ is_healthy: true, status: 'DATA_AVAILABLE' }});
+        const pubStale = formatPublicWsLabel({{ is_healthy: false, status: 'STALE' }});
+        console.log(JSON.stringify({{ recOk, recPending, pwsConn, pwsReconn, pubOk, pubStale }}));
+        """
+        proc = subprocess.run(
+            ["node", "-e", js_code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(proc.returncode, 0, f"Node error: {proc.stderr}")
+        parsed = json.loads(proc.stdout.strip())
+        self.assertEqual(parsed["recOk"]["text"], "완료(정상)")
+        self.assertEqual(parsed["recOk"]["tone"], "ok")
+        self.assertIn("대기 2건", parsed["recPending"]["text"])
+        self.assertIn("미확인 1건", parsed["recPending"]["text"])
+        self.assertEqual(parsed["pwsConn"]["text"], "연결됨")
+        self.assertIn("재연결 중", parsed["pwsReconn"]["text"])
+        self.assertIn("대기 3건", parsed["pwsReconn"]["text"])
+        self.assertEqual(parsed["pubOk"]["text"], "정상 수신")
+        self.assertEqual(parsed["pubStale"]["tone"], "warn")
+
+    def test_decision_feed_formatters_korean_labels(self):
+        """의사결정 피드 포맷터가 action/policy_mode를 한국어 라벨로 변환하는지 검증"""
+        funcs = "\n".join([
+            self._extract_function("formatDecisionActionBadge"),
+            self._extract_function("formatPolicyModeLabel"),
+        ])
+        js_code = f"""
+        {funcs}
+        const a1 = formatDecisionActionBadge('BUY_SUBMITTED');
+        const a2 = formatDecisionActionBadge('HOLD');
+        const a3 = formatDecisionActionBadge('BLOCKED');
+        const p1 = formatPolicyModeLabel('MARKET_COOLDOWN');
+        const p2 = formatPolicyModeLabel('INSUFFICIENT_CASH');
+        console.log(JSON.stringify({{ a1, a2, a3, p1, p2 }}));
+        """
+        proc = subprocess.run(
+            ["node", "-e", js_code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(proc.returncode, 0, f"Node error: {proc.stderr}")
+        parsed = json.loads(proc.stdout.strip())
+        self.assertEqual(parsed["a1"]["text"], "매수 실행")
+        self.assertEqual(parsed["a2"]["text"], "관망(보류)")
+        self.assertEqual(parsed["a3"]["text"], "진입 차단")
+        self.assertEqual(parsed["p1"], "재진입 쿨다운")
+        self.assertEqual(parsed["p2"], "원화 잔고 부족")
+
+    def test_alert_log_client_filter_helper(self):
+        """filterAlertItems가 수준(ALL/ERROR/WARNING)과 키워드 검색을 정확히 필터링하는지 검증"""
+        func_code = self._extract_function("filterAlertItems")
+        js_code = f"""
+        {func_code}
+        const items = [
+            {{ level: 'WARNING', source: '빗썸 봇', message: 'WS 재연결 지연' }},
+            {{ level: 'ERROR', source: '업비트 봇', message: 'REST 대사 타임아웃' }},
+            {{ level: 'CRITICAL', source: '통합 대시보드', message: '프로세스 응답 없음' }}
+        ];
+        const allItems = filterAlertItems(items, 'ALL', '');
+        const errItems = filterAlertItems(items, 'ERROR', '');
+        const warnItems = filterAlertItems(items, 'WARNING', '');
+        const kwItems = filterAlertItems(items, 'ALL', '타임아웃');
+        console.log(JSON.stringify({{
+            all: allItems.length,
+            err: errItems.length,
+            warn: warnItems.length,
+            kw: kwItems.length
+        }}));
+        """
+        proc = subprocess.run(
+            ["node", "-e", js_code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(proc.returncode, 0, f"Node error: {proc.stderr}")
+        parsed = json.loads(proc.stdout.strip())
+        self.assertEqual(parsed["all"], 3)
+        self.assertEqual(parsed["err"], 2)
+        self.assertEqual(parsed["warn"], 1)
+        self.assertEqual(parsed["kw"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

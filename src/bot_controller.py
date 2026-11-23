@@ -55,6 +55,7 @@ class BotController:
         web_port: int = 7979,
         get_feed_health: Callable[[], dict[str, Any]] | None = None,
         risk_guard: RiskGuard | None = None,
+        get_private_ws_health: Callable[[], dict[str, Any]] | None = None,
     ):
         self.get_exchange = exchange_factory
         self.order_executor = order_executor
@@ -70,6 +71,7 @@ class BotController:
         self.web_port = web_port
         # 웹소켓 구현에 직접 결합하지 않고, 호출자가 제공한 읽기 전용 상태만 사용한다.
         self.get_feed_health = get_feed_health
+        self.get_private_ws_health = get_private_ws_health
         self.risk_guard = risk_guard
         self.start_time = time.time()
         self._last_dashboard_fetch_ts: float = 0.0
@@ -95,6 +97,7 @@ class BotController:
                 "entry_blocking_markets": [],
                 "order_status_counts": {},
                 "feed": {"is_healthy": False, "status": "DATA_UNAVAILABLE"},
+                "private_ws": {"is_connected": False, "status": "UNAVAILABLE", "pending_order_events": 0},
             },
             "policy": {},
             "fear_and_greed": "50점 (중립)",
@@ -106,6 +109,8 @@ class BotController:
             "candidates": [],
             "recent_trades": [],
             "recent_orders": [],
+            "recent_decisions": [],
+            "decision_summary": {},
         }
 
     def _get_feed_health(self) -> dict[str, Any]:
@@ -120,6 +125,18 @@ class BotController:
             logger.debug("대시보드 시세 상태 조회 예외: %s", exc)
         return {"is_healthy": False, "status": "DATA_UNAVAILABLE", "message": "시세 상태 확인 실패"}
 
+    def _get_private_ws_health(self) -> dict[str, Any]:
+        """Private 주문·체결 스트림 상태를 읽기 전용으로 조회한다."""
+        if self.get_private_ws_health is None:
+            return {"is_connected": False, "is_running": False, "status": "UNAVAILABLE", "pending_order_events": 0}
+        try:
+            health = self.get_private_ws_health()
+            if isinstance(health, dict):
+                return dict(health)
+        except Exception as exc:
+            logger.debug("대시보드 Private WS 상태 조회 예외: %s", exc)
+        return {"is_connected": False, "is_running": False, "status": "UNAVAILABLE", "pending_order_events": 0}
+
     def _build_safety_data(self, orders: list[dict[str, Any]]) -> dict[str, Any]:
         """신규 매수 안전 게이트와 사람이 읽을 수 있는 차단 사유를 함께 만든다."""
         status_counts: dict[str, int] = {}
@@ -128,6 +145,7 @@ class BotController:
             status_counts[status] = status_counts.get(status, 0) + 1
 
         feed = self._get_feed_health()
+        private_ws = self._get_private_ws_health()
         block_reasons: list[str] = []
         if self.get_is_paused():
             block_reasons.append("봇이 일시정지 상태")
@@ -171,6 +189,7 @@ class BotController:
             # REST 백필의 최근 성공·실패 결과를 화면/API 소비자에게 그대로 전달한다.
             "reconciliation_metrics": dict(getattr(self.order_journal, "reconciliation_metrics", {})),
             "feed": feed,
+            "private_ws": private_ws,
         }
 
     @staticmethod
@@ -624,6 +643,36 @@ class BotController:
             except Exception as report_exc:
                 logger.debug("확정 체결 성과 리포트 생성 예외: %s", report_exc)
 
+            # 9. 최근 전략/AI 진입 및 필터 탈락 의사결정 피드 (거래소별 격리 DB 조회)
+            recent_decisions_data: list[dict[str, Any]] = []
+            decision_summary_data: dict[str, Any] = {}
+            try:
+                db_mgr = getattr(self.risk_manager, "db", None)
+                decision_ex = getattr(self.risk_manager, "exchange", None) or scope
+                if db_mgr is not None and hasattr(db_mgr, "get_recent_strategy_decisions"):
+                    raw_decisions = db_mgr.get_recent_strategy_decisions(str(decision_ex), limit=30)
+                    for dec in raw_decisions:
+                        m = str(dec.get("market", "") or "")
+                        payload = dec.get("payload") if isinstance(dec.get("payload"), dict) else {}
+                        ts_val = float(dec.get("decision_ts", 0.0) or 0.0)
+                        recent_decisions_data.append({
+                            "decision_ts": ts_val,
+                            "time_str": time.strftime("%H:%M:%S", time.localtime(ts_val)) if ts_val > 0 else "-",
+                            "market": m,
+                            "korean_name": bithumb.get_korean_name(m) if m else "",
+                            "action": dec.get("action", ""),
+                            "policy_mode": dec.get("policy_mode", ""),
+                            "block_reasons": dec.get("block_reasons", []),
+                            "btc_regime": payload.get("btc_regime", ""),
+                        })
+                if db_mgr is not None and hasattr(db_mgr, "get_strategy_decision_summary"):
+                    decision_summary_data = db_mgr.get_strategy_decision_summary(
+                        str(decision_ex),
+                        since_ts=now - 3600.0,
+                    )
+            except Exception as dec_exc:
+                logger.debug("대시보드 전략 의사결정 피드 로드 예외: %s", dec_exc)
+
             self.latest_dashboard_data = {
                 "total_equity": int(bot_equity),
                 "account_total_equity": int(total_equity),
@@ -660,6 +709,8 @@ class BotController:
                 "candidates": candidates_data,
                 "recent_trades": recent_trades_data,
                 "recent_orders": recent_orders_data,
+                "recent_decisions": recent_decisions_data,
+                "decision_summary": decision_summary_data,
                 "daily_stats_history": daily_history_data,
                 "confirmed_fill_performance": confirmed_fill_report,
                 "api_usage": {
@@ -681,9 +732,9 @@ class BotController:
         """웹 대시보드 원격 버튼 액션 핸들러"""
         if action == "panic":
             return self.execute_panic_sell()
-        elif action == "pause":
+        elif action in ("pause", "pause_buy"):
             return self.pause_bot()
-        elif action == "resume":
+        elif action in ("resume", "resume_buy"):
             return self.resume_bot()
         return "알 수 없는 작업"
 

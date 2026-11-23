@@ -226,7 +226,37 @@ class UnifiedDashboardServer:
         except (OSError, ValueError):
             return []
 
-    def get_alert_logs(self, exchange_target: str = "combined") -> dict[str, Any]:
+    @staticmethod
+    def _filter_alert_items(
+        alerts: list[dict[str, str]],
+        level_filter: str = "ALL",
+        keyword: str = "",
+    ) -> list[dict[str, str]]:
+        """이미 WARNING 이상으로 정제된 로그 목록에 수준·키워드 필터만 적용한다."""
+        lvl = str(level_filter or "ALL").strip().upper()
+        kw = str(keyword or "").strip().lower()
+        out: list[dict[str, str]] = []
+        for item in alerts:
+            item_lvl = str(item.get("level", "")).upper()
+            if lvl == "ERROR" and item_lvl not in {"ERROR", "CRITICAL"}:
+                continue
+            if lvl == "CRITICAL" and item_lvl != "CRITICAL":
+                continue
+            if lvl == "WARNING" and item_lvl != "WARNING":
+                continue
+            if kw:
+                haystack = f"{item.get('source', '')} {item.get('level', '')} {item.get('message', '')}".lower()
+                if kw not in haystack:
+                    continue
+            out.append(item)
+        return out
+
+    def get_alert_logs(
+        self,
+        exchange_target: str = "combined",
+        level_filter: str = "ALL",
+        keyword: str = "",
+    ) -> dict[str, Any]:
         """선택한 거래소 범위의 WARNING 이상 로그만 최신순으로 반환한다 (2.0초 TTL 및 mtime 캐싱)."""
         target = exchange_target.lower()
         if target not in {"combined", "bithumb", "upbit"}:
@@ -239,7 +269,8 @@ class UnifiedDashboardServer:
                 cached_ts, cached_data, cached_mtimes = cached_entry
                 # 2.0초 미만이면 디스크 I/O 없이 즉시 캐시 반환
                 if now - cached_ts < 2.0:
-                    return cached_data
+                    filtered = self._filter_alert_items(cached_data.get("alerts", []), level_filter, keyword)
+                    return {**cached_data, "alerts": filtered, "level_filter": level_filter.upper(), "keyword": keyword}
 
                 # 2.0초 경과 시 파일들의 mtime 검사
                 files_changed = False
@@ -259,7 +290,8 @@ class UnifiedDashboardServer:
                 if not files_changed:
                     # 파일 변경이 없으면 캐시 타임스탬프만 갱신하고 즉시 반환
                     self._alert_cache[target] = (now, cached_data, current_mtimes)
-                    return cached_data
+                    filtered = self._filter_alert_items(cached_data.get("alerts", []), level_filter, keyword)
+                    return {**cached_data, "alerts": filtered, "level_filter": level_filter.upper(), "keyword": keyword}
 
         alerts: list[dict[str, str]] = []
         scan_mtimes: dict[str, float] = {}
@@ -289,7 +321,8 @@ class UnifiedDashboardServer:
         result = {"alerts": alerts[:ALERT_LIMIT], "exchange": target, "updated_at": now}
         with self._alert_cache_lock:
             self._alert_cache[target] = (now, result, scan_mtimes)
-        return result
+        filtered = self._filter_alert_items(result["alerts"], level_filter, keyword)
+        return {**result, "alerts": filtered, "level_filter": str(level_filter or "ALL").upper(), "keyword": keyword}
 
     def get_daily_reports(self) -> dict[str, Any]:
         """일일 퀀트 성과 분석 보고서 파일 목록을 최신순으로 반환"""
@@ -590,6 +623,8 @@ class UnifiedDashboardServer:
             "candidates": [],
             "recent_trades": [],
             "recent_orders": [],
+            "recent_decisions": [],
+            "decision_summary": {},
             "daily_stats_history": [],
             "confirmed_fill_performance": {},
             "message": "봇 프로세스 미구동 또는 응답 없음",
@@ -597,8 +632,10 @@ class UnifiedDashboardServer:
                 "entry_ready": False,
                 "entry_block_reasons": ["봇 프로세스 미구동 또는 응답 없음"],
                 "entry_blocking_markets": [],
+                "reconciliation_state": "PENDING",
                 "order_status_counts": {},
                 "feed": {"is_healthy": False, "status": "OFFLINE"},
+                "private_ws": {"is_connected": False, "is_running": False, "status": "OFFLINE", "pending_order_events": 0},
             },
             "api_usage": {
                 "exchange": {},
@@ -834,6 +871,23 @@ class UnifiedDashboardServer:
             list(bithumb_data.get("safety", {}).get("entry_blocking_markets", []) or []) +
             list(upbit_data.get("safety", {}).get("entry_blocking_markets", []) or [])
         ))
+        private_ws_by_exchange = {
+            ex: (
+                dict(safety_by_exchange[ex].get("private_ws"))
+                if isinstance(safety_by_exchange[ex].get("private_ws"), dict)
+                else {"is_connected": False, "is_running": False, "status": "UNAVAILABLE", "pending_order_events": 0}
+            )
+            for ex in ("bithumb", "upbit")
+        }
+        connected_private_count = sum(1 for p in private_ws_by_exchange.values() if p.get("is_connected") is True)
+        combined_private_ws = {
+            "is_connected": connected_private_count == len(private_ws_by_exchange),
+            "status": "CONNECTED" if connected_private_count == len(private_ws_by_exchange) else (
+                "DEGRADED" if connected_private_count > 0 else "DISCONNECTED"
+            ),
+            "pending_order_events": sum(int(p.get("pending_order_events", 0) or 0) for p in private_ws_by_exchange.values()),
+            "by_exchange": private_ws_by_exchange,
+        }
         combined_safety = {
             "entry_ready": len(combined_block_reasons) == 0,
             "entry_block_reasons": combined_block_reasons,
@@ -841,6 +895,7 @@ class UnifiedDashboardServer:
             "order_status_counts": combined_counts,
             "by_exchange": safety_by_exchange,
             "feed": combined_feed,
+            "private_ws": combined_private_ws,
         }
         combined_new_listing_used = int(bithumb_data.get("new_listing_slot_used", 0) or 0) + int(
             upbit_data.get("new_listing_slot_used", 0) or 0
@@ -888,6 +943,45 @@ class UnifiedDashboardServer:
             bt_fill_report or up_fill_report
         ) else {}
 
+        # 최근 전략/AI 의사결정 피드 병합 (거래소 태그 유지)
+        combined_decisions: list[dict[str, Any]] = []
+        for ex_key, ex_data in (("bithumb", bithumb_data), ("upbit", upbit_data)):
+            for dec in ex_data.get("recent_decisions", []) or []:
+                if isinstance(dec, dict):
+                    item = dict(dec)
+                    item.setdefault("exchange", ex_key)
+                    combined_decisions.append(item)
+        combined_decisions.sort(key=lambda x: float(x.get("decision_ts", 0.0) or 0.0), reverse=True)
+        combined_decisions = combined_decisions[:40]
+
+        bt_dec_sum = bithumb_data.get("decision_summary") if isinstance(bithumb_data.get("decision_summary"), dict) else {}
+        up_dec_sum = upbit_data.get("decision_summary") if isinstance(upbit_data.get("decision_summary"), dict) else {}
+        combined_total_dec = int(bt_dec_sum.get("total_count", 0) or 0) + int(up_dec_sum.get("total_count", 0) or 0)
+        combined_entered_dec = int(bt_dec_sum.get("entered_count", 0) or 0) + int(up_dec_sum.get("entered_count", 0) or 0)
+        combined_blocked_dec = int(bt_dec_sum.get("blocked_count", 0) or 0) + int(up_dec_sum.get("blocked_count", 0) or 0)
+        combined_hold_dec = int(bt_dec_sum.get("hold_count", 0) or 0) + int(up_dec_sum.get("hold_count", 0) or 0)
+        merged_reason_counts: dict[str, int] = {}
+        for ds in (bt_dec_sum, up_dec_sum):
+            for item in ds.get("top_block_reasons", []) or []:
+                if isinstance(item, dict) and item.get("policy_mode"):
+                    mode = str(item["policy_mode"])
+                    merged_reason_counts[mode] = merged_reason_counts.get(mode, 0) + int(item.get("count", 0) or 0)
+        non_enter_combined = max(1, combined_blocked_dec + combined_hold_dec)
+        combined_decision_summary = {
+            "total_count": combined_total_dec,
+            "entered_count": combined_entered_dec,
+            "blocked_count": combined_blocked_dec,
+            "hold_count": combined_hold_dec,
+            "top_block_reasons": [
+                {
+                    "policy_mode": mode,
+                    "count": cnt,
+                    "pct": round(cnt / non_enter_combined * 100.0, 1),
+                }
+                for mode, cnt in sorted(merged_reason_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+            ],
+        }
+
         combined = {
             "title": "Bithumb & Upbit AI 퀀트 트레이딩 Pro (통합)",
             "total_equity": total_bot_equity,
@@ -915,6 +1009,8 @@ class UnifiedDashboardServer:
             "candidates": combined_candidates,
             "recent_trades": combined_recent_trades,
             "recent_orders": combined_orders,
+            "recent_decisions": combined_decisions,
+            "decision_summary": combined_decision_summary,
             "daily_stats_history": combined_daily_history,
             "confirmed_fill_performance": combined_fill_report,
             "fear_and_greed": fng,
@@ -1269,8 +1365,14 @@ class UnifiedDashboardServer:
 
                     # 2. WARNING 이상 운영 로그만 별도 조회한다.
                     if path == "/api/alerts":
-                        target = urllib.parse.parse_qs(parsed_url.query).get("exchange", ["combined"])[0]
-                        body = json.dumps(server_self.get_alert_logs(target), ensure_ascii=False).encode("utf-8")
+                        qs = urllib.parse.parse_qs(parsed_url.query)
+                        target = qs.get("exchange", ["combined"])[0]
+                        level_filter = qs.get("level", ["ALL"])[0]
+                        keyword = qs.get("keyword", [""])[0]
+                        body = json.dumps(
+                            server_self.get_alert_logs(target, level_filter=level_filter, keyword=keyword),
+                            ensure_ascii=False,
+                        ).encode("utf-8")
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json; charset=utf-8")
                         self.send_header("Access-Control-Allow-Origin", "*")

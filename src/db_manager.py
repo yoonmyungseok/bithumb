@@ -700,6 +700,116 @@ class DatabaseManager:
             })
         return results
 
+    def get_recent_strategy_decisions(
+        self,
+        exchange: str,
+        limit: int = 30,
+        exclude_policy_modes: tuple[str, ...] = ("ORDERBOOK_SLIPPAGE",),
+    ) -> list[dict[str, Any]]:
+        """최근 전략/AI 진입 및 필터 탈락 판단 이력을 최신순으로 조회한다."""
+        norm_exchange = exchange.strip().lower()
+        safe_limit = max(1, min(int(limit), 200))
+        placeholders = ",".join("?" for _ in exclude_policy_modes)
+        where_extra = f"AND policy_mode NOT IN ({placeholders})" if exclude_policy_modes else ""
+        params: list[Any] = [norm_exchange, *exclude_policy_modes, safe_limit]
+
+        with _DB_LOCK, self._get_connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT decision_ts, cycle_id, market, action, policy_mode, block_reasons_json, payload_json
+                FROM strategy_decisions
+                WHERE exchange = ? {where_extra}
+                ORDER BY decision_ts DESC, id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                block_reasons = json.loads(row["block_reasons_json"] or "[]")
+            except json.JSONDecodeError:
+                block_reasons = []
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(block_reasons, list):
+                block_reasons = []
+            if not isinstance(payload, dict):
+                payload = {}
+            results.append({
+                "decision_ts": float(row["decision_ts"]),
+                "cycle_id": str(row["cycle_id"] or ""),
+                "market": str(row["market"] or ""),
+                "action": str(row["action"] or ""),
+                "policy_mode": str(row["policy_mode"] or ""),
+                "block_reasons": [str(r) for r in block_reasons],
+                "payload": payload,
+            })
+        return results
+
+    def get_strategy_decision_summary(
+        self,
+        exchange: str,
+        since_ts: float,
+        exclude_policy_modes: tuple[str, ...] = ("ORDERBOOK_SLIPPAGE",),
+    ) -> dict[str, Any]:
+        """지정 시각 이후 진입·차단·보류 건수와 상위 탈락 사유 TOP 3를 집계한다."""
+        norm_exchange = exchange.strip().lower()
+        placeholders = ",".join("?" for _ in exclude_policy_modes)
+        where_extra = f"AND policy_mode NOT IN ({placeholders})" if exclude_policy_modes else ""
+        params: list[Any] = [norm_exchange, float(since_ts), *exclude_policy_modes]
+
+        with _DB_LOCK, self._get_connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT action, policy_mode, COUNT(*) AS cnt
+                FROM strategy_decisions
+                WHERE exchange = ? AND decision_ts >= ? {where_extra}
+                GROUP BY action, policy_mode
+                """,
+                params,
+            ).fetchall()
+
+        total_count = 0
+        entered_count = 0
+        blocked_count = 0
+        hold_count = 0
+        reason_counts: dict[str, int] = {}
+
+        for row in rows:
+            action = str(row["action"] or "").upper()
+            policy_mode = str(row["policy_mode"] or "UNKNOWN").upper()
+            cnt = int(row["cnt"] or 0)
+            total_count += cnt
+            if action in ("BUY_APPROVED", "BUY_SUBMITTED"):
+                entered_count += cnt
+            elif action == "HOLD":
+                hold_count += cnt
+                reason_counts[policy_mode] = reason_counts.get(policy_mode, 0) + cnt
+            else:
+                blocked_count += cnt
+                reason_counts[policy_mode] = reason_counts.get(policy_mode, 0) + cnt
+
+        non_enter_total = max(1, blocked_count + hold_count)
+        top_block_reasons = [
+            {
+                "policy_mode": mode,
+                "count": cnt,
+                "pct": round(cnt / non_enter_total * 100.0, 1),
+            }
+            for mode, cnt in sorted(reason_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+        ]
+        return {
+            "total_count": total_count,
+            "entered_count": entered_count,
+            "blocked_count": blocked_count,
+            "hold_count": hold_count,
+            "top_block_reasons": top_block_reasons,
+        }
+
 
 def reset_db_manager_cache() -> None:
     """테스트 tearDown 등에서 경로별 싱글톤과 WAL 잠금을 해제한다."""

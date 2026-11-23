@@ -614,6 +614,195 @@ class UnifiedDashboardServerTests(unittest.TestCase):
             self.assertFalse(res["success"])
             self.assertIn("찾을 수 없습니다", res["message"])
 
+    def test_combined_safety_includes_private_ws_health_and_isolation(self):
+        """통합 탭은 거래소별 Private WS 상태를 보존하고 일부 연결 시 DEGRADED로 집계한다."""
+        server = UnifiedDashboardServer(port=17999)
+
+        def fake_fetch(_api_url: str, exchange_name: str):
+            if exchange_name == "bithumb":
+                return {
+                    "online": True,
+                    "exchange": "bithumb",
+                    "safety": {
+                        "entry_ready": True,
+                        "entry_block_reasons": [],
+                        "entry_blocking_markets": [],
+                        "reconciliation_state": "READY",
+                        "order_status_counts": {},
+                        "feed": {"is_healthy": True, "status": "DATA_AVAILABLE"},
+                        "private_ws": {"is_connected": True, "is_running": True, "status": "CONNECTED", "pending_order_events": 1},
+                    },
+                }
+            return {
+                "online": True,
+                "exchange": "upbit",
+                "safety": {
+                    "entry_ready": False,
+                    "entry_block_reasons": ["초기 주문 체결 대사 미완료"],
+                    "entry_blocking_markets": ["KRW-BTC"],
+                    "reconciliation_state": "PENDING",
+                    "order_status_counts": {"RECONCILIATION_PENDING": 1},
+                    "feed": {"is_healthy": True, "status": "DATA_AVAILABLE"},
+                    "private_ws": {"is_connected": False, "is_running": True, "status": "RECONNECTING", "pending_order_events": 2},
+                },
+            }
+
+        server.fetch_exchange_status = fake_fetch
+        agg = server.get_aggregated_status()
+        safety = agg["combined"]["safety"]
+        self.assertFalse(safety["entry_ready"])
+        self.assertEqual(safety["private_ws"]["status"], "DEGRADED")
+        self.assertFalse(safety["private_ws"]["is_connected"])
+        self.assertEqual(safety["private_ws"]["pending_order_events"], 3)
+        self.assertEqual(safety["by_exchange"]["bithumb"]["private_ws"]["status"], "CONNECTED")
+        self.assertEqual(safety["by_exchange"]["upbit"]["private_ws"]["status"], "RECONNECTING")
+        self.assertEqual(safety["entry_blocking_markets"], ["KRW-BTC"])
+
+    def test_private_ws_health_status_masks_credentials_and_reports_states(self):
+        """BasePrivateWebSocketClient.get_health_status는 자격 증명을 노출하지 않고 연결 상태를 정확히 반환한다."""
+        from base_websocket import BasePrivateWebSocketClient
+
+        disabled_client = BasePrivateWebSocketClient()
+        disabled_health = disabled_client.get_health_status()
+        self.assertEqual(disabled_health["status"], "DISABLED")
+        self.assertFalse(disabled_health["enabled"])
+
+        client = BasePrivateWebSocketClient(access_key="secret-access-key", secret_key="secret-key-value")
+        stopped_health = client.get_health_status()
+        self.assertEqual(stopped_health["status"], "STOPPED")
+        self.assertNotIn("secret-access-key", str(stopped_health))
+        self.assertNotIn("secret-key-value", str(stopped_health))
+
+        client.is_running = True
+        client.is_connected = True
+        connected_health = client.get_health_status()
+        self.assertEqual(connected_health["status"], "CONNECTED")
+        self.assertTrue(connected_health["is_connected"])
+
+    def test_strategy_decision_feed_db_isolation_and_aggregation(self):
+        """strategy_decisions 조회·집계가 거래소별로 격리되고 통합 대시보드에서 최신순 병합되는지 검증"""
+        import tempfile
+        import time
+        from db_manager import DatabaseManager, reset_db_manager_cache
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db = DatabaseManager(os.path.join(tmp_dir, "test_decisions.db"))
+            now = time.time()
+            db.record_strategy_decision(
+                exchange="bithumb", cycle_id="c1", market="KRW-BTC",
+                action="BLOCKED", policy_mode="MARKET_COOLDOWN",
+                block_reasons=["재진입 쿨다운 중"], payload={"btc_regime": "NORMAL"},
+                decision_ts=now - 120,
+            )
+            db.record_strategy_decision(
+                exchange="bithumb", cycle_id="c1", market="KRW-ETH",
+                action="BUY_SUBMITTED", policy_mode="NORMAL",
+                block_reasons=[], payload={"btc_regime": "BULL_TREND"},
+                decision_ts=now - 60,
+            )
+            db.record_strategy_decision(
+                exchange="bithumb", cycle_id="c1", market="KRW-XRP",
+                action="OBSERVED", policy_mode="ORDERBOOK_SLIPPAGE",
+                block_reasons=[], payload={}, decision_ts=now - 30,
+            )
+            db.record_strategy_decision(
+                exchange="upbit", cycle_id="c2", market="KRW-SOL",
+                action="HOLD", policy_mode="AI_PROVIDER",
+                block_reasons=["AI 점수 미달"], payload={"btc_regime": "NORMAL"},
+                decision_ts=now - 10,
+            )
+
+            bt_list = db.get_recent_strategy_decisions("bithumb", limit=10)
+            self.assertEqual(len(bt_list), 2)
+            self.assertEqual(bt_list[0]["market"], "KRW-ETH")
+            self.assertEqual(bt_list[1]["market"], "KRW-BTC")
+
+            bt_sum = db.get_strategy_decision_summary("bithumb", since_ts=now - 3600)
+            self.assertEqual(bt_sum["total_count"], 2)
+            self.assertEqual(bt_sum["entered_count"], 1)
+            self.assertEqual(bt_sum["blocked_count"], 1)
+            self.assertEqual(bt_sum["top_block_reasons"][0]["policy_mode"], "MARKET_COOLDOWN")
+
+            up_sum = db.get_strategy_decision_summary("upbit", since_ts=now - 3600)
+            self.assertEqual(up_sum["total_count"], 1)
+            self.assertEqual(up_sum["hold_count"], 1)
+
+            reset_db_manager_cache()
+
+        server = UnifiedDashboardServer(port=17999)
+
+        def fake_fetch(_api_url: str, exchange_name: str):
+            if exchange_name == "bithumb":
+                return {
+                    "online": True,
+                    "recent_decisions": [{"decision_ts": 100.0, "market": "KRW-BTC", "action": "BLOCKED", "policy_mode": "SAFETY"}],
+                    "decision_summary": {"total_count": 2, "entered_count": 1, "blocked_count": 1, "hold_count": 0, "top_block_reasons": [{"policy_mode": "SAFETY", "count": 1, "pct": 100.0}]},
+                }
+            return {
+                "online": True,
+                "recent_decisions": [{"decision_ts": 200.0, "market": "KRW-SOL", "action": "HOLD", "policy_mode": "AI_PROVIDER"}],
+                "decision_summary": {"total_count": 3, "entered_count": 0, "blocked_count": 1, "hold_count": 2, "top_block_reasons": [{"policy_mode": "AI_PROVIDER", "count": 2, "pct": 66.7}]},
+            }
+
+        server.fetch_exchange_status = fake_fetch
+        agg = server.get_aggregated_status()["combined"]
+        self.assertEqual(len(agg["recent_decisions"]), 2)
+        self.assertEqual(agg["recent_decisions"][0]["exchange"], "upbit")
+        self.assertEqual(agg["recent_decisions"][1]["exchange"], "bithumb")
+        self.assertEqual(agg["decision_summary"]["total_count"], 5)
+        self.assertEqual(agg["decision_summary"]["entered_count"], 1)
+        self.assertEqual(agg["decision_summary"]["top_block_reasons"][0]["policy_mode"], "AI_PROVIDER")
+
+    def test_alert_logs_level_and_keyword_filtering_preserves_warning_boundary(self):
+        """이상 로그 필터링 시 ERROR/WARNING 및 키워드 필터가 동작하며 INFO 미노출·마스킹을 유지하는지 검증"""
+        from unittest.mock import MagicMock
+
+        server = UnifiedDashboardServer(port=17999)
+        server._read_recent_lines = MagicMock(side_effect=[
+            [
+                "2026-11-24 00:01:00 [INFO] 일반 정보 로그",
+                "2026-11-24 00:02:00 [WARNING] 빗썸 WS 재연결 지연",
+                "2026-11-24 00:03:00 [ERROR] 주문 REST 대사 타임아웃 token=mysecret123",
+            ],
+            [], [], [], [],
+        ])
+        err_only = server.get_alert_logs("bithumb", level_filter="ERROR")
+        self.assertEqual(len(err_only["alerts"]), 1)
+        self.assertEqual(err_only["alerts"][0]["level"], "ERROR")
+        self.assertNotIn("mysecret123", err_only["alerts"][0]["message"])
+
+        warn_only = server.get_alert_logs("bithumb", level_filter="WARNING")
+        self.assertEqual(len(warn_only["alerts"]), 1)
+        self.assertEqual(warn_only["alerts"][0]["level"], "WARNING")
+
+        kw_res = server.get_alert_logs("bithumb", level_filter="ALL", keyword="타임아웃")
+        self.assertEqual(len(kw_res["alerts"]), 1)
+        self.assertIn("타임아웃", kw_res["alerts"][0]["message"])
+
+    def test_bot_controller_soft_kill_switch_pause_buy_and_resume_buy(self):
+        """pause_buy 및 resume_buy 액션이 신규 매수 중지/재개 경로로 안전하게 연결되는지 검증"""
+        from unittest.mock import MagicMock
+        from bot_controller import BotController
+
+        paused_state = {"val": False}
+        ctrl = BotController(
+            exchange_factory=MagicMock(),
+            order_executor=MagicMock(),
+            order_journal=MagicMock(),
+            risk_manager=MagicMock(),
+            trailing_tracker=MagicMock(),
+            trade_memory=MagicMock(),
+            telegram=MagicMock(),
+            get_is_paused=lambda: paused_state["val"],
+            set_is_paused=lambda v: paused_state.__setitem__("val", v),
+        )
+        msg_pause = ctrl.handle_web_action("pause_buy")
+        self.assertTrue(paused_state["val"])
+        self.assertIn("신규 매수", msg_pause)
+        msg_resume = ctrl.handle_web_action("resume_buy")
+        self.assertFalse(paused_state["val"])
+        self.assertIn("재개", msg_resume)
+
 
 if __name__ == "__main__":
     unittest.main()

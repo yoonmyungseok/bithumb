@@ -321,6 +321,7 @@ bot_controller = BotController(
     web_port=WEB_PORT,
     # 지연 평가 람다로 웹소켓 생성 이후에도 최신 건강 상태를 대시보드에 제공한다.
     get_feed_health=lambda: ws_client.get_health_status(),
+    get_private_ws_health=lambda: private_ws.get_health_status() if private_ws is not None else {"status": "DISABLED", "is_connected": False, "is_running": False, "pending_order_events": 0},
     risk_guard=risk_guard,
 )
 

@@ -16,6 +16,10 @@
     countdownTimer: null,
     candidateFilter: '',
     journalFilter: '',
+    decisionFilter: 'ALL',
+    alertLevelFilter: 'ALL',
+    alertKeyword: '',
+    cachedAlerts: [],
     pendingAction: null,
     // 일일 퀀트 보고서 상태
     currentView: 'dashboard',
@@ -568,6 +572,33 @@
     return firstSentence.length > 35 ? `${firstSentence.slice(0, 32)}...` : firstSentence;
   }
 
+  function filterAlertItems(alerts, levelFilter, keyword) {
+    const list = Array.isArray(alerts) ? alerts : [];
+    const lvl = String(levelFilter || 'ALL').toUpperCase();
+    const kw = String(keyword || '').trim().toLowerCase();
+    return list.filter((item) => {
+      const itemLvl = String((item && item.level) || '').toUpperCase();
+      if (lvl === 'ERROR' && itemLvl !== 'ERROR' && itemLvl !== 'CRITICAL') return false;
+      if (lvl === 'WARNING' && itemLvl !== 'WARNING') return false;
+      if (kw) {
+        const hay = `${item.source || ''} ${item.level || ''} ${item.message || ''}`.toLowerCase();
+        if (!hay.includes(kw)) return false;
+      }
+      return true;
+    });
+  }
+
+  function applyAlertFiltersAndRender() {
+    const filtered = filterAlertItems(state.cachedAlerts, state.alertLevelFilter, state.alertKeyword);
+    renderAlertLogs(filtered);
+    const countEl = document.getElementById('alerts_count');
+    if (countEl) {
+      countEl.textContent = filtered.length === state.cachedAlerts.length
+        ? `${filtered.length}건`
+        : `${filtered.length}/${state.cachedAlerts.length}건`;
+    }
+  }
+
   // WARNING, ERROR, CRITICAL 로그 전용 조회. 로그 원문은 반드시 textContent로 렌더링한다.
   async function fetchAlertLogs() {
     const tbody = document.getElementById('alerts_tbody');
@@ -586,9 +617,8 @@
       const data = await res.json();
       const rawAlerts = Array.isArray(data.alerts) ? data.alerts : [];
       // 최근 24시간 이내 로그만 선별 필터링
-      const validAlerts = rawAlerts.filter(a => !a.timestamp || isWithinLast24Hours(a.timestamp));
-      renderAlertLogs(validAlerts);
-      if (countEl) countEl.textContent = `${validAlerts.length}건`;
+      state.cachedAlerts = rawAlerts.filter(a => !a.timestamp || isWithinLast24Hours(a.timestamp));
+      applyAlertFiltersAndRender();
     } catch (err) {
       tbody.replaceChildren();
       const row = document.createElement('tr');
@@ -745,7 +775,105 @@
     }
 
     // 통합 탭은 거래소별 안전 원인을 나란히 보여 주되, 개별 탭에서는 현재 거래소 하나만 표시한다.
+    renderSafetyAlertBanner(data);
     renderExchangeSafetyDetails(data);
+  }
+
+  function formatReconciliationLabel(state, pendingCount, unknownCount) {
+    const norm = String(state || 'PENDING').toUpperCase();
+    const pending = Number(pendingCount || 0);
+    const unknown = Number(unknownCount || 0);
+    if (norm === 'READY' && pending === 0 && unknown === 0) {
+      return { text: '완료(정상)', tone: 'ok' };
+    }
+    if (pending > 0 || unknown > 0) {
+      const parts = [];
+      if (pending > 0) parts.push(`대기 ${pending}건`);
+      if (unknown > 0) parts.push(`미확인 ${unknown}건`);
+      return { text: `주의(${parts.join(', ')})`, tone: 'warn' };
+    }
+    if (norm === 'READY') {
+      return { text: '완료(정상)', tone: 'ok' };
+    }
+    return { text: '대사 대기(PENDING)', tone: 'warn' };
+  }
+
+  function formatPrivateWsLabel(privateWs) {
+    const pws = (privateWs && typeof privateWs === 'object') ? privateWs : {};
+    const status = String(pws.status || 'UNAVAILABLE').toUpperCase();
+    const queueCnt = Number(pws.pending_order_events || 0);
+    const queueSuffix = queueCnt > 0 ? ` · 대기 ${queueCnt}건` : '';
+    if (status === 'CONNECTED') return { text: `연결됨${queueSuffix}`, tone: 'ok' };
+    if (status === 'RECONNECTING') return { text: `재연결 중${queueSuffix}`, tone: 'warn' };
+    if (status === 'DEGRADED') return { text: `일부 연결${queueSuffix}`, tone: 'warn' };
+    if (status === 'DISABLED') return { text: '비활성', tone: 'muted' };
+    if (status === 'OFFLINE' || status === 'STOPPED') return { text: '오프라인', tone: 'bad' };
+    return { text: `미연결(${status})${queueSuffix}`, tone: 'bad' };
+  }
+
+  function formatPublicWsLabel(feed) {
+    const f = (feed && typeof feed === 'object') ? feed : {};
+    const status = String(f.status || 'DATA_UNAVAILABLE').toUpperCase();
+    if (f.is_healthy === true || status === 'DATA_AVAILABLE') return { text: '정상 수신', tone: 'ok' };
+    if (status === 'STALE' || status === 'PROCESSING_DELAY' || status === 'DEGRADED') return { text: `지연(${status})`, tone: 'warn' };
+    if (status === 'OFFLINE') return { text: '오프라인', tone: 'bad' };
+    return { text: `비정상(${status})`, tone: 'bad' };
+  }
+
+  function createSafetyChip(label, valueObj) {
+    const chip = document.createElement('span');
+    const toneMap = {
+      ok: 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300',
+      warn: 'border-amber-500/35 bg-amber-500/10 text-amber-200',
+      bad: 'border-rose-500/35 bg-rose-500/10 text-rose-300',
+      muted: 'border-slate-700 bg-slate-800/70 text-slate-400',
+    };
+    chip.className = `inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium ${toneMap[valueObj.tone] || toneMap.muted}`;
+    chip.textContent = `${label}: ${valueObj.text}`;
+    return chip;
+  }
+
+  function renderSafetyAlertBanner(safety) {
+    const banner = document.getElementById('safety_alert_banner');
+    if (!banner) return;
+    const data = (safety && typeof safety === 'object') ? safety : {};
+    const byExchange = (data.by_exchange && typeof data.by_exchange === 'object')
+      ? data.by_exchange
+      : { current: data };
+    const warnings = [];
+    const labels = { bithumb: '빗썸', upbit: '업비트', current: '현재 거래소' };
+
+    Object.entries(byExchange).forEach(([exchange, item]) => {
+      const exData = (item && typeof item === 'object') ? item : {};
+      const exLabel = labels[exchange] || exchange;
+      const recState = String(exData.reconciliation_state || '').toUpperCase();
+      const pending = Number(exData.reconciliation_pending_count || 0);
+      const unknown = Number(exData.unknown_orders_count || 0);
+      const pws = (exData.private_ws && typeof exData.private_ws === 'object') ? exData.private_ws : {};
+      const pwsStatus = String(pws.status || '').toUpperCase();
+      const blockingMarkets = Array.isArray(exData.entry_blocking_markets) ? exData.entry_blocking_markets : [];
+
+      if (recState && recState !== 'READY') {
+        warnings.push(`${exLabel} REST 대사 대기(${recState})`);
+      }
+      if (pending > 0 || unknown > 0) {
+        warnings.push(`${exLabel} 미해결 주문(대사 ${pending} · 확인불가 ${unknown})`);
+      }
+      if (pwsStatus && pwsStatus !== 'CONNECTED' && pwsStatus !== 'DISABLED' && pwsStatus !== 'UNAVAILABLE') {
+        warnings.push(`${exLabel} Private WS ${pwsStatus}`);
+      }
+      if (blockingMarkets.length > 0) {
+        warnings.push(`${exLabel} 매수 잠금 종목: ${blockingMarkets.slice(0, 5).join(', ')}`);
+      }
+    });
+
+    if (warnings.length === 0) {
+      banner.classList.add('hidden');
+      banner.textContent = '';
+      return;
+    }
+    banner.classList.remove('hidden');
+    banner.textContent = `⚠️ 안전 관제 알림 — ${warnings.join(' | ')} (기존 포지션 보호는 정상 유지됨)`;
   }
 
   function renderExchangeSafetyDetails(safety) {
@@ -763,21 +891,51 @@
       const data = (item && typeof item === 'object') ? item : {};
       const ready = data.entry_ready === true;
       const feed = (data.feed && typeof data.feed === 'object') ? data.feed : {};
+      const privateWs = (data.private_ws && typeof data.private_ws === 'object') ? data.private_ws : {};
       const reasons = Array.isArray(data.entry_block_reasons) ? data.entry_block_reasons : [];
+      const blockingMarkets = Array.isArray(data.entry_blocking_markets) ? data.entry_blocking_markets : [];
+      const recMetrics = (data.reconciliation_metrics && typeof data.reconciliation_metrics === 'object')
+        ? data.reconciliation_metrics
+        : {};
+
       const card = document.createElement('div');
       card.className = ready
         ? 'rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3'
         : 'rounded-xl border border-rose-500/30 bg-rose-500/5 p-3';
+
       const title = document.createElement('div');
-      title.className = 'font-semibold text-slate-100';
+      title.className = 'font-semibold text-slate-100 flex items-center justify-between gap-2';
       title.textContent = `${labels[exchange] || exchange}: ${ready ? '신규 매수 가능' : '신규 매수 차단'}`;
+
+      const chips = document.createElement('div');
+      chips.className = 'flex flex-wrap gap-1.5 mt-2';
+      chips.appendChild(createSafetyChip('신규 BUY', ready ? { text: '허용', tone: 'ok' } : { text: '차단', tone: 'bad' }));
+      chips.appendChild(createSafetyChip('REST 대사', formatReconciliationLabel(
+        data.reconciliation_state,
+        data.reconciliation_pending_count,
+        data.unknown_orders_count,
+      )));
+      chips.appendChild(createSafetyChip('Private WS', formatPrivateWsLabel(privateWs)));
+      chips.appendChild(createSafetyChip('Public WS', formatPublicWsLabel(feed)));
+
       const body = document.createElement('div');
-      body.className = 'text-[11px] mt-1 text-slate-300';
-      const feedStatus = String(feed.status || 'DATA_UNAVAILABLE');
-      body.textContent = reasons.length
-        ? reasons.slice(0, 2).join(' · ')
-        : `시세 스트림 ${feedStatus}`;
-      card.append(title, body);
+      body.className = 'text-[11px] mt-2 text-slate-300';
+      if (reasons.length) {
+        body.textContent = reasons.slice(0, 2).join(' · ');
+      } else if (recMetrics.last_suspend_reason) {
+        body.textContent = `최근 대사 보류 이력: ${String(recMetrics.last_suspend_reason)}`;
+      } else {
+        body.textContent = '모든 안전 게이트 정상';
+      }
+
+      card.append(title, chips, body);
+
+      if (blockingMarkets.length > 0) {
+        const lockedEl = document.createElement('div');
+        lockedEl.className = 'text-[11px] mt-1.5 text-amber-300 font-medium';
+        lockedEl.textContent = `매수 잠금 종목: ${blockingMarkets.join(', ')}`;
+        card.appendChild(lockedEl);
+      }
       container.appendChild(card);
     });
   }
@@ -1445,6 +1603,7 @@
     // Render Tables
     renderPositionsTable(positions);
     renderCandidatesTable(candidates, d.safety);
+    renderDecisionFeed(d.recent_decisions || [], d.decision_summary || {}, state.activeExchange);
     renderDailyHistoryTable(d.daily_stats_history || []);
     renderConfirmedFillReport(d, state.activeExchange);
     renderRecentTradesTable(d.recent_trades || []);
@@ -1631,6 +1790,130 @@
         `;
       }).join('');
     }
+  }
+
+  function formatDecisionActionBadge(action) {
+    const code = String(action || '').toUpperCase();
+    if (code === 'BUY_SUBMITTED' || code === 'BUY_APPROVED') {
+      return { text: code === 'BUY_SUBMITTED' ? '매수 실행' : '매수 승인', cls: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' };
+    }
+    if (code === 'HOLD') {
+      return { text: '관망(보류)', cls: 'bg-slate-700/60 text-slate-300 border-slate-600' };
+    }
+    return { text: '진입 차단', cls: 'bg-amber-500/20 text-amber-200 border-amber-500/40' };
+  }
+
+  function formatPolicyModeLabel(policyMode) {
+    const mode = String(policyMode || '').toUpperCase();
+    const map = {
+      SAFETY: '안전 게이트',
+      INSUFFICIENT_CASH: '원화 잔고 부족',
+      MARKET_COOLDOWN: '재진입 쿨다운',
+      INSUFFICIENT_CANDLES: '캔들 데이터 부족',
+      NEW_LISTING_INELIGIBLE: '신규상장 조건 미달',
+      AI_PROVIDER: 'AI 공급자 제한',
+      NORMAL: '정규 전략',
+      NEW_LISTING: '신규상장 전략',
+      RISK_OFF: '위험회피',
+      CONSECUTIVE_LOSS_RECOVERY: '연속손실 회복',
+    };
+    return map[mode] || (mode || '-');
+  }
+
+  function renderDecisionFeed(decisions, summary, activeExchange) {
+    const tbody = document.getElementById('decision_feed_tbody');
+    const summaryEl = document.getElementById('decision_summary_text');
+    const topReasonsEl = document.getElementById('decision_top_reasons');
+    if (!tbody) return;
+
+    const sum = (summary && typeof summary === 'object') ? summary : {};
+    const total = Number(sum.total_count || 0);
+    const entered = Number(sum.entered_count || 0);
+    const blocked = Number(sum.blocked_count || 0);
+    const hold = Number(sum.hold_count || 0);
+
+    if (summaryEl) {
+      summaryEl.textContent = total > 0
+        ? `최근 1시간: 전체 ${total}건 · 진입 ${entered}건 · 차단 ${blocked}건 · 관망 ${hold}건`
+        : '최근 1시간 내 기록된 스캔·의사결정 내역이 없습니다.';
+    }
+
+    if (topReasonsEl) {
+      topReasonsEl.replaceChildren();
+      const topReasons = Array.isArray(sum.top_block_reasons) ? sum.top_block_reasons : [];
+      topReasons.forEach((item, idx) => {
+        const chip = document.createElement('span');
+        chip.className = 'inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-200';
+        const label = formatPolicyModeLabel(item.policy_mode);
+        chip.textContent = `TOP ${idx + 1} · ${label} ${item.count || 0}건 (${item.pct || 0}%)`;
+        topReasonsEl.appendChild(chip);
+      });
+    }
+
+    const list = Array.isArray(decisions) ? decisions : [];
+    const filter = state.decisionFilter || 'ALL';
+    const filtered = list.filter((item) => {
+      const act = String(item.action || '').toUpperCase();
+      if (filter === 'ENTER') return act === 'BUY_APPROVED' || act === 'BUY_SUBMITTED';
+      if (filter === 'BLOCKED') return act !== 'BUY_APPROVED' && act !== 'BUY_SUBMITTED';
+      return true;
+    });
+
+    tbody.replaceChildren();
+    if (filtered.length === 0) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 7;
+      td.className = 'p-5 text-center text-slate-500';
+      td.textContent = '조건에 해당하는 의사결정 내역이 없습니다.';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+
+    filtered.forEach((item) => {
+      const tr = document.createElement('tr');
+      tr.className = 'hover:bg-slate-800/40 transition-colors';
+
+      const tdTime = document.createElement('td');
+      tdTime.className = 'p-2.5 font-mono text-slate-400 whitespace-nowrap';
+      tdTime.textContent = String(item.time_str || '-');
+
+      const tdEx = document.createElement('td');
+      tdEx.className = 'p-2.5 whitespace-nowrap';
+      const exKey = String(item.exchange || activeExchange || '').toLowerCase();
+      tdEx.textContent = exKey === 'upbit' ? '🔵 업비트' : (exKey === 'bithumb' ? '🟡 빗썸' : '-');
+
+      const tdMarket = document.createElement('td');
+      tdMarket.className = 'p-2.5 font-medium text-slate-200 whitespace-nowrap';
+      const market = String(item.market || '-');
+      const kName = String(item.korean_name || '');
+      tdMarket.textContent = kName ? `${kName} (${market})` : market;
+
+      const tdAction = document.createElement('td');
+      tdAction.className = 'p-2.5 whitespace-nowrap';
+      const badgeInfo = formatDecisionActionBadge(item.action);
+      const badge = document.createElement('span');
+      badge.className = `inline-block rounded-md border px-2 py-0.5 text-[11px] font-semibold ${badgeInfo.cls}`;
+      badge.textContent = badgeInfo.text;
+      tdAction.appendChild(badge);
+
+      const tdStage = document.createElement('td');
+      tdStage.className = 'p-2.5 text-slate-300 whitespace-nowrap';
+      tdStage.textContent = formatPolicyModeLabel(item.policy_mode);
+
+      const tdReason = document.createElement('td');
+      tdReason.className = 'p-2.5 text-slate-300';
+      const reasons = Array.isArray(item.block_reasons) ? item.block_reasons : [];
+      tdReason.textContent = reasons.length ? reasons.join(' · ') : '-';
+
+      const tdRegime = document.createElement('td');
+      tdRegime.className = 'p-2.5 text-slate-400 whitespace-nowrap';
+      tdRegime.textContent = item.btc_regime ? String(item.btc_regime) : '-';
+
+      tr.append(tdTime, tdEx, tdMarket, tdAction, tdStage, tdReason, tdRegime);
+      tbody.appendChild(tr);
+    });
   }
 
   // Render Candidates Watchlist Table & Mobile Cards
@@ -2074,6 +2357,72 @@
     return root;
   }
 
+  function renderConfirmedFillBreakdown(report) {
+    const container = document.getElementById('confirmed_fill_breakdown');
+    if (!container) return;
+    container.replaceChildren();
+
+    const regimes = Array.isArray(report && report.regime_breakdown) ? report.regime_breakdown : [];
+    const hours = Array.isArray(report && report.hourly_kst_breakdown) ? report.hourly_kst_breakdown : [];
+    if (regimes.length === 0 && hours.length === 0) {
+      container.classList.add('hidden');
+      return;
+    }
+    container.classList.remove('hidden');
+
+    function buildBreakdownCard(titleText, rows, keyName, labelFn) {
+      const card = document.createElement('div');
+      card.className = 'rounded-xl border border-slate-800/80 bg-slate-900/50 p-3';
+      const title = document.createElement('div');
+      title.className = 'text-xs font-semibold text-slate-300 mb-2';
+      title.textContent = titleText;
+      card.appendChild(title);
+
+      if (!rows.length) {
+        const empty = document.createElement('div');
+        empty.className = 'text-[11px] text-slate-500';
+        empty.textContent = '집계된 체결 내역이 없습니다.';
+        card.appendChild(empty);
+        return card;
+      }
+
+      const list = document.createElement('div');
+      list.className = 'space-y-1.5 max-h-40 overflow-y-auto pr-1';
+      rows.forEach((row) => {
+        const line = document.createElement('div');
+        line.className = 'flex items-center justify-between gap-2 text-[11px] rounded-lg bg-slate-950/50 px-2.5 py-1.5 border border-slate-800/60';
+
+        const left = document.createElement('span');
+        left.className = 'font-medium text-slate-200';
+        left.textContent = `${labelFn(row[keyName])} (${row.count || 0}건)`;
+
+        const right = document.createElement('span');
+        const pnl = Number(row.net_pnl_krw || 0);
+        const winRate = Number(row.win_rate_pct || 0).toFixed(1);
+        right.className = pnl >= 0 ? 'font-mono text-emerald-400' : 'font-mono text-rose-400';
+        right.textContent = `승률 ${winRate}% · ${pnl >= 0 ? '+' : ''}${formatKrw(pnl)}`;
+
+        line.append(left, right);
+        list.appendChild(line);
+      });
+      card.appendChild(list);
+      return card;
+    }
+
+    container.appendChild(buildBreakdownCard(
+      '📊 시장 레짐별 성과 (확정 체결)',
+      regimes,
+      'regime',
+      (r) => formatMarketRegime(String(r || 'UNKNOWN')),
+    ));
+    container.appendChild(buildBreakdownCard(
+      '🕒 KST 시간대별 성과 (확정 체결)',
+      hours,
+      'hour_kst',
+      (h) => String(h || '-'),
+    ));
+  }
+
   function renderConfirmedFillReport(d, activeExchange) {
     const report = resolveConfirmedFillReport(d, activeExchange);
     const genEl = document.getElementById('confirmed_fill_generated_at');
@@ -2109,14 +2458,23 @@
             ${Number(summary.total_net_pnl_krw || 0) >= 0 ? '+' : ''}${formatKrw(summary.total_net_pnl_krw || 0)}
           </div>
         </div>
-        <div class="col-span-2 sm:col-span-4 text-[11px] text-slate-500">
-          성과 제외 주문: ${formatOrderStatusDisplayLabel('RECONCILIATION_PENDING')} ${statusExcluded.RECONCILIATION_PENDING || 0}건 ·
-          ${formatOrderStatusDisplayLabel('OPEN')} ${statusExcluded.OPEN || 0}건 ·
-          ${formatOrderStatusDisplayLabel('CANCELED')} ${statusExcluded.CANCELED || 0}건 ·
-          ${formatOrderStatusDisplayLabel('UNKNOWN')} ${statusExcluded.UNKNOWN || 0}건
+        <div class="col-span-2 sm:col-span-4 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400 pt-1">
+          <span>
+            누적 수수료: <b class="text-slate-200">${formatKrw(summary.total_fee_krw || 0)}</b> ·
+            평균 슬리피지(진입/청산): <b class="text-slate-200">${Number(summary.avg_entry_slippage_bps || 0).toFixed(1)} / ${Number(summary.avg_exit_slippage_bps || 0).toFixed(1)} bps</b> ·
+            최대: <b class="text-amber-300">${Number(summary.max_slippage_bps || 0).toFixed(1)} bps</b>
+          </span>
+          <span class="text-slate-500">
+            성과 제외 주문: ${formatOrderStatusDisplayLabel('RECONCILIATION_PENDING')} ${statusExcluded.RECONCILIATION_PENDING || 0}건 ·
+            ${formatOrderStatusDisplayLabel('OPEN')} ${statusExcluded.OPEN || 0}건 ·
+            ${formatOrderStatusDisplayLabel('CANCELED')} ${statusExcluded.CANCELED || 0}건 ·
+            ${formatOrderStatusDisplayLabel('UNKNOWN')} ${statusExcluded.UNKNOWN || 0}건
+          </span>
         </div>
       `;
     }
+
+    renderConfirmedFillBreakdown(report);
 
     const cmpEl = document.getElementById('confirmed_fill_comparison');
     const cmp = report.daily_stats_comparison;
@@ -3376,6 +3734,46 @@
     }
     window.addEventListener('resize', handleResize);
     window.addEventListener('orientationchange', handleResize);
+
+    // 의사결정 피드 필터 버튼 바인딩
+    document.querySelectorAll('.decision-filter-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const nextFilter = btn.getAttribute('data-decision-filter') || 'ALL';
+        state.decisionFilter = nextFilter;
+        document.querySelectorAll('.decision-filter-btn').forEach((b) => {
+          const isActive = b.getAttribute('data-decision-filter') === nextFilter;
+          b.className = isActive
+            ? 'decision-filter-btn px-2.5 py-1 rounded-lg text-xs font-medium bg-blue-600 text-white'
+            : 'decision-filter-btn px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-800 text-slate-300 hover:bg-slate-700';
+        });
+        if (state.lastData) {
+          renderDashboard(state.lastData);
+        }
+      });
+    });
+
+    // 이상 로그 수준 필터 및 키워드 검색 바인딩
+    document.querySelectorAll('.alert-level-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const nextLevel = btn.getAttribute('data-alert-level') || 'ALL';
+        state.alertLevelFilter = nextLevel;
+        document.querySelectorAll('.alert-level-btn').forEach((b) => {
+          const isActive = b.getAttribute('data-alert-level') === nextLevel;
+          b.className = isActive
+            ? 'alert-level-btn px-2 py-1 rounded-lg text-[11px] font-medium bg-blue-600 text-white'
+            : 'alert-level-btn px-2 py-1 rounded-lg text-[11px] font-medium bg-slate-800 text-slate-300 hover:bg-slate-700';
+        });
+        applyAlertFiltersAndRender();
+      });
+    });
+
+    const alertSearchEl = document.getElementById('alerts_keyword_input');
+    if (alertSearchEl) {
+      alertSearchEl.addEventListener('input', (e) => {
+        state.alertKeyword = e.target.value || '';
+        applyAlertFiltersAndRender();
+      });
+    }
   });
 
 })();

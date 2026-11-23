@@ -269,7 +269,7 @@ def build_trade_legs_from_journal(
 
 
 def summarize_trade_legs(legs: list[dict[str, Any]]) -> dict[str, Any]:
-    """확정 체결 레그 기준 승률·Profit Factor·순손익."""
+    """확정 체결 레그 기준 승률·Profit Factor·순손익·슬리피지 요약."""
     if not legs:
         return {
             "confirmed_fill_count": 0,
@@ -282,6 +282,9 @@ def summarize_trade_legs(legs: list[dict[str, Any]]) -> dict[str, Any]:
             "total_gross_pnl_krw": 0.0,
             "total_net_pnl_krw": 0.0,
             "total_fee_krw": 0.0,
+            "avg_entry_slippage_bps": 0.0,
+            "avg_exit_slippage_bps": 0.0,
+            "max_slippage_bps": 0.0,
         }
 
     wins = [leg for leg in legs if float(leg.get("net_pnl_krw", 0.0)) > 0]
@@ -289,6 +292,10 @@ def summarize_trade_legs(legs: list[dict[str, Any]]) -> dict[str, Any]:
     gross_win = sum(float(leg.get("net_pnl_krw", 0.0)) for leg in wins)
     gross_loss = abs(sum(float(leg.get("net_pnl_krw", 0.0)) for leg in losses))
     profit_factor = (gross_win / gross_loss) if gross_loss > 0 else None
+
+    entry_slips = [float(leg.get("entry_slippage_bps", 0.0) or 0.0) for leg in legs]
+    exit_slips = [float(leg.get("exit_slippage_bps", 0.0) or 0.0) for leg in legs]
+    all_slips = entry_slips + exit_slips
 
     return {
         "confirmed_fill_count": len(legs),
@@ -301,7 +308,68 @@ def summarize_trade_legs(legs: list[dict[str, Any]]) -> dict[str, Any]:
         "total_gross_pnl_krw": round(sum(float(leg.get("gross_pnl_krw", 0.0)) for leg in legs), 2),
         "total_net_pnl_krw": round(sum(float(leg.get("net_pnl_krw", 0.0)) for leg in legs), 2),
         "total_fee_krw": round(sum(float(leg.get("total_fee_krw", 0.0)) for leg in legs), 2),
+        "avg_entry_slippage_bps": round(sum(entry_slips) / len(entry_slips), 2) if entry_slips else 0.0,
+        "avg_exit_slippage_bps": round(sum(exit_slips) / len(exit_slips), 2) if exit_slips else 0.0,
+        "max_slippage_bps": round(max(all_slips), 2) if all_slips else 0.0,
     }
+
+
+def _extract_kst_hour(exit_at_kst: str) -> str:
+    """'YYYY-MM-DD HH:MM:SS' 형식의 KST 청산 시각에서 시(HH)를 추출한다."""
+    text = str(exit_at_kst or "").strip()
+    if len(text) >= 13 and text[10] in (" ", "T"):
+        hour = text[11:13]
+        if hour.isdigit():
+            return hour
+    return ""
+
+
+def aggregate_by_hour_kst(legs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """KST 시간대(00~23시)별 확정 체결 건수·승률·순손익·평균 슬리피지 집계."""
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for leg in legs:
+        hour = _extract_kst_hour(str(leg.get("exit_at_kst", "") or ""))
+        if not hour:
+            continue
+        buckets.setdefault(hour, []).append(leg)
+
+    rows: list[dict[str, Any]] = []
+    for hour in sorted(buckets.keys()):
+        hour_legs = buckets[hour]
+        summary = summarize_trade_legs(hour_legs)
+        rows.append({
+            "hour_kst": f"{hour}:00",
+            "count": summary["confirmed_fill_count"],
+            "win_count": summary["win_count"],
+            "win_rate_pct": summary["win_rate_pct"],
+            "net_pnl_krw": summary["total_net_pnl_krw"],
+            "total_fee_krw": summary["total_fee_krw"],
+            "avg_exit_slippage_bps": summary["avg_exit_slippage_bps"],
+        })
+    return rows
+
+
+def aggregate_by_regime(legs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """시장 레짐(NORMAL, BULL_TREND, RISK_OFF 등)별 확정 체결 성과 집계."""
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for leg in legs:
+        regime = str(leg.get("regime") or "UNKNOWN").upper()
+        buckets.setdefault(regime, []).append(leg)
+
+    rows: list[dict[str, Any]] = []
+    for regime, reg_legs in sorted(buckets.items(), key=lambda x: len(x[1]), reverse=True):
+        summary = summarize_trade_legs(reg_legs)
+        rows.append({
+            "regime": regime,
+            "count": summary["confirmed_fill_count"],
+            "win_count": summary["win_count"],
+            "win_rate_pct": summary["win_rate_pct"],
+            "net_pnl_krw": summary["total_net_pnl_krw"],
+            "total_fee_krw": summary["total_fee_krw"],
+            "avg_entry_slippage_bps": summary["avg_entry_slippage_bps"],
+            "avg_exit_slippage_bps": summary["avg_exit_slippage_bps"],
+        })
+    return rows
 
 
 def aggregate_daily_kst(legs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -411,6 +479,8 @@ def build_confirmed_fill_report(
     )
 
     daily_rows = aggregate_daily_kst(legs)[:daily_rollup_limit]
+    hourly_rows = aggregate_by_hour_kst(legs)
+    regime_rows = aggregate_by_regime(legs)
     recent_legs = list(reversed(legs))[:recent_leg_limit]
 
     return {
@@ -425,6 +495,8 @@ def build_confirmed_fill_report(
         },
         "summary": summary,
         "daily_kst_rollup": daily_rows,
+        "hourly_kst_breakdown": hourly_rows,
+        "regime_breakdown": regime_rows,
         "recent_trade_legs": recent_legs,
         "daily_stats_comparison": comparison,
     }
@@ -453,6 +525,23 @@ def _merge_performance_summaries(
         for status, count in (summary.get("order_status_excluded_counts") or {}).items():
             excluded[status] = excluded.get(status, 0) + int(count or 0)
 
+    left_cnt = int(left.get("confirmed_fill_count", 0) or 0)
+    right_cnt = int(right.get("confirmed_fill_count", 0) or 0)
+    avg_entry_slip = (
+        (float(left.get("avg_entry_slippage_bps", 0.0) or 0.0) * left_cnt
+         + float(right.get("avg_entry_slippage_bps", 0.0) or 0.0) * right_cnt)
+        / fill_count
+    ) if fill_count > 0 else 0.0
+    avg_exit_slip = (
+        (float(left.get("avg_exit_slippage_bps", 0.0) or 0.0) * left_cnt
+         + float(right.get("avg_exit_slippage_bps", 0.0) or 0.0) * right_cnt)
+        / fill_count
+    ) if fill_count > 0 else 0.0
+    max_slip = max(
+        float(left.get("max_slippage_bps", 0.0) or 0.0),
+        float(right.get("max_slippage_bps", 0.0) or 0.0),
+    )
+
     return {
         "confirmed_fill_count": fill_count,
         "win_count": win_count,
@@ -475,6 +564,9 @@ def _merge_performance_summaries(
             float(left.get("total_fee_krw", 0.0) or 0.0) + float(right.get("total_fee_krw", 0.0) or 0.0),
             2,
         ),
+        "avg_entry_slippage_bps": round(avg_entry_slip, 2),
+        "avg_exit_slippage_bps": round(avg_exit_slip, 2),
+        "max_slippage_bps": round(max_slip, 2),
         "order_status_excluded_counts": excluded,
     }
 
@@ -506,6 +598,45 @@ def _merge_recent_trade_legs(
     return merged[:limit]
 
 
+def _merge_breakdown_rows(
+    left_rows: list[dict[str, Any]],
+    right_rows: list[dict[str, Any]],
+    key_name: str,
+) -> list[dict[str, Any]]:
+    """시간대·레짐별 성과 행을 키 기준으로 합산한다."""
+    merged: dict[str, dict[str, Any]] = {}
+    for rows in (left_rows or [], right_rows or []):
+        for row in rows:
+            if not isinstance(row, dict) or not row.get(key_name):
+                continue
+            k = str(row[key_name])
+            cur = merged.setdefault(k, {
+                key_name: k,
+                "count": 0,
+                "win_count": 0,
+                "net_pnl_krw": 0.0,
+                "total_fee_krw": 0.0,
+            })
+            cur["count"] += int(row.get("count", 0) or 0)
+            cur["win_count"] += int(row.get("win_count", 0) or 0)
+            cur["net_pnl_krw"] += float(row.get("net_pnl_krw", 0.0) or 0.0)
+            cur["total_fee_krw"] += float(row.get("total_fee_krw", 0.0) or 0.0)
+
+    out: list[dict[str, Any]] = []
+    for k in sorted(merged.keys()):
+        item = merged[k]
+        cnt = item["count"]
+        out.append({
+            key_name: k,
+            "count": cnt,
+            "win_count": item["win_count"],
+            "win_rate_pct": round(item["win_count"] / cnt * 100.0, 2) if cnt > 0 else 0.0,
+            "net_pnl_krw": round(item["net_pnl_krw"], 2),
+            "total_fee_krw": round(item["total_fee_krw"], 2),
+        })
+    return out
+
+
 def merge_exchange_reports(
     bithumb_report: dict[str, Any],
     upbit_report: dict[str, Any],
@@ -520,6 +651,16 @@ def merge_exchange_reports(
         "generated_at_kst": get_kst_now_str(),
         "timezone": "Asia/Seoul",
         "summary": _merge_performance_summaries(bt_summary, up_summary),
+        "hourly_kst_breakdown": _merge_breakdown_rows(
+            bithumb_report.get("hourly_kst_breakdown") or [],
+            upbit_report.get("hourly_kst_breakdown") or [],
+            "hour_kst",
+        ),
+        "regime_breakdown": _merge_breakdown_rows(
+            bithumb_report.get("regime_breakdown") or [],
+            upbit_report.get("regime_breakdown") or [],
+            "regime",
+        ),
         "recent_trade_legs": _merge_recent_trade_legs(
             bithumb_report,
             upbit_report,
