@@ -329,6 +329,19 @@ class StrategyPolicy:
     RISK_OFF_MAX_ALT_ALLOC_PCT: float = 0.12      # RISK_OFF 시 알트 최대 비중 12% (단타 적극 매수 허용)
     RISK_OFF_MAX_ALT_BUDGET_KRW: float = 200000.0  # RISK_OFF 시 알트 1종목 최대 매수 금액 20만 원 캡
     RISK_OFF_MIN_ORDERBOOK_RATIO: float = 1.00    # RISK_OFF 시 최소 요구 호가 잔량비 (매수벽 >= 매도벽)
+    NORMAL_MIN_ORDERBOOK_RATIO: float = 0.95      # NORMAL 시 최소 요구 호가 잔량비 (매도벽 우위 진입 차단)
+    BULL_MIN_ORDERBOOK_RATIO: float = 0.95        # BULL_TREND 시 최소 요구 호가 잔량비 (매도벽 우위 진입 차단)
+    MIN_ENTRY_ATR_PCT: float = 0.25               # 비메이저 알트코인 최소 진입 변동성 (ATR% < 0.25% 극저탄력 횡보 배제)
+
+    @classmethod
+    def get_min_orderbook_ratio(cls, regime: str = "NORMAL") -> float:
+        """레짐별 최소 요구 호가 잔량비(매수벽/매도벽)를 반환한다."""
+        regime_upper = str(regime or "NORMAL").upper()
+        if regime_upper == "RISK_OFF":
+            return cls.RISK_OFF_MIN_ORDERBOOK_RATIO
+        if regime_upper == "BULL_TREND":
+            return cls.BULL_MIN_ORDERBOOK_RATIO
+        return cls.NORMAL_MIN_ORDERBOOK_RATIO
 
     @classmethod
     def get_risk_off_max_alt_alloc_pct(cls) -> float:
@@ -1892,9 +1905,15 @@ def entry_signal(
     if orderbook is not None:
         fb = alpha_res.get("factor_breakdown", {})
         ob_ratio = float(fb.get("orderbook_smoothed_ratio") or fb.get("orderbook_raw_ratio") or 1.0)
-        min_ob_required = StrategyPolicy.RISK_OFF_MIN_ORDERBOOK_RATIO if regime_upper == "RISK_OFF" else 0.80
+        min_ob_required = StrategyPolicy.get_min_orderbook_ratio(regime_upper)
         hard_gate_orderbook = (ob_ratio >= min_ob_required)
         ob_reason = f"오더북 비율 {ob_ratio:.2f} {'>=' if hard_gate_orderbook else '<'} 기준 {min_ob_required:.2f}"
+
+    # 2-3-1. 비메이저 알트 극저변동성(ATR% < 0.25%) 횡보 진입 차단 (수수료 대비 기대수익 부족 및 타임스탑 손실 방지)
+    atr_pct_val = float(alpha_res.get("factor_breakdown", {}).get("atr_pct") or 0.0)
+    hard_gate_atr = True
+    if market and (not is_major_market(market)) and atr_pct_val > 0.0:
+        hard_gate_atr = (atr_pct_val >= StrategyPolicy.MIN_ENTRY_ATR_PCT)
 
     # 2-4. RISK_OFF 약세장 시 MACD 가속도(Slope > 0) 양수 필수 검증 (NEUTRAL / NEGATIVE 차단)
     hard_gate_macd_risk_off = True
@@ -1911,7 +1930,7 @@ def entry_signal(
     hard_gates_passed = (
         hard_gate_btc and hard_gate_mtf and hard_gate_rsi and hard_gate_bb
         and hard_gate_ma and hard_gate_disparity and hard_gate_shadow and hard_gate_orderbook
-        and hard_gate_macd_risk_off
+        and hard_gate_atr and hard_gate_macd_risk_off
     )
 
     # 3. 저점권 반등 정량 게이트: 점수가 높아도 상단권 추격을 허용하지 않는다.

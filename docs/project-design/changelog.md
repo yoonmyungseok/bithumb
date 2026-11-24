@@ -2,6 +2,13 @@
  
  버전별 상세 근거는 관련 커밋과 설계 문서를 함께 확인한다. 이후 변경은 관련 설계 문서 갱신과 동시에 맨 위에 추가한다.
 
+## 2026-11-25 DB KPI 기반 전략 개선 (전 레짐 호가 잔량비·저탄력 필터 및 타임스탑 정교화)
+
+- `src/strategy_engine.py`: `StrategyPolicy`에 `NORMAL_MIN_ORDERBOOK_RATIO = 0.95`, `BULL_MIN_ORDERBOOK_RATIO = 0.95`, `MIN_ENTRY_ATR_PCT = 0.25`, `get_min_orderbook_ratio()`를 추가하고, `entry_signal()`의 `hard_gate_orderbook`과 `hard_gate_atr`에 반영.
+- `src/trading_runtime.py`: `process_entry_gating`의 호가 잔량비 가드를 전 레짐으로 확장하고, `process_priority_exits` 타임스탑 로직에서 `BULL_TREND` 1H 추세 생존 시 정상 눌림목(`-1.5%` 초과) 조기 손절 보호 및 `NORMAL`/`RISK_OFF` 5m+1H 동시 추세 훼손 시 절반 시간 경과 후 조기 탈출을 추가.
+- `src/gemini_analyzer.py`, `src/ai_provider.py`: 매수 분석 프롬프트 및 `GeminiProvider`/`BithumbGeminiProvider` `SYSTEM_INSTRUCTION`에 전 레짐 호가 잔량비(`>= 0.95`, `RISK_OFF >= 1.00`)와 비메이저 `ATR% >= 0.25%` 기준 동기화.
+- `tests/test_strategy_kpi_improvements.py`: 전 레짐 호가 게이트, 비메이저 극저변동성 차단, 타임스탑 추세 보호/조기 탈출, AI 지침 동기화 회귀 테스트 6건 추가(전체 통과) 및 DB 과거 거래 필터 시뮬레이션 검증(`손절 방어 + 타임스탑 추세이탈청산` 손실 빗썸 `-40.6%`, 업비트 `-41.3%` 축소).
+
 ## 2026-11-24 대시보드 Soft Kill-Switch 명확화 및 이상 로그 탐색기 추가 (4단계)
 
 - `src/bot_controller.py`: `handle_web_action()`에 `pause_buy` / `resume_buy` 액션 경로 추가(기존 보유 포지션 보호는 유지하고 신규 매수만 중지/재개).

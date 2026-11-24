@@ -1299,10 +1299,38 @@ class TradingCycleEngine:
             if is_holding_support or hold_duration_sec < effective_max_hold:
                 is_time_stop_profit_trigger = False
 
+        # 1H봉 MTF 추세 지지 확인
+        is_1h_trend_alive = True
+        candles_1h = getattr(market_inputs, "candles_1h", None)
+        if candles_1h and len(candles_1h) >= 20:
+            c1h_cur = float(candles_1h[0].get("trade_price", 0.0) or current_price)
+            p1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
+            ema20_1h = calculate_ema(p1h, 20)
+            is_1h_trend_alive = c1h_cur >= (ema20_1h * 0.985)
+
         is_time_stop_loss_trigger = (
             (hold_duration_sec >= effective_max_hold or (hold_duration_sec >= effective_time_stop and is_trend_broken))
             and (pnl_pct_current < be_threshold_pct)
         )
+        # NORMAL/RISK_OFF에서 5분봉 추세 이탈과 1H 대세 추세 훼손이 동시에 발생하면 50% 경과 시점부터 손실 확대 전 조기 정리한다.
+        if (
+            btc_regime != "BULL_TREND"
+            and is_trend_broken
+            and (not is_1h_trend_alive)
+            and hold_duration_sec >= (effective_time_stop * 0.5)
+            and pnl_pct_current < be_threshold_pct
+        ):
+            is_time_stop_loss_trigger = True
+
+        # 상승장(BULL_TREND)에서는 1H 추세가 살아있고 정상 눌림목(-1.5% 초과) 구간이면 5분봉 단기 이탈만으로 성급히 손절하지 않는다.
+        if (
+            btc_regime == "BULL_TREND"
+            and is_1h_trend_alive
+            and pnl_pct_current > -1.5
+            and hold_duration_sec < effective_max_hold
+        ):
+            is_time_stop_loss_trigger = False
+
         # 상승장(BULL_TREND)에서는 단기 횡보 숨고르기가 정상적이므로 조기 모멘텀 탈출을 비활성화하여 털림 방지
         # 초저가주/일반주의 실질 수수료 BEP 마진 미달 구간(-0.50% ~ BEP 미만)에서 추세 이탈 시 모멘텀 조기 탈출
         is_early_momentum_exit = (
@@ -1312,15 +1340,6 @@ class TradingCycleEngine:
             and (not is_above_vwap)
             and is_trend_broken
         )
-
-        # 1H봉 MTF 추세 지지 확인
-        is_1h_trend_alive = True
-        candles_1h = getattr(market_inputs, "candles_1h", None)
-        if candles_1h and len(candles_1h) >= 20:
-            c1h_cur = float(candles_1h[0].get("trade_price", 0.0) or current_price)
-            p1h = [float(c.get("trade_price", 0.0)) for c in candles_1h]
-            ema20_1h = calculate_ema(p1h, 20)
-            is_1h_trend_alive = c1h_cur >= (ema20_1h * 0.985)
 
         # AI가 명시적으로 보유(HOLD 또는 RUNNER_HOLD)를 유지하거나 1시간봉 대세 추세가 살아있는 경우,
         # 정규 손절선에 닿지 않은 상태에서 단순 시간 경과에 의한 조기 손절을 방지하여 휩쏘 털림 차단
@@ -1919,23 +1938,28 @@ class TradingCycleEngine:
             pct_b_cap = StrategyPolicy.PCT_B_MAX
         is_dip_support = sel_pct_b <= pct_b_cap
 
-        # RISK_OFF 약세장에서는 떨어지는 칼날 잡기, 매도벽 압박, 저품질 알파 및 역추세 진입을 차단하기 위한 하드 가드
+        # 전 레짐 공통 호가 잔량비 하드 가드 (매도벽 우위 추격 진입 차단) + RISK_OFF 추가 가드
         entry_indicators = selected_entry.get("strategy_snapshot", {}).get("indicators", {})
         rebound_ok = True
         orderbook_ok = True
         risk_off_alpha_ok = True
         risk_off_macd_ok = True
         risk_off_guard_reason = ""
+        ob_ratio = float(entry_indicators.get("orderbook_smoothed_ratio") or entry_indicators.get("orderbook_raw_ratio") or 1.0)
+        min_ob_ratio = (
+            StrategyPolicy.get_min_orderbook_ratio(btc_regime)
+            if hasattr(StrategyPolicy, "get_min_orderbook_ratio")
+            else (getattr(StrategyPolicy, "RISK_OFF_MIN_ORDERBOOK_RATIO", 1.00) if btc_regime == "RISK_OFF" else 0.95)
+        )
+        if ob_ratio < min_ob_ratio:
+            orderbook_ok = False
+            risk_off_guard_reason = f"{btc_regime} 호가 잔량비 미달({ob_ratio:.2f} < {min_ob_ratio:.2f}) 매수 차단"
+
         if btc_regime == "RISK_OFF":
             rebound_val = entry_indicators.get("rebound_confirmed", selected_entry.get("rebound_confirmed", True))
             if not rebound_val:
                 rebound_ok = False
                 risk_off_guard_reason = "RISK_OFF 약세장 반등 미확정(rebound_confirmed=False) 매수 차단"
-            ob_ratio = float(entry_indicators.get("orderbook_smoothed_ratio") or entry_indicators.get("orderbook_raw_ratio") or 1.0)
-            min_ob_ratio = getattr(StrategyPolicy, "RISK_OFF_MIN_ORDERBOOK_RATIO", 1.00)
-            if ob_ratio < min_ob_ratio:
-                orderbook_ok = False
-                risk_off_guard_reason = f"RISK_OFF 호가 잔량비 미달({ob_ratio:.2f} < {min_ob_ratio:.2f}) 매수 차단"
 
             # 1. 최소 알파 점수 80점 허들 검증 (MET 78점형 진입 차단)
             cand_alpha = max(ai_alpha, local_alpha_score, int(selected_entry.get("alpha_score", 0) or 0))
@@ -2039,7 +2063,7 @@ class TradingCycleEngine:
                 elif not rebound_ok and is_ai_buy_signal:
                     reason = f"AI 단독 매수 약세장 반등 미확정 차단: {risk_off_guard_reason} | {reason}"
                 elif not orderbook_ok and is_ai_buy_signal:
-                    reason = f"AI 단독 매수 약세장 호가 매도벽 우세 차단: {risk_off_guard_reason} | {reason}"
+                    reason = f"AI 단독 매수 호가 매도벽 우세 차단: {risk_off_guard_reason} | {reason}"
                 elif not risk_off_alpha_ok and is_ai_buy_signal:
                     reason = f"AI 단독 매수 약세장 알파 점수 미달 차단: {risk_off_guard_reason} | {reason}"
                 elif not risk_off_macd_ok and is_ai_buy_signal:
